@@ -240,10 +240,16 @@ pub(crate) fn scrub_secrets(text: &str) -> String {
 }
 
 /// Scrub for text that is about to be DISPLAYED or printed (the
-/// panic hook's stderr line, the crash banner, the details view):
-/// secret shapes plus the home prefix when the environment names
-/// one (`HOME`, or `USERPROFILE` on Windows).
-fn scrub_for_display(text: &str) -> String {
+/// panic hook's stderr line, the crash banner, the details view,
+/// and the backend supervisor's `BackendEvent::Crashed` summary,
+/// which the app renders verbatim in the connection status):
+/// secret shapes and phone-like numbers are masked, plus the
+/// home prefix when the environment names one (`HOME`, or
+/// `USERPROFILE` on Windows). It does not mask names or message
+/// text; it is a secrets-and-identifiers scrub, not a content
+/// filter.
+#[must_use]
+pub fn scrub_for_display(text: &str) -> String {
     let mut out = text.to_owned();
     if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
         if !home.is_empty() {

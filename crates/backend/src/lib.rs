@@ -1191,7 +1191,13 @@ pub enum BackendEvent {
     /// supervisor. `restarted` says whether the single automatic
     /// restart was attempted after this crash.
     Crashed {
-        /// Short panic summary (message + location, redacted).
+        /// Short failure summary: the panic message, or the
+        /// reason a run returned when it died before or outside a
+        /// session. Scrubbed by the supervisor before emission
+        /// with the crash reports' display scrubber (secret
+        /// shapes and phone-like numbers masked, the user's home
+        /// path replaced with `~`), because the app renders it
+        /// verbatim in the connection status.
         summary: String,
         /// Whether the supervisor restarted the backend afterwards.
         restarted: bool,
@@ -1468,6 +1474,15 @@ fn supervise<F>(
             Ok(Err(reason)) => reason,
             Err(payload) => panic_summary(&payload),
         };
+        // Both summary sources are free text: a panic payload can
+        // interpolate identifiers, and a startup reason is built
+        // from store and filesystem errors that can carry the
+        // data-dir path (the user's home path and username). The
+        // app renders the summary verbatim in the connection
+        // status, so scrub it here, at construction, with the
+        // same display scrubber the crash report banner uses:
+        // every consumer of the event receives the redacted form.
+        let summary = core::crash::scrub_for_display(&summary);
         if attempt == 1 {
             sink.emit(BackendEvent::Crashed { summary, restarted: true });
         } else {
@@ -1496,7 +1511,10 @@ fn supervise<F>(
     }
 }
 
-/// Extracts a short, redaction-safe summary from a panic payload.
+/// Extracts the panic message from a panic payload, verbatim.
+/// The text is not redaction-safe on its own: `supervise` runs
+/// every summary through the crash display scrubber before it
+/// leaves in a [`BackendEvent::Crashed`].
 fn panic_summary(payload: &Box<dyn std::any::Any + Send>) -> String {
     if let Some(s) = payload.downcast_ref::<&str>() {
         (*s).to_owned()
@@ -1629,6 +1647,96 @@ mod tests {
             matches!(second, Ok(BackendEvent::Connected { .. })),
             "restarted backend must emit events: {second:?}"
         );
+        drop(channels.commands);
+    }
+
+    /// A panic message stuffed with everything a payload can
+    /// interpolate: a bearer token, an API key, a phone number,
+    /// and the user's home path. The Crashed summary is rendered
+    /// verbatim by the app, so none of it may leave in the event.
+    struct LeakyPanicBackend;
+
+    impl Backend for LeakyPanicBackend {
+        fn run(
+            self: Box<Self>,
+            _config: &BackendConfig,
+            _commands: Receiver<BackendCommand>,
+            _events: EventSink,
+        ) -> Result<(), String> {
+            let home = std::env::var("HOME").unwrap_or_default();
+            panic!(
+                "auth failed: Bearer <redacted> key sk-proj-0123456789abcdef \
+                 for +62 812-3456-7890 at {home}/zaprust/session.db"
+            );
+        }
+    }
+
+    fn assert_summary_is_scrubbed(summary: &str) {
+        assert!(
+            !summary.contains("tok_live_0123456789abcdef"),
+            "bearer token leaked into the summary: {summary}"
+        );
+        assert!(
+            !summary.contains("sk-proj-0123456789abcdef"),
+            "API key leaked into the summary: {summary}"
+        );
+        assert!(!summary.contains("812-3456"), "phone number leaked into the summary: {summary}");
+        assert!(
+            summary.contains("***90"),
+            "the phone number should be masked to its last digits: {summary}"
+        );
+        if let Ok(home) = std::env::var("HOME") {
+            if !home.is_empty() && home != "/" {
+                assert!(!summary.contains(&home), "home path leaked into the summary: {summary}");
+                assert!(
+                    summary.contains("~/zaprust/session.db"),
+                    "the home prefix should be replaced with ~: {summary}"
+                );
+            }
+        }
+        // Scrubbing masks shapes; it does not blank the summary.
+        assert!(summary.contains("auth failed"), "summary must stay informative: {summary}");
+    }
+
+    #[test]
+    fn crashed_summary_is_scrubbed_before_it_is_emitted() {
+        let channels = spawn_backend(
+            || Box::new(LeakyPanicBackend) as Box<dyn Backend>,
+            test_config(),
+            no_wake(),
+        );
+        let first = channels
+            .events
+            .recv_timeout(Duration::from_secs(5))
+            .expect("a Crashed event must arrive");
+        match &first {
+            BackendEvent::Crashed { summary, restarted } => {
+                assert!(*restarted, "first crash must announce a restart");
+                assert_summary_is_scrubbed(summary);
+            }
+            other => panic!("expected Crashed, got {other:?}"),
+        }
+        // The restarted run fails the same way: the supervisor
+        // gives up (restart once, then stop), and the final
+        // summary is scrubbed too.
+        let mut saw_final_crash = false;
+        let mut saw_error = false;
+        for _ in 0..4 {
+            match channels.events.recv_timeout(Duration::from_secs(5)) {
+                Ok(BackendEvent::Crashed { summary, restarted: false }) => {
+                    assert_summary_is_scrubbed(&summary);
+                    saw_final_crash = true;
+                }
+                Ok(BackendEvent::Error { .. }) => saw_error = true,
+                Ok(_) => {}
+                Err(_) => break,
+            }
+            if saw_final_crash && saw_error {
+                break;
+            }
+        }
+        assert!(saw_final_crash, "second crash must be reported as not restarted");
+        assert!(saw_error, "a persistent Error event must follow the give-up");
         drop(channels.commands);
     }
 

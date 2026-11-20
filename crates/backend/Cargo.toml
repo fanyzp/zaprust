@@ -26,6 +26,12 @@ whatsapp = ["dep:whatsapp-rust", "dep:diesel", "dep:tokio", "dep:tracing"]
 calls = ["whatsapp", "whatsapp-rust/voip-mlow", "whatsapp-rust/voip-relay-native", "dep:cpal"]
 
 [dependencies]
+# Core for one shared piece of pure logic: the crash display
+# scrubber, applied to the supervisor's Crashed summary before it
+# is emitted (the summary is rendered verbatim by the app, and
+# panic payloads are free text). Nothing else crosses from core;
+# the backend's event and command types stay its own.
+core = { path = "../core" }
 qrcode = "0.14"
 directories = "6"
 # Microphone/speaker I/O for calls (the `calls` feature). The same

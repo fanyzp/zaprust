@@ -784,6 +784,16 @@ pub(crate) struct App {
     /// OS notification requests queued by the upsert path for new
     /// incoming messages; drained per frame by the notify module.
     pub(crate) pending_notifications: Vec<crate::notify::NotifyRequest>,
+    /// Backend events received but not yet applied. `poll_backend`
+    /// applies them in per-frame budgeted batches, so a history
+    /// sync burst cannot freeze the UI; the rest wait here, in
+    /// order, for the following frames (see live.rs).
+    pub(crate) event_queue: std::collections::VecDeque<backend::BackendEvent>,
+    /// Side effects deferred while one event batch is being
+    /// applied: per-chat sorts, the chat-list sort, the
+    /// conversation rebuild and the archive writes are coalesced
+    /// to once per batch instead of once per event (see live.rs).
+    pub(crate) event_batch: crate::live::EventBatch,
     /// Link-preview cache by URL (bounded, see `extras::OgCache`).
     pub(crate) og_cache: crate::extras::OgCache,
     /// In-flight link-preview fetches: (message id, url, result).
@@ -1179,6 +1189,8 @@ impl App {
             community_origin: None,
             header_menu_open: args.header_menu,
             pending_notifications: Vec::new(),
+            event_queue: std::collections::VecDeque::new(),
+            event_batch: crate::live::EventBatch::default(),
             og_cache: crate::extras::OgCache::default(),
             og_rx: None,
             bubble_menu: None,

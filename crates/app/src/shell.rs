@@ -15,7 +15,7 @@ impl eframe::App for App {
         }
         apply_visuals(&ctx, self.tokens);
         ctx.set_pixels_per_point(self.zoom_percent as f32 / 100.0);
-        self.poll_backend();
+        self.poll_backend(&ctx);
         self.poll_workers(&ctx);
         self.poll_update(&ctx);
         self.drain_os_notifications(&ctx);

@@ -397,6 +397,45 @@ fn privacy_commands_are_logged_by_the_fake() {
 }
 
 #[test]
+fn fake_privacy_state_round_trips_through_set_privacy() {
+    let (ch, _log) = linked_backend();
+    // The linked script reports the baseline privacy state, as
+    // the real backend reports its connect-time fetch.
+    let events = collect_until(&ch.events, 5, |e| matches!(e, BackendEvent::PrivacyState(_)));
+    let baseline = events.iter().find_map(|e| match e {
+        BackendEvent::PrivacyState(map) => Some(map),
+        _ => None,
+    });
+    let baseline = baseline.expect("the linked script reports a privacy state");
+    assert_eq!(baseline.get("readreceipts").map(String::as_str), Some("all"));
+    assert_eq!(baseline.get("last").map(String::as_str), Some("contacts"));
+
+    // A change is adopted by the fake account and the full
+    // updated state is re-emitted, mirroring the real backend's
+    // refetch after a successful SetPrivacy: the category the
+    // command did not touch is still reported.
+    ch.commands
+        .send(BackendCommand::SetPrivacy {
+            category: "readreceipts".to_owned(),
+            value: "none".to_owned(),
+        })
+        .unwrap();
+    let events = collect_until(&ch.events, 5, |e| matches!(e, BackendEvent::PrivacyState(_)));
+    let updated = events.iter().find_map(|e| match e {
+        BackendEvent::PrivacyState(map) => Some(map),
+        _ => None,
+    });
+    let updated = updated.expect("SetPrivacy re-emits the privacy state");
+    assert_eq!(updated.get("readreceipts").map(String::as_str), Some("none"));
+    assert_eq!(
+        updated.get("last").map(String::as_str),
+        Some("contacts"),
+        "the re-emitted state is the full map, not just the changed entry"
+    );
+    ch.commands.send(BackendCommand::Shutdown).unwrap();
+}
+
+#[test]
 fn scripted_group_delivers_location_carousel_and_contact_kinds() {
     let ch = spawn(FakeBackend::auto());
     ch.commands.send(BackendCommand::ConnectQr).unwrap();

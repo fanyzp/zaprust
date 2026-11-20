@@ -627,6 +627,10 @@ impl Backend for FakeBackend {
         // real backend fetches at connect: BlockContact mutates it
         // and the full list is re-emitted as a Blocklist event.
         let mut blocked_state: std::collections::HashSet<String> = std::collections::HashSet::new();
+        // The account's privacy settings, mirroring the real
+        // backend's fetch: SetPrivacy mutates one entry and the
+        // full map is re-emitted, as the real refetch reports it.
+        let mut privacy_state = baseline_privacy_state();
         let mut message_state: std::collections::HashMap<(String, String), LiveMessage> =
             scripted_messages()
                 .into_iter()
@@ -662,7 +666,7 @@ impl Backend for FakeBackend {
                 BackendCommand::ConnectQr => {
                     events.emit(BackendEvent::QrCode { payload: FAKE_QR_PAYLOAD.to_owned() });
                     if self.auto_connect {
-                        emit_linked_script(&events, &call_state);
+                        emit_linked_script(&events, &call_state, &privacy_state);
                         if self.demo_script && !script_started {
                             script_started = true;
                             let tick_events = events.clone();
@@ -677,7 +681,7 @@ impl Backend for FakeBackend {
                 BackendCommand::ConnectPairCode { phone } => {
                     events.emit(BackendEvent::PairCode { code: fake_pair_code(&phone) });
                     if self.auto_connect {
-                        emit_linked_script(&events, &call_state);
+                        emit_linked_script(&events, &call_state, &privacy_state);
                         if self.demo_script && !script_started {
                             script_started = true;
                             let tick_events = events.clone();
@@ -1072,9 +1076,8 @@ impl Backend for FakeBackend {
                             .unwrap_or_else(std::sync::PoisonError::into_inner)
                             .push(format!("privacy:{category}={value}"));
                     }
-                    let mut state = std::collections::BTreeMap::new();
-                    state.insert(category, value);
-                    events.emit(BackendEvent::PrivacyState(state));
+                    privacy_state.insert(category, value);
+                    events.emit(BackendEvent::PrivacyState(privacy_state.clone()));
                 }
                 BackendCommand::ForwardMessage { from_chat_jid, message_id, to_chat_jid } => {
                     if let Some(log) = &command_log {
@@ -1551,9 +1554,22 @@ fn emit_call_end(events: &EventSink, state: &mut FakeCallState, call: &FakeCall,
     events.emit(BackendEvent::MessageUpsert(msg));
 }
 
+/// The fake account's privacy settings at link time, spelled
+/// the way the real backend's `privacy_map` reports them. The
+/// run loop keeps the live copy: SetPrivacy mutates it and the
+/// full map is re-emitted, mirroring the real backend's
+/// refetch-after-change.
+fn baseline_privacy_state() -> std::collections::BTreeMap<String, String> {
+    let mut privacy = std::collections::BTreeMap::new();
+    privacy.insert("last".to_owned(), "contacts".to_owned());
+    privacy.insert("readreceipts".to_owned(), "all".to_owned());
+    privacy
+}
+
 fn emit_linked_script(
     events: &EventSink,
     call_state: &std::sync::Arc<std::sync::Mutex<FakeCallState>>,
+    privacy: &std::collections::BTreeMap<String, String>,
 ) {
     events.emit(BackendEvent::Connected { account: "Fake account (not WhatsApp)".to_owned() });
     for chat in scripted_chats() {
@@ -1571,12 +1587,9 @@ fn emit_linked_script(
         chat_jid: FAKE_DM_JID.to_owned(),
         message_id: "fake-promo-1".to_owned(),
     });
-    // Baseline privacy state, as the real backend reports it after
-    // fetching the account's settings.
-    let mut privacy = std::collections::BTreeMap::new();
-    privacy.insert("last".to_owned(), "contacts".to_owned());
-    privacy.insert("readreceipts".to_owned(), "all".to_owned());
-    events.emit(BackendEvent::PrivacyState(privacy));
+    // The account's privacy state, as the real backend reports
+    // it after fetching the account's settings.
+    events.emit(BackendEvent::PrivacyState(privacy.clone()));
     // Baseline blocklist, as the real backend reports it after
     // fetching the account's list at connect: nobody blocked.
     events.emit(BackendEvent::Blocklist(Vec::new()));

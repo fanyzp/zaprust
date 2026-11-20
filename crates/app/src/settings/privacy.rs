@@ -19,14 +19,7 @@ impl App {
                 |ui| switch(ui, &mut v, t),
             );
             if v != self.read_receipts {
-                self.read_receipts = v;
-                self.persist_settings();
-                if self.live_mode {
-                    self.send_backend(backend::BackendCommand::SetPrivacy {
-                        category: "readreceipts".to_owned(),
-                        value: if v { "all" } else { "none" }.to_owned(),
-                    });
-                }
+                self.set_read_receipts(v);
             }
             divider(ui, t);
             let mut tp = self.typing_indicators;

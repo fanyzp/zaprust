@@ -1149,7 +1149,7 @@ impl crate::state::App {
                 self.apply_message_deleted_for_me(chat_id, &chat_jid, mid, &pid);
             }
             BackendEvent::PrivacyState(map) => {
-                self.privacy_state = map;
+                self.apply_privacy_state(map);
             }
             BackendEvent::Blocklist(jids) => {
                 // The server's list is the source of truth for
@@ -2075,6 +2075,54 @@ impl crate::state::App {
         }
     }
 
+    /// Adopts a privacy state fetched from the account. The map
+    /// itself drives the account rows on the Privacy page, and
+    /// one value in it is also a local setting: read receipts.
+    /// That flag gates whether this client sends read receipts at
+    /// all, and it is loaded from the settings file at startup,
+    /// before any fetch lands, so the server's value (the user
+    /// may have changed it on their phone) is adopted into the
+    /// flag and written through to the persisted settings. Left
+    /// unreconciled the two silently disagree in the exposing
+    /// direction: receipts the account has off keep going out
+    /// until the toggle here happens to be flipped. Only the
+    /// spellings the toggle itself writes are adopted; an
+    /// unrecognized value leaves the flag alone. Demo mode never
+    /// adopts: the fake backend's scripted state is not an
+    /// account and must not rewrite real settings.
+    fn apply_privacy_state(&mut self, map: std::collections::BTreeMap<String, String>) {
+        if self.live_mode {
+            if let Some(on) = server_read_receipts(map.get("readreceipts")) {
+                if on != self.read_receipts {
+                    self.read_receipts = on;
+                    self.persist_settings();
+                }
+            }
+        }
+        self.privacy_state = map;
+    }
+
+    /// Applies a read-receipts toggle change from the Privacy
+    /// page. The local flag flips at once (it gates receipt
+    /// sending, so turning receipts off takes effect immediately),
+    /// the choice is persisted, and in live mode the account
+    /// setting follows via SetPrivacy. The backend answers a
+    /// successful change with a fresh PrivacyState, which
+    /// [`App::apply_privacy_state`] adopts as confirmation; a
+    /// failure surfaces as a notice and the same fetch re-adopts
+    /// the value the server kept, so the toggle never keeps
+    /// claiming a state the server rejected.
+    pub(crate) fn set_read_receipts(&mut self, on: bool) {
+        self.read_receipts = on;
+        self.persist_settings();
+        if self.live_mode {
+            self.send_backend(BackendCommand::SetPrivacy {
+                category: "readreceipts".to_owned(),
+                value: if on { "all" } else { "none" }.to_owned(),
+            });
+        }
+    }
+
     /// Records a real read action in the selected chat (the
     /// conversation screen calls this when the user scrolls to the
     /// newest messages, focuses or types in the composer, or sends
@@ -2156,6 +2204,20 @@ pub(crate) fn count_reactions(
 #[must_use]
 pub(crate) fn should_mark_read(read_receipts: bool, live_mode: bool) -> bool {
     read_receipts && live_mode
+}
+
+/// What a fetched `readreceipts` value means for the local
+/// read-receipts toggle: `all` is ON and `none` is OFF, the two
+/// spellings the toggle itself writes. Any other value (or a
+/// state that does not carry the category) is not the toggle's
+/// to adopt and returns `None`.
+#[must_use]
+pub(crate) fn server_read_receipts(fetched: Option<&String>) -> Option<bool> {
+    match fetched.map(String::as_str) {
+        Some("all") => Some(true),
+        Some("none") => Some(false),
+        _ => None,
+    }
 }
 
 /// The full receipt gate: the privacy contract above, plus the
@@ -2929,6 +2991,97 @@ mod chat_state_routing_tests {
         tx.send(BackendEvent::Blocklist(Vec::new())).unwrap();
         drain_all(&mut app, &ctx);
         assert!(app.blocked_chats.is_empty(), "an empty server list clears the set");
+    }
+
+    /// The connect-time privacy fetch reconciles the local
+    /// read-receipts toggle with the account's setting (audit
+    /// finding D3): the server value is adopted into the flag
+    /// that gates receipt sending and into the settings document
+    /// persist_settings writes, in both directions, and adopting
+    /// sends nothing back to the backend.
+    #[test]
+    fn server_read_receipts_setting_is_adopted() {
+        let (mut app, tx, ctx, cmd_rx) = live_app();
+        // Set the starting flag explicitly: adoption persists,
+        // and a parallel test's write must not leak into this
+        // one's starting state through the settings file.
+        app.read_receipts = true;
+
+        // The account has receipts off (changed on the phone):
+        // the fetch adopts that.
+        let mut state = std::collections::BTreeMap::new();
+        state.insert("last".to_owned(), "contacts".to_owned());
+        state.insert("readreceipts".to_owned(), "none".to_owned());
+        tx.send(BackendEvent::PrivacyState(state)).unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(!app.read_receipts, "the server value drives the toggle");
+        assert_eq!(
+            app.settings_json()["read_receipts"],
+            serde_json::json!(false),
+            "the adopted value is what persist_settings writes"
+        );
+        assert_eq!(app.privacy_state.get("last").map(String::as_str), Some("contacts"));
+        assert!(cmd_rx.try_recv().is_err(), "adopting a fetched state sends nothing back");
+
+        // And back on, the same way.
+        let mut state = std::collections::BTreeMap::new();
+        state.insert("readreceipts".to_owned(), "all".to_owned());
+        tx.send(BackendEvent::PrivacyState(state)).unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(app.read_receipts);
+        assert_eq!(app.settings_json()["read_receipts"], serde_json::json!(true));
+    }
+
+    /// A fetched readreceipts value the toggle cannot represent
+    /// (and a state that does not carry the category at all)
+    /// leaves the local flag alone.
+    #[test]
+    fn unrecognized_server_read_receipts_value_is_not_adopted() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        app.read_receipts = true;
+
+        let mut state = std::collections::BTreeMap::new();
+        state.insert("readreceipts".to_owned(), "contact_blacklist".to_owned());
+        tx.send(BackendEvent::PrivacyState(state)).unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(app.read_receipts, "an unrepresentable value changes nothing");
+
+        let mut state = std::collections::BTreeMap::new();
+        state.insert("last".to_owned(), "none".to_owned());
+        tx.send(BackendEvent::PrivacyState(state)).unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(app.read_receipts, "a missing category changes nothing");
+    }
+
+    /// The Privacy page toggle path: flipping the switch flips
+    /// the local gate at once and puts the matching SetPrivacy
+    /// command on the backend channel, so the account setting
+    /// follows the toggle.
+    #[test]
+    fn read_receipts_toggle_sends_set_privacy() {
+        let (mut app, _tx, _ctx, cmd_rx) = live_app();
+
+        app.set_read_receipts(false);
+        assert!(!app.read_receipts, "the local gate flips at once");
+        assert_eq!(
+            cmd_rx.try_recv(),
+            Ok(BackendCommand::SetPrivacy {
+                category: "readreceipts".to_owned(),
+                value: "none".to_owned(),
+            }),
+            "turning receipts off must reach the account setting"
+        );
+
+        app.set_read_receipts(true);
+        assert!(app.read_receipts);
+        assert_eq!(
+            cmd_rx.try_recv(),
+            Ok(BackendCommand::SetPrivacy {
+                category: "readreceipts".to_owned(),
+                value: "all".to_owned(),
+            }),
+            "turning receipts on must reach the account setting"
+        );
     }
 
     /// The Settings cache-clear must empty every in-memory

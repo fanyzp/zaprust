@@ -354,7 +354,17 @@ impl App {
     /// Persists the settings the user can change (privacy toggles,
     /// appearance fine-tuning, feature configuration).
     pub(crate) fn persist_settings(&self) {
-        let v = serde_json::json!({
+        write_json_file(
+            &backend::data_dir().join("settings.json"),
+            &self.settings_json().to_string(),
+        );
+    }
+
+    /// The settings document exactly as [`App::persist_settings`]
+    /// writes it. Split out so tests can verify what a state
+    /// change puts on disk without touching the real data dir.
+    pub(crate) fn settings_json(&self) -> serde_json::Value {
+        serde_json::json!({
             "read_receipts": self.read_receipts,
             "default_ephemeral_secs": self.default_ephemeral_secs,
             "typing_indicators": self.typing_indicators,
@@ -377,8 +387,7 @@ impl App {
             "my_name": self.my_profile.name,
             "my_about": self.my_profile.about,
             "my_photo_path": self.my_profile.photo_path,
-        });
-        write_json_file(&backend::data_dir().join("settings.json"), &v.to_string());
+        })
     }
 
     /// Polls all worker channels (GIPHY, staged sends).

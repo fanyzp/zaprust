@@ -1447,9 +1447,20 @@ pub(super) async fn run_async(
                                     events.emit(BackendEvent::PrivacyState(privacy_map(&resp)));
                                 }
                             }
-                            Err(e) => events.emit(BackendEvent::Error {
-                                message: format!("Privacy change failed: {e}"),
-                            }),
+                            Err(e) => {
+                                events.emit(BackendEvent::Error {
+                                    message: format!("Privacy change failed: {e}"),
+                                });
+                                // Re-assert the account's actual
+                                // settings after the failure: the
+                                // app applies privacy changes
+                                // optimistically, and this fetch is
+                                // what reconciles its state with
+                                // the value the server kept.
+                                if let Ok(resp) = client.fetch_privacy_settings().await {
+                                    events.emit(BackendEvent::PrivacyState(privacy_map(&resp)));
+                                }
+                            }
                         },
                         _ => events.emit(BackendEvent::Error {
                             message: "Unknown privacy category or value.".to_owned(),

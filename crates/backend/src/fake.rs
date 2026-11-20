@@ -594,7 +594,7 @@ impl Backend for FakeBackend {
         _config: &BackendConfig,
         commands: Receiver<BackendCommand>,
         events: EventSink,
-    ) {
+    ) -> Result<(), String> {
         let mut sent_counter: u64 = 0;
         let command_log = self.command_log.clone();
         // Session state: commands mutate these maps, so sequences
@@ -1412,11 +1412,12 @@ impl Backend for FakeBackend {
                 }
                 BackendCommand::Shutdown => {
                     call_alive.store(false, std::sync::atomic::Ordering::Relaxed);
-                    return;
+                    return Ok(());
                 }
             }
         }
         call_alive.store(false, std::sync::atomic::Ordering::Relaxed);
+        Ok(())
     }
 }
 

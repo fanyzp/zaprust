@@ -14,7 +14,7 @@
 
 use std::sync::mpsc::Receiver;
 
-use crate::{Backend, BackendCommand, BackendConfig, BackendEvent, EventSink};
+use crate::{Backend, BackendCommand, BackendConfig, EventSink};
 
 use session::run_async;
 
@@ -34,7 +34,7 @@ impl Backend for WhatsappBackend {
         config: &BackendConfig,
         commands: Receiver<BackendCommand>,
         events: EventSink,
-    ) {
+    ) -> Result<(), String> {
         let runtime = match tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .enable_all()
@@ -43,13 +43,10 @@ impl Backend for WhatsappBackend {
         {
             Ok(rt) => rt,
             Err(e) => {
-                events.emit(BackendEvent::Error {
-                    message: format!("Could not start the async runtime: {e}"),
-                });
-                return;
+                return Err(format!("Could not start the async runtime: {e}"));
             }
         };
-        runtime.block_on(run_async(config, commands, events));
+        runtime.block_on(run_async(config, commands, events))
     }
 }
 

@@ -44,12 +44,16 @@ pub(super) async fn run_async(
     config: &BackendConfig,
     commands: Receiver<BackendCommand>,
     events: EventSink,
-) {
+) -> Result<(), String> {
+    // Startup failures return Err instead of emitting an Error event
+    // and returning quietly: a quiet return looks like a clean exit
+    // to the supervisor, which then never restarts and never closes
+    // the command channel, leaving live mode silently dead. An Err
+    // is treated like a crash (see `Backend::run`), so the failure
+    // gets the restart, and its text reaches the user as the Crashed
+    // summary.
     if let Err(e) = std::fs::create_dir_all(config.account_dir()) {
-        events.emit(BackendEvent::Error {
-            message: format!("Could not create the account data folder: {e}"),
-        });
-        return;
+        return Err(format!("Could not create the account data folder: {e}"));
     }
     let db_path = config.session_db_path().to_string_lossy().into_owned();
     // This client pairs once and stays connected for weeks, which is
@@ -87,10 +91,7 @@ pub(super) async fn run_async(
     let store = match SqliteDatabase::open(&db_path, store_config).await {
         Ok(db) => db.store(1),
         Err(e) => {
-            events.emit(BackendEvent::Error {
-                message: format!("Could not open the session store: {e}"),
-            });
-            return;
+            return Err(format!("Could not open the session store: {e}"));
         }
     };
 
@@ -218,9 +219,7 @@ pub(super) async fn run_async(
     {
         Ok(bot) => bot,
         Err(e) => {
-            events
-                .emit(BackendEvent::Error { message: format!("Could not start the client: {e}") });
-            return;
+            return Err(format!("Could not start the client: {e}"));
         }
     };
 
@@ -1379,4 +1378,9 @@ pub(super) async fn run_async(
             tracing::info!("session shut down: {:?}", report.run);
         }
     }
+    // Reaching here means the run ended on purpose: the UI sent
+    // Shutdown, the command channel closed, or the bot run loop
+    // ended on its own (logout, a stopped connection). All are
+    // clean exits the supervisor must not restart.
+    Ok(())
 }

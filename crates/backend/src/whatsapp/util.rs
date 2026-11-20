@@ -143,54 +143,120 @@ fn unwrap_media_proto(
     current
 }
 
-/// Downloads the media inside a protocol message, returning the
-/// bytes and a file extension for the media kind.
+/// Hard cap on one media download, in plaintext bytes. WhatsApp
+/// allows documents up to about 2 GB and the declared length is
+/// sender-controlled, so without a cap one hostile or accidental
+/// giant file could fill the disk (and, in the old buffered design,
+/// the RAM) of the machine running Zaprust. 512 MiB sits far above
+/// anything WhatsApp itself produces in practice (its videos are
+/// recompressed to tens of megabytes) while keeping a single save
+/// bounded.
+pub(super) const MAX_DOWNLOAD_BYTES: u64 = 512 * 1024 * 1024;
+
+/// Wire allowance on top of the plaintext cap: the ciphertext
+/// carries CBC padding and a MAC beyond the plaintext, so the wire
+/// budget needs a little slack or a file exactly at the cap would
+/// fail on its overhead.
+const DOWNLOAD_WIRE_SLACK_BYTES: u64 = 1024 * 1024;
+
+fn download_limits() -> whatsapp_rust::download::DownloadLimits {
+    whatsapp_rust::download::DownloadLimits::new(
+        MAX_DOWNLOAD_BYTES + DOWNLOAD_WIRE_SLACK_BYTES,
+        MAX_DOWNLOAD_BYTES,
+    )
+}
+
+fn too_large_message() -> String {
+    format!(
+        "That file is too large to download (the limit is {} MB).",
+        MAX_DOWNLOAD_BYTES / 1024 / 1024
+    )
+}
+
+/// Rejects a download whose declared plaintext length already
+/// exceeds the cap, before any network traffic. The declared length
+/// is sender-controlled, so this is only a fast path: the library
+/// budget from [`download_limits`] enforces the same cap
+/// mid-transfer when the declaration understates the real size.
+fn check_declared_length(declared: Option<u64>) -> Result<(), String> {
+    match declared {
+        Some(len) if len > MAX_DOWNLOAD_BYTES => Err(too_large_message()),
+        _ => Ok(()),
+    }
+}
+
+/// The downloadable media inside an unwrapped protocol message,
+/// with the file extension for its kind.
+fn media_part<'p>(
+    proto: &'p whatsapp_rust::prelude::wa::Message,
+) -> Option<(&'p (dyn whatsapp_rust::download::Downloadable + 'p), &'static str)> {
+    if let Some(m) = proto.image_message.as_option() {
+        return Some((m, "jpg"));
+    }
+    if let Some(m) = proto.video_message.as_option() {
+        return Some((m, "mp4"));
+    }
+    if let Some(m) = proto.audio_message.as_option() {
+        return Some((m, "ogg"));
+    }
+    if let Some(m) = proto.document_message.as_option() {
+        return Some((m, "bin"));
+    }
+    if let Some(m) = proto.sticker_message.as_option() {
+        return Some((m, "webp"));
+    }
+    None
+}
+
+/// Maps a library download error to the user-facing message: a
+/// budget refusal is the size cap speaking, everything else is a
+/// plain failure. A writer-cleanup failure wraps the real cause, so
+/// look one level in.
+fn download_error_message(error: whatsapp_rust::download::ClientDownloadError) -> String {
+    use whatsapp_rust::download::{ClientDownloadError, DownloadPolicyError};
+    match error {
+        ClientDownloadError::ResourcePolicy(DownloadPolicyError::LimitExceeded { .. }) => {
+            too_large_message()
+        }
+        ClientDownloadError::WriterCleanup { failure, .. } => download_error_message(*failure),
+        other => format!("Download failed: {other}"),
+    }
+}
+
+/// Downloads the media inside a protocol message into a new file
+/// named `<stem>.<ext>` inside `dir`, returning the saved path.
+/// The library streams the decrypted plaintext straight into the
+/// file, so no whole-file buffer ever sits in memory, and the byte
+/// budget bounds the transfer even when the declared length lies.
+/// On failure the partial file is removed, so a broken download
+/// never leaves a file behind that looks complete.
 pub(super) async fn download_proto(
     client: &whatsapp_rust::Client,
     proto: &whatsapp_rust::prelude::wa::Message,
-) -> Result<(Vec<u8>, &'static str), String> {
-    let limits = whatsapp_rust::download::DownloadLimits::default();
+    dir: &std::path::Path,
+    stem: &str,
+) -> Result<std::path::PathBuf, String> {
     // Media inside view-once and ephemeral messages travels wrapped:
     // the payload fields sit on the inner message, so unwrap first or
     // those messages report no downloadable media even though the
     // conversation view shows them fine.
     let proto = unwrap_media_proto(proto);
-    if let Some(m) = proto.image_message.as_option() {
-        return client
-            .download(m, limits)
-            .await
-            .map(|b| (b, "jpg"))
-            .map_err(|e| format!("Download failed: {e}"));
+    let Some((media, ext)) = media_part(proto) else {
+        return Err("That message has no downloadable media.".to_owned());
+    };
+    check_declared_length(media.file_length())?;
+    let path = dir.join(format!("{stem}.{ext}"));
+    std::fs::create_dir_all(dir)
+        .map_err(|e| format!("Could not create the downloads folder: {e}"))?;
+    let file = std::fs::File::create(&path)
+        .map_err(|e| format!("Could not create the download file: {e}"))?;
+    match client.download_to_writer(media, file, download_limits()).await {
+        Ok(_file) => Ok(path),
+        Err(e) => {
+            let _ = std::fs::remove_file(&path);
+            Err(download_error_message(e))
+        }
     }
-    if let Some(m) = proto.video_message.as_option() {
-        return client
-            .download(m, limits)
-            .await
-            .map(|b| (b, "mp4"))
-            .map_err(|e| format!("Download failed: {e}"));
-    }
-    if let Some(m) = proto.audio_message.as_option() {
-        return client
-            .download(m, limits)
-            .await
-            .map(|b| (b, "ogg"))
-            .map_err(|e| format!("Download failed: {e}"));
-    }
-    if let Some(m) = proto.document_message.as_option() {
-        return client
-            .download(m, limits)
-            .await
-            .map(|b| (b, "bin"))
-            .map_err(|e| format!("Download failed: {e}"));
-    }
-    if let Some(m) = proto.sticker_message.as_option() {
-        return client
-            .download(m, limits)
-            .await
-            .map(|b| (b, "webp"))
-            .map_err(|e| format!("Download failed: {e}"));
-    }
-    Err("That message has no downloadable media.".to_owned())
 }
 
 #[cfg(test)]
@@ -248,5 +314,33 @@ mod tests {
         // match, which is the failure this guards against.
         assert!(wrap_view_once(image_proto()).image_message.as_option().is_none());
         assert!(wrap_ephemeral(image_proto()).image_message.as_option().is_none());
+    }
+
+    /// The size cap's fast path: a declared length over the cap is
+    /// refused before any network traffic, with the reason stated;
+    /// unknown and at-cap lengths pass (the library budget still
+    /// enforces the cap mid-transfer).
+    #[test]
+    fn declared_length_over_the_cap_is_rejected() {
+        assert!(check_declared_length(None).is_ok());
+        assert!(check_declared_length(Some(1024)).is_ok());
+        assert!(check_declared_length(Some(MAX_DOWNLOAD_BYTES)).is_ok());
+        let err = check_declared_length(Some(MAX_DOWNLOAD_BYTES + 1))
+            .expect_err("one byte over the cap must be refused");
+        assert!(err.contains("too large"), "the refusal says why: {err}");
+    }
+
+    /// The declared length the pre-check reads comes from the media
+    /// part itself: a document proto declaring an over-cap length
+    /// yields a part whose length the check rejects.
+    #[test]
+    fn media_part_exposes_the_declared_length() {
+        let mut doc = wa::message::DocumentMessage::default();
+        doc.file_length = Some(MAX_DOWNLOAD_BYTES + 1);
+        let mut msg = wa::Message::default();
+        msg.document_message = MessageField::some(doc);
+        let (media, ext) = media_part(&msg).expect("a document is downloadable media");
+        assert_eq!(ext, "bin");
+        assert!(check_declared_length(media.file_length()).is_err());
     }
 }

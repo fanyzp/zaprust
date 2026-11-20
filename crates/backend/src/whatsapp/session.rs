@@ -1270,34 +1270,32 @@ pub(super) async fn run_async(
                             .cloned();
                         match proto {
                             Some(proto) => {
-                                match download_proto(&client, &proto).await {
-                                    Ok((bytes, ext)) => {
-                                        let dir = config.data_dir.join("downloads");
-                                        let file_name = format!(
-                                            "{}-{}.{}",
-                                            user_part(&chat_jid),
-                                            sanitize_id(&message_id),
-                                            ext
-                                        );
-                                        let path = dir.join(&file_name);
-                                        let written = std::fs::create_dir_all(&dir).and_then(|()| {
-                                            std::fs::write(&path, &bytes)
-                                        });
-                                        match written {
-                                            Ok(()) => events.emit(BackendEvent::MediaSaved {
-                                                chat_jid: chat_jid.clone(),
-                                                message_id: message_id.clone(),
-                                                path: path.to_string_lossy().into_owned(),
-                                            }),
-                                            Err(e) => events.emit(BackendEvent::Error {
-                                                message: format!(
-                                                    "The media downloaded but saving it failed: {e}"
-                                                ),
-                                            }),
+                                // The download runs as its own task: a
+                                // transfer takes as long as the network
+                                // takes, and the dispatch loop (Shutdown
+                                // included) must not wait behind it. The
+                                // outcome arrives as the same MediaSaved
+                                // / Error events as before.
+                                let client = client.clone();
+                                let events = events.clone();
+                                let dir = config.data_dir.join("downloads");
+                                let stem = format!(
+                                    "{}-{}",
+                                    user_part(&chat_jid),
+                                    sanitize_id(&message_id)
+                                );
+                                tokio::spawn(async move {
+                                    match download_proto(&client, &proto, &dir, &stem).await {
+                                        Ok(path) => events.emit(BackendEvent::MediaSaved {
+                                            chat_jid,
+                                            message_id,
+                                            path: path.to_string_lossy().into_owned(),
+                                        }),
+                                        Err(e) => {
+                                            events.emit(BackendEvent::Error { message: e });
                                         }
                                     }
-                                    Err(e) => events.emit(BackendEvent::Error { message: e }),
-                                }
+                                });
                             }
                             None => events.emit(BackendEvent::Error {
                                 message: "Only media received during this session can be \

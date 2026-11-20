@@ -1,11 +1,15 @@
 //! Voice call signalling: incoming-call offers, outgoing and
 //! incoming call setup, and the per-call media pump task.
 
+#[cfg(feature = "calls")]
 use whatsapp_rust::prelude::*;
+#[cfg(feature = "calls")]
 use whatsapp_rust::wacore::types::events::Event;
 
+#[cfg(feature = "calls")]
 use crate::{BackendEvent, EventSink};
 
+#[cfg(feature = "calls")]
 use super::util::lock_cache;
 
 /// The ringing incoming call, kept as the whole protocol event

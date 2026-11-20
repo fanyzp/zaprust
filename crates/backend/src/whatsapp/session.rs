@@ -15,6 +15,7 @@ use crate::{
     ParticipantOp,
 };
 
+#[cfg(feature = "calls")]
 use super::calls::{
     accept_incoming_call, handle_call_event, offer_call_id, start_outgoing_call, CallActive,
     CallIncoming,

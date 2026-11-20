@@ -558,6 +558,12 @@ impl crate::state::App {
         // clean composer, never with demo state inside it.
         let first_live = self.chats.first().map_or(0, |c| c.id);
         let previous = self.selected_chat;
+        // A new session never inherits a recording: cancel any
+        // take in progress outright, even when the first live
+        // chat's id matches the current selection and the
+        // switch below would be a no-op. A take recorded before
+        // this session must not be sendable inside it.
+        self.cancel_recording();
         self.switch_composer_chat(previous, first_live);
         self.selected_chat = first_live;
         self.sync_conversation();

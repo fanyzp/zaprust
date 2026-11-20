@@ -1398,11 +1398,22 @@ impl App {
     /// chat list directly, every other path through
     /// `select_chat_now`), so composer state follows its chat
     /// on every route and can never leak into the conversation
-    /// that happens to be open next.
+    /// that happens to be open next. A voice recording is the
+    /// one composer-adjacent state that does not park: it
+    /// belongs to the chat it was started in, so a switch
+    /// cancels it instead (see below).
     pub(crate) fn switch_composer_chat(&mut self, previous: u64, next: u64) {
         if previous == next {
             return;
         }
+        // A recording in progress is cancelled by the switch,
+        // through the same path as the composer's cancel
+        // button: the recorder is dropped, its capture thread
+        // stops and the partial take is discarded. Parking the
+        // take instead would let it be finished into the chat
+        // that happens to be open next, a wrong-recipient
+        // hazard; cancelling matches WhatsApp's own behavior.
+        self.cancel_recording();
         // The draft text keeps its existing parking rule (an
         // empty draft leaves no entry; the chat list's Draft row
         // state reads the same map).
@@ -2257,5 +2268,48 @@ mod tests {
         app.send_staged(&mut engaged);
         assert!(engaged);
         assert_eq!(app.chats.iter().find(|c| c.id == 3).unwrap().messages.len(), stored_before + 1);
+    }
+
+    #[test]
+    fn switching_chats_cancels_an_active_recording() {
+        let mut app = demo_app();
+        app.select_chat_now(1);
+        // One second of captured audio stands in for a take in
+        // progress (tests have no microphone to record from).
+        app.recorder = Some(crate::recorder::Recorder::for_test(&vec![0; 48_000]));
+        app.select_chat_now(2);
+        assert!(app.recorder.is_none(), "the switch must cancel the recording");
+        // Nothing of the take can be sent afterwards: finishing
+        // is a no-op, no voice note lands in the newly opened
+        // chat, and no send is counted.
+        let conversation_before = app.conversation.len();
+        let sent_before = app.sent_counter;
+        let mut engaged = false;
+        app.finish_recording(&mut engaged);
+        assert!(!engaged);
+        assert_eq!(app.conversation.len(), conversation_before);
+        assert_eq!(app.sent_counter, sent_before);
+    }
+
+    #[test]
+    fn a_recording_finished_in_its_own_chat_still_sends() {
+        let mut app = demo_app();
+        app.select_chat_now(1);
+        app.recorder = Some(crate::recorder::Recorder::for_test(&vec![0; 48_000]));
+        // Re-selecting the chat already open is not a switch:
+        // the take survives it.
+        app.select_chat_now(1);
+        assert!(app.recorder.is_some(), "staying in the chat must keep the recording");
+        let before = app.conversation.len();
+        let mut engaged = false;
+        app.finish_recording(&mut engaged);
+        assert!(app.recorder.is_none(), "finishing consumes the recorder");
+        assert!(engaged);
+        assert_eq!(app.conversation.len(), before + 1, "the voice note lands in its own chat");
+        let last = app.conversation.last().expect("the sent note is last");
+        assert!(
+            matches!(last.kind, core::model::MessageKind::Voice { secs: 1, .. }),
+            "the sent note is the recorded second"
+        );
     }
 }

@@ -341,7 +341,7 @@ impl App {
     pub(crate) fn poll_update(&mut self, ctx: &egui::Context) {
         if !self.update.startup_done {
             self.update.startup_done = true;
-            if now_unix().saturating_sub(self.update.last_check) >= 86_400 {
+            if auto_check_due(self.update.auto_check, self.update.last_check, now_unix()) {
                 self.start_update_check(ctx, false);
             }
         }
@@ -433,6 +433,14 @@ impl App {
             }
         }
     }
+}
+
+/// Whether the silent startup check should fire: only when the
+/// user has not opted out in Settings > About, and only when the
+/// last completed check is at least a day old. Manual checks from
+/// About never consult this; they are the user's own action.
+fn auto_check_due(auto_check: bool, last_check: u64, now: u64) -> bool {
+    auto_check && now.saturating_sub(last_check) >= 86_400
 }
 
 /// Fetches the release's `SHA256SUMS`, reading at most
@@ -629,6 +637,23 @@ mod tests {
 
         assert_ne!(checksum.kind, no_asset.kind);
         assert_ne!(checksum.kind, size.kind);
+    }
+
+    #[test]
+    fn auto_check_gate_honors_the_opt_out() {
+        let now = 1_700_000_000;
+        // On, and the last check is a day or more old: due.
+        assert!(auto_check_due(true, now - 86_400, now));
+        assert!(auto_check_due(true, 0, now));
+        // On, but checked recently: not due.
+        assert!(!auto_check_due(true, now - 3_600, now));
+        assert!(!auto_check_due(true, now, now));
+        // Off: never due, however stale the last check is. The
+        // automatic path is the only thing the toggle gates;
+        // `start_update_check` itself stays callable for the
+        // manual button.
+        assert!(!auto_check_due(false, 0, now));
+        assert!(!auto_check_due(false, now - 86_400 * 30, now));
     }
 
     #[test]

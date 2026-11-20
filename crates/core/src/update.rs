@@ -216,9 +216,16 @@ impl ReleaseInfo {
 /// (release assets redirect to hosts such as
 /// `objects.githubusercontent.com`). Lookalike hosts such as
 /// `github.com.evil.example` or `evilgithubusercontent.com` are
-/// rejected: the suffix check requires a dot boundary.
+/// rejected: the suffix check requires a dot boundary. A backslash
+/// anywhere before the fragment is also rejected, with the shared
+/// check from `crate::net`: WHATWG-style parsers treat '\' as an
+/// authority delimiter and would name a different host than this
+/// validator does, so the two validators refuse the same URLs.
 #[must_use]
 pub(crate) fn is_trusted_download_url(url: &str) -> bool {
+    if crate::net::has_backslash_before_fragment(url) {
+        return false;
+    }
     let Some((scheme, rest)) = url.split_once("://") else {
         return false;
     };
@@ -694,6 +701,19 @@ mod tests {
         assert!(!is_trusted_download_url("https://[127.0.0.1]/x"));
         assert!(!is_trusted_download_url("github.com/no-scheme"));
         assert!(!is_trusted_download_url(""));
+        // Backslashes before the fragment: a WHATWG parser ends
+        // the authority at the '\' and would connect to the host
+        // before it, while this validator reads the name after
+        // the last '@'. The first URL below would otherwise pass
+        // as objects.githubusercontent.com. Same rule as the
+        // fetch validator in `crate::net`, shared helper included.
+        assert!(!is_trusted_download_url("https://evil.example\\@objects.githubusercontent.com/x"));
+        assert!(!is_trusted_download_url("https://github.com\\@evil.example/x"));
+        assert!(!is_trusted_download_url("https://github.com/fanyzp\\zaprust"));
+        // A backslash inside the fragment is never sent to a
+        // server and cannot move the authority; the shared rule
+        // exempts it, exactly as in `crate::net`.
+        assert!(is_trusted_download_url("https://github.com/x#frag\\ment"));
     }
 
     #[test]

@@ -294,6 +294,7 @@ impl App {
                 if let Some(u) = v["update_last_check"].as_u64() {
                     self.update.last_check = u;
                 }
+                self.update.auto_check = v["update_auto_check"].as_bool().unwrap_or(true);
                 // "My profile" identity: seed the editor state
                 // once from the persisted keys. Absent keys leave
                 // the defaults (empty name/about, no photo).
@@ -401,6 +402,7 @@ impl App {
             "motion": self.motion.as_str(),
             "language": self.language,
             "update_last_check": self.update.last_check,
+            "update_auto_check": self.update.auto_check,
             "features": self.feature_flags,
             "giphy_prefs": self.giphy_prefs,
             "my_name": self.my_profile.name,

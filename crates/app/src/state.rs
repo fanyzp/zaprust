@@ -452,6 +452,10 @@ pub(crate) struct UpdateState {
     /// Self-update: last check time (Unix seconds), persisted; the
     /// silent startup check runs at most once a day.
     pub(crate) last_check: u64,
+    /// Self-update: whether the silent once-a-day check runs at
+    /// all, persisted; the user's opt-out from Settings > About.
+    /// Manual checks are unaffected. Default on.
+    pub(crate) auto_check: bool,
     /// Self-update: whether the running check was user-triggered
     /// (manual checks surface their failures, silent ones do not).
     pub(crate) manual: bool,
@@ -1291,6 +1295,7 @@ impl App {
                 release: None,
                 rx: None,
                 last_check: 0,
+                auto_check: true,
                 manual: false,
                 startup_done: false,
                 target: None,

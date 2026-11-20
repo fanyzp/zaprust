@@ -10,13 +10,37 @@
 //! audit SEC-01; the same validation now also guards the GIPHY
 //! media fetch, SEC-F02).
 
+/// Whether a URL contains a backslash before its fragment.
+///
+/// The fetchers parse URLs with the WHATWG parser, which for
+/// https also treats '\' as an authority delimiter; the
+/// hand-rolled validators in this crate do not. On a URL
+/// containing one, the two parsers name different hosts (the
+/// validator would check the name after the last '@' while the
+/// fetcher connects to the host before the '\'), which defeats
+/// any host check or address pin built on the validated name.
+/// Rejecting '\' anywhere before the fragment removes the
+/// disagreement by construction: every accepted URL tokenizes
+/// identically in both parsers, so the host validated is the
+/// host the fetcher connects to. The fragment is exempt because
+/// it is never sent to a server and cannot move the authority.
+/// Message, media, and release URLs never legitimately contain
+/// a backslash. Shared by every URL validator in this crate
+/// (this module's fetch check and `crate::update`'s download
+/// check) so the two cannot drift apart.
+#[must_use]
+pub(crate) fn has_backslash_before_fragment(url: &str) -> bool {
+    url.split('#').next().unwrap_or("").contains('\\')
+}
+
 /// Whether an IP is a public internet address. Anything else
 /// (private, loopback, link-local, unspecified, multicast, the
 /// special-purpose ranges, and the v6 equivalents) must never be
 /// fetched by an automatic worker. IPv6 addresses that embed an
-/// IPv4 address (the mapped and compatible forms) are classified
-/// by the embedded address, so the v4 rules cannot be bypassed by
-/// spelling the same host as IPv6.
+/// IPv4 address (the mapped and compatible forms, and the 6to4
+/// and Teredo transition forms) are classified by the embedded
+/// address, so the v4 rules cannot be bypassed by spelling the
+/// same host as IPv6.
 #[must_use]
 pub fn is_public_ip(ip: std::net::IpAddr) -> bool {
     match ip {
@@ -37,6 +61,27 @@ pub fn is_public_ip(ip: std::net::IpAddr) -> bool {
                     segments[7] as u8,
                 );
                 return is_public_v4(embedded);
+            }
+            if segments[0] == 0x2002 {
+                // 6to4, 2002:<ipv4>::/16: segments 1-2 are the
+                // IPv4 address of the site's relay, which is the
+                // host a connection to this address is routed
+                // toward, so it decides by the same v4 rules.
+                let embedded = std::net::Ipv4Addr::new(
+                    (segments[1] >> 8) as u8,
+                    segments[1] as u8,
+                    (segments[2] >> 8) as u8,
+                    segments[2] as u8,
+                );
+                return is_public_v4(embedded);
+            }
+            if segments[0] == 0x2001 && segments[1] == 0 {
+                // Teredo, 2001:0000::/32: the client's IPv4
+                // address sits in the last 32 bits, XOR-obfuscated
+                // with all ones. De-obfuscate and apply the v4
+                // rules to it.
+                let obfuscated = (u32::from(segments[6]) << 16) | u32::from(segments[7]);
+                return is_public_v4(std::net::Ipv4Addr::from(!obfuscated));
             }
             !v6.is_loopback()
                 && !v6.is_unspecified()
@@ -99,21 +144,11 @@ fn is_public_v4(v4: std::net::Ipv4Addr) -> bool {
 /// any URL containing a backslash before the fragment (see the
 /// check in the body).
 fn https_host_port(url: &str) -> Option<(String, u16)> {
-    // The fetchers parse URLs with the WHATWG parser, which for
-    // https also treats '\' as an authority delimiter; this parser
-    // does not. On a URL containing one, the two parsers name
-    // different hosts (the validator would check the name after
-    // the last '@' while the fetcher connects to the host before
-    // the '\'), which defeats the address pin. Rejecting '\'
-    // anywhere before the fragment removes the disagreement by
-    // construction: every accepted URL tokenizes identically in
-    // both parsers, so the host validated here is the host the
-    // fetcher connects to. The fragment is exempt because it is
-    // never sent to a server and cannot move the authority.
-    // Message and media URLs never legitimately contain a
-    // backslash.
-    let before_fragment = url.split('#').next().unwrap_or("");
-    if before_fragment.contains('\\') {
+    // See `has_backslash_before_fragment`: on a URL containing a
+    // backslash before the fragment, this parser and the
+    // fetchers' WHATWG parser name different hosts, which would
+    // defeat the address pin.
+    if has_backslash_before_fragment(url) {
         return None;
     }
     let (scheme, rest) = url.split_once("://")?;
@@ -290,6 +325,33 @@ mod tests {
         // stays public: it names that same public host.
         assert!(is_public_ip(ip("::ffff:8.8.8.8")));
         assert!(is_public_ip(ip("::8.8.8.8")));
+    }
+
+    #[test]
+    fn ipv6_transition_forms_are_classified_by_the_embedded_address() {
+        for bad in [
+            // 6to4 spellings of non-public IPv4 addresses:
+            // 2002:<ipv4>:: embeds the address in segments 1-2.
+            "2002:7f00:0001::", // 127.0.0.1
+            "2002:0a00:0005::", // 10.0.0.5
+            "2002:c0a8:0101::", // 192.168.1.1
+            "2002:a9fe:a9fe::", // 169.254.169.254
+            // Teredo spellings: 2001:0000::/32, the client IPv4
+            // XOR all-ones in the last 32 bits.
+            "2001:0000::80ff:fffe",                    // 127.0.0.1
+            "2001:0000::f5ff:fffa",                    // 10.0.0.5
+            "2001:0000:4136:e378:8000:63bf:3f57:fefe", // 192.168.1.1, realistic shape
+        ] {
+            assert!(!is_public_ip(ip(bad)), "{bad} must not be public");
+        }
+        // A transition spelling of a public address stays public:
+        // it names that same public host.
+        assert!(is_public_ip(ip("2002:0808:0808::"))); // 6to4, 8.8.8.8
+        assert!(is_public_ip(ip("2001:0000::f7f7:f7f7"))); // Teredo, 8.8.8.8
+                                                           // And the URL-level check agrees, literals included.
+        assert!(!public_https_url_allowed("https://[2002:7f00:0001::]/x"));
+        assert!(!public_https_url_allowed("https://[2001:0000::80ff:fffe]/x"));
+        assert!(public_https_url_allowed("https://[2002:0808:0808::]/x"));
     }
 
     #[test]

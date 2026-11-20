@@ -139,6 +139,20 @@ group-add, read receipts) are fetched on connect and set via
 `set_privacy_setting`; anything else is phone-managed and the
 UI says so instead of showing a fake control.
 
+## Network egress and proxies
+
+Besides the WhatsApp connection itself, the app makes two
+kinds of HTTP requests: update checks and downloads (ureq),
+and GIPHY API and media requests (reqwest, only with a
+user-supplied API key). Their proxy behavior differs, and the
+difference is stated plainly rather than smoothed over: the
+update traffic honors the standard proxy environment
+variables (`ALL_PROXY`, `HTTPS_PROXY`, `HTTP_PROXY`,
+`NO_PROXY`, ureq's default), while GIPHY traffic and the
+WhatsApp connection always connect directly. There is no
+in-app proxy or Tor setting, so an environment proxy does
+not cover the WhatsApp connection.
+
 ## Crash safety
 
 - A global panic hook (installed first in `main`) writes a

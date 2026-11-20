@@ -271,6 +271,13 @@ const SETTINGS_REGISTRY: &[SettingEntry] = &[
         keywords: "check for updates pembaruan",
     },
     SettingEntry {
+        id: "about.auto_check",
+        tab: "About",
+        title_en: "Automatic checks",
+        title_id: "Automatic checks",
+        keywords: "automatic daily update check otomatis pembaruan harian",
+    },
+    SettingEntry {
         id: "about.created_by",
         tab: "About",
         title_en: "Created by",

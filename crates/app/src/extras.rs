@@ -744,11 +744,18 @@ impl App {
                     }
                 }
                 if let Some(store) = &session.store {
-                    for (chat_id, _, pid) in &work {
-                        if let (Some(jid), Some(pid)) = (session.jids.get(chat_id), pid) {
-                            let _ = store.delete_message(jid, pid);
-                        }
-                    }
+                    // One batch for the whole pass: the store
+                    // deletes in a single transaction and
+                    // reclaims the freed pages once, instead of
+                    // paying a commit (and WAL truncation) per
+                    // expired message.
+                    let keys: Vec<(String, String)> = work
+                        .iter()
+                        .filter_map(|(chat_id, _, pid)| {
+                            Some((session.jids.get(chat_id)?.clone(), pid.clone()?))
+                        })
+                        .collect();
+                    let _ = store.delete_messages(&keys);
                 }
             }
             // The expired messages have left the mirror; their

@@ -163,6 +163,16 @@ pub(super) async fn run_async(
     // of SQLite, so the pragma actually encrypts; the plaintext
     // database of an older build is converted by the app before
     // this runs (see `store::encrypt_file_in_place`).
+    // The same hook switches on secure_delete (privacy audit
+    // A2), so protocol state the library deletes (consumed
+    // prekeys, replaced sessions) is zeroed as its pages are
+    // freed instead of lingering in the file. That is as far as
+    // this repo's control reaches: the library owns the pooled
+    // connections' lifecycle, so no VACUUM or checkpoint can be
+    // driven from here. The proportionate measure is the pragma:
+    // this store holds device keys and protocol state only,
+    // never message bodies (those live in the archive, whose
+    // store does reclaim; see the store crate).
     let key_hex = {
         use std::fmt::Write;
         let mut hex = String::with_capacity(64);
@@ -177,6 +187,7 @@ pub(super) async fn run_async(
             .with_connection_init(move |conn| {
                 use diesel::RunQueryDsl;
                 diesel::sql_query(format!("PRAGMA key = \"x'{key_hex}'\"")).execute(conn)?;
+                diesel::sql_query("PRAGMA secure_delete = ON").execute(conn)?;
                 diesel::sql_query("SELECT count(*) FROM sqlite_master").execute(conn)?;
                 Ok(())
             });

@@ -14,6 +14,13 @@
 //!   databases under one key held in the OS keyring (see
 //!   [`dbkey`]). Archives written by older, plaintext builds are
 //!   converted in place on first open ([`encrypt_file_in_place`]).
+//! - **Physical deletion** (privacy audit A2): connections run
+//!   with `secure_delete` on, so a deleted row's content is
+//!   zeroed as its page is freed instead of lingering in the
+//!   file; mass deletions additionally checkpoint and VACUUM
+//!   (see [`Store::delete_chat`]), and a one-time purge on first
+//!   open clears the free pages archives accumulated before
+//!   this discipline existed (see [`Store::open`]).
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
@@ -141,7 +148,15 @@ impl From<std::io::Error> for StoreError {
 }
 
 /// The newest schema version this build migrates to.
-pub const SCHEMA_VERSION: i64 = 7;
+pub const SCHEMA_VERSION: i64 = 8;
+
+/// `store_meta` key recording that the one-time freelist purge
+/// (see [`Store::open`]) has run for this archive. The purge
+/// rewrites the whole file, so it must happen exactly once per
+/// archive, not on every startup; the flag is written only
+/// after the purge completes, so a crash mid-purge simply
+/// retries on the next open.
+const FREELIST_PURGED_KEY: &str = "freelist_purged";
 
 /// Message flag bit 1 was the retired AI-generated marker; the
 /// bit stays unassigned so existing archives keep their meaning.
@@ -222,6 +237,9 @@ impl Store {
     /// Opens (or creates) the encrypted archive at `path` and runs
     /// migrations. A plaintext archive left by an older build is
     /// converted in place first (see [`encrypt_file_in_place`]).
+    /// The first open under a build with physical deletion also
+    /// runs the one-time freelist purge described in the crate
+    /// docs; later opens skip it.
     ///
     /// # Errors
     /// [`StoreError`] on SQLite failures (including a wrong `key`,
@@ -248,10 +266,71 @@ impl Store {
     }
 
     fn init(conn: Connection) -> Result<Self, StoreError> {
-        conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;")?;
+        // secure_delete is per-connection, and this connection
+        // is the only one the store ever uses, so setting it
+        // here covers every delete the archive performs: freed
+        // pages are zeroed as they are freed, instead of keeping
+        // the deleted rows' bytes until the page happens to be
+        // reused (privacy audit A2).
+        conn.execute_batch(
+            "PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA secure_delete = ON;",
+        )?;
         let store = Self { conn };
         store.migrate()?;
+        store.purge_freelist_once()?;
         Ok(store)
+    }
+
+    /// The one-time purge of free pages accumulated before
+    /// `secure_delete` was enabled: archives written by older
+    /// builds deleted rows logically only, so their bodies can
+    /// still sit in the file's free pages (ciphertext, but
+    /// recoverable by anyone holding file and key together).
+    /// VACUUM drops every free page, so one pass clears them
+    /// all. Gated on the [`FREELIST_PURGED_KEY`] flag in
+    /// `store_meta`: the flag is written after the purge, so
+    /// the purge runs exactly once per archive and a crash
+    /// mid-purge retries on the next open instead of marking
+    /// work done that never happened.
+    fn purge_freelist_once(&self) -> Result<(), StoreError> {
+        let done: bool = self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM store_meta WHERE key = ?1)",
+            params![FREELIST_PURGED_KEY],
+            |row| row.get(0),
+        )?;
+        if done {
+            return Ok(());
+        }
+        self.reclaim_deleted()?;
+        self.conn.execute(
+            "INSERT INTO store_meta (key, value) VALUES (?1, '1')",
+            params![FREELIST_PURGED_KEY],
+        )?;
+        Ok(())
+    }
+
+    /// Physically removes what deletions freed: truncates the
+    /// WAL (its frames still carry pre-delete page images) and
+    /// VACUUMs, which rebuilds the database file from live
+    /// pages only and drops every free page. VACUUM rewrites
+    /// the whole encrypted file, so it is tied to mass
+    /// deletions (a chat deleted or cleared, an expiry batch)
+    /// and to the one-time purge, never to single-row deletes;
+    /// those rely on `secure_delete` zeroing plus the WAL
+    /// truncation in [`Store::delete_message`].
+    fn reclaim_deleted(&self) -> Result<(), StoreError> {
+        self.checkpoint_truncate()?;
+        self.conn.execute_batch("VACUUM;")?;
+        self.checkpoint_truncate()?;
+        Ok(())
+    }
+
+    /// Flushes the WAL into the database file and truncates
+    /// the WAL to zero length, so frames written before a
+    /// deletion do not linger for the rest of the session.
+    fn checkpoint_truncate(&self) -> Result<(), StoreError> {
+        self.conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
+        Ok(())
     }
 
     /// The schema version stored in the database file.
@@ -401,6 +480,22 @@ impl Store {
                     )?;
                     tx.execute_batch("PRAGMA user_version = 7;")?;
                 }
+                7 => {
+                    // v8: the store_meta key/value table. Its
+                    // first resident records that the one-time
+                    // freelist purge has run (see
+                    // FREELIST_PURGED_KEY); the purge itself
+                    // cannot live in this ladder because VACUUM
+                    // is not allowed inside a transaction, so it
+                    // runs from the open path after migration.
+                    tx.execute_batch(
+                        "CREATE TABLE IF NOT EXISTS store_meta (
+                            key TEXT PRIMARY KEY,
+                            value TEXT NOT NULL
+                        );",
+                    )?;
+                    tx.execute_batch("PRAGMA user_version = 8;")?;
+                }
                 _ => return Err(StoreError::BadSchemaVersion(version)),
             }
             tx.commit()?;
@@ -520,9 +615,17 @@ impl Store {
     }
 
     /// Deletes one stored message. Returns whether a row
-    /// existed. The disappearing-messages expiry pass uses this
-    /// so an expired message leaves the archive together with
-    /// the conversation.
+    /// existed. The deletion is physical, not just logical:
+    /// `secure_delete` zeroes the freed page in the database
+    /// file, and the WAL is truncated so the frames written
+    /// before the deletion do not keep the body for the rest
+    /// of the session. (The freed page itself is dropped by
+    /// the next mass deletion's VACUUM.) Single deletions like
+    /// a delete-for-me landing from another device take this
+    /// path; the disappearing-messages expiry pass removes its
+    /// whole catch through [`Store::delete_messages`] instead,
+    /// so a pass pays one commit and one reclaim, not one per
+    /// message.
     ///
     /// # Errors
     /// [`StoreError`] on SQLite failures.
@@ -531,7 +634,39 @@ impl Store {
             "DELETE FROM messages WHERE chat_jid = ?1 AND id = ?2",
             params![chat_jid, id],
         )?;
+        if changed > 0 {
+            self.checkpoint_truncate()?;
+        }
         Ok(changed > 0)
+    }
+
+    /// Deletes many stored messages, given as (chat JID,
+    /// message id) pairs, in a single transaction, and
+    /// reclaims what they freed (WAL truncation plus VACUUM;
+    /// see [`Store::delete_chat`] for why mass deletions pay
+    /// for the rewrite). Returns how many rows existed. An
+    /// empty batch is a no-op, matching
+    /// [`Store::upsert_messages`].
+    ///
+    /// # Errors
+    /// [`StoreError`] on SQLite failures.
+    pub fn delete_messages(&self, keys: &[(String, String)]) -> Result<usize, StoreError> {
+        if keys.is_empty() {
+            return Ok(0);
+        }
+        let tx = self.conn.unchecked_transaction()?;
+        let mut deleted = 0;
+        for (chat_jid, id) in keys {
+            deleted += tx.execute(
+                "DELETE FROM messages WHERE chat_jid = ?1 AND id = ?2",
+                params![chat_jid, id],
+            )?;
+        }
+        tx.commit()?;
+        if deleted > 0 {
+            self.reclaim_deleted()?;
+        }
+        Ok(deleted)
     }
 
     /// Deletes one stored chat and all its messages. Returns
@@ -539,15 +674,22 @@ impl Store {
     /// device leaves the archive whole: the chat row and its
     /// message rows go in one transaction, so the archive never
     /// holds a chat without its messages or messages without
-    /// their chat.
+    /// their chat. When anything was removed, the freed space
+    /// is reclaimed (WAL truncation plus VACUUM): a whole chat
+    /// is exactly the deletion whose bodies must not linger
+    /// in free pages, and it is rare and user-initiated, so
+    /// the file rewrite is worth its cost here and only here.
     ///
     /// # Errors
     /// [`StoreError`] on SQLite failures.
     pub fn delete_chat(&self, chat_jid: &str) -> Result<bool, StoreError> {
         let tx = self.conn.unchecked_transaction()?;
-        tx.execute("DELETE FROM messages WHERE chat_jid = ?1", params![chat_jid])?;
+        let messages = tx.execute("DELETE FROM messages WHERE chat_jid = ?1", params![chat_jid])?;
         let changed = tx.execute("DELETE FROM chats WHERE jid = ?1", params![chat_jid])?;
         tx.commit()?;
+        if messages + changed > 0 {
+            self.reclaim_deleted()?;
+        }
         Ok(changed > 0)
     }
 
@@ -558,7 +700,9 @@ impl Store {
     /// `None` clears everything), and `keep_starred` spares
     /// rows whose flags carry [`FLAG_STARRED`], the clearing
     /// device's keep-starred choice. Returns how many message
-    /// rows were deleted.
+    /// rows were deleted. A clear that removed anything
+    /// reclaims the freed space like [`Store::delete_chat`]
+    /// does.
     ///
     /// # Errors
     /// [`StoreError`] on SQLite failures.
@@ -575,6 +719,9 @@ impl Store {
                AND (?3 = 0 OR (flags & ?4) = 0)",
             params![chat_jid, up_to, i64::from(keep_starred), FLAG_STARRED],
         )?;
+        if changed > 0 {
+            self.reclaim_deleted()?;
+        }
         Ok(changed)
     }
 
@@ -1001,6 +1148,178 @@ mod tests {
         assert!(store.messages(&chat.jid).unwrap().is_empty());
         assert_eq!(store.delete_chat_messages(&chat.jid, false, None).unwrap(), 0);
         assert_eq!(store.chats().unwrap().len(), 1, "the chat row still stays");
+    }
+
+    /// Whether `needle` appears in the bytes of the database
+    /// file at `path` or of its WAL sidecar. Used on plaintext
+    /// test databases, where a surviving body is directly
+    /// visible in the file.
+    fn db_files_contain(path: &Path, needle: &str) -> bool {
+        let needle = needle.as_bytes();
+        let hit = |p: &Path| {
+            std::fs::read(p).unwrap_or_default().windows(needle.len()).any(|w| w == needle)
+        };
+        hit(path) || hit(Path::new(&format!("{}-wal", path.display())))
+    }
+
+    #[test]
+    fn secure_delete_is_enabled_on_store_connections() {
+        // The pragma is per-connection; init must switch it on
+        // for the store's one connection, or every delete below
+        // silently degrades to logical-only.
+        let store = Store::open_in_memory().unwrap();
+        let on: i64 = store.conn.query_row("PRAGMA secure_delete", [], |row| row.get(0)).unwrap();
+        assert_eq!(on, 1, "store connections must run with secure_delete on");
+    }
+
+    #[test]
+    fn deleted_message_bodies_do_not_survive_in_the_file() {
+        // A plaintext file database (opened through the real
+        // init path, just without a key) so a surviving body
+        // would be directly visible in the raw bytes: this
+        // proves the physical-deletion property, not merely
+        // that a pragma was issued.
+        let path = temp_db_path("physical-delete");
+        let marker = "DELETION-MARKER-body-6f1a9c4e-never-meant-to-survive";
+        let marker2 = "DELETION-MARKER-chat-8b2d05f1-never-meant-to-survive";
+        let control = "CONTROL-body-41c77d2e-meant-to-survive";
+        let chat_a = scripted_chats()[0].clone();
+        let chat_b = scripted_chats()[1].clone();
+        let store = Store::init(Connection::open(&path).unwrap()).unwrap();
+        store.upsert_chat(&chat_a).unwrap();
+        store.upsert_chat(&chat_b).unwrap();
+        store
+            .upsert_message(&LiveMessage::text("m-del", &chat_a.jid, None, marker, 100, false), 0)
+            .unwrap();
+        store
+            .upsert_message(
+                &LiveMessage::text("m-del-chat", &chat_b.jid, None, marker2, 100, false),
+                0,
+            )
+            .unwrap();
+        store
+            .upsert_message(&LiveMessage::text("m-keep", &chat_a.jid, None, control, 101, false), 0)
+            .unwrap();
+        // Sanity: the scan can see the bodies while they live.
+        assert!(db_files_contain(&path, marker), "setup: marker body must be in the file");
+        assert!(db_files_contain(&path, control), "setup: control body must be in the file");
+
+        // Single delete (the delete-for-me path): secure_delete
+        // zeroes the page and the WAL truncation drops the
+        // pre-delete frames, so the body is gone from the raw
+        // bytes without any VACUUM.
+        assert!(store.delete_message(&chat_a.jid, "m-del").unwrap());
+        assert!(!db_files_contain(&path, marker), "deleted body must not survive in the file");
+        assert!(db_files_contain(&path, control), "the kept message's body must still be there");
+
+        // Whole-chat delete: the reclaim's VACUUM drops the
+        // freed pages entirely.
+        assert!(store.delete_chat(&chat_b.jid).unwrap());
+        assert!(!db_files_contain(&path, marker2), "deleted chat's body must not survive");
+        assert!(db_files_contain(&path, control), "the other chat must be untouched");
+        drop(store);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn one_time_purge_clears_prefixed_remnants_and_runs_once() {
+        let path = temp_db_path("purge-once");
+        let old_marker = "OLD-REMNANT-body-02fe91aa-from-before-the-fix";
+        let new_marker = "NEW-REMNANT-body-7d04b3c9-after-the-fix";
+        let chat = scripted_chats()[0].clone();
+        // Build a pre-fix archive: schema migrated, but the
+        // connection deletes the way old builds did (default
+        // secure_delete off, no reclaim, no purge flag).
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA secure_delete = OFF;").unwrap();
+            let store = Store { conn };
+            store.migrate().unwrap();
+            store.upsert_chat(&chat).unwrap();
+            store
+                .upsert_message(
+                    &LiveMessage::text("old-1", &chat.jid, None, old_marker, 100, false),
+                    0,
+                )
+                .unwrap();
+            drop(store);
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch("PRAGMA secure_delete = OFF;").unwrap();
+            conn.execute("DELETE FROM messages WHERE id = 'old-1'", []).unwrap();
+            drop(conn);
+        }
+        assert!(
+            db_files_contain(&path, old_marker),
+            "setup: the logically deleted body must linger in free pages"
+        );
+
+        // First open under the fixed build: the purge runs and
+        // the remnant is physically gone.
+        {
+            let store = Store::init(Connection::open(&path).unwrap()).unwrap();
+            assert!(store.messages(&chat.jid).unwrap().is_empty());
+        }
+        assert!(!db_files_contain(&path, old_marker), "the purge must clear pre-fix remnants");
+        let conn = Connection::open(&path).unwrap();
+        let flag: Option<String> = conn
+            .query_row(
+                "SELECT value FROM store_meta WHERE key = ?1",
+                params![FREELIST_PURGED_KEY],
+                |row| row.get(0),
+            )
+            .ok();
+        assert_eq!(flag.as_deref(), Some("1"), "the purge records itself in store_meta");
+        // Leave a fresh remnant the pre-fix way.
+        conn.execute_batch("PRAGMA secure_delete = OFF;").unwrap();
+        conn.execute(
+            "INSERT INTO messages (chat_jid, id, sender, body, timestamp, from_me)
+             VALUES (?1, 'new-1', NULL, ?2, 200, 0)",
+            params![chat.jid, new_marker],
+        )
+        .unwrap();
+        conn.execute("DELETE FROM messages WHERE id = 'new-1'", []).unwrap();
+        drop(conn);
+        assert!(db_files_contain(&path, new_marker), "setup: the new remnant must linger");
+
+        // Second open: the purge must NOT run again (it is a
+        // one-time migration, not a per-startup VACUUM), so the
+        // remnant left behind above survives this open.
+        {
+            let _store = Store::init(Connection::open(&path).unwrap()).unwrap();
+        }
+        assert!(
+            db_files_contain(&path, new_marker),
+            "the one-time purge must not repeat on the second open"
+        );
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn delete_messages_removes_the_batch_and_reports_the_count() {
+        let store = Store::open_in_memory().unwrap();
+        let chat_a = scripted_chats()[0].clone();
+        let chat_b = scripted_chats()[1].clone();
+        for (chat, id) in [(&chat_a, "a1"), (&chat_a, "a2"), (&chat_b, "b1")] {
+            store
+                .upsert_message(&LiveMessage::text(id, &chat.jid, None, id, 100, false), 0)
+                .unwrap();
+        }
+        // The expiry pass's shape: one batch spanning chats,
+        // including a key that does not exist.
+        let deleted = store
+            .delete_messages(&[
+                (chat_a.jid.clone(), "a1".to_owned()),
+                (chat_b.jid.clone(), "b1".to_owned()),
+                (chat_a.jid.clone(), "missing".to_owned()),
+            ])
+            .unwrap();
+        assert_eq!(deleted, 2);
+        let remaining: Vec<String> =
+            store.messages(&chat_a.jid).unwrap().into_iter().map(|(m, _)| m.id).collect();
+        assert_eq!(remaining, ["a2"]);
+        assert!(store.messages(&chat_b.jid).unwrap().is_empty());
+        // An empty batch is a no-op, not an error.
+        assert_eq!(store.delete_messages(&[]).unwrap(), 0);
     }
 
     #[test]

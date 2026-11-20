@@ -16,6 +16,23 @@ pub(crate) enum GiphyMsg {
     Preview(String, Vec<u8>),
 }
 
+/// One sticker preview decoded by a worker thread: the file it
+/// belongs to, the file's stamp when the worker read it, and the
+/// tile-sized RGBA pixels (None when the file could not be read
+/// or decoded). The draw path never decodes; it only queues
+/// requests and binds the textures this message produces.
+pub(crate) struct StickerPreviewMsg {
+    /// Sticker file the preview belongs to.
+    pub(crate) path: PathBuf,
+    /// The file's stamp at read time; a failure is remembered
+    /// against it, so a replaced file is retried and an unchanged
+    /// one is not.
+    pub(crate) stamp: Option<StickerFileStamp>,
+    /// Decoded RGBA pixels and their [width, height], or None
+    /// when the read or decode failed.
+    pub(crate) pixels: Option<(Vec<u8>, [usize; 2])>,
+}
+
 /// One finished live-media download: the MP4 bytes for a GIF send,
 /// targeted at the chat that was open when the user clicked.
 pub(crate) struct MediaFetchResult {
@@ -504,6 +521,43 @@ impl App {
         }
         // Staged album sends: files the send worker has read.
         self.poll_staged_send();
+        // Sticker previews: workers read and decode off the UI
+        // thread; here the finished pixels are only uploaded,
+        // and failures go into the negative cache so the picker
+        // does not queue them again.
+        if self.picker.sticker_rx.is_some() {
+            let mut drained: Vec<StickerPreviewMsg> = Vec::new();
+            if let Some(rx) = &self.picker.sticker_rx {
+                loop {
+                    match rx.try_recv() {
+                        Ok(msg) => drained.push(msg),
+                        Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                        Err(std::sync::mpsc::TryRecvError::Disconnected) => break,
+                    }
+                }
+            }
+            for msg in drained {
+                self.picker.sticker_pending.remove(&msg.path);
+                match msg.pixels {
+                    Some((rgba, size)) => {
+                        let name = msg
+                            .path
+                            .file_stem()
+                            .map(|s| s.to_string_lossy().into_owned())
+                            .unwrap_or_default();
+                        let color = egui::ColorImage::from_rgba_unmultiplied(size, &rgba);
+                        let handle = ctx.load_texture(
+                            format!("sticker-{name}"),
+                            color,
+                            egui::TextureOptions::LINEAR,
+                        );
+                        self.picker.sticker_textures.insert(msg.path.clone(), handle);
+                        self.picker.sticker_failures.forget(&msg.path);
+                    }
+                    None => self.picker.sticker_failures.record(&msg.path, msg.stamp),
+                }
+            }
+        }
     }
 
     /// Starts a GIPHY trending fetch (worker thread).
@@ -568,6 +622,49 @@ impl App {
             .ok();
         self.picker.giphy_rx = Some(rx);
         true
+    }
+
+    /// Queues sticker files for preview decoding on a worker
+    /// thread (the GIPHY preview pattern): the worker reads and
+    /// decodes each file at tile size and reports back through
+    /// the shared channel drained in `poll_workers`. Called from
+    /// the sticker tab's draw with the stickers that have no
+    /// texture, no remembered failure and no decode in flight;
+    /// the draw path itself never reads or decodes.
+    pub(crate) fn request_sticker_previews(&mut self, paths: Vec<PathBuf>) {
+        if paths.is_empty() {
+            return;
+        }
+        if self.picker.sticker_tx.is_none() {
+            let (tx, rx) = std::sync::mpsc::channel::<StickerPreviewMsg>();
+            self.picker.sticker_tx = Some(tx);
+            self.picker.sticker_rx = Some(rx);
+        }
+        let Some(tx) = self.picker.sticker_tx.clone() else {
+            return;
+        };
+        for path in &paths {
+            self.picker.sticker_pending.insert(path.clone());
+        }
+        let queued = paths.clone();
+        let spawned = std::thread::Builder::new()
+            .name("zaprust-sticker-previews".to_owned())
+            .spawn(move || {
+                for path in paths {
+                    let stamp = StickerFileStamp::of(&path);
+                    let pixels =
+                        std::fs::read(&path).ok().and_then(|bytes| decode_sticker_preview(&bytes));
+                    let _ = tx.send(StickerPreviewMsg { path, stamp, pixels });
+                }
+            });
+        if spawned.is_err() {
+            // No worker will report back; unmark the batch so a
+            // later draw can queue it again instead of waiting on
+            // results that will never arrive.
+            for path in &queued {
+                self.picker.sticker_pending.remove(path);
+            }
+        }
     }
 
     /// Per-frame expiry tick: disappearing messages expire on
@@ -777,6 +874,86 @@ pub(crate) fn decode_image_limited(bytes: &[u8]) -> Option<image::DynamicImage> 
     reader.decode().ok()
 }
 
+/// Edge bound for sticker previews, in pixels: twice the 52 px
+/// tile the picker renders, so high-DPI displays stay sharp
+/// without paying for the source resolution.
+pub(crate) const STICKER_PREVIEW_PX: u32 = 104;
+
+/// Decodes sticker bytes into a tile-sized preview: the same
+/// limited decode as [`decode_image_limited`], then a downscale
+/// so neither edge exceeds [`STICKER_PREVIEW_PX`]. Runs on the
+/// preview worker thread, never on the draw path. Returns the
+/// RGBA pixels and their [width, height].
+pub(crate) fn decode_sticker_preview(bytes: &[u8]) -> Option<(Vec<u8>, [usize; 2])> {
+    let img = decode_image_limited(bytes)?;
+    let img =
+        img.resize(STICKER_PREVIEW_PX, STICKER_PREVIEW_PX, image::imageops::FilterType::Triangle);
+    let rgba = img.to_rgba8();
+    let size = [rgba.width() as usize, rgba.height() as usize];
+    Some((rgba.into_raw(), size))
+}
+
+/// A file's identity for failure caching: length plus modified
+/// time. Two stamps are equal only while the file is untouched,
+/// so a sticker that is replaced or repaired gets a new stamp
+/// and is decoded again, while an unchanged bad file is not
+/// retried.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) struct StickerFileStamp {
+    len: u64,
+    modified: Option<std::time::SystemTime>,
+}
+
+impl StickerFileStamp {
+    /// The stamp of the file at `path` right now, or None when
+    /// its metadata cannot be read (missing or unstat-able).
+    pub(crate) fn of(path: &std::path::Path) -> Option<Self> {
+        let meta = std::fs::metadata(path).ok()?;
+        Some(Self { len: meta.len(), modified: meta.modified().ok() })
+    }
+}
+
+/// Negative cache for sticker previews: the paths whose decode
+/// failed, each remembered against the file's stamp at attempt
+/// time. The picker asks [`StickerFailureCache::still_failed`]
+/// before queueing a decode; a true answer means "do not retry",
+/// so one corrupt file costs one decode, not one per repaint.
+#[derive(Default)]
+pub(crate) struct StickerFailureCache {
+    entries: std::collections::HashMap<PathBuf, Option<StickerFileStamp>>,
+}
+
+impl StickerFailureCache {
+    /// Remembers that decoding `path` failed while the file had
+    /// the given stamp.
+    pub(crate) fn record(&mut self, path: &std::path::Path, stamp: Option<StickerFileStamp>) {
+        self.entries.insert(path.to_path_buf(), stamp);
+    }
+
+    /// Drops any remembered failure for `path` (its decode has
+    /// since succeeded).
+    pub(crate) fn forget(&mut self, path: &std::path::Path) {
+        self.entries.remove(path);
+    }
+
+    /// True while `path` has a remembered failure and the file
+    /// still carries the stamp it failed with. When the file has
+    /// changed since (new length or mtime, or it vanished and
+    /// came back), the entry is dropped and the answer is false,
+    /// so the next draw queues a fresh decode.
+    pub(crate) fn still_failed(&mut self, path: &std::path::Path) -> bool {
+        let Some(&stamp) = self.entries.get(path) else {
+            return false;
+        };
+        if StickerFileStamp::of(path) == stamp {
+            true
+        } else {
+            self.entries.remove(path);
+            false
+        }
+    }
+}
+
 /// Cap on cached link previews. Past it the oldest entries are
 /// evicted; without a bound the cache grew for the whole session
 /// (SEC-F06).
@@ -911,5 +1088,79 @@ mod tests {
         ] {
             assert!(pinned_preview_client(bad).is_none(), "{bad} must be rejected");
         }
+    }
+
+    #[test]
+    fn sticker_preview_decode_downscales_to_the_tile_bound() {
+        // A source far larger than the 52 px tile: the preview
+        // request must come back bounded, not at source size.
+        let img = image::RgbaImage::from_pixel(512, 300, image::Rgba([30, 200, 30, 255]));
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(img)
+            .write_to(&mut png, image::ImageFormat::Png)
+            .expect("png encode");
+        let (rgba, size) = decode_sticker_preview(&png.into_inner()).expect("preview decodes");
+        assert_eq!(size[0], STICKER_PREVIEW_PX as usize);
+        assert!(size[1] <= STICKER_PREVIEW_PX as usize, "height {} over the bound", size[1]);
+        assert!(size[1] < size[0], "aspect ratio preserved");
+        assert_eq!(rgba.len(), size[0] * size[1] * 4);
+    }
+
+    #[test]
+    fn sticker_preview_decode_rejects_non_image_bytes() {
+        assert!(decode_sticker_preview(b"not an image").is_none());
+    }
+
+    /// A fresh temp path for one failure-cache test (parallel
+    /// tests use distinct names).
+    fn sticker_test_path(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join("zaprust-sticker-failure-test");
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join(name);
+        let _ = std::fs::remove_file(&path);
+        path
+    }
+
+    #[test]
+    fn sticker_failure_cache_does_not_retry_an_unchanged_file() {
+        let path = sticker_test_path("unchanged.png");
+        std::fs::write(&path, b"corrupt").expect("write bad sticker");
+        let mut cache = StickerFailureCache::default();
+        assert!(!cache.still_failed(&path), "nothing recorded yet");
+        cache.record(&path, StickerFileStamp::of(&path));
+        // The picker queues a decode only when this is false, so
+        // staying true across draws is what stops the per-frame
+        // retry.
+        assert!(cache.still_failed(&path));
+        assert!(cache.still_failed(&path));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn sticker_failure_cache_retries_once_the_file_changes() {
+        let path = sticker_test_path("replaced.png");
+        std::fs::write(&path, b"corrupt").expect("write bad sticker");
+        let mut cache = StickerFailureCache::default();
+        cache.record(&path, StickerFileStamp::of(&path));
+        assert!(cache.still_failed(&path));
+        // Replacing the file (different length, new mtime) moves
+        // its stamp: the failure no longer applies and a fresh
+        // decode is due without an app restart.
+        std::fs::write(&path, b"a longer, still not valid, sticker body").expect("replace sticker");
+        assert!(!cache.still_failed(&path));
+        assert!(!cache.still_failed(&path), "the stale entry stays dropped");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn sticker_failure_cache_forget_clears_the_entry() {
+        let path = sticker_test_path("forgotten.png");
+        std::fs::write(&path, b"corrupt").expect("write bad sticker");
+        let mut cache = StickerFailureCache::default();
+        cache.record(&path, StickerFileStamp::of(&path));
+        assert!(cache.still_failed(&path));
+        cache.forget(&path);
+        assert!(!cache.still_failed(&path));
+        let _ = std::fs::remove_file(&path);
     }
 }

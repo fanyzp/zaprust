@@ -468,6 +468,16 @@ pub(crate) struct PickerState {
     pub(crate) giphy_textures: std::collections::HashMap<String, egui::TextureHandle>,
     /// Decoded sticker PNG textures, keyed by file path.
     pub(crate) sticker_textures: std::collections::HashMap<std::path::PathBuf, egui::TextureHandle>,
+    /// Sticker files whose preview decode failed, remembered
+    /// against the file's stamp so a bad file is attempted once,
+    /// not once per repaint, and a replaced file is retried.
+    pub(crate) sticker_failures: crate::extras::StickerFailureCache,
+    /// Sticker paths a preview worker is currently decoding.
+    pub(crate) sticker_pending: std::collections::HashSet<std::path::PathBuf>,
+    /// Shared sender handed to sticker preview workers.
+    pub(crate) sticker_tx: Option<std::sync::mpsc::Sender<crate::extras::StickerPreviewMsg>>,
+    /// In-flight sticker preview worker results.
+    pub(crate) sticker_rx: Option<std::sync::mpsc::Receiver<crate::extras::StickerPreviewMsg>>,
     /// In-flight GIPHY worker results.
     pub(crate) giphy_rx: Option<std::sync::mpsc::Receiver<crate::extras::GiphyMsg>>,
     /// In-flight live GIF download (MP4 bytes for one send).
@@ -1192,6 +1202,10 @@ impl App {
                 giphy_rejected: false,
                 giphy_textures: std::collections::HashMap::new(),
                 sticker_textures: std::collections::HashMap::new(),
+                sticker_failures: crate::extras::StickerFailureCache::default(),
+                sticker_pending: std::collections::HashSet::new(),
+                sticker_tx: None,
+                sticker_rx: None,
                 giphy_rx: None,
                 media_fetch_rx: None,
             },

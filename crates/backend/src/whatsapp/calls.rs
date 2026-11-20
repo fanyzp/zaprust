@@ -158,7 +158,7 @@ pub(super) async fn start_outgoing_call(
             return;
         }
     };
-    let audio = match crate::audio::CallAudio::real(false) {
+    let audio = match crate::audio::CallAudio::real(false).await {
         Ok(a) => a,
         Err(e) => {
             events.emit(BackendEvent::Error { message: e });
@@ -214,7 +214,7 @@ pub(super) async fn accept_incoming_call(
         return;
     };
     let (call_id, chat_jid) = offer_call_id(ic);
-    let audio = match crate::audio::CallAudio::real(false) {
+    let audio = match crate::audio::CallAudio::real(false).await {
         Ok(a) => a,
         Err(e) => {
             events.emit(BackendEvent::Error { message: e });

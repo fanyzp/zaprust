@@ -436,6 +436,40 @@ fn fake_privacy_state_round_trips_through_set_privacy() {
 }
 
 #[test]
+fn fake_baseline_includes_online_and_round_trips_it() {
+    let (ch, _log) = linked_backend();
+    // The baseline carries the Online audience with a value the
+    // category actually accepts (`all` or `match_last_seen`), so
+    // the Privacy page's Online row is populated in demo mode.
+    let events = collect_until(&ch.events, 5, |e| matches!(e, BackendEvent::PrivacyState(_)));
+    let baseline = events.iter().find_map(|e| match e {
+        BackendEvent::PrivacyState(map) => Some(map),
+        _ => None,
+    });
+    let baseline = baseline.expect("the linked script reports a privacy state");
+    assert_eq!(baseline.get("online").map(String::as_str), Some("match_last_seen"));
+
+    // Setting Online re-emits the full map with the new value,
+    // like the real backend's refetch after a change.
+    ch.commands
+        .send(BackendCommand::SetPrivacy { category: "online".to_owned(), value: "all".to_owned() })
+        .unwrap();
+    let events = collect_until(&ch.events, 5, |e| matches!(e, BackendEvent::PrivacyState(_)));
+    let updated = events.iter().find_map(|e| match e {
+        BackendEvent::PrivacyState(map) => Some(map),
+        _ => None,
+    });
+    let updated = updated.expect("SetPrivacy re-emits the privacy state");
+    assert_eq!(updated.get("online").map(String::as_str), Some("all"));
+    assert_eq!(
+        updated.get("last").map(String::as_str),
+        Some("contacts"),
+        "the re-emitted state is the full map, not just the changed entry"
+    );
+    ch.commands.send(BackendCommand::Shutdown).unwrap();
+}
+
+#[test]
 fn scripted_group_delivers_location_carousel_and_contact_kinds() {
     let ch = spawn(FakeBackend::auto());
     ch.commands.send(BackendCommand::ConnectQr).unwrap();

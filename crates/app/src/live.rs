@@ -2123,6 +2123,26 @@ impl crate::state::App {
         }
     }
 
+    /// Cycles one account-privacy row on the Privacy page to its
+    /// next audience and sends it to the account. The displayed
+    /// value is not touched here: it comes from `privacy_state`,
+    /// which only a fresh fetch updates, on success and on failure
+    /// alike (the backend re-asserts the fetched state after a
+    /// rejected change), so the page never claims a value the
+    /// server did not take.
+    pub(crate) fn cycle_privacy(&mut self, category: &str) {
+        let current = self.privacy_state.get(category).cloned().unwrap_or_default();
+        let Some(next) = next_privacy_audience(category, &current) else {
+            return;
+        };
+        if self.live_mode {
+            self.send_backend(BackendCommand::SetPrivacy {
+                category: category.to_owned(),
+                value: next.to_owned(),
+            });
+        }
+    }
+
     /// Records a real read action in the selected chat (the
     /// conversation screen calls this when the user scrolls to the
     /// newest messages, focuses or types in the composer, or sends
@@ -2217,6 +2237,69 @@ pub(crate) fn server_read_receipts(fetched: Option<&String>) -> Option<bool> {
         Some("all") => Some(true),
         Some("none") => Some(false),
         _ => None,
+    }
+}
+
+/// The audiences one account-privacy category accepts, in cycle
+/// order (protocol spellings), matching the library's validity
+/// table for the categories the Privacy page shows. `online`
+/// accepts only `all` and `match_last_seen`; the other four rows
+/// share `all`, `contacts`, `none`. `contact_blacklist` is
+/// deliberately not a stop on any cycle: it names a per-contact
+/// exception list that a bare value change cannot express, and
+/// sending it without the list would discard the list the phone
+/// configured. It is display-only here (see
+/// [`privacy_value_label`]).
+#[must_use]
+pub(crate) fn privacy_audiences(category: &str) -> &'static [&'static str] {
+    match category {
+        "online" => &["all", "match_last_seen"],
+        "last" | "profile" | "status" | "groupadd" => &["all", "contacts", "none"],
+        _ => &[],
+    }
+}
+
+/// The next audience for a privacy row, cycling within
+/// [`privacy_audiences`]. A current value outside the cycle is
+/// never "corrected" in place; cycling from it lands somewhere
+/// valid and predictable: `contact_blacklist` (contacts with an
+/// exception list this page cannot edit) advances to the stop
+/// after "contacts", and any other unrecognized value restarts
+/// the cycle at its first audience.
+#[must_use]
+pub(crate) fn next_privacy_audience(category: &str, current: &str) -> Option<&'static str> {
+    let cycle = privacy_audiences(category);
+    if cycle.is_empty() {
+        return None;
+    }
+    let pos = cycle.iter().position(|v| *v == current).or_else(|| {
+        // `contact_blacklist` refines the "contacts" audience, so
+        // its cycle position is that of "contacts".
+        if current == "contact_blacklist" {
+            cycle.iter().position(|v| *v == "contacts")
+        } else {
+            None
+        }
+    });
+    Some(match pos {
+        Some(i) => cycle[(i + 1) % cycle.len()],
+        None => cycle[0],
+    })
+}
+
+/// The button label for a fetched privacy value: the audience's
+/// plain name, in the wording WhatsApp itself uses. A value this
+/// page does not know is shown verbatim, never silently presented
+/// as a neighboring audience.
+#[must_use]
+pub(crate) fn privacy_value_label(value: &str) -> String {
+    match value {
+        "all" => "Everyone".to_owned(),
+        "contacts" => "My contacts".to_owned(),
+        "none" => "Nobody".to_owned(),
+        "contact_blacklist" => "My contacts except…".to_owned(),
+        "match_last_seen" => "Same as last seen".to_owned(),
+        other => other.to_owned(),
     }
 }
 
@@ -3081,6 +3164,93 @@ mod chat_state_routing_tests {
                 value: "all".to_owned(),
             }),
             "turning receipts on must reach the account setting"
+        );
+    }
+
+    /// The Online row's cycle is exactly the set the category
+    /// accepts: `all` and `match_last_seen`, wrapping. The values
+    /// the shared cycle used to offer it (`contacts`, `none`) are
+    /// not in the set, and the sibling rows keep their own set.
+    #[test]
+    fn online_cycle_visits_exactly_its_valid_set_and_wraps() {
+        assert_eq!(privacy_audiences("online"), ["all", "match_last_seen"]);
+        assert_eq!(next_privacy_audience("online", "all"), Some("match_last_seen"));
+        assert_eq!(next_privacy_audience("online", "match_last_seen"), Some("all"));
+
+        for category in ["last", "profile", "status", "groupadd"] {
+            assert_eq!(privacy_audiences(category), ["all", "contacts", "none"], "{category}");
+            assert_eq!(next_privacy_audience(category, "all"), Some("contacts"));
+            assert_eq!(next_privacy_audience(category, "contacts"), Some("none"));
+            assert_eq!(next_privacy_audience(category, "none"), Some("all"));
+        }
+
+        // `contact_blacklist` is a real fetched value for the
+        // four list categories, but it is never a cycle stop:
+        // sending it bare would discard the exception list it
+        // names.
+        for category in ["online", "last", "profile", "status", "groupadd"] {
+            assert!(
+                !privacy_audiences(category).contains(&"contact_blacklist"),
+                "{category} must not offer contact_blacklist"
+            );
+        }
+        // Categories the page does not show have no cycle.
+        assert_eq!(next_privacy_audience("readreceipts", "all"), None);
+    }
+
+    /// A fetched value the page cannot represent is shown as
+    /// itself and never silently presented as a neighbor, and
+    /// cycling away from it lands somewhere valid and predictable:
+    /// an exception list advances past "contacts", anything else
+    /// unknown restarts the cycle at its first audience.
+    #[test]
+    fn unrecognized_privacy_value_is_not_coerced() {
+        assert_eq!(privacy_value_label("all"), "Everyone");
+        assert_eq!(privacy_value_label("contacts"), "My contacts");
+        assert_eq!(privacy_value_label("none"), "Nobody");
+        assert_eq!(privacy_value_label("match_last_seen"), "Same as last seen");
+        assert_eq!(privacy_value_label("contact_blacklist"), "My contacts except…");
+        // Unknown spellings display verbatim: the page does not
+        // pretend they are an audience it knows.
+        assert_eq!(privacy_value_label("known"), "known");
+        assert_eq!(privacy_value_label("some_future_value"), "some_future_value");
+
+        assert_eq!(next_privacy_audience("last", "contact_blacklist"), Some("none"));
+        assert_eq!(next_privacy_audience("profile", "contact_blacklist"), Some("none"));
+        assert_eq!(next_privacy_audience("online", "some_future_value"), Some("all"));
+        assert_eq!(next_privacy_audience("last", "some_future_value"), Some("all"));
+    }
+
+    /// The Privacy page's Online row: cycling sends SetPrivacy
+    /// with the server's exact spelling for "same as last seen",
+    /// the value the old shared cycle could never produce.
+    #[test]
+    fn cycling_online_sends_match_last_seen_with_exact_spelling() {
+        let (mut app, _tx, _ctx, cmd_rx) = live_app();
+        app.privacy_state.insert("online".to_owned(), "all".to_owned());
+
+        app.cycle_privacy("online");
+        assert_eq!(
+            cmd_rx.try_recv(),
+            Ok(BackendCommand::SetPrivacy {
+                category: "online".to_owned(),
+                value: "match_last_seen".to_owned(),
+            }),
+            "cycling Online from Everyone must offer same-as-last-seen"
+        );
+        // The displayed value does not move on its own: only the
+        // backend's answering PrivacyState moves it.
+        assert_eq!(app.privacy_state.get("online").map(String::as_str), Some("all"));
+
+        app.privacy_state.insert("online".to_owned(), "match_last_seen".to_owned());
+        app.cycle_privacy("online");
+        assert_eq!(
+            cmd_rx.try_recv(),
+            Ok(BackendCommand::SetPrivacy {
+                category: "online".to_owned(),
+                value: "all".to_owned()
+            }),
+            "the cycle wraps back to Everyone"
         );
     }
 

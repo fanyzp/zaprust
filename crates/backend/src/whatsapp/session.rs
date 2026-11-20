@@ -1422,6 +1422,7 @@ pub(super) async fn run_async(
                 }
                 BackendCommand::SetPrivacy { category, value } => {
                     use whatsapp_rust::privacy_settings::{PrivacyCategory, PrivacyValue};
+                    let (category_name, value_name) = (category.clone(), value.clone());
                     let category = match category.as_str() {
                         "last" => Some(PrivacyCategory::Last),
                         "online" => Some(PrivacyCategory::Online),
@@ -1440,31 +1441,55 @@ pub(super) async fn run_async(
                         "known" => Some(PrivacyValue::Known),
                         _ => None,
                     };
-                    match (category, value) {
-                        (Some(c), Some(v)) => match client.set_privacy_setting(c, v).await {
-                            Ok(_) => {
-                                if let Ok(resp) = client.fetch_privacy_settings().await {
-                                    events.emit(BackendEvent::PrivacyState(privacy_map(&resp)));
+                    // The pair is validated here, at the boundary,
+                    // before anything is sent. The library only
+                    // debug-asserts that a value fits its category,
+                    // so an invalid pair (e.g. `contacts` for
+                    // `online`, which accepts only `all` and
+                    // `match_last_seen`) would otherwise go out and
+                    // fail at the server. And `contact_blacklist`,
+                    // though a valid value for its categories,
+                    // names a per-contact exception list this
+                    // command cannot carry: sending it bare would
+                    // discard the list the phone configured.
+                    let refusal = match (&category, &value) {
+                        (Some(_), Some(PrivacyValue::ContactBlacklist)) => Some(
+                            "Privacy change failed: an exception list cannot be set without its contacts."
+                                .to_owned(),
+                        ),
+                        (Some(c), Some(v)) if !c.is_valid_value(v) => Some(format!(
+                            "Privacy change failed: {category_name} does not accept {value_name}."
+                        )),
+                        _ => None,
+                    };
+                    match refusal {
+                        Some(message) => events.emit(BackendEvent::Error { message }),
+                        None => match (category, value) {
+                            (Some(c), Some(v)) => match client.set_privacy_setting(c, v).await {
+                                Ok(_) => {
+                                    if let Ok(resp) = client.fetch_privacy_settings().await {
+                                        events.emit(BackendEvent::PrivacyState(privacy_map(&resp)));
+                                    }
                                 }
-                            }
-                            Err(e) => {
-                                events.emit(BackendEvent::Error {
-                                    message: format!("Privacy change failed: {e}"),
-                                });
-                                // Re-assert the account's actual
-                                // settings after the failure: the
-                                // app applies privacy changes
-                                // optimistically, and this fetch is
-                                // what reconciles its state with
-                                // the value the server kept.
-                                if let Ok(resp) = client.fetch_privacy_settings().await {
-                                    events.emit(BackendEvent::PrivacyState(privacy_map(&resp)));
+                                Err(e) => {
+                                    events.emit(BackendEvent::Error {
+                                        message: format!("Privacy change failed: {e}"),
+                                    });
+                                    // Re-assert the account's actual
+                                    // settings after the failure: the
+                                    // app applies privacy changes
+                                    // optimistically, and this fetch is
+                                    // what reconciles its state with
+                                    // the value the server kept.
+                                    if let Ok(resp) = client.fetch_privacy_settings().await {
+                                        events.emit(BackendEvent::PrivacyState(privacy_map(&resp)));
+                                    }
                                 }
-                            }
+                            },
+                            _ => events.emit(BackendEvent::Error {
+                                message: "Unknown privacy category or value.".to_owned(),
+                            }),
                         },
-                        _ => events.emit(BackendEvent::Error {
-                            message: "Unknown privacy category or value.".to_owned(),
-                        }),
                     }
                 }
                 BackendCommand::Disconnect => {

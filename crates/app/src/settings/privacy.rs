@@ -81,7 +81,7 @@ impl App {
             // These genuinely round-trip to WhatsApp through the
             // library's privacy API while linked.
             let state = self.privacy_state.clone();
-            let mut changes: Vec<(String, String)> = Vec::new();
+            let mut cycle: Vec<&str> = Vec::new();
             settings_card(ui, t, |ui| {
                 for (label, key) in [
                     ("Last seen", "last"),
@@ -95,17 +95,12 @@ impl App {
                         if crate::widgets::button(
                             ui,
                             t,
-                            current.as_str(),
+                            &crate::live::privacy_value_label(&current),
                             crate::widgets::Btn::Secondary,
                         )
                         .clicked()
                         {
-                            let next = match current.as_str() {
-                                "all" => "contacts",
-                                "contacts" => "none",
-                                _ => "all",
-                            };
-                            changes.push((key.to_owned(), next.to_owned()));
+                            cycle.push(key);
                         }
                     });
                     divider(ui, t);
@@ -116,8 +111,8 @@ impl App {
                         .color(rgb(t.text_faint)),
                 );
             });
-            for (category, value) in changes {
-                self.send_backend(backend::BackendCommand::SetPrivacy { category, value });
+            for category in cycle {
+                self.cycle_privacy(category);
             }
         } else {
             settings_card(ui, t, |ui| {

@@ -1562,6 +1562,10 @@ fn emit_call_end(events: &EventSink, state: &mut FakeCallState, call: &FakeCall,
 fn baseline_privacy_state() -> std::collections::BTreeMap<String, String> {
     let mut privacy = std::collections::BTreeMap::new();
     privacy.insert("last".to_owned(), "contacts".to_owned());
+    privacy.insert("online".to_owned(), "match_last_seen".to_owned());
+    privacy.insert("profile".to_owned(), "contacts".to_owned());
+    privacy.insert("status".to_owned(), "contacts".to_owned());
+    privacy.insert("groupadd".to_owned(), "contacts".to_owned());
     privacy.insert("readreceipts".to_owned(), "all".to_owned());
     privacy
 }

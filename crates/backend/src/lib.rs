@@ -399,7 +399,11 @@ pub enum BackendCommand {
     },
     /// Set a WhatsApp privacy option (live mode; the values are the
     /// protocol spellings: `all`, `contacts`, `none`,
-    /// `contact_blacklist`, `match_last_seen`, `known`).
+    /// `contact_blacklist`, `match_last_seen`, `known`). The
+    /// backend validates the value against the category and
+    /// refuses pairs the category does not accept, and refuses
+    /// `contact_blacklist` outright: it names an exception list
+    /// this command cannot carry.
     SetPrivacy {
         /// One of: `last`, `online`, `profile`, `status`,
         /// `groupadd`, `readreceipts`.

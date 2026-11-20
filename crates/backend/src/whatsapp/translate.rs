@@ -139,6 +139,17 @@ pub(super) fn translate_event(event: &Event, sink: &EventSink) {
                 duration_secs: change.duration,
             });
         }
+        Event::MuteUpdate(update) => {
+            // App-state sync reporting the account's mute state
+            // for one chat: a mute or unmute from another device,
+            // or the state as a full sync delivers it. This is
+            // the only wire path that knows mute; message arrivals
+            // do not carry it.
+            sink.emit(BackendEvent::MuteChanged {
+                chat_jid: update.jid.to_string(),
+                muted: mute_action_state(&update.action, now_millis()),
+            });
+        }
         Event::ChatPresence(update) => {
             use whatsapp_rust::wacore::types::presence::ChatActivity;
             sink.emit(BackendEvent::TypingReceived {
@@ -426,6 +437,33 @@ pub(super) fn quoted_context(ctx: &MessageContext) -> Option<(Option<String>, Op
     Some((sender, excerpt))
 }
 
+/// The effective mute state of a sync `MuteAction` at
+/// `now_ms`. The action's flag alone is not the whole story: a
+/// timed mute carries a positive end timestamp and stops being
+/// a mute once it passes. The indefinite spelling is `-1` (what
+/// the library's own `mute_chat` sends); a missing end is read
+/// the same way.
+pub(super) fn mute_action_state(
+    action: &whatsapp_rust::prelude::wa::sync_action_value::MuteAction,
+    now_ms: i64,
+) -> bool {
+    if action.muted != Some(true) {
+        return false;
+    }
+    match action.mute_end_timestamp {
+        Some(end) if end > 0 => end > now_ms,
+        _ => true,
+    }
+}
+
+/// Wall-clock milliseconds since the Unix epoch (0 if the
+/// system clock is set before it).
+fn now_millis() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
+}
+
 pub(super) fn kind_of(jid: &str) -> LiveChatKind {
     if jid.ends_with("@g.us") {
         LiveChatKind::Group
@@ -438,4 +476,39 @@ pub(super) fn kind_of(jid: &str) -> LiveChatKind {
 
 pub(super) fn user_part(jid: &str) -> String {
     jid.split('@').next().unwrap_or(jid).to_owned()
+}
+
+#[cfg(test)]
+mod mute_action_tests {
+    use super::mute_action_state;
+    use whatsapp_rust::prelude::wa::sync_action_value::MuteAction;
+
+    const NOW_MS: i64 = 1_700_000_000_000;
+
+    fn action(muted: Option<bool>, mute_end_timestamp: Option<i64>) -> MuteAction {
+        let mut action = MuteAction::default();
+        action.muted = muted;
+        action.mute_end_timestamp = mute_end_timestamp;
+        action
+    }
+
+    #[test]
+    fn indefinite_mute_is_muted() {
+        // -1 is the indefinite spelling the library itself sends.
+        assert!(mute_action_state(&action(Some(true), Some(-1)), NOW_MS));
+        // A missing end reads as indefinite too.
+        assert!(mute_action_state(&action(Some(true), None), NOW_MS));
+    }
+
+    #[test]
+    fn timed_mute_lasts_until_its_end() {
+        assert!(mute_action_state(&action(Some(true), Some(NOW_MS + 3_600_000)), NOW_MS));
+        assert!(!mute_action_state(&action(Some(true), Some(NOW_MS - 1)), NOW_MS));
+    }
+
+    #[test]
+    fn unmute_and_absent_flag_are_not_muted() {
+        assert!(!mute_action_state(&action(Some(false), Some(0)), NOW_MS));
+        assert!(!mute_action_state(&action(None, None), NOW_MS));
+    }
 }

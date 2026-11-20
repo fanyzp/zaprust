@@ -666,7 +666,9 @@ pub struct LiveChat {
     /// Muted (notifications silenced), as persisted in the
     /// archive. Like the timer, a message-arrival upsert does
     /// not learn it from the wire, so the app keeps a known
-    /// mute across upserts that report `false`.
+    /// mute across upserts that report `false`; mute changes
+    /// made on the server arrive as
+    /// [`BackendEvent::MuteChanged`] instead.
     pub muted: bool,
 }
 
@@ -877,6 +879,19 @@ pub enum BackendEvent {
         chat_jid: String,
         /// New timer in seconds (`0` is off).
         duration_secs: u32,
+    },
+    /// A chat's mute state changed on the server: muted or
+    /// unmuted from another device, or the account state as a
+    /// full sync reports it. This is the authoritative path for
+    /// mute changes made elsewhere; a mute set from this client
+    /// goes out as [`BackendCommand::ChatAction`] and applies
+    /// locally at once, without waiting for this event.
+    MuteChanged {
+        /// Chat JID.
+        chat_jid: String,
+        /// Whether the chat is muted now. A timed mute whose
+        /// end has passed reports `false`.
+        muted: bool,
     },
     /// Current privacy settings as fetched from the account
     /// (category → value spellings; see [`BackendCommand::SetPrivacy`]).

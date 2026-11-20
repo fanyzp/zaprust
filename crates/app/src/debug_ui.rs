@@ -71,6 +71,9 @@ impl App {
             BackendEvent::DisappearingChanged { chat_jid, duration_secs } => {
                 ("message", format!("DisappearingChanged in {chat_jid}: {duration_secs}s"), None)
             }
+            BackendEvent::MuteChanged { chat_jid, muted } => {
+                ("message", format!("MuteChanged in {chat_jid}: muted={muted}"), None)
+            }
             BackendEvent::PrivacyState(_) => ("backend", "PrivacyState".to_owned(), None),
             BackendEvent::Crashed { summary, restarted } => {
                 ("backend", format!("Crashed (restarted={restarted}): {summary}"), None)

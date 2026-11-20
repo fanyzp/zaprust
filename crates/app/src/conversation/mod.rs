@@ -160,13 +160,14 @@ impl App {
                 close = true;
             }
             Some("mute") => {
-                if let Some(c) = self.chats.iter_mut().find(|c| c.id == chat.id) {
-                    c.muted = !c.muted;
-                } else if let Some(c) = self.detached_chat.as_mut().filter(|c| c.id == chat.id) {
-                    // The announcement chat lives in the detached
-                    // slot; muting it is a local state change too.
-                    c.muted = !c.muted;
-                }
+                // Through apply_chat_action, like pin: the flip
+                // applies locally at once and, in live mode, the
+                // backend command follows, so the account's mute
+                // state changes too instead of only this window's.
+                // The detached announcement chat is covered by
+                // the same call's detached fallback (local-only,
+                // as before).
+                self.apply_chat_action(chat.id, chat.archived, chat.pinned, !chat.muted);
                 close = true;
             }
             Some("pinchat") => {

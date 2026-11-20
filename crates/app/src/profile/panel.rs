@@ -969,11 +969,10 @@ impl App {
             export = true;
         }
         if toggle_mute {
-            if let Some(c) = self.chats.iter_mut().find(|c| c.id == chat.id) {
-                c.muted = !c.muted;
-            } else if let Some(c) = self.detached_chat.as_mut().filter(|c| c.id == chat.id) {
-                c.muted = !c.muted;
-            }
+            // Same routing as the header menu: apply_chat_action
+            // flips locally at once and sends the backend command
+            // in live mode.
+            self.apply_chat_action(chat.id, chat.archived, chat.pinned, !chat.muted);
         }
         if export {
             self.export_current_chat();

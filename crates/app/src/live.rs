@@ -1058,6 +1058,10 @@ impl crate::state::App {
                 let chat_id = jid_id(&chat_jid);
                 self.apply_disappearing_changed(chat_id, duration_secs);
             }
+            BackendEvent::MuteChanged { chat_jid, muted } => {
+                let chat_id = jid_id(&chat_jid);
+                self.apply_mute_changed(chat_id, muted);
+            }
             BackendEvent::PrivacyState(map) => {
                 self.privacy_state = map;
             }
@@ -1151,8 +1155,10 @@ impl crate::state::App {
         }
         // Same protection for mute: an arrival upsert reports
         // `false` without knowing better, so it must not unmute
-        // a chat this client knows is muted. Unmuting has its
-        // own path (the chat action and its upsert).
+        // a chat this client knows is muted. Server-side mute
+        // changes have their own authoritative path
+        // (MuteChanged events); this merge only protects the
+        // stored value, exactly as for the timer above.
         if !merged.muted {
             if let Some(known) = self.chats.iter().find(|c| c.id == id) {
                 merged.muted = known.muted;
@@ -1214,6 +1220,33 @@ impl crate::state::App {
                 chat_id,
                 &crate::extras::disappearing_notice_text(duration_secs),
             );
+        }
+    }
+
+    /// Applies a mute change the server reported (a mute or
+    /// unmute done on another device, or the account state from
+    /// a full sync). The reported value wins over the local
+    /// mirror unconditionally, including over an optimistic
+    /// local toggle whose backend command failed: this event is
+    /// the reconciliation path for mute, the counterpart of
+    /// DisappearingChanged for the timer. State and archive
+    /// update either way. A mute set from this client does not
+    /// wait for this event; it applies through apply_chat_action
+    /// at once.
+    pub(crate) fn apply_mute_changed(&mut self, chat_id: u64, muted: bool) {
+        if let Some(c) = self.chats.iter_mut().find(|c| c.id == chat_id) {
+            c.muted = muted;
+        }
+        if let Some(c) = self.detached_chat.as_mut().filter(|c| c.id == chat_id) {
+            c.muted = muted;
+        }
+        if let Some(session) = &self.live {
+            if let (Some(store), Some(jid)) = (&session.store, session.jids.get(&chat_id)) {
+                if let Some(chat) = self.chats.iter().find(|c| c.id == chat_id) {
+                    let ts = session.times.get(&chat_id).copied().unwrap_or(0);
+                    let _ = store.upsert_chat(&chat_to_live(chat, jid, ts));
+                }
+            }
         }
     }
 
@@ -1950,5 +1983,181 @@ mod key_decision_tests {
     #[test]
     fn demo_start_proceeds_despite_a_key_load_error() {
         assert!(matches!(key_decision(&Err(unreadable_key()), true), KeyDecision::Run(_)));
+    }
+}
+
+#[cfg(test)]
+mod mute_routing_tests {
+    use super::*;
+    use crate::state::{App, Args};
+    use backend::ChatAction;
+
+    const CHAT_JID: &str = "6281234567890@s.whatsapp.net";
+    const BASE_TS: i64 = 1_700_000_000;
+
+    /// The same live-mode harness as the burst tests: an app
+    /// whose backend channels the test feeds and reads by hand,
+    /// with an in-memory archive attached.
+    fn live_app() -> (
+        App,
+        std::sync::mpsc::Sender<BackendEvent>,
+        egui::Context,
+        std::sync::mpsc::Receiver<BackendCommand>,
+    ) {
+        let ctx = egui::Context::default();
+        crate::theme::install_fonts(&ctx);
+        let mut app = App::new(Args::parse(), &ctx);
+        let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<BackendCommand>();
+        let (evt_tx, evt_rx) = std::sync::mpsc::channel::<BackendEvent>();
+        app.live = Some(LiveSession {
+            channels: BackendChannels { commands: cmd_tx, events: evt_rx },
+            status: LinkStatus::Linked,
+            qr: None,
+            pair_code: None,
+            pair_code_at: None,
+            account: "Test account".to_owned(),
+            connected_at: None,
+            store: Some(store::Store::open_in_memory().unwrap()),
+            jids: HashMap::new(),
+            messages: HashMap::new(),
+            times: HashMap::new(),
+            fake: true,
+            flags: HashMap::new(),
+            engaged_chats: std::collections::HashSet::new(),
+        });
+        app.live_mode = true;
+        app.link_previews = false;
+        (app, evt_tx, ctx, cmd_rx)
+    }
+
+    fn drain_all(app: &mut App, ctx: &egui::Context) {
+        for _ in 0..64 {
+            app.poll_backend(ctx);
+            if app.event_queue.is_empty() {
+                return;
+            }
+        }
+        panic!("the event queue did not drain");
+    }
+
+    /// An arrival-style chat upsert: it carries no chat-action
+    /// state (mute least of all), exactly like the real
+    /// backend's message-arrival upserts.
+    fn arrival_upsert() -> BackendEvent {
+        BackendEvent::ChatUpsert(LiveChat {
+            jid: CHAT_JID.to_owned(),
+            title: "Sender".to_owned(),
+            kind: LiveChatKind::Dm,
+            preview: "hello".to_owned(),
+            preview_sender: None,
+            timestamp: BASE_TS,
+            unread: 0,
+            archived: false,
+            pinned: false,
+            ephemeral_secs: 0,
+            muted: false,
+        })
+    }
+
+    fn seed_chat(app: &mut App, tx: &std::sync::mpsc::Sender<BackendEvent>, ctx: &egui::Context) {
+        tx.send(arrival_upsert()).unwrap();
+        drain_all(app, ctx);
+        assert!(app.chats.iter().any(|c| c.id == jid_id(CHAT_JID)), "the upsert seeds the chat");
+    }
+
+    fn chat_muted(app: &App) -> bool {
+        app.chats.iter().find(|c| c.id == jid_id(CHAT_JID)).expect("chat exists").muted
+    }
+
+    fn archived_muted(app: &App) -> bool {
+        let store = app.live.as_ref().unwrap().store.as_ref().unwrap();
+        store
+            .chats()
+            .unwrap()
+            .iter()
+            .find(|c| c.jid == CHAT_JID)
+            .expect("the chat reached the archive")
+            .muted
+    }
+
+    /// The header-menu / profile-panel toggle path: both call
+    /// apply_chat_action with the flipped value. In live mode
+    /// that must put the matching ChatAction command on the
+    /// backend channel, flip the local mirror at once, and
+    /// write the state through to the archive.
+    #[test]
+    fn mute_toggle_sends_the_backend_command() {
+        let (mut app, tx, ctx, cmd_rx) = live_app();
+        seed_chat(&mut app, &tx, &ctx);
+        let chat_id = jid_id(CHAT_JID);
+
+        app.apply_chat_action(chat_id, false, false, true);
+        assert_eq!(
+            cmd_rx.try_recv(),
+            Ok(BackendCommand::ChatAction {
+                chat_jid: CHAT_JID.to_owned(),
+                action: ChatAction::Mute
+            }),
+            "muting in live mode must reach the backend"
+        );
+        assert!(chat_muted(&app), "the local flip applies at once");
+        assert!(archived_muted(&app), "the archive write-through carries the mute");
+
+        app.apply_chat_action(chat_id, false, false, false);
+        assert_eq!(
+            cmd_rx.try_recv(),
+            Ok(BackendCommand::ChatAction {
+                chat_jid: CHAT_JID.to_owned(),
+                action: ChatAction::Unmute
+            }),
+            "unmuting in live mode must reach the backend"
+        );
+        assert!(!chat_muted(&app));
+        assert!(!archived_muted(&app));
+    }
+
+    /// A mute change the server reports (another device, or a
+    /// full sync) adopts unconditionally, even over a local
+    /// optimistic toggle: the server value is the truth the
+    /// local mirror reconciles to.
+    #[test]
+    fn server_mute_changed_overrides_local_state() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        seed_chat(&mut app, &tx, &ctx);
+        let chat_id = jid_id(CHAT_JID);
+
+        tx.send(BackendEvent::MuteChanged { chat_jid: CHAT_JID.to_owned(), muted: true }).unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(chat_muted(&app), "a server mute lands in the mirror");
+        assert!(archived_muted(&app), "and in the archive");
+
+        // The user unmutes here (optimistic local flip plus the
+        // backend command), then the server re-asserts the mute,
+        // as it would if that command failed or another device
+        // muted again: the server value wins.
+        app.apply_chat_action(chat_id, false, false, false);
+        assert!(!chat_muted(&app));
+        tx.send(BackendEvent::MuteChanged { chat_jid: CHAT_JID.to_owned(), muted: true }).unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(chat_muted(&app), "the server value overrides the local toggle");
+        assert!(archived_muted(&app));
+    }
+
+    /// The counterpart rule: an arrival upsert knows nothing
+    /// about mute, so it must not unmute a chat the mirror
+    /// knows is muted (the merge protection stays).
+    #[test]
+    fn arrival_upsert_keeps_the_known_mute() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        seed_chat(&mut app, &tx, &ctx);
+
+        tx.send(BackendEvent::MuteChanged { chat_jid: CHAT_JID.to_owned(), muted: true }).unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(chat_muted(&app));
+
+        tx.send(arrival_upsert()).unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(chat_muted(&app), "an arrival upsert must not unmute");
+        assert!(archived_muted(&app), "nor rewrite the archive row as unmuted");
     }
 }

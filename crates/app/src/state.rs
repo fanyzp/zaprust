@@ -683,8 +683,12 @@ pub(crate) struct App {
     /// Send typing indicators (Settings > Privacy). When OFF the
     /// app never emits composing/pause chat-states.
     pub(crate) typing_indicators: bool,
-    /// Fetch link previews for URLs in live messages
-    /// (Settings > Chats). Never fetches in demo mode.
+    /// Legacy link-previews preference. Received links are
+    /// never fetched (a fetch would hand the sender the user's
+    /// address and online timing), and previews render only
+    /// when the sender's client attached one, so this value no
+    /// longer gates anything. It is still loaded and persisted
+    /// so existing settings files keep round-tripping.
     pub(crate) link_previews: bool,
     /// Privacy values reported by the account (live mode), spelling
     /// per `backend::BackendCommand::SetPrivacy`.
@@ -817,10 +821,6 @@ pub(crate) struct App {
     /// conversation rebuild and the archive writes are coalesced
     /// to once per batch instead of once per event (see live.rs).
     pub(crate) event_batch: crate::live::EventBatch,
-    /// Link-preview cache by URL (bounded, see `extras::OgCache`).
-    pub(crate) og_cache: crate::extras::OgCache,
-    /// In-flight link-preview fetches: (message id, url, result).
-    pub(crate) og_rx: Option<std::sync::mpsc::Receiver<(u64, String, Option<core::rich::OgData>)>>,
     /// In-flight chat export: a worker renders and writes the
     /// file off the UI thread; the result is the written path or
     /// the error text (see conversation/mod.rs).
@@ -1251,8 +1251,6 @@ impl App {
             pending_notifications: Vec::new(),
             event_queue: std::collections::VecDeque::new(),
             event_batch: crate::live::EventBatch::default(),
-            og_cache: crate::extras::OgCache::default(),
-            og_rx: None,
             export_rx: None,
             storage_sizes: None,
             staged_send: None,

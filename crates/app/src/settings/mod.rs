@@ -131,13 +131,6 @@ const SETTINGS_REGISTRY: &[SettingEntry] = &[
         keywords: "archive stays arsip",
     },
     SettingEntry {
-        id: "chats.link_previews",
-        tab: "Chats",
-        title_en: "Link previews",
-        title_id: "Link previews",
-        keywords: "opengraph url fetch pratinjau tautan",
-    },
-    SettingEntry {
         id: "chats.composer_hint",
         tab: "Chats",
         title_en: "Composer shortcuts hint",

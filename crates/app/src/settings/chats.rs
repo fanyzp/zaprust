@@ -33,22 +33,6 @@ impl App {
             );
             self.keep_archived = v;
             divider(ui, t);
-            let mut lp = self.link_previews;
-            row_hl(
-                ui,
-                &mut self.settings_highlight,
-                self.motion,
-                "chats.link_previews",
-                t,
-                &crate::i18n::t("chats_page.link_previews"),
-                &crate::i18n::t("chats_page.link_previews_caption"),
-                |ui| switch(ui, &mut lp, t),
-            );
-            if lp != self.link_previews {
-                self.link_previews = lp;
-                self.persist_settings();
-            }
-            divider(ui, t);
             // The hint bar's re-show switch: dismissing the bar in
             // the composer sets this off, and this is the only way
             // back on, so the dismissed surface is never lost.

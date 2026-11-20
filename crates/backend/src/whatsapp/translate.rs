@@ -6,7 +6,8 @@ use whatsapp_rust::prelude::*;
 use whatsapp_rust::wacore::types::events::Event;
 
 use crate::{
-    BackendEvent, EventSink, LiveChat, LiveChatKind, LiveMessage, LiveMessageKind, ReceiptKind,
+    BackendEvent, EventSink, LiveChat, LiveChatKind, LiveMessage, LiveMessageKind, LivePreview,
+    ReceiptKind,
 };
 
 /// Maps the library's privacy-settings response into our
@@ -355,6 +356,9 @@ pub(super) fn translate_message(ctx: &MessageContext) -> Option<(LiveChat, LiveM
         msg.quoted_sender = quoted.0;
         msg.quoted_body = quoted.1;
     }
+    // A link preview the sender's client attached travels with
+    // the message; surface it as carried, never fetch it here.
+    msg.link_preview = embedded_link_preview(&ctx.message);
     // The author JID travels with every message: replies quote it
     // as the context participant, group reactions target it.
     msg.sender_jid = Some(source.sender.to_string());
@@ -526,6 +530,25 @@ pub(super) fn classify_message(
         );
     }
     (LiveMessageKind::Text, false)
+}
+
+/// Extracts the link preview a sender's client attached to an
+/// extended-text message: the page title and description it
+/// generated, plus the URL it matched. This is the only source of
+/// link previews: the receiving side never fetches a URL itself,
+/// so a sender cannot learn the recipient's address or timing
+/// from a planted link. A message whose extended text carries no
+/// preview fields (an ordinary text or reply) yields `None`.
+pub(super) fn embedded_link_preview(
+    msg: &whatsapp_rust::prelude::wa::Message,
+) -> Option<LivePreview> {
+    let extended = msg.extended_text_message.as_option()?;
+    let title = extended.title.clone().unwrap_or_default();
+    let description = extended.description.clone().unwrap_or_default();
+    if title.is_empty() && description.is_empty() {
+        return None;
+    }
+    Some(LivePreview { title, description, url: extended.matched_text.clone().unwrap_or_default() })
 }
 
 /// Extracts (sender, excerpt) when a message quotes another one:
@@ -788,5 +811,70 @@ mod clear_chat_action_tests {
         // clearing device held, it does not narrow the clear.
         let range = SyncActionMessageRange::default();
         assert_eq!(clear_chat_bound(&clear(Some(range))), None);
+    }
+}
+
+#[cfg(test)]
+mod embedded_link_preview_tests {
+    use super::embedded_link_preview;
+    use whatsapp_rust::prelude::wa;
+    use whatsapp_rust::prelude::{MessageBuilderExt, MessageField};
+
+    fn extended_text(
+        text: &str,
+        matched: Option<&str>,
+        title: Option<&str>,
+        description: Option<&str>,
+    ) -> wa::Message {
+        let mut extended = wa::message::ExtendedTextMessage::default();
+        extended.text = Some(text.to_owned());
+        extended.matched_text = matched.map(ToOwned::to_owned);
+        extended.title = title.map(ToOwned::to_owned);
+        extended.description = description.map(ToOwned::to_owned);
+        let mut msg = wa::Message::default();
+        msg.extended_text_message = MessageField::some(extended);
+        msg
+    }
+
+    #[test]
+    fn an_attached_preview_is_carried_through() {
+        let msg = extended_text(
+            "look at this https://example.com/page",
+            Some("https://example.com/page"),
+            Some("Example Page"),
+            Some("A page about examples"),
+        );
+        let preview = embedded_link_preview(&msg).expect("the wire carried a preview");
+        assert_eq!(preview.title, "Example Page");
+        assert_eq!(preview.description, "A page about examples");
+        assert_eq!(preview.url, "https://example.com/page");
+    }
+
+    #[test]
+    fn a_title_alone_still_counts_as_a_preview() {
+        let msg = extended_text(
+            "https://example.com",
+            Some("https://example.com"),
+            Some("Example"),
+            None,
+        );
+        let preview = embedded_link_preview(&msg).expect("title-only preview");
+        assert_eq!(preview.title, "Example");
+        assert_eq!(preview.description, "");
+    }
+
+    #[test]
+    fn extended_text_without_preview_fields_yields_none() {
+        // A plain reply or link text: the extended text carries
+        // no sender-generated preview, and the receiver must not
+        // manufacture one by fetching.
+        let msg = extended_text("just a reply with https://example.com inside", None, None, None);
+        assert!(embedded_link_preview(&msg).is_none());
+    }
+
+    #[test]
+    fn plain_conversation_text_yields_none() {
+        let msg = wa::Message::text("hello https://example.com");
+        assert!(embedded_link_preview(&msg).is_none());
     }
 }

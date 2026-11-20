@@ -1,6 +1,6 @@
 //! Safety checks for fetching remote content, shared by every
 //! feature that downloads bytes from a URL it did not itself
-//! construct (link previews, GIF media, and similar).
+//! construct (GIF media, and similar).
 //!
 //! The check is deliberately conservative: the URL must be https,
 //! and the host, whether a literal IP or every DNS answer for the

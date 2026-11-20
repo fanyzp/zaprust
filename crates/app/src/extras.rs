@@ -381,66 +381,8 @@ impl App {
         write_json_file(&backend::data_dir().join("settings.json"), &v.to_string());
     }
 
-    /// Starts a link-preview fetch for a live message (worker
-    /// thread, 5s timeout, result cached by URL).
-    pub(crate) fn maybe_fetch_preview(&mut self, msg_id: u64, url: String) {
-        if let Some(cached) = self.og_cache.get(&url).cloned() {
-            self.apply_preview(msg_id, cached);
-            return;
-        }
-        if self.og_rx.is_some() {
-            return; // one fetch at a time; later messages retry next frame
-        }
-        let (tx, rx) = std::sync::mpsc::channel();
-        let fetch_url = url.clone();
-        std::thread::Builder::new()
-            .name("zaprust-og-fetch".to_owned())
-            .spawn(move || {
-                let data = fetch_open_graph(&fetch_url);
-                let _ = tx.send((msg_id, fetch_url, data));
-            })
-            .ok();
-        self.og_rx = Some(rx);
-    }
-
-    fn apply_preview(&mut self, msg_id: u64, data: Option<core::rich::OgData>) {
-        let Some(data) = data else {
-            return;
-        };
-        let preview = core::model::LinkPreview {
-            title: data.title,
-            description: data.description,
-            url: String::new(),
-            // Live fetches carry no image; the text card renders alone.
-            image: core::model::PreviewImage::None,
-        };
-        // Apply to the live session copy and the visible conversation.
-        if let Some(session) = &mut self.live {
-            for msgs in session.messages.values_mut() {
-                for (_, m) in msgs.iter_mut() {
-                    if m.id == msg_id {
-                        let mut p = preview.clone();
-                        if p.url.is_empty() {
-                            p.url = core::rich::first_url(&m.body).unwrap_or_default();
-                        }
-                        m.link_preview = Some(p);
-                    }
-                }
-            }
-        }
-        for m in &mut self.conversation {
-            if m.id == msg_id && m.link_preview.is_none() {
-                let mut p = preview.clone();
-                if p.url.is_empty() {
-                    p.url = core::rich::first_url(&m.body).unwrap_or_default();
-                }
-                m.link_preview = Some(p);
-            }
-        }
-    }
-
-    /// Polls all worker channels (GIPHY, previews, staged
-    /// sends). Called every frame from the shell.
+    /// Polls all worker channels (GIPHY, staged sends).
+    /// Called every frame from the shell.
     pub(crate) fn poll_workers(&mut self, ctx: &egui::Context) {
         // Chat export: the worker wrote the file (or failed);
         // the outcome is reported via the notice banner, the
@@ -457,19 +399,6 @@ impl App {
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     self.export_rx = None;
-                }
-                Err(std::sync::mpsc::TryRecvError::Empty) => {}
-            }
-        }
-        if let Some(rx) = &self.og_rx {
-            match rx.try_recv() {
-                Ok((msg_id, url, data)) => {
-                    self.og_cache.insert(url, data.clone());
-                    self.apply_preview(msg_id, data);
-                    self.og_rx = None;
-                }
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    self.og_rx = None;
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
             }
@@ -986,48 +915,10 @@ impl StickerFailureCache {
     }
 }
 
-/// Cap on cached link previews. Past it the oldest entries are
-/// evicted; without a bound the cache grew for the whole session
-/// (SEC-F06).
-const MAX_OG_CACHE_ENTRIES: usize = 256;
-
-/// Bounded link-preview cache by URL. Insertion order is kept in
-/// a plain Vec and the oldest entry is evicted first once the
-/// cache grows past [`MAX_OG_CACHE_ENTRIES`]; at this size a
-/// linear lookup is cheap and no extra dependency is needed.
-/// A cached `None` means the URL was fetched and had no preview;
-/// it still counts as cached so it is not fetched again.
-#[derive(Default)]
-pub(crate) struct OgCache {
-    entries: Vec<(String, Option<core::rich::OgData>)>,
-}
-
-impl OgCache {
-    pub(crate) fn get(&self, url: &str) -> Option<&Option<core::rich::OgData>> {
-        self.entries.iter().find(|(key, _)| key == url).map(|(_, data)| data)
-    }
-
-    pub(crate) fn insert(&mut self, url: String, data: Option<core::rich::OgData>) {
-        if let Some(slot) = self.entries.iter_mut().find(|(key, _)| *key == url) {
-            slot.1 = data;
-            return;
-        }
-        self.entries.push((url, data));
-        while self.entries.len() > MAX_OG_CACHE_ENTRIES {
-            self.entries.remove(0);
-        }
-    }
-
-    pub(crate) fn clear(&mut self) {
-        self.entries.clear();
-    }
-}
-
 /// Caps for the GPU texture caches, in entries. Photo textures
 /// are full-size images, so the media cache stays small; avatars
 /// and stickers are tiny tiles and previews are downscaled, so
-/// they get more room. At these sizes a linear lookup is cheap
-/// (the same reasoning as [`OgCache`]).
+/// they get more room. At these sizes a linear lookup is cheap.
 pub(crate) const MAX_MEDIA_TEXTURES: usize = 128;
 pub(crate) const MAX_AVATAR_TEXTURES: usize = 256;
 pub(crate) const MAX_GIPHY_TEXTURES: usize = 128;
@@ -1035,9 +926,9 @@ pub(crate) const MAX_STICKER_TEXTURES: usize = 256;
 
 /// A bounded GPU texture cache: insertion order is kept in a
 /// plain Vec and the oldest entry is evicted first once the
-/// cache grows past its cap, exactly like [`OgCache`]. Without
-/// a bound these caches kept every texture decoded in the
-/// session alive until exit (audit finding 10).
+/// cache grows past its cap. Without a bound these caches kept
+/// every texture decoded in the session alive until exit
+/// (audit finding 10).
 pub(crate) struct TextureCache<K> {
     entries: Vec<(K, egui::TextureHandle)>,
     cap: usize,
@@ -1081,91 +972,9 @@ impl<K: PartialEq> TextureCache<K> {
     }
 }
 
-/// Builds the link-preview client for one fetch hop: the hop's
-/// URL is validated and resolved once through `core::net`, and
-/// the client is pinned to exactly those addresses, so the name
-/// is never resolved a second time at connect and a rebinding
-/// answer cannot slip a private address past the check (SEC-F05).
-/// IP-literal hosts need no pin; there is no name to rebind.
-/// Returns `None` when the URL fails validation.
-fn pinned_preview_client(url: &str) -> Option<reqwest::blocking::Client> {
-    let target = core::net::validated_target(url)?;
-    let host = reqwest::Url::parse(url).ok()?.host_str()?.to_owned();
-    let mut builder = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(5))
-        .redirect(reqwest::redirect::Policy::none());
-    if host.parse::<std::net::IpAddr>().is_err() {
-        builder = builder.resolve_to_addrs(&host, &target.addrs);
-    }
-    builder.build().ok()
-}
-
-/// Fetches a page and parses its OpenGraph metadata (blocking,
-/// 5-second timeout). Never called in demo mode. Hardened per
-/// security audit SEC-01/SEC-13: https only, public hosts only,
-/// redirects followed manually so every hop is re-validated and
-/// pinned to its validated addresses (SEC-F05), and the body read
-/// is capped instead of buffered whole.
-fn fetch_open_graph(url: &str) -> Option<core::rich::OgData> {
-    use std::io::Read;
-    let mut current = url.to_owned();
-    for _ in 0..=3 {
-        let client = pinned_preview_client(&current)?;
-        let mut resp = client.get(&current).send().ok()?;
-        if resp.status().is_redirection() {
-            let location = resp.headers().get("location")?.to_str().ok()?.to_owned();
-            let next = reqwest::Url::parse(&current).ok()?.join(&location).ok()?;
-            current = next.to_string();
-            continue;
-        }
-        if !resp.status().is_success() {
-            return None;
-        }
-        let mut buf = Vec::new();
-        resp.by_ref().take(512 * 1024).read_to_end(&mut buf).ok()?;
-        let html = String::from_utf8_lossy(&buf);
-        return core::rich::parse_open_graph(&html);
-    }
-    None
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn pinned_client_builds_for_a_public_literal() {
-        // SEC-F05: client construction itself needs no network;
-        // a public literal passes validation and builds.
-        assert!(pinned_preview_client("https://8.8.8.8/page").is_some());
-    }
-
-    #[test]
-    fn og_cache_evicts_the_oldest_entries_past_the_cap() {
-        // SEC-F06 regression: the cache must stay bounded, with
-        // the earliest inserts evicted first.
-        let mut cache = OgCache::default();
-        for i in 0..MAX_OG_CACHE_ENTRIES + 2 {
-            cache.insert(format!("https://example.com/{i}"), None);
-        }
-        assert!(cache.get("https://example.com/0").is_none());
-        assert!(cache.get("https://example.com/1").is_none());
-        assert!(cache.get("https://example.com/2").is_some());
-        let last = format!("https://example.com/{}", MAX_OG_CACHE_ENTRIES + 1);
-        assert!(cache.get(&last).is_some());
-    }
-
-    #[test]
-    fn og_cache_reinsert_replaces_in_place() {
-        let mut cache = OgCache::default();
-        cache.insert("https://example.com/a".to_owned(), None);
-        let data = core::rich::OgData { title: "Title".to_owned(), description: "Desc".to_owned() };
-        cache.insert("https://example.com/a".to_owned(), Some(data));
-        let cached = cache.get("https://example.com/a").expect("entry stays cached");
-        assert_eq!(cached.as_ref().map(|d| d.title.as_str()), Some("Title"));
-        cache.clear();
-        assert!(cache.get("https://example.com/a").is_none());
-    }
 
     fn test_texture(ctx: &egui::Context, name: &str) -> egui::TextureHandle {
         ctx.load_texture(
@@ -1202,19 +1011,6 @@ mod tests {
         cache.clear();
         assert!(cache.get("key").is_none());
         assert!(!cache.contains_key("key"));
-    }
-
-    #[test]
-    fn pinned_client_rejects_non_public_targets() {
-        for bad in [
-            "http://8.8.8.8/page",
-            "https://127.0.0.1/admin",
-            "https://192.168.1.1/page",
-            "https://example.com@10.0.0.5/page",
-            "not a url",
-        ] {
-            assert!(pinned_preview_client(bad).is_none(), "{bad} must be rejected");
-        }
     }
 
     #[test]

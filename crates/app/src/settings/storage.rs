@@ -101,7 +101,7 @@ impl App {
             if self.cache_cleared {
                 ui.label(
                     RichText::new(
-                        "In-memory caches cleared, images, link previews and \
+                        "In-memory caches cleared, images and \
                          thumbnails will be refetched on demand.",
                     )
                     .size(12.0)
@@ -129,7 +129,6 @@ impl App {
     /// sticker textures, and the per-message media and avatar
     /// textures were never cleared at all (audit finding 10).
     pub(crate) fn clear_in_memory_caches(&mut self) {
-        self.og_cache.clear();
         self.media.textures.clear();
         self.media.avatar_textures.clear();
         self.picker.giphy_textures.clear();

@@ -168,7 +168,6 @@ dependencies = [
  "opus",
  "opusic-sys",
  "quick-replies",
- "reqwest",
  "rfd",
  "serde_json",
  "stickers",

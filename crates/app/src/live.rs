@@ -944,16 +944,10 @@ impl crate::state::App {
             }
             BackendEvent::ChatUpsert(chat) => self.apply_chat_upsert(&chat),
             BackendEvent::MessageUpsert(msg) => {
-                let chat_id = jid_id(&msg.chat_jid);
-                let msg_key = message_id(&msg.chat_jid, &msg.id);
-                // Side effects (preview fetches) run only for
-                // genuinely new messages, not
-                // for every re-upsert of a known one (logic review
-                // F8). The upsert itself reports which case this is.
-                let new_incoming = self.apply_message_upsert(&msg);
-                if new_incoming {
-                    self.on_incoming_live_message(chat_id, msg_key, &msg);
-                }
+                // Applying an upsert never triggers a network
+                // fetch: a link preview renders only when the
+                // sender's client attached one to the message.
+                self.apply_message_upsert(&msg);
             }
             BackendEvent::MessageSent { chat_jid, message_id } => {
                 self.apply_message_sent(&chat_jid, &message_id);
@@ -2023,22 +2017,6 @@ impl crate::state::App {
         }
     }
 
-    /// Per-message work for one incoming live message: the
-    /// link-preview fetch.
-    pub(crate) fn on_incoming_live_message(
-        &mut self,
-        _chat_id: u64,
-        msg_id: u64,
-        live: &LiveMessage,
-    ) {
-        // Link preview fetch (live mode only, setting-gated).
-        if self.link_previews && !self.live.as_ref().is_some_and(|s| s.fake) {
-            if let Some(url) = core::rich::first_url(&live.body) {
-                self.maybe_fetch_preview(msg_id, url);
-            }
-        }
-    }
-
     /// Sends a composing/paused chat-state for the selected live
     /// chat, only when the typing-indicators toggle is ON and the
     /// state actually changed (no per-keystroke spam). Tracked per
@@ -2321,7 +2299,6 @@ mod burst_drain_tests {
             engaged_chats: std::collections::HashSet::new(),
         });
         app.live_mode = true;
-        app.link_previews = false;
         (app, evt_tx, ctx, cmd_rx)
     }
 
@@ -2348,6 +2325,59 @@ mod burst_drain_tests {
 
     fn stored_messages(app: &App) -> &Vec<(i64, Message)> {
         app.live.as_ref().unwrap().messages.get(&jid_id(CHAT_JID)).expect("the chat has messages")
+    }
+
+    /// Privacy finding B1: a received message containing a URL
+    /// must never make the client fetch a preview from the
+    /// sender-chosen host (that leaks the recipient's address and
+    /// online timing). Applying the upsert leaves the message
+    /// without a preview; previews exist only when the sender's
+    /// client attached one.
+    #[test]
+    fn received_url_message_gets_no_fetched_preview() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        tx.send(BackendEvent::MessageUpsert(LiveMessage::text(
+            "url-1",
+            CHAT_JID,
+            Some("Sender".to_owned()),
+            "look at https://example.com/page".to_owned(),
+            BASE_TS,
+            false,
+        )))
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        let (_, msg) =
+            stored_messages(&app).iter().find(|(_, m)| m.body.contains("example.com")).unwrap();
+        assert!(msg.link_preview.is_none(), "a received link must not be fetched");
+    }
+
+    /// The other half of B1: a preview the sender's client
+    /// attached to the message is carried through to the mirror
+    /// untouched, so it can render with no network call.
+    #[test]
+    fn sender_attached_preview_reaches_the_mirror() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        let mut live = LiveMessage::text(
+            "prev-1",
+            CHAT_JID,
+            Some("Sender".to_owned()),
+            "look at https://example.com/page".to_owned(),
+            BASE_TS,
+            false,
+        );
+        live.link_preview = Some(backend::LivePreview {
+            title: "Example Page".to_owned(),
+            description: "A page about examples".to_owned(),
+            url: "https://example.com/page".to_owned(),
+        });
+        tx.send(BackendEvent::MessageUpsert(live)).unwrap();
+        drain_all(&mut app, &ctx);
+        let (_, msg) =
+            stored_messages(&app).iter().find(|(_, m)| m.body.contains("example.com")).unwrap();
+        let preview = msg.link_preview.as_ref().expect("the attached preview survives");
+        assert_eq!(preview.title, "Example Page");
+        assert_eq!(preview.description, "A page about examples");
+        assert_eq!(preview.url, "https://example.com/page");
     }
 
     /// The audit's freeze scenario, shrunk: a 600-message history
@@ -2549,7 +2579,6 @@ mod chat_state_routing_tests {
             engaged_chats: std::collections::HashSet::new(),
         });
         app.live_mode = true;
-        app.link_previews = false;
         (app, evt_tx, ctx, cmd_rx)
     }
 
@@ -2784,7 +2813,6 @@ mod chat_state_routing_tests {
         app.media.avatar_textures.insert("Sender".to_owned(), handle.clone());
         app.picker.giphy_textures.insert("https://example.com/g".to_owned(), handle.clone());
         app.picker.sticker_textures.insert(std::path::PathBuf::from("sticker.png"), handle);
-        app.og_cache.insert("https://example.com".to_owned(), None);
 
         app.clear_in_memory_caches();
 
@@ -2796,7 +2824,6 @@ mod chat_state_routing_tests {
             .sticker_textures
             .get(&std::path::PathBuf::from("sticker.png"))
             .is_none());
-        assert!(app.og_cache.get("https://example.com").is_none());
         assert!(app.cache_cleared);
     }
 
@@ -3473,7 +3500,6 @@ mod mirror_pruning_tests {
             engaged_chats: std::collections::HashSet::new(),
         });
         app.live_mode = true;
-        app.link_previews = false;
         (app, evt_tx, ctx, cmd_rx)
     }
 

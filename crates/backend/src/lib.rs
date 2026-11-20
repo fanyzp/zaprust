@@ -747,7 +747,8 @@ pub struct LiveMessage {
     pub quoted_sender: Option<String>,
     /// Quoted message excerpt.
     pub quoted_body: Option<String>,
-    /// Link preview attached by the (fake) backend, when scripted.
+    /// Link preview the sender's client attached to the message,
+    /// when the wire carried one. Never fetched by this client.
     pub link_preview: Option<LivePreview>,
     /// Whether the message was edited.
     pub edited: bool,

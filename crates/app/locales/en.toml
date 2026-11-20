@@ -147,8 +147,6 @@
 
 # ---- settings: chats ----
 "chats_page.subtitle" = "Sending, downloads and history behavior."
-"chats_page.link_previews" = "Link previews"
-"chats_page.link_previews_caption" = "Fetch OpenGraph previews for links in live chats (needs network; never fetched in demo mode)"
 "chats_page.enter_sends" = "Enter sends"
 "chats_page.enter_sends_caption" = "Off: Ctrl+Enter sends instead"
 "chats_page.composer_hint" = "Composer shortcuts hint"

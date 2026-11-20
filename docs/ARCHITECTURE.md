@@ -105,8 +105,10 @@ when the poll was created or received this session, because
 the creation secret travels with the creation message; older
 polls answer with an honest error),
 reactions, quotes, edits/revokes (local state; live send paths
-limited by the library), link previews (OpenGraph fetch in
-live mode only, disable-able), location/contact cards, and
+limited by the library), link previews (rendered only from
+the preview the sender's client attached; never fetched, so
+a planted link cannot leak the recipient's address or
+timing), location/contact cards, and
 carousel **rendering** (receive-only; the pinned library has
 no public send construction) are mapped in the backend and
 rendered natively. The support table in

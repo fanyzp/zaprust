@@ -691,6 +691,14 @@ impl App {
                     }
                 }
             }
+            // The expired messages have left the mirror; their
+            // per-message helper entries go with them, so the
+            // helper maps stay scoped to the messages the mirror
+            // holds instead of growing by one entry per message
+            // ever seen.
+            for (chat_id, mid, pid) in &work {
+                self.forget_live_message(*chat_id, *mid, pid.as_deref());
+            }
             // A chat whose newest message expired shows the new
             // newest message as its preview.
             for (chat_id, _, _) in &work {

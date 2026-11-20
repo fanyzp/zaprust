@@ -1013,7 +1013,7 @@ impl crate::state::App {
                     }
                 }
                 {
-                    let actors = self.reaction_actors.entry(key).or_default();
+                    let actors = self.reaction_actors.entry(key.clone()).or_default();
                     if emoji.is_empty() {
                         actors.remove(&actor);
                     } else {
@@ -1028,6 +1028,14 @@ impl crate::state::App {
                                 m.reactions = counts.clone();
                             }
                         }
+                    }
+                    if counts.is_empty() {
+                        // The last actor removed their reaction:
+                        // the entry itself goes too, so the map
+                        // holds only messages with live reactions
+                        // instead of an empty set per message ever
+                        // reacted to.
+                        self.reaction_actors.remove(&key);
                     }
                 }
                 if self.selected_chat == chat_id {
@@ -1360,7 +1368,13 @@ impl crate::state::App {
                 flags |= store::FLAG_PINNED_MESSAGE;
             }
             if flags != session.flags.get(&msg_id).copied().unwrap_or(0) {
-                session.flags.insert(msg_id, flags);
+                if flags == 0 {
+                    // Same rule as `set_live_flag`: the flag map
+                    // holds only messages that carry flags.
+                    session.flags.remove(&msg_id);
+                } else {
+                    session.flags.insert(msg_id, flags);
+                }
             }
             if session.store.is_some() {
                 if self.event_batch.active {
@@ -1546,18 +1560,63 @@ impl crate::state::App {
         }
     }
 
+    /// Drops every per-message helper entry kept for one live
+    /// message: its protocol ID, sender JID, receipt log,
+    /// reaction state, archive flags, and any pending read
+    /// receipt. Called when a message leaves the session mirror
+    /// (today: a disappearing message whose timer ran out), so
+    /// the helper maps stay scoped to the messages the mirror
+    /// actually holds instead of gaining an entry for every
+    /// message ever seen. Nothing here is consulted for a
+    /// message that is no longer rendered, so lookups for the
+    /// messages that remain are unaffected.
+    pub(crate) fn forget_live_message(
+        &mut self,
+        chat_id: u64,
+        msg_id: u64,
+        protocol_id: Option<&str>,
+    ) {
+        self.protocol_ids.remove(&msg_id);
+        self.sender_jids.remove(&msg_id);
+        self.receipt_log.remove(&msg_id);
+        self.my_reactions.remove(&msg_id);
+        self.reaction_actors.remove(&format!("{chat_id}:{msg_id}"));
+        if let Some(pid) = protocol_id {
+            let mut drained = false;
+            if let Some(pending) = self.unread_live.get_mut(&chat_id) {
+                pending.retain(|p| p != pid);
+                drained = pending.is_empty();
+            }
+            if drained {
+                self.unread_live.remove(&chat_id);
+            }
+        }
+        if let Some(session) = &mut self.live {
+            session.flags.remove(&msg_id);
+        }
+    }
+
     /// Sets (or clears with `flags = 0`) archive flags for one
     /// message and persists them when a store row exists.
     pub(crate) fn set_live_flag(&mut self, chat_id: u64, msg_id: u64, bit: i64, on: bool) {
         let protocol_id = self.protocol_ids.get(&msg_id).cloned();
         if let Some(session) = &mut self.live {
-            let entry = session.flags.entry(msg_id).or_insert(0);
-            if on {
-                *entry |= bit;
-            } else {
-                *entry &= !bit;
+            let flags = {
+                let entry = session.flags.entry(msg_id).or_insert(0);
+                if on {
+                    *entry |= bit;
+                } else {
+                    *entry &= !bit;
+                }
+                *entry
+            };
+            if flags == 0 {
+                // Absence and zero mean the same to every reader
+                // (all read with `unwrap_or(0)`); keep the map
+                // scoped to messages that actually carry flags.
+                // The store write below still persists the zero.
+                session.flags.remove(&msg_id);
             }
-            let flags = *entry;
             // Persist through a targeted flags-only UPDATE. The old
             // path rebuilt the whole row from the UI model, which
             // zeroed the timestamp and erased quote, preview and
@@ -2400,5 +2459,228 @@ mod chat_state_routing_tests {
         assert!(chat_pinned(&app), "an informed upsert pins the mirror");
         assert!(archived_archived(&app), "and the archive row follows");
         assert!(archived_pinned(&app));
+    }
+}
+
+#[cfg(test)]
+mod mirror_pruning_tests {
+    use super::*;
+    use crate::state::{App, Args};
+
+    const CHAT_JID: &str = "6281234567890@s.whatsapp.net";
+
+    /// The same live-mode harness as the burst tests: an app
+    /// whose backend channels the test feeds and reads by hand,
+    /// with an in-memory archive attached.
+    fn live_app() -> (
+        App,
+        std::sync::mpsc::Sender<BackendEvent>,
+        egui::Context,
+        std::sync::mpsc::Receiver<BackendCommand>,
+    ) {
+        let ctx = egui::Context::default();
+        crate::theme::install_fonts(&ctx);
+        let mut app = App::new(Args::parse(), &ctx);
+        let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<BackendCommand>();
+        let (evt_tx, evt_rx) = std::sync::mpsc::channel::<BackendEvent>();
+        app.live = Some(LiveSession {
+            channels: BackendChannels { commands: cmd_tx, events: evt_rx },
+            status: LinkStatus::Linked,
+            qr: None,
+            pair_code: None,
+            pair_code_at: None,
+            account: "Test account".to_owned(),
+            connected_at: None,
+            store: Some(store::Store::open_in_memory().unwrap()),
+            jids: HashMap::new(),
+            messages: HashMap::new(),
+            times: HashMap::new(),
+            fake: true,
+            flags: HashMap::new(),
+            engaged_chats: std::collections::HashSet::new(),
+        });
+        app.live_mode = true;
+        app.link_previews = false;
+        (app, evt_tx, ctx, cmd_rx)
+    }
+
+    fn drain_all(app: &mut App, ctx: &egui::Context) {
+        for _ in 0..64 {
+            app.poll_backend(ctx);
+            if app.event_queue.is_empty() {
+                return;
+            }
+        }
+        panic!("the event queue did not drain");
+    }
+
+    /// The one path that removes messages from the live mirror
+    /// (a disappearing message expiring) must take the message's
+    /// helper entries with it, and only that message's: every
+    /// per-message map is seeded for an expiring and a surviving
+    /// message, and after the pass the survivor's entries must
+    /// still resolve while the expired one's are all gone.
+    #[test]
+    fn expiry_prunes_helper_entries_of_the_expired_message_only() {
+        let (mut app, _tx, _ctx, _cmd_rx) = live_app();
+        let chat_id = jid_id(CHAT_JID);
+        let old_mid = message_id(CHAT_JID, "old-pid");
+        let new_mid = message_id(CHAT_JID, "new-pid");
+        let old = Message { expires_at: 100, ..Message::mine(old_mid, "about to vanish", "09:00") };
+        let new = Message { expires_at: 0, ..Message::mine(new_mid, "stays", "09:01") };
+        {
+            let session = app.live.as_mut().unwrap();
+            session.jids.insert(chat_id, CHAT_JID.to_owned());
+            session.messages.insert(chat_id, vec![(1_000, old), (1_060, new)]);
+            session.flags.insert(old_mid, store::FLAG_STARRED);
+            session.flags.insert(new_mid, store::FLAG_STARRED);
+        }
+        for mid in [old_mid, new_mid] {
+            let pid = if mid == old_mid { "old-pid" } else { "new-pid" };
+            app.protocol_ids.insert(mid, pid.to_owned());
+            app.sender_jids.insert(mid, "6281234567890@s.whatsapp.net".to_owned());
+            app.receipt_log.insert(mid, vec![(ReceiptKind::Read, "09:05".to_owned())]);
+            app.my_reactions.insert(mid, "thumbs-up".to_owned());
+            app.reaction_actors.insert(
+                format!("{chat_id}:{mid}"),
+                HashMap::from([("Alice".to_owned(), "thumbs-up".to_owned())]),
+            );
+        }
+        app.unread_live.insert(chat_id, vec!["old-pid".to_owned()]);
+
+        app.expire_disappearing_messages(200);
+
+        let session = app.live.as_ref().unwrap();
+        let mirror = session.messages.get(&chat_id).unwrap();
+        assert_eq!(mirror.len(), 1, "only the expired message leaves the mirror");
+        assert_eq!(mirror[0].1.id, new_mid);
+        assert!(!session.flags.contains_key(&old_mid), "expired flags are pruned");
+        assert!(session.flags.contains_key(&new_mid), "surviving flags stay");
+        for (map, mid) in
+            [("protocol", old_mid), ("sender", old_mid), ("receipt", old_mid), ("mine", old_mid)]
+        {
+            let present = match map {
+                "protocol" => app.protocol_ids.contains_key(&mid),
+                "sender" => app.sender_jids.contains_key(&mid),
+                "receipt" => app.receipt_log.contains_key(&mid),
+                _ => app.my_reactions.contains_key(&mid),
+            };
+            assert!(!present, "the expired message's {map} entry is pruned");
+        }
+        assert!(
+            !app.reaction_actors.contains_key(&format!("{chat_id}:{old_mid}")),
+            "the expired message's reaction entry is pruned"
+        );
+        assert!(
+            !app.unread_live.contains_key(&chat_id),
+            "the expired message's pending read receipt is pruned with it"
+        );
+
+        // Lookups for the retained message still resolve, through
+        // the same paths the UI uses: the protocol map itself,
+        // the flag path that reads it to persist, and the quote
+        // resolution for a reply aimed at the survivor.
+        assert_eq!(app.protocol_ids.get(&new_mid).map(String::as_str), Some("new-pid"));
+        assert_eq!(
+            app.sender_jids.get(&new_mid).map(String::as_str),
+            Some("6281234567890@s.whatsapp.net")
+        );
+        assert!(app.receipt_log.contains_key(&new_mid));
+        assert!(app.my_reactions.contains_key(&new_mid));
+        assert!(app.reaction_actors.contains_key(&format!("{chat_id}:{new_mid}")));
+        app.set_live_flag(chat_id, new_mid, store::FLAG_PINNED_MESSAGE, true);
+        assert_eq!(
+            app.live.as_ref().unwrap().flags.get(&new_mid).copied().unwrap_or(0),
+            store::FLAG_STARRED | store::FLAG_PINNED_MESSAGE,
+            "the flag path still finds the survivor's protocol id"
+        );
+        app.selected_chat = chat_id;
+        app.sync_conversation();
+        app.composer.reply_to = Some((new_mid, "Sender".to_owned(), "stays".to_owned()));
+        let quote = app.live_quote_for_reply().expect("a reply to the survivor still resolves");
+        assert_eq!(quote.message_id, "new-pid");
+        app.composer.reply_to = Some((old_mid, "Sender".to_owned(), "gone".to_owned()));
+        assert!(
+            app.live_quote_for_reply().is_none(),
+            "a reply to the expired message resolves to nothing, as before"
+        );
+    }
+
+    /// When the last actor removes their reaction, the
+    /// per-message actor entry itself is dropped, so the map
+    /// holds only messages with live reactions.
+    #[test]
+    fn removing_the_last_reaction_drops_the_actor_entry() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        let chat_id = jid_id(CHAT_JID);
+        let mid = message_id(CHAT_JID, "r1");
+        tx.send(BackendEvent::MessageUpsert(LiveMessage::text(
+            "r1",
+            CHAT_JID,
+            Some("Alice".to_owned()),
+            "react to me",
+            1_700_000_000,
+            false,
+        )))
+        .unwrap();
+        tx.send(BackendEvent::ReactionUpdate {
+            chat_jid: CHAT_JID.to_owned(),
+            message_id: "r1".to_owned(),
+            actor: "Alice".to_owned(),
+            emoji: "thumbs-up".to_owned(),
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        let key = format!("{chat_id}:{mid}");
+        assert!(app.reaction_actors.contains_key(&key), "the reaction registers its entry");
+        let mirror = app.live.as_ref().unwrap().messages.get(&chat_id).unwrap();
+        assert_eq!(mirror[0].1.reactions, vec![("thumbs-up".to_owned(), 1)]);
+
+        tx.send(BackendEvent::ReactionUpdate {
+            chat_jid: CHAT_JID.to_owned(),
+            message_id: "r1".to_owned(),
+            actor: "Alice".to_owned(),
+            emoji: String::new(),
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(!app.reaction_actors.contains_key(&key), "the emptied entry is dropped");
+        let mirror = app.live.as_ref().unwrap().messages.get(&chat_id).unwrap();
+        assert!(mirror[0].1.reactions.is_empty(), "the mirror count still clears");
+    }
+
+    /// Toggling a flag off removes the in-memory entry (absence
+    /// and zero are the same to every reader) while the zero
+    /// itself is still persisted to the archive row.
+    #[test]
+    fn clearing_the_last_flag_removes_the_entry_but_persists_zero() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        let chat_id = jid_id(CHAT_JID);
+        let mid = message_id(CHAT_JID, "f1");
+        tx.send(BackendEvent::MessageUpsert(LiveMessage::text(
+            "f1",
+            CHAT_JID,
+            Some("Sender".to_owned()),
+            "star me",
+            1_700_000_000,
+            false,
+        )))
+        .unwrap();
+        drain_all(&mut app, &ctx);
+
+        app.set_live_flag(chat_id, mid, store::FLAG_STARRED, true);
+        assert_eq!(
+            app.live.as_ref().unwrap().flags.get(&mid).copied().unwrap_or(0),
+            store::FLAG_STARRED
+        );
+        app.set_live_flag(chat_id, mid, store::FLAG_STARRED, false);
+        assert!(
+            !app.live.as_ref().unwrap().flags.contains_key(&mid),
+            "a zeroed flag entry leaves the map"
+        );
+        let archived =
+            app.live.as_ref().unwrap().store.as_ref().unwrap().messages(CHAT_JID).unwrap();
+        let row = archived.iter().find(|(m, _)| m.id == "f1").expect("the row is archived");
+        assert_eq!(row.1, 0, "the archive row still records the cleared flag");
     }
 }

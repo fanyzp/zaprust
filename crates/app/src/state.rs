@@ -675,10 +675,15 @@ pub(crate) struct App {
     /// Privacy values reported by the account (live mode), spelling
     /// per `backend::BackendCommand::SetPrivacy`.
     pub(crate) privacy_state: std::collections::BTreeMap<String, String>,
-    /// App message ID → protocol message ID (live mode).
+    /// App message ID → protocol message ID (live mode). Holds
+    /// an entry per message in the session mirror (plus, briefly,
+    /// a send whose binding landed before its upsert); when a
+    /// message leaves the mirror its entry is dropped with it
+    /// (see `App::forget_live_message`), so the map tracks the
+    /// mirror instead of the whole session history.
     pub(crate) protocol_ids: std::collections::HashMap<u64, String>,
     /// App message ID → author JID (live mode): the participant a
-    /// reply quotes.
+    /// reply quotes. Same lifecycle as `protocol_ids`.
     pub(crate) sender_jids: std::collections::HashMap<u64, String>,
     /// Chat ID → protocol IDs of unread incoming messages (live).
     pub(crate) unread_live: std::collections::HashMap<u64, Vec<String>>,

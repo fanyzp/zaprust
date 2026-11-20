@@ -349,7 +349,7 @@ impl App {
 
     /// The house confirmation modal for destructive actions
     /// parked in `ui_confirm` (removing a group member, leaving
-    /// a group): a centered glass card over the unified dim,
+    /// a group, replacing a privacy exception list): a centered glass card over the unified dim,
     /// naming its target, the safe action first and the
     /// destructive action last. Escape or a click on the dim
     /// cancels; only the confirm button performs the action, so
@@ -384,6 +384,11 @@ impl App {
                 crate::i18n::t("profile.leave_group"),
                 crate::i18n::tf("profile.leave_group_body", "name", name),
                 crate::i18n::t("profile.leave_group"),
+            ),
+            UiConfirm::ReplaceExceptionList { label, .. } => (
+                crate::i18n::t("privacy.exceptions_title"),
+                crate::i18n::tf("privacy.exceptions_body", "name", label),
+                crate::i18n::t("privacy.exceptions_confirm"),
             ),
         };
         let mut decision: Option<bool> = None;
@@ -476,6 +481,9 @@ impl App {
                     self.profile_form_for = None;
                     self.groups.members_requested.remove(&chat_id);
                 }
+                Some(UiConfirm::ReplaceExceptionList { category, .. }) => {
+                    self.cycle_privacy(&category);
+                }
                 None => {}
             },
             Some(false) => {
@@ -513,6 +521,14 @@ impl App {
         let Some(msg) = self.conversation.iter().find(|m| m.id == msg_id).cloned() else {
             return;
         };
+        // View-once media is never relayed, in either mode: the
+        // sender marked it to be viewed once, in place. (The menu
+        // also hides Forward for these; this is the backstop for
+        // every other entry point, and the backend refuses too.)
+        if msg.is_view_once() {
+            self.notice = Some("View-once media cannot be forwarded.".to_owned());
+            return;
+        }
         if self.live.is_some() {
             let (Some(from_jid), Some(to_jid), Some(pid)) = (
                 self.live_jid(source_chat),
@@ -553,7 +569,7 @@ impl App {
             self.conversation.push(copy);
         } else if let Some(chat) = self.chats.iter_mut().find(|c| c.id == target_chat) {
             chat.messages.push(copy);
-            chat.preview = msg.body.clone();
+            chat.preview = msg.preview_text();
         }
         self.notice = Some("Message forwarded.".to_owned());
     }
@@ -672,7 +688,13 @@ impl App {
 
     /// Asks the backend to download a media message's bytes
     /// (session-scoped; the reply arrives as a MediaSaved event).
+    /// View-once media is refused here, before any command is
+    /// sent: it is viewed inside the app only, never saved.
     pub(crate) fn download_media(&mut self, msg_id: u64) {
+        if self.conversation.iter().find(|m| m.id == msg_id).is_some_and(|m| m.is_view_once()) {
+            self.notice = Some("View-once media cannot be saved.".to_owned());
+            return;
+        }
         if let (Some(jid), Some(pid)) =
             (self.live_jid(self.selected_chat), self.protocol_ids.get(&msg_id).cloned())
         {

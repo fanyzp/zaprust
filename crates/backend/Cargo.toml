@@ -14,7 +14,10 @@ workspace = true
 [features]
 default = ["whatsapp"]
 # The real protocol implementation, backed by the whatsapp-rust library.
-whatsapp = ["dep:whatsapp-rust", "dep:diesel"]
+# tokio and tracing are used only by the whatsapp module (and, for
+# tokio, the calls-gated audio helper), so they ride along here
+# instead of taxing the fake-only build.
+whatsapp = ["dep:whatsapp-rust", "dep:diesel", "dep:tokio", "dep:tracing"]
 # Voice/video calls. The feature set is assembled by hand instead of
 # using the library's umbrella `voip` feature: the umbrella pulls
 # voip-libopus (a C library binding), while WhatsApp calls natively
@@ -23,13 +26,19 @@ whatsapp = ["dep:whatsapp-rust", "dep:diesel"]
 calls = ["whatsapp", "whatsapp-rust/voip-mlow", "whatsapp-rust/voip-relay-native", "dep:cpal"]
 
 [dependencies]
+# Core for one shared piece of pure logic: the crash display
+# scrubber, applied to the supervisor's Crashed summary before it
+# is emitted (the summary is rendered verbatim by the app, and
+# panic payloads are free text). Nothing else crosses from core;
+# the backend's event and command types stay its own.
+core = { path = "../core" }
 qrcode = "0.14"
 directories = "6"
 # Microphone/speaker I/O for calls (the `calls` feature). The same
 # major version the pinned library's voip example builds against.
 cpal = { version = "0.18", optional = true }
-tokio = { version = "1", features = ["rt-multi-thread", "time", "sync"] }
-tracing = "0.1"
+tokio = { version = "1", features = ["rt-multi-thread", "time", "sync"], optional = true }
+tracing = { version = "0.1", optional = true }
 
 # Pinned to a git revision, deliberately not the crates.io release:
 # crates.io 0.7.0 enables a `simd` feature in wacore-binary that needs a

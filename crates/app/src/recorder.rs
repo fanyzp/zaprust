@@ -127,6 +127,22 @@ impl Recorder {
         Ok(Self { capture, stop, thread: Some(thread), started: Instant::now() })
     }
 
+    /// A recorder with no device or capture thread behind it,
+    /// holding `samples` as if already captured. Exists so app
+    /// state tests can stand in for a recording in progress
+    /// without a microphone; `finish` encodes the held samples
+    /// exactly like a real take.
+    #[cfg(test)]
+    pub(crate) fn for_test(samples: &[i16]) -> Self {
+        let capture = Capture { samples: samples.to_vec(), ..Capture::default() };
+        Self {
+            capture: Arc::new(Mutex::new(capture)),
+            stop: Arc::new(AtomicBool::new(false)),
+            thread: None,
+            started: Instant::now(),
+        }
+    }
+
     /// Seconds since the recording started.
     pub(crate) fn elapsed_secs(&self) -> u64 {
         self.started.elapsed().as_secs().min(MAX_SECS)

@@ -25,11 +25,11 @@ use super::send::{
     outgoing_location_message, outgoing_text_message, send_media, stamp_ephemeral, OutgoingMedia,
 };
 use super::translate::{
-    privacy_map, translate_event, translate_message, translate_special, user_part,
+    participant_name, privacy_map, translate_event, translate_message, translate_special,
 };
 use super::util::{
     abort_latest, build_message_target, cap_poll_secrets, download_proto, lock_cache,
-    parse_address, received_poll_secret, sanitize_id, spawn_latest, unix_now, LatestTask,
+    parse_address, proto_is_view_once, received_poll_secret, spawn_latest, unix_now, LatestTask,
     PollSecrets, ProtoCache,
 };
 
@@ -60,6 +60,41 @@ const SEND_MEDIA_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(6
 /// hostage, so past the budget the session ends anyway and the
 /// runtime drop aborts the bot.
 const SHUTDOWN_FLUSH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// (jid, display name) rows for a membership-request list. The
+/// protocol carries no name for a requester, so the display name
+/// is empty: the app resolves a label from its own data or masks
+/// the identifier. The raw phone number or LID must never be
+/// substituted as the name (privacy finding D5).
+fn request_rows(list: &[whatsapp_rust::MembershipRequest]) -> Vec<(String, String)> {
+    list.iter().map(|r| (r.jid.to_string(), String::new())).collect()
+}
+
+/// What the user should be told about a logout's deregistration
+/// outcome, if anything. The library always performs its local
+/// teardown, so the local session ends either way; the question
+/// is only whether the server confirmed the deregistration. An
+/// attempt the server did not confirm, and one that could not be
+/// made because the socket was down, both leave this device
+/// listed as linked on the phone, and reporting neither would
+/// let the user believe the logout fully landed. A logout that
+/// was never attempted because there is no phone-number identity
+/// has nothing registered to remove, so it stays silent.
+fn logout_problem(outcome: &whatsapp_rust::DeregistrationOutcome) -> Option<String> {
+    use whatsapp_rust::{DeregistrationOutcome, DeregistrationSkipReason};
+    match outcome {
+        DeregistrationOutcome::Failed { source } => Some(format!(
+            "Logging out did not reach the server: {source}. \
+             This device may still appear linked on your phone."
+        )),
+        DeregistrationOutcome::NotAttempted(DeregistrationSkipReason::Offline) => Some(
+            "Logging out could not reach the server while offline. \
+             This device may still appear linked on your phone."
+                .to_owned(),
+        ),
+        _ => None,
+    }
+}
 
 /// How awaiting one command handler ended.
 enum HandlerEnd<O> {
@@ -110,6 +145,7 @@ pub(super) async fn run_async(
     config: &BackendConfig,
     commands: Receiver<BackendCommand>,
     events: EventSink,
+    logged_out: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<(), String> {
     // Startup failures return Err instead of emitting an Error event
     // and returning quietly: a quiet return looks like a clean exit
@@ -137,6 +173,16 @@ pub(super) async fn run_async(
     // of SQLite, so the pragma actually encrypts; the plaintext
     // database of an older build is converted by the app before
     // this runs (see `store::encrypt_file_in_place`).
+    // The same hook switches on secure_delete (privacy audit
+    // A2), so protocol state the library deletes (consumed
+    // prekeys, replaced sessions) is zeroed as its pages are
+    // freed instead of lingering in the file. That is as far as
+    // this repo's control reaches: the library owns the pooled
+    // connections' lifecycle, so no VACUUM or checkpoint can be
+    // driven from here. The proportionate measure is the pragma:
+    // this store holds device keys and protocol state only,
+    // never message bodies (those live in the archive, whose
+    // store does reclaim; see the store crate).
     let key_hex = {
         use std::fmt::Write;
         let mut hex = String::with_capacity(64);
@@ -151,6 +197,7 @@ pub(super) async fn run_async(
             .with_connection_init(move |conn| {
                 use diesel::RunQueryDsl;
                 diesel::sql_query(format!("PRAGMA key = \"x'{key_hex}'\"")).execute(conn)?;
+                diesel::sql_query("PRAGMA secure_delete = ON").execute(conn)?;
                 diesel::sql_query("SELECT count(*) FROM sqlite_master").execute(conn)?;
                 Ok(())
             });
@@ -188,6 +235,11 @@ pub(super) async fn run_async(
     // land after a newer one and overwrite it with stale state.
     let privacy_fetch: LatestTask = std::sync::Arc::new(std::sync::Mutex::new(None));
     let privacy_fetch_conn = privacy_fetch.clone();
+    // The blocklist fetch spawned by `on_connected`, same slot
+    // discipline as the privacy fetch: only the newest fetch may
+    // land, so a reconnect never adopts a stale blocklist.
+    let blocklist_fetch: LatestTask = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let blocklist_fetch_conn = blocklist_fetch.clone();
 
     let sink = events.clone();
     let sink_pair = events.clone();
@@ -195,6 +247,11 @@ pub(super) async fn run_async(
     let sink_out = events.clone();
     let sink_msg = events.clone();
     let sink_all = events.clone();
+    // The logout flag the caller wipes the account directory on:
+    // set by the library's logged-out callback (this device was
+    // unlinked, here or from the phone) and by the Disconnect
+    // handler below, whose own logout is what ends the run.
+    let logged_out_flag = logged_out.clone();
 
     let bot = match Bot::builder()
         .with_backend(store)
@@ -220,6 +277,7 @@ pub(super) async fn run_async(
         .on_connected(move |client| {
             let sink = sink_conn.clone();
             let fetch_slot = privacy_fetch_conn.clone();
+            let blocklist_slot = blocklist_fetch_conn.clone();
             async move {
                 sink.emit(BackendEvent::Connected { account: "WhatsApp account".to_owned() });
                 // The privacy fetch is a network round trip and this
@@ -230,16 +288,31 @@ pub(super) async fn run_async(
                 // It runs as its own task instead and emits
                 // PrivacyState when it lands; a failed fetch stays
                 // silent, exactly as before.
+                let sink_privacy = sink.clone();
+                let client_privacy = client.clone();
                 spawn_latest(&fetch_slot, async move {
-                    if let Ok(resp) = client.fetch_privacy_settings().await {
-                        sink.emit(BackendEvent::PrivacyState(privacy_map(&resp)));
+                    if let Ok(resp) = client_privacy.fetch_privacy_settings().await {
+                        sink_privacy.emit(BackendEvent::PrivacyState(privacy_map(&resp)));
+                    }
+                });
+                // The blocklist fetch rides the same pattern: the
+                // app seeds its blocked set from the server's list,
+                // so blocks made on the phone (or before a restart)
+                // show correctly. A failed fetch stays silent and
+                // the app keeps its persisted copy.
+                spawn_latest(&blocklist_slot, async move {
+                    if let Ok(entries) = client.blocking().get_blocklist().await {
+                        let jids = entries.iter().map(|e| e.jid.to_string()).collect::<Vec<_>>();
+                        sink.emit(BackendEvent::Blocklist(jids));
                     }
                 });
             }
         })
         .on_logged_out(move |_info| {
             let sink = sink_out.clone();
+            let logged_out = logged_out_flag.clone();
             async move {
+                logged_out.store(true, std::sync::atomic::Ordering::SeqCst);
                 sink.emit(BackendEvent::LoggedOut);
             }
         })
@@ -287,14 +360,23 @@ pub(super) async fn run_async(
                 }
             }
         })
-        .on_event(move |event: Arc<Event>, _client| {
+        .on_event(move |event: Arc<Event>, client| {
             let sink = sink_all.clone();
             #[cfg(feature = "calls")]
             let incoming_slot = call_incoming_events.clone();
             async move {
                 #[cfg(feature = "calls")]
                 handle_call_event(&event, &incoming_slot, &sink);
-                translate_event(&event, &sink);
+                // The account's own JIDs (non-AD spellings, the
+                // form notifications carry): translate_event uses
+                // them to tell the account-wide disappearing
+                // default apart from a per-chat timer change.
+                let own_jids: Vec<String> = [client.pn(), client.lid()]
+                    .into_iter()
+                    .flatten()
+                    .map(|jid| jid.to_non_ad().to_string())
+                    .collect();
+                translate_event(&event, &sink, &own_jids);
             }
         })
         .build()
@@ -820,6 +902,14 @@ pub(super) async fn run_async(
                         .get(&(from_chat_jid.clone(), message_id.clone()))
                         .cloned();
                     match (proto, to_chat_jid.parse::<Jid>()) {
+                        (Some(proto), Ok(_)) if proto_is_view_once(&proto) => {
+                            // The app gates this too; the backend
+                            // refuses as well so no caller can relay
+                            // media the sender marked view-once.
+                            events.emit(BackendEvent::Error {
+                                message: "View-once media cannot be forwarded.".to_owned(),
+                            });
+                        }
                         (Some(proto), Ok(to)) => {
                             if let Err(e) = client.forward_message(to, &proto).await {
                                 events.emit(BackendEvent::Error {
@@ -1079,9 +1169,7 @@ pub(super) async fn run_async(
                             let members = meta
                                 .participants
                                 .iter()
-                                .map(|p| {
-                                    (p.jid.to_string(), user_part(&p.jid.to_string()), p.is_admin())
-                                })
+                                .map(|p| (p.jid.to_string(), participant_name(p), p.is_admin()))
                                 .collect();
                             events.emit(BackendEvent::GroupMembers {
                                 chat_jid: chat_jid.clone(),
@@ -1147,14 +1235,7 @@ pub(super) async fn run_async(
                 BackendCommand::FetchJoinRequests { chat_jid } => match chat_jid.parse::<Jid>() {
                     Ok(jid) => match client.groups().get_membership_requests(jid).await {
                         Ok(list) => {
-                            let requests = list
-                                .iter()
-                                .map(|r| {
-                                    let jid = r.jid.to_string();
-                                    let name = user_part(&jid);
-                                    (jid, name)
-                                })
-                                .collect();
+                            let requests = request_rows(&list);
                             events.emit(BackendEvent::JoinRequests {
                                 chat_jid: chat_jid.clone(),
                                 requests,
@@ -1187,14 +1268,7 @@ pub(super) async fn run_async(
                             match result {
                                 Ok(()) => match groups.get_membership_requests(jid).await {
                                     Ok(list) => {
-                                        let requests = list
-                                            .iter()
-                                            .map(|r| {
-                                                let j = r.jid.to_string();
-                                                let name = user_part(&j);
-                                                (j, name)
-                                            })
-                                            .collect();
+                                        let requests = request_rows(&list);
                                         events.emit(BackendEvent::JoinRequests {
                                             chat_jid: chat_jid.clone(),
                                             requests,
@@ -1334,8 +1408,10 @@ pub(super) async fn run_async(
                             let client = client.clone();
                             let events = events.clone();
                             let dir = config.data_dir.join("downloads");
-                            let stem =
-                                format!("{}-{}", user_part(&chat_jid), sanitize_id(&message_id));
+                            // The stem is the naming contract the
+                            // app's deletion paths match downloads
+                            // by (see `downloaded_media_stem`).
+                            let stem = crate::downloaded_media_stem(&chat_jid, &message_id);
                             tokio::spawn(async move {
                                 match download_proto(&client, &proto, &dir, &stem).await {
                                     Ok(path) => events.emit(BackendEvent::MediaSaved {
@@ -1358,6 +1434,7 @@ pub(super) async fn run_async(
                 }
                 BackendCommand::SetPrivacy { category, value } => {
                     use whatsapp_rust::privacy_settings::{PrivacyCategory, PrivacyValue};
+                    let (category_name, value_name) = (category.clone(), value.clone());
                     let category = match category.as_str() {
                         "last" => Some(PrivacyCategory::Last),
                         "online" => Some(PrivacyCategory::Online),
@@ -1365,6 +1442,9 @@ pub(super) async fn run_async(
                         "status" => Some(PrivacyCategory::Status),
                         "groupadd" => Some(PrivacyCategory::GroupAdd),
                         "readreceipts" => Some(PrivacyCategory::ReadReceipts),
+                        "calladd" => Some(PrivacyCategory::CallAdd),
+                        "messages" => Some(PrivacyCategory::Messages),
+                        "defense" => Some(PrivacyCategory::DefenseMode),
                         _ => None,
                     };
                     let value = match value.as_str() {
@@ -1374,26 +1454,81 @@ pub(super) async fn run_async(
                         "contact_blacklist" => Some(PrivacyValue::ContactBlacklist),
                         "match_last_seen" => Some(PrivacyValue::MatchLastSeen),
                         "known" => Some(PrivacyValue::Known),
+                        "off" => Some(PrivacyValue::Off),
+                        "on_standard" => Some(PrivacyValue::OnStandard),
                         _ => None,
                     };
-                    match (category, value) {
-                        (Some(c), Some(v)) => match client.set_privacy_setting(c, v).await {
-                            Ok(_) => {
-                                if let Ok(resp) = client.fetch_privacy_settings().await {
-                                    events.emit(BackendEvent::PrivacyState(privacy_map(&resp)));
+                    // The pair is validated here, at the boundary,
+                    // before anything is sent. The library only
+                    // debug-asserts that a value fits its category,
+                    // so an invalid pair (e.g. `contacts` for
+                    // `online`, which accepts only `all` and
+                    // `match_last_seen`) would otherwise go out and
+                    // fail at the server. And `contact_blacklist`,
+                    // though a valid value for its categories,
+                    // names a per-contact exception list this
+                    // command cannot carry: sending it bare would
+                    // discard the list the phone configured.
+                    let refusal = match (&category, &value) {
+                        (Some(_), Some(PrivacyValue::ContactBlacklist)) => Some(
+                            "Privacy change failed: an exception list cannot be set without its contacts."
+                                .to_owned(),
+                        ),
+                        (Some(c), Some(v)) if !c.is_valid_value(v) => Some(format!(
+                            "Privacy change failed: {category_name} does not accept {value_name}."
+                        )),
+                        _ => None,
+                    };
+                    match refusal {
+                        Some(message) => events.emit(BackendEvent::Error { message }),
+                        None => match (category, value) {
+                            (Some(c), Some(v)) => match client.set_privacy_setting(c, v).await {
+                                Ok(_) => {
+                                    if let Ok(resp) = client.fetch_privacy_settings().await {
+                                        events.emit(BackendEvent::PrivacyState(privacy_map(&resp)));
+                                    }
                                 }
-                            }
-                            Err(e) => events.emit(BackendEvent::Error {
-                                message: format!("Privacy change failed: {e}"),
+                                Err(e) => {
+                                    events.emit(BackendEvent::Error {
+                                        message: format!("Privacy change failed: {e}"),
+                                    });
+                                    // Re-assert the account's actual
+                                    // settings after the failure: the
+                                    // app applies privacy changes
+                                    // optimistically, and this fetch is
+                                    // what reconciles its state with
+                                    // the value the server kept.
+                                    if let Ok(resp) = client.fetch_privacy_settings().await {
+                                        events.emit(BackendEvent::PrivacyState(privacy_map(&resp)));
+                                    }
+                                }
+                            },
+                            _ => events.emit(BackendEvent::Error {
+                                message: "Unknown privacy category or value.".to_owned(),
                             }),
                         },
-                        _ => events.emit(BackendEvent::Error {
-                            message: "Unknown privacy category or value.".to_owned(),
-                        }),
                     }
                 }
                 BackendCommand::Disconnect => {
-                    let _ = client.logout().await;
+                    // The local teardown always happens inside
+                    // logout; what can silently fail is the
+                    // deregistration reaching the server. Surface
+                    // that, or the user believes they logged out
+                    // while the phone still lists this device as
+                    // linked. The loop's own ending is unchanged:
+                    // termination still arrives via the run loop's
+                    // outcome, as it does for a clean logout.
+                    let report = client.logout().await;
+                    // This device is unlinked from this side,
+                    // whatever the server answered (an offline
+                    // logout is reported below, but the user's
+                    // intent and the local teardown stand): the
+                    // caller wipes the account directory once the
+                    // session has fully ended (privacy audit A8).
+                    logged_out.store(true, std::sync::atomic::Ordering::SeqCst);
+                    if let Some(problem) = logout_problem(&report.deregistration) {
+                        events.emit(BackendEvent::Error { message: problem });
+                    }
                 }
                 // Shutdown never reaches the handler: the
                 // dispatch loop intercepts it while obtaining the
@@ -1422,6 +1557,9 @@ pub(super) async fn run_async(
     // (The runtime drop at the end of `Backend::run` would abort it
     // anyway; doing it here keeps the guarantee local.)
     abort_latest(&privacy_fetch);
+    // Same for a blocklist fetch: it must not land after the
+    // session it was fetched for has ended.
+    abort_latest(&blocklist_fetch);
 
     match run_outcome {
         Some(outcome) => {
@@ -1466,6 +1604,36 @@ pub(super) async fn run_async(
     Ok(())
 }
 
+/// Removes a logged-out account's session directory.
+///
+/// A logout unlinks the device, but unlinking is protocol-level:
+/// without this, the encrypted session store (the device
+/// identity keys and protocol state) would sit in
+/// `accounts/<id>/` forever, an identity a later local attacker
+/// or a copied directory could still pick up (privacy audit
+/// A8). The chat archive is a separate, deliberate local store
+/// at the data-dir root and is NOT removed: logging out ends
+/// the link, it does not erase the user's saved chats, which
+/// stay readable (and deletable) as a local archive.
+///
+/// The caller runs this only after the session has fully ended
+/// (the runtime is down, the store's connections are closed),
+/// so nothing can recreate the directory behind the removal.
+/// Best-effort: a missing directory is success, and any other
+/// failure is logged and left for a future logout to retry.
+pub(super) fn remove_account_dir_after_logout(account_dir: &std::path::Path) {
+    match std::fs::remove_dir_all(account_dir) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => {
+            tracing::warn!(
+                "removing the logged-out account folder {} failed: {e}",
+                account_dir.display()
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1478,6 +1646,50 @@ mod tests {
             .build()
             .expect("test runtime builds")
             .block_on(future);
+    }
+
+    /// The post-logout wipe (privacy audit A8): the account's
+    /// session directory, device identity included, is removed,
+    /// and the chat archive at the data-dir root, a separate
+    /// local store the logout does not own, is untouched.
+    #[test]
+    fn logout_wipe_removes_the_session_dir_and_keeps_the_archive() {
+        let root =
+            std::env::temp_dir().join(format!("zaprust-logout-wipe-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let account = root.join("accounts").join("default");
+        std::fs::create_dir_all(&account).expect("account dir");
+        std::fs::write(account.join("session.db"), b"device identity").expect("session store");
+        std::fs::write(root.join("archive.db"), b"chat archive").expect("archive");
+        remove_account_dir_after_logout(&account);
+        assert!(!account.exists(), "the session directory is gone after logout");
+        assert_eq!(
+            std::fs::read(root.join("archive.db")).expect("archive survives"),
+            b"chat archive",
+            "the archive is a separate store and stays"
+        );
+        // A second wipe over a missing directory is not an error.
+        remove_account_dir_after_logout(&account);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A server-confirmed logout is the clean case: nothing to
+    /// tell the user.
+    #[test]
+    fn confirmed_logout_reports_no_problem() {
+        use whatsapp_rust::DeregistrationOutcome;
+        assert!(logout_problem(&DeregistrationOutcome::Confirmed).is_none());
+    }
+
+    /// A logout that never reached the server (the socket was
+    /// down) must be reported: the phone still lists this device
+    /// as linked, and silence would read as a completed logout.
+    #[test]
+    fn offline_logout_reports_a_problem() {
+        use whatsapp_rust::{DeregistrationOutcome, DeregistrationSkipReason};
+        let outcome = DeregistrationOutcome::NotAttempted(DeregistrationSkipReason::Offline);
+        let problem = logout_problem(&outcome).expect("offline logout is reported");
+        assert!(problem.contains("still appear linked"), "honest wording: {problem}");
     }
 
     /// A handler that announces it started, then sleeps far past

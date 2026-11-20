@@ -10,7 +10,9 @@
 
 use std::collections::VecDeque;
 use std::io::Write as _;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 
@@ -144,6 +146,134 @@ pub fn redact(text: &str) -> String {
         }
     }
     mask_phones(&masked)
+}
+
+/// Longest byte run buffered while waiting for a line's newline
+/// before the scrubbed buffer is flushed as one chunk. Real log
+/// lines are far shorter; this only bounds memory against a
+/// writer that never terminates a line.
+const MAX_PENDING_LINE: usize = 1 << 20;
+
+/// Placeholder written in place of a line whose redaction failed.
+/// The raw line is never written as a fallback.
+const REDACTION_FAILED_LINE: &str = "<log line dropped: redaction failed>";
+
+/// Scrubs one log line (without its newline) through the
+/// crash-report pipeline. The scrubber is audited panic-free; the
+/// `catch_unwind` is a last resort so a future scrubber
+/// regression degrades to a dropped line instead of raw secrets
+/// on disk or a dead logger.
+fn scrub_log_line(text: &str, home: Option<&Path>) -> String {
+    let scrubbed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match home {
+        Some(home) => crate::crash::scrub(text, home),
+        None => crate::crash::scrub_secrets(text),
+    }));
+    scrubbed.unwrap_or_else(|_| REDACTION_FAILED_LINE.to_owned())
+}
+
+/// Writer adapter that scrubs every line with the crash-report
+/// redaction pipeline ([`crate::crash::scrub_secrets`], plus the
+/// home-prefix redaction when built with
+/// [`ScrubWriter::with_home`]) before the line reaches the inner
+/// writer. This is the sink used for the `--debug` log file, so
+/// backend and library lines get the same treatment as crash
+/// reports instead of persisting raw.
+///
+/// Bytes are buffered until a newline arrives, so a partial line
+/// is never written unscrubbed and a scrubbed line is never
+/// split; `flush` flushes the inner writer but deliberately
+/// leaves a trailing partial line buffered. Clones share one
+/// buffer, so the adapter can sit behind a make-writer closure
+/// that hands out a writer per event.
+pub struct ScrubWriter<W> {
+    state: Arc<Mutex<ScrubState<W>>>,
+}
+
+struct ScrubState<W> {
+    inner: W,
+    pending: Vec<u8>,
+    home: Option<PathBuf>,
+}
+
+impl<W> Clone for ScrubWriter<W> {
+    fn clone(&self) -> Self {
+        Self { state: Arc::clone(&self.state) }
+    }
+}
+
+impl<W> std::fmt::Debug for ScrubWriter<W> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Never print the pending buffer: it is unscrubbed text.
+        let pending = self.state.try_lock().map(|s| s.pending.len());
+        f.debug_struct("ScrubWriter").field("pending_bytes", &pending).finish_non_exhaustive()
+    }
+}
+
+impl<W: std::io::Write> ScrubWriter<W> {
+    /// Wraps `inner`; every completed line is scrubbed with the
+    /// crash-report secret scrubber before it is written.
+    #[must_use]
+    pub fn new(inner: W) -> Self {
+        Self { state: Arc::new(Mutex::new(ScrubState { inner, pending: Vec::new(), home: None })) }
+    }
+
+    /// Wraps `inner`; lines additionally get the crash reports'
+    /// home-prefix redaction (`home` shows up as `~`, never
+    /// verbatim).
+    #[must_use]
+    pub fn with_home(inner: W, home: PathBuf) -> Self {
+        Self {
+            state: Arc::new(Mutex::new(ScrubState {
+                inner,
+                pending: Vec::new(),
+                home: Some(home),
+            })),
+        }
+    }
+}
+
+impl<W: std::io::Write> ScrubState<W> {
+    /// Writes every complete line in `pending`, scrubbed, to the
+    /// inner writer. A trailing partial line stays buffered.
+    fn drain_scrubbed(&mut self) -> std::io::Result<()> {
+        while let Some(end) = self.pending.iter().position(|&b| b == b'\n') {
+            let line: Vec<u8> = self.pending.drain(..=end).collect();
+            let text = String::from_utf8_lossy(&line[..line.len() - 1]);
+            let scrubbed = scrub_log_line(&text, self.home.as_deref());
+            self.inner.write_all(scrubbed.as_bytes())?;
+            self.inner.write_all(b"\n")?;
+        }
+        if self.pending.len() >= MAX_PENDING_LINE {
+            // A line that never terminates: scrub and flush what
+            // is buffered rather than growing memory without
+            // bound. The next bytes simply start a new chunk.
+            let text = String::from_utf8_lossy(&self.pending).into_owned();
+            self.pending.clear();
+            let scrubbed = scrub_log_line(&text, self.home.as_deref());
+            self.inner.write_all(scrubbed.as_bytes())?;
+        }
+        Ok(())
+    }
+}
+
+impl<W: std::io::Write> std::io::Write for ScrubWriter<W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        // A poisoned lock means an earlier write panicked while
+        // holding it; recover the state instead of letting one
+        // failure silence logging for the rest of the process.
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.pending.extend_from_slice(buf);
+        state.drain_scrubbed()?;
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        // Only the inner writer is flushed: a trailing partial
+        // line stays buffered until its newline arrives, so it
+        // can never reach disk unscrubbed.
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.inner.flush()
+    }
 }
 
 /// One structured trace entry. `body` is the optional message
@@ -382,5 +512,100 @@ mod tests {
             assert!(!text.contains("ABCD2345"), "{name} leaked a pair code");
             assert!(!text.contains("15550134472"), "{name} leaked a phone");
         }
+    }
+
+    /// In-memory sink whose contents a test can inspect after
+    /// writing through a [`ScrubWriter`] clone.
+    #[derive(Clone, Default)]
+    struct SharedBuf(Arc<Mutex<Vec<u8>>>);
+
+    impl std::io::Write for SharedBuf {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl SharedBuf {
+        fn text(&self) -> String {
+            String::from_utf8_lossy(&self.0.lock().unwrap()).into_owned()
+        }
+    }
+
+    #[test]
+    fn scrub_writer_scrubs_secrets_phones_and_auth_headers() {
+        let sink = SharedBuf::default();
+        let mut w = ScrubWriter::new(sink.clone());
+        w.write_all(b"login from +1 555-013-4472 with sk-AbC123_xYz-987654\n").unwrap();
+        w.write_all(b"Authorization: Bearer abcDEF123456789 token=zzz999888\n").unwrap();
+        w.write_all(b"Authorization: Basic dXNlcjpwYXNzd29yZA==\n").unwrap();
+        w.write_all(b"{\"api_key\": \"hunter2secretvalue\"}\n").unwrap();
+        w.flush().unwrap();
+        let out = sink.text();
+        assert!(!out.contains("555-013"), "phone leaked: {out}");
+        assert!(out.contains("***72"), "mask keeps last 2 digits: {out}");
+        assert!(!out.contains("sk-AbC123"), "API key leaked: {out}");
+        assert!(!out.contains("abcDEF123456789"), "bearer token leaked: {out}");
+        assert!(!out.contains("zzz999888"), "labelled token leaked: {out}");
+        assert!(!out.contains("dXNlcjpwYXNzd29yZA"), "basic token leaked: {out}");
+        assert!(!out.contains("hunter2secretvalue"), "JSON secret leaked: {out}");
+    }
+
+    #[test]
+    fn scrub_writer_holds_a_partial_line_until_its_newline() {
+        let sink = SharedBuf::default();
+        let mut w = ScrubWriter::new(sink.clone());
+        w.write_all(b"secret sk-AbC123_xYz-987654 no newline yet").unwrap();
+        w.flush().unwrap();
+        assert_eq!(sink.text(), "", "a partial line must never be flushed raw");
+        w.write_all(b"\n").unwrap();
+        let out = sink.text();
+        assert!(!out.contains("sk-AbC123"), "completed line leaked: {out}");
+        assert!(out.ends_with('\n'), "{out}");
+    }
+
+    #[test]
+    fn scrub_writer_survives_split_and_invalid_input() {
+        let sink = SharedBuf::default();
+        let mut w = ScrubWriter::new(sink.clone());
+        // Chunks of 3 bytes split multi-byte characters and the
+        // secret itself; the adapter buffers raw bytes, so the
+        // assembled line is still scrubbed as a whole.
+        let line = "user İrem sk-AbC123_xYz-987654 ok\n";
+        for chunk in line.as_bytes().chunks(3) {
+            w.write_all(chunk).unwrap();
+        }
+        // Invalid UTF-8 must not panic either; the token is still
+        // masked after lossy decoding.
+        w.write_all(b"bad \xff\xfe bytes token=zzz999888\n").unwrap();
+        w.flush().unwrap();
+        let out = sink.text();
+        assert!(!out.contains("AbC123"), "split secret leaked: {out}");
+        assert!(!out.contains("zzz999888"), "invalid-UTF8 line leaked: {out}");
+    }
+
+    #[test]
+    fn scrub_writer_clones_share_one_line_buffer() {
+        let sink = SharedBuf::default();
+        let mut w1 = ScrubWriter::new(sink.clone());
+        let mut w2 = w1.clone();
+        w1.write_all(b"tok").unwrap();
+        w2.write_all(b"en=zzz999888\n").unwrap();
+        let out = sink.text();
+        assert!(!out.contains("zzz999888"), "line split across clones leaked: {out}");
+    }
+
+    #[test]
+    fn scrub_writer_redacts_the_home_prefix() {
+        let sink = SharedBuf::default();
+        let mut w = ScrubWriter::with_home(sink.clone(), PathBuf::from("/home/rifan"));
+        w.write_all(b"open /home/rifan/zaprust/archive.db failed\n").unwrap();
+        let out = sink.text();
+        assert!(!out.contains("/home/rifan"), "home path leaked: {out}");
+        assert!(out.contains("~/zaprust/archive.db"), "{out}");
     }
 }

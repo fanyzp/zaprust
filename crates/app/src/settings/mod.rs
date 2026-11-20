@@ -131,13 +131,6 @@ const SETTINGS_REGISTRY: &[SettingEntry] = &[
         keywords: "archive stays arsip",
     },
     SettingEntry {
-        id: "chats.link_previews",
-        tab: "Chats",
-        title_en: "Link previews",
-        title_id: "Link previews",
-        keywords: "opengraph url fetch pratinjau tautan",
-    },
-    SettingEntry {
         id: "chats.composer_hint",
         tab: "Chats",
         title_en: "Composer shortcuts hint",
@@ -276,6 +269,13 @@ const SETTINGS_REGISTRY: &[SettingEntry] = &[
         title_en: "Version check",
         title_id: "Version check",
         keywords: "check for updates pembaruan",
+    },
+    SettingEntry {
+        id: "about.auto_check",
+        tab: "About",
+        title_en: "Automatic checks",
+        title_id: "Automatic checks",
+        keywords: "automatic daily update check otomatis pembaruan harian",
     },
     SettingEntry {
         id: "about.created_by",
@@ -549,6 +549,13 @@ impl App {
                         // a vertical stack, so force it here.
                         ui.vertical(|ui| {
                             ui.set_max_width(680.0);
+                            // The storage page's measured sizes are
+                            // cached per visit (see storage.rs):
+                            // showing any other page ends the visit,
+                            // so the next open measures again.
+                            if self.settings_tab != "Data & Storage" {
+                                self.storage_sizes = None;
+                            }
                             match self.settings_tab {
                                 "Appearance" => self.page_appearance(ui, t),
                                 "Chats" => self.page_chats(ui, t),

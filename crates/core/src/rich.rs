@@ -130,7 +130,8 @@ pub fn parse_open_graph(html: &str) -> Option<OgData> {
 /// Byte offset of `needle` in `hay` at or after `from`, comparing ASCII
 /// case-insensitively. All needles used here are ASCII, so byte offsets
 /// stay valid in the original string (no length-changing lowercase pass).
-fn find_ci(hay: &str, needle: &str, from: usize) -> Option<usize> {
+/// Shared with the crash scrubbers, which need the same guarantee.
+pub(crate) fn find_ci(hay: &str, needle: &str, from: usize) -> Option<usize> {
     let hay_b = hay.as_bytes();
     let needle_b = needle.as_bytes();
     if needle_b.is_empty() || hay_b.len() < needle_b.len() || from > hay_b.len() - needle_b.len() {

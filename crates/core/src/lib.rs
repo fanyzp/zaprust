@@ -10,7 +10,7 @@
 //!   credential storage, self-update checks, crash reports, debug
 //!   bundles and rich-text parsing.
 //! - [`net`], the shared public-address validation every remote
-//!   fetch (link previews, GIF media) runs before connecting.
+//!   fetch (GIF media) runs before connecting.
 //!
 //! Everything here is unit-tested without a GUI. The application crate
 //! (the `app` crate) is a thin shell that draws what this crate describes.

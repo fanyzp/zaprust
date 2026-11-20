@@ -19,9 +19,17 @@ impl App {
         group_label(ui, t, "Updates");
         settings_card(ui, t, |ui| {
             let status: String = match &self.update.phase {
-                UpdatePhase::Idle => "Zaprust checks for updates once a day, and only ever \
-                     installs one when you say so."
-                    .to_owned(),
+                UpdatePhase::Idle => {
+                    if self.update.auto_check {
+                        "Zaprust checks for updates once a day, and only ever \
+                         installs one when you say so."
+                            .to_owned()
+                    } else {
+                        "Automatic checks are off, and Zaprust only ever \
+                         installs an update when you say so."
+                            .to_owned()
+                    }
+                }
                 UpdatePhase::Checking => "Checking for updates...".to_owned(),
                 UpdatePhase::UpToDate => "You are on the latest version.".to_owned(),
                 UpdatePhase::Available => match &self.update.release {
@@ -81,6 +89,22 @@ impl App {
                     }
                 },
             );
+            divider(ui, t);
+            let mut auto = self.update.auto_check;
+            row_hl(
+                ui,
+                &mut self.settings_highlight,
+                self.motion,
+                "about.auto_check",
+                t,
+                "Automatic checks",
+                "Once a day, ask GitHub whether a newer version exists",
+                |ui| switch(ui, &mut auto, t),
+            );
+            if auto != self.update.auto_check {
+                self.update.auto_check = auto;
+                self.persist_settings();
+            }
             if self.update.phase == UpdatePhase::Available {
                 divider(ui, t);
                 if install_kind == core::update::InstallKind::SystemPackage {

@@ -397,6 +397,98 @@ fn privacy_commands_are_logged_by_the_fake() {
 }
 
 #[test]
+fn fake_privacy_state_round_trips_through_set_privacy() {
+    let (ch, _log) = linked_backend();
+    // The linked script reports the baseline privacy state, as
+    // the real backend reports its connect-time fetch.
+    let events = collect_until(&ch.events, 5, |e| matches!(e, BackendEvent::PrivacyState(_)));
+    let baseline = events.iter().find_map(|e| match e {
+        BackendEvent::PrivacyState(map) => Some(map),
+        _ => None,
+    });
+    let baseline = baseline.expect("the linked script reports a privacy state");
+    assert_eq!(baseline.get("readreceipts").map(String::as_str), Some("all"));
+    assert_eq!(baseline.get("last").map(String::as_str), Some("contacts"));
+
+    // A change is adopted by the fake account and the full
+    // updated state is re-emitted, mirroring the real backend's
+    // refetch after a successful SetPrivacy: the category the
+    // command did not touch is still reported.
+    ch.commands
+        .send(BackendCommand::SetPrivacy {
+            category: "readreceipts".to_owned(),
+            value: "none".to_owned(),
+        })
+        .unwrap();
+    let events = collect_until(&ch.events, 5, |e| matches!(e, BackendEvent::PrivacyState(_)));
+    let updated = events.iter().find_map(|e| match e {
+        BackendEvent::PrivacyState(map) => Some(map),
+        _ => None,
+    });
+    let updated = updated.expect("SetPrivacy re-emits the privacy state");
+    assert_eq!(updated.get("readreceipts").map(String::as_str), Some("none"));
+    assert_eq!(
+        updated.get("last").map(String::as_str),
+        Some("contacts"),
+        "the re-emitted state is the full map, not just the changed entry"
+    );
+    ch.commands.send(BackendCommand::Shutdown).unwrap();
+}
+
+#[test]
+fn fake_baseline_includes_online_and_round_trips_it() {
+    let (ch, _log) = linked_backend();
+    // The baseline carries the Online audience with a value the
+    // category actually accepts (`all` or `match_last_seen`), so
+    // the Privacy page's Online row is populated in demo mode.
+    let events = collect_until(&ch.events, 5, |e| matches!(e, BackendEvent::PrivacyState(_)));
+    let baseline = events.iter().find_map(|e| match e {
+        BackendEvent::PrivacyState(map) => Some(map),
+        _ => None,
+    });
+    let baseline = baseline.expect("the linked script reports a privacy state");
+    assert_eq!(baseline.get("online").map(String::as_str), Some("match_last_seen"));
+
+    // Setting Online re-emits the full map with the new value,
+    // like the real backend's refetch after a change.
+    ch.commands
+        .send(BackendCommand::SetPrivacy { category: "online".to_owned(), value: "all".to_owned() })
+        .unwrap();
+    let events = collect_until(&ch.events, 5, |e| matches!(e, BackendEvent::PrivacyState(_)));
+    let updated = events.iter().find_map(|e| match e {
+        BackendEvent::PrivacyState(map) => Some(map),
+        _ => None,
+    });
+    let updated = updated.expect("SetPrivacy re-emits the privacy state");
+    assert_eq!(updated.get("online").map(String::as_str), Some("all"));
+    assert_eq!(
+        updated.get("last").map(String::as_str),
+        Some("contacts"),
+        "the re-emitted state is the full map, not just the changed entry"
+    );
+    ch.commands.send(BackendCommand::Shutdown).unwrap();
+}
+
+#[test]
+fn fake_baseline_carries_the_rowless_categories() {
+    let (ch, _log) = linked_backend();
+    // The categories the Privacy page has no row for are part
+    // of the account state the real backend reports (audit
+    // finding D6), so the fake's baseline carries them too,
+    // with values their categories accept.
+    let events = collect_until(&ch.events, 5, |e| matches!(e, BackendEvent::PrivacyState(_)));
+    let baseline = events.iter().find_map(|e| match e {
+        BackendEvent::PrivacyState(map) => Some(map),
+        _ => None,
+    });
+    let baseline = baseline.expect("the linked script reports a privacy state");
+    assert_eq!(baseline.get("calladd").map(String::as_str), Some("known"));
+    assert_eq!(baseline.get("messages").map(String::as_str), Some("contacts"));
+    assert_eq!(baseline.get("defense").map(String::as_str), Some("off"));
+    ch.commands.send(BackendCommand::Shutdown).unwrap();
+}
+
+#[test]
 fn scripted_group_delivers_location_carousel_and_contact_kinds() {
     let ch = spawn(FakeBackend::auto());
     ch.commands.send(BackendCommand::ConnectQr).unwrap();
@@ -659,6 +751,35 @@ fn forward_command_copies_the_message_into_the_target_chat() {
             .iter()
             .any(|e| matches!(e, BackendEvent::MessageUpsert(m) if m.forwarded && m.from_me)),
         "the forwarded copy lands in the group, marked forwarded and from me"
+    );
+}
+
+#[test]
+fn forward_command_refuses_view_once_media() {
+    let (ch, _log) = linked_backend();
+    let _ = collect_until(
+        &ch.events,
+        3,
+        |e| matches!(e, BackendEvent::MessageUpsert(m) if m.id == "fake-3"),
+    );
+    // fake-vo-1 is the scripted view-once video in the DM.
+    ch.commands
+        .send(BackendCommand::ForwardMessage {
+            from_chat_jid: "10000000001@s.whatsapp.net".to_owned(),
+            message_id: "fake-vo-1".to_owned(),
+            to_chat_jid: "10000000002@g.us".to_owned(),
+        })
+        .unwrap();
+    let events = collect_until(&ch.events, 5, |e| matches!(e, BackendEvent::Error { .. }));
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, BackendEvent::Error { message } if message.contains("View-once"))),
+        "forwarding view-once media must be refused with an error"
+    );
+    assert!(
+        !events.iter().any(|e| matches!(e, BackendEvent::MessageUpsert(m) if m.forwarded)),
+        "no forwarded copy of the view-once message may appear"
     );
 }
 
@@ -1237,5 +1358,39 @@ fn block_contact_is_logged_by_the_fake() {
     assert!(
         log.iter().any(|l| l == "block:10000000001@s.whatsapp.net:true"),
         "block is log-observable: {log:?}"
+    );
+}
+
+#[test]
+fn blocklist_is_emitted_at_connect_and_after_block_toggles() {
+    let (ch, _log) = linked_backend();
+    // The connect script reports the baseline list (empty),
+    // like the real backend's connect-time fetch.
+    let events = collect_until(&ch.events, 10, |e| matches!(e, BackendEvent::Blocklist(_)));
+    assert!(
+        events.iter().any(|e| matches!(e, BackendEvent::Blocklist(jids) if jids.is_empty())),
+        "baseline blocklist is emitted: {events:?}"
+    );
+    ch.commands
+        .send(BackendCommand::BlockContact {
+            chat_jid: "10000000001@s.whatsapp.net".to_owned(),
+            block: true,
+        })
+        .unwrap();
+    let events = collect_until(&ch.events, 10, |e| matches!(e, BackendEvent::Blocklist(_)));
+    assert!(
+        events.iter().any(|e| matches!(e, BackendEvent::Blocklist(jids) if *jids == vec!["10000000001@s.whatsapp.net".to_owned()])),
+        "block re-emits the list: {events:?}"
+    );
+    ch.commands
+        .send(BackendCommand::BlockContact {
+            chat_jid: "10000000001@s.whatsapp.net".to_owned(),
+            block: false,
+        })
+        .unwrap();
+    let events = collect_until(&ch.events, 10, |e| matches!(e, BackendEvent::Blocklist(_)));
+    assert!(
+        events.iter().any(|e| matches!(e, BackendEvent::Blocklist(jids) if jids.is_empty())),
+        "unblock re-emits the list: {events:?}"
     );
 }

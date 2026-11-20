@@ -37,7 +37,7 @@
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::PathBuf;
-use std::sync::mpsc::{Receiver, Sender};
+use std::sync::mpsc::{Receiver, Sender, SyncSender};
 use std::sync::Arc;
 
 #[cfg(feature = "calls")]
@@ -98,22 +98,166 @@ pub fn data_dir() -> PathBuf {
     dir
 }
 
-/// One-time adoption of the data directory from before the rename
-/// (the app shipped as Zaplite until 1.0.0). On the first run after
-/// the rename the Zaprust directory does not exist yet; if the
-/// legacy one does, its contents are copied over, never moved, so
-/// the old install keeps working and the session, archive, and
-/// settings carry across. Later runs see the Zaprust directory in
-/// place and do nothing.
+/// The platform data directory from before the rename (the app
+/// shipped as Zaplite until 1.0.0). The fallback mirrors
+/// [`data_dir`]'s: a `.zaplite` folder under the current directory
+/// when the platform reports no data dir.
+fn legacy_data_dir() -> PathBuf {
+    directories::ProjectDirs::from("", "", "Zaplite")
+        .map_or_else(|| PathBuf::from(".zaplite"), |d| d.data_dir().to_path_buf())
+}
+
+/// One-time adoption of the data directory from before the rename.
+/// On the first run after the rename the Zaprust directory does
+/// not exist yet; if the legacy one does, its contents are copied
+/// over, so the session, archive, and settings carry across. The
+/// copy is staged in a sibling directory and renamed into place,
+/// so an interrupted copy never leaves a half-populated directory
+/// that a later run would mistake for a completed adoption. The
+/// legacy directory itself stays in place for now: it is removed
+/// by [`remove_legacy_data_dir`] once the app has proven it runs
+/// from the new directory. Later runs see the Zaprust directory
+/// in place and do nothing.
 fn adopt_legacy_data_dir(new_dir: &std::path::Path) {
-    if new_dir.exists() {
+    adopt_legacy_dir(new_dir, &legacy_data_dir());
+}
+
+/// The adoption itself, split out from the platform path lookup
+/// so tests can drive it with temporary directories.
+fn adopt_legacy_dir(new_dir: &std::path::Path, legacy: &std::path::Path) {
+    if new_dir.exists() || !legacy.is_dir() {
         return;
     }
-    let legacy = directories::ProjectDirs::from("", "", "Zaplite")
-        .map_or_else(|| PathBuf::from(".zaplite"), |d| d.data_dir().to_path_buf());
-    if legacy.is_dir() {
-        let _ = copy_dir_contents(&legacy, new_dir);
+    // Stage the copy next to its destination and rename it into
+    // place: the rename is atomic on the destination filesystem,
+    // so the new directory either appears complete or not at all.
+    let Some(parent) = new_dir.parent() else {
+        return;
+    };
+    let Some(name) = new_dir.file_name().and_then(|n| n.to_str()) else {
+        return;
+    };
+    let staging = parent.join(format!(".{name}.adopting"));
+    let _ = std::fs::remove_dir_all(&staging);
+    if copy_dir_contents(legacy, &staging).is_err() {
+        let _ = std::fs::remove_dir_all(&staging);
+        return;
     }
+    if std::fs::rename(&staging, new_dir).is_err() && new_dir.exists() {
+        // Another starter won the race and adopted first; the
+        // staged copy is a duplicate and must not linger either.
+        let _ = std::fs::remove_dir_all(&staging);
+    }
+}
+
+/// Removes the legacy (pre-rename) data directory, once the app
+/// has proven it runs from the current one.
+///
+/// The adoption in [`data_dir`] copies the legacy directory and
+/// deliberately leaves the original in place, so a first run that
+/// goes wrong loses nothing. But the leftover is a complete second
+/// copy of the user's data, and any database in it predates the
+/// SQLCipher conversion (SEC-F01): never adopted copies stay in
+/// plaintext forever, outside the current directory's lifecycle,
+/// permission hardening, and pruning. Callers invoke this only
+/// after the current directory's archive has opened successfully,
+/// which is the proof that the app runs from the new location.
+/// The removal is best-effort and never fails startup; a later
+/// start retries whatever it could not do.
+///
+/// The rails, all checked against canonical paths: nothing happens
+/// when there is no legacy directory, when the current directory
+/// does not exist (adoption never completed), or when the two
+/// resolve to the same place or one inside the other, so the
+/// current directory is never deleted, in whole or in part.
+pub fn remove_legacy_data_dir() {
+    let _ = remove_legacy_dir(&data_dir(), &legacy_data_dir());
+}
+
+/// The cleanup itself, split out from the platform path lookup
+/// so tests can drive it with temporary directories. Returns
+/// whether the legacy directory was removed.
+fn remove_legacy_dir(current: &std::path::Path, legacy: &std::path::Path) -> bool {
+    if !legacy.is_dir() || !current.is_dir() {
+        return false;
+    }
+    let (Ok(current), Ok(legacy)) = (current.canonicalize(), legacy.canonicalize()) else {
+        return false;
+    };
+    if current.starts_with(&legacy) || legacy.starts_with(&current) {
+        return false;
+    }
+    std::fs::remove_dir_all(&legacy).is_ok()
+}
+
+/// The file stem every download of a message's media is saved
+/// under in the downloads folder: `<chat user part>-<message
+/// id>`, with the id kept filename-safe. This is the one place
+/// the naming rule lives: the download path in the WhatsApp
+/// backend builds the saved file's name from it, and the
+/// removal helpers below match files by it, so a rename here
+/// renames both sides of the contract.
+#[must_use]
+pub fn downloaded_media_stem(chat_jid: &str, message_id: &str) -> String {
+    let user = chat_jid.split('@').next().unwrap_or(chat_jid);
+    let safe: String = message_id
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .collect();
+    format!("{user}-{safe}")
+}
+
+/// Removes the downloaded media file of one message, if the
+/// user ever saved it.
+///
+/// A saved download is the decrypted media in plaintext, in a
+/// file of its own: deleting, clearing or expiring the message
+/// in the archive must take the file with it, or the deletion
+/// is only cosmetic (privacy audit A3). The file is identified
+/// by the naming rule in [`downloaded_media_stem`]; the
+/// extension is whatever the media carried, so any file whose
+/// name is the stem plus an extension goes. Best-effort:
+/// returns whether a file was removed, never errors.
+pub fn remove_download_for_message(
+    data_dir: &std::path::Path,
+    chat_jid: &str,
+    message_id: &str,
+) -> bool {
+    let stem = downloaded_media_stem(chat_jid, message_id);
+    remove_downloads_matching(&data_dir.join("downloads"), &format!("{stem}."), true) > 0
+}
+
+/// Removes every downloaded media file belonging to a chat,
+/// for when the whole chat is deleted (privacy audit A3). The
+/// chat prefix is the JID's user part plus the separator dash,
+/// so a different chat whose user part merely starts with the
+/// same digits is not matched. Best-effort: returns how many
+/// files were removed.
+pub fn remove_downloads_for_chat(data_dir: &std::path::Path, chat_jid: &str) -> usize {
+    let user = chat_jid.split('@').next().unwrap_or(chat_jid);
+    remove_downloads_matching(&data_dir.join("downloads"), &format!("{user}-"), false)
+}
+
+/// Removes files in `dir` whose names start with `prefix`.
+/// With `one`, stops after the first removal (a message has at
+/// most one saved file; its extension is the only unknown).
+fn remove_downloads_matching(dir: &std::path::Path, prefix: &str, one: bool) -> usize {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        if entry.file_name().to_string_lossy().starts_with(prefix)
+            && entry.file_type().is_ok_and(|t| t.is_file())
+            && std::fs::remove_file(entry.path()).is_ok()
+        {
+            removed += 1;
+            if one {
+                break;
+            }
+        }
+    }
+    removed
 }
 
 /// Recursive file copy used by the legacy data-dir adoption above.
@@ -325,7 +469,11 @@ pub enum BackendCommand {
     },
     /// Set a WhatsApp privacy option (live mode; the values are the
     /// protocol spellings: `all`, `contacts`, `none`,
-    /// `contact_blacklist`, `match_last_seen`, `known`).
+    /// `contact_blacklist`, `match_last_seen`, `known`). The
+    /// backend validates the value against the category and
+    /// refuses pairs the category does not accept, and refuses
+    /// `contact_blacklist` outright: it names an exception list
+    /// this command cannot carry.
     SetPrivacy {
         /// One of: `last`, `online`, `profile`, `status`,
         /// `groupadd`, `readreceipts`.
@@ -336,7 +484,9 @@ pub enum BackendCommand {
     /// Forward a message to another chat. The real backend can
     /// only forward messages it saw during this session (it needs
     /// the original protocol payload); the fake backend forwards
-    /// from its scripted set.
+    /// from its scripted set. View-once media is refused by both
+    /// backends with an `Error` event: media the sender marked
+    /// view-once is never relayed.
     ForwardMessage {
         /// Source chat JID.
         from_chat_jid: String,
@@ -487,7 +637,9 @@ pub enum BackendCommand {
     },
     /// Download a media message's bytes to the downloads folder
     /// under the app data dir. Answered with `MediaSaved` or an
-    /// `Error` event.
+    /// `Error` event. View-once media is refused with an `Error`
+    /// event and nothing is written: it is viewed inside the app
+    /// only, never saved to disk.
     DownloadMedia {
         /// Chat JID.
         chat_jid: String,
@@ -599,9 +751,10 @@ pub struct LiveCard {
     pub buttons: Vec<String>,
 }
 
-/// An OpenGraph preview attached to a live message (scripted by the
-/// fake backend; fetched by the app for real backends when the
-/// link-preview setting is on).
+/// An OpenGraph preview attached to a live message. For real backends
+/// it is read from the preview data embedded in the wire message
+/// itself; the app never fetches preview data from the network. The
+/// fake backend scripts it.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct LivePreview {
     /// Page title.
@@ -651,11 +804,26 @@ pub struct LiveChat {
     pub preview_sender: Option<String>,
     /// Unix timestamp (seconds) of the latest message.
     pub timestamp: i64,
-    /// Unread count as reported by the protocol.
+    /// Unread count as reported by the protocol. Like the
+    /// timer, a message-arrival upsert does not learn it from
+    /// the wire and reports 0, so the app keeps a known count
+    /// across upserts that report 0; the app's message upserts
+    /// own the increments, and read state changes made on the
+    /// server arrive as [`BackendEvent::ChatReadChanged`]
+    /// instead.
     pub unread: u32,
-    /// Archived (chat-actions state; the app mirrors it locally).
+    /// Archived (chat-actions state; the app mirrors it
+    /// locally). Like mute, a message-arrival upsert does not
+    /// learn it from the wire, so the app keeps a known archive
+    /// state across upserts that report `false`; archive changes
+    /// made on the server arrive as
+    /// [`BackendEvent::ArchiveChanged`] instead.
     pub archived: bool,
-    /// Pinned to the top of the chat list.
+    /// Pinned to the top of the chat list. Like archive, a
+    /// message-arrival upsert does not learn it from the wire,
+    /// so the app keeps a known pin across upserts that report
+    /// `false`; pin changes made on the server arrive as
+    /// [`BackendEvent::PinChanged`] instead.
     pub pinned: bool,
     /// Disappearing-messages timer in seconds (`0` is off), as
     /// persisted in the archive. Message-arrival upserts do not
@@ -666,7 +834,9 @@ pub struct LiveChat {
     /// Muted (notifications silenced), as persisted in the
     /// archive. Like the timer, a message-arrival upsert does
     /// not learn it from the wire, so the app keeps a known
-    /// mute across upserts that report `false`.
+    /// mute across upserts that report `false`; mute changes
+    /// made on the server arrive as
+    /// [`BackendEvent::MuteChanged`] instead.
     pub muted: bool,
 }
 
@@ -726,7 +896,8 @@ pub struct LiveMessage {
     pub quoted_sender: Option<String>,
     /// Quoted message excerpt.
     pub quoted_body: Option<String>,
-    /// Link preview attached by the (fake) backend, when scripted.
+    /// Link preview the sender's client attached to the message,
+    /// when the wire carried one. Never fetched by this client.
     pub link_preview: Option<LivePreview>,
     /// Whether the message was edited.
     pub edited: bool,
@@ -878,9 +1049,142 @@ pub enum BackendEvent {
         /// New timer in seconds (`0` is off).
         duration_secs: u32,
     },
+    /// The account-wide default disappearing-messages timer
+    /// changed on another device (the phone included): the
+    /// server pushes it as an account sync notification, and the
+    /// app adopts it the way it adopts a fetched privacy setting.
+    /// There is no fetch for this value; this event is the only
+    /// reconciliation channel, so a default changed while this
+    /// client was offline is adopted when the sync delivers it.
+    DefaultDisappearingTimerChanged {
+        /// New default timer in seconds (`0` is off).
+        duration_secs: u32,
+    },
+    /// A chat's mute state changed on the server: muted or
+    /// unmuted from another device, or the account state as a
+    /// full sync reports it. This is the authoritative path for
+    /// mute changes made elsewhere; a mute set from this client
+    /// goes out as [`BackendCommand::ChatAction`] and applies
+    /// locally at once, without waiting for this event.
+    MuteChanged {
+        /// Chat JID.
+        chat_jid: String,
+        /// Whether the chat is muted now. A timed mute whose
+        /// end has passed reports `false`.
+        muted: bool,
+    },
+    /// A chat's pin state changed on the server: pinned or
+    /// unpinned from another device, or the account state as a
+    /// full sync reports it. This is the authoritative path for
+    /// pin changes made elsewhere; a pin set from this client
+    /// goes out as [`BackendCommand::ChatAction`] and applies
+    /// locally at once, without waiting for this event.
+    PinChanged {
+        /// Chat JID.
+        chat_jid: String,
+        /// Whether the chat is pinned now.
+        pinned: bool,
+    },
+    /// A chat's archive state changed on the server: archived
+    /// or unarchived from another device, or the account state
+    /// as a full sync reports it. This is the authoritative
+    /// path for archive changes made elsewhere; an archive set
+    /// from this client goes out as
+    /// [`BackendCommand::ChatAction`] and applies locally at
+    /// once, without waiting for this event.
+    ArchiveChanged {
+        /// Chat JID.
+        chat_jid: String,
+        /// Whether the chat is archived now.
+        archived: bool,
+    },
+    /// A message's star state changed on the server: starred or
+    /// unstarred from another device, or the account state as a
+    /// full sync reports it. This is the authoritative path for
+    /// star changes made elsewhere; a star set from this client
+    /// goes out as [`BackendCommand::StarMessage`] and applies
+    /// locally at once, without waiting for this event.
+    StarChanged {
+        /// Chat JID the message belongs to.
+        chat_jid: String,
+        /// Protocol ID of the message.
+        message_id: String,
+        /// Whether the message is starred now.
+        starred: bool,
+    },
+    /// A chat's read state changed on the server: marked read or
+    /// marked unread from another device, or the account state
+    /// as a full sync reports it. This is state adoption only:
+    /// the device that made the change already sent any read
+    /// receipts, so the app must never answer this event with
+    /// [`BackendCommand::MarkAsRead`]. A read set from this
+    /// client goes out as that command (the receipt path) and
+    /// clears the badge locally at once.
+    ChatReadChanged {
+        /// Chat JID.
+        chat_jid: String,
+        /// Whether the chat is read now.
+        read: bool,
+        /// Unread count to adopt when `read` is false: the
+        /// number of messages the sync action's message range
+        /// lists as unread (0 when it lists none). Ignored when
+        /// `read` is true; the count is 0 then.
+        unread_count: u32,
+    },
+    /// A chat was deleted on the server (deleted on the phone).
+    /// The app removes the chat from its list, its session
+    /// mirror and its archive. There is no local counterpart:
+    /// this client has no delete-chat action of its own, so
+    /// nothing here echoes back to the backend.
+    ChatDeleted {
+        /// Chat JID.
+        chat_jid: String,
+    },
+    /// A chat's messages were cleared on the server (cleared
+    /// on the phone; the chat itself stays in the list). The
+    /// app removes the cleared messages from its session
+    /// mirror and its archive; the chat, its list position
+    /// and its settings are untouched. There is no local
+    /// counterpart: this client has no clear-chat action of
+    /// its own, so nothing here echoes back to the backend.
+    ChatCleared {
+        /// Chat JID.
+        chat_jid: String,
+        /// Whether the clear deleted starred messages too
+        /// (the clearing device's choice). When this is
+        /// false, starred messages survive the clear.
+        delete_starred: bool,
+        /// The clear's bound, from the sync action's message
+        /// range: messages stamped at or before this Unix
+        /// timestamp (seconds) are cleared; later messages
+        /// are not the clear's to remove. `None` when the
+        /// action carries no bound; the clear then covers
+        /// the whole chat.
+        last_message_timestamp: Option<i64>,
+    },
+    /// One message was deleted for the account on the server
+    /// (deleted with "delete for me" on the phone): it is
+    /// gone from the account's own view but was not revoked
+    /// for anyone else. The app removes it from its session
+    /// mirror and its archive. There is no local counterpart:
+    /// this client has no delete-for-me action of its own, so
+    /// nothing here echoes back to the backend.
+    MessageDeletedForMe {
+        /// Chat JID the message belongs to.
+        chat_jid: String,
+        /// Protocol ID of the message.
+        message_id: String,
+    },
     /// Current privacy settings as fetched from the account
     /// (category → value spellings; see [`BackendCommand::SetPrivacy`]).
     PrivacyState(std::collections::BTreeMap<String, String>),
+    /// The account's blocklist as fetched at connect: the JIDs
+    /// blocked on the server, in the server's own spelling. The
+    /// app adopts the list as its blocked set, replacing any
+    /// locally persisted copy: the server is the source of truth
+    /// for blocks, and a client that only remembers its own
+    /// toggles shows the wrong state after a restart.
+    Blocklist(Vec<String>),
     /// An incoming 1:1 call is ringing. Accept or reject it with
     /// the matching commands; only one call exists at a time.
     IncomingCall {
@@ -927,7 +1231,11 @@ pub enum BackendEvent {
     GroupMembers {
         /// Group JID.
         chat_jid: String,
-        /// (jid, display name, is admin) rows.
+        /// (jid, display name, is admin) rows. The display name
+        /// is the name the server rendered for the participant,
+        /// or empty when it rendered none; the host then resolves
+        /// a label from its own data or masks the identifier. It
+        /// is never the raw phone number or LID.
         members: Vec<(String, String, bool)>,
     },
     /// A group's invite link, answering `FetchGroupInviteLink`.
@@ -961,7 +1269,11 @@ pub enum BackendEvent {
     JoinRequests {
         /// Group JID.
         chat_jid: String,
-        /// (jid, display name) rows.
+        /// (jid, display name) rows. The protocol carries no
+        /// name for a requester, so the real backend leaves the
+        /// display name empty and the host resolves a label from
+        /// its own data or masks the identifier; it is never the
+        /// raw phone number or LID.
         requests: Vec<(String, String)>,
     },
     /// The connection dropped (the backend will try to reconnect).
@@ -973,7 +1285,13 @@ pub enum BackendEvent {
     /// supervisor. `restarted` says whether the single automatic
     /// restart was attempted after this crash.
     Crashed {
-        /// Short panic summary (message + location, redacted).
+        /// Short failure summary: the panic message, or the
+        /// reason a run returned when it died before or outside a
+        /// session. Scrubbed by the supervisor before emission
+        /// with the crash reports' display scrubber (secret
+        /// shapes and phone-like numbers masked, the user's home
+        /// path replaced with `~`), because the app renders it
+        /// verbatim in the connection status.
         summary: String,
         /// Whether the supervisor restarted the backend afterwards.
         restarted: bool,
@@ -985,20 +1303,41 @@ pub enum BackendEvent {
     },
 }
 
+/// Capacity of the event channel between a backend and the UI.
+///
+/// The channel is bounded so a UI that stops draining (a hung
+/// frame, a stalled modal) cannot accumulate events, each carrying
+/// full message bodies, in memory for the life of the process.
+/// The capacity is sized against the two rates it sits between:
+/// the library's ordered delivery queue holds 4096 events and one
+/// incoming message becomes two or more backend events, so 8192
+/// absorbs a full reconnect backlog flush without the producer
+/// ever waiting in practice; the UI drains up to 256 events per
+/// frame into its own queue, emptying a full channel in well
+/// under a second of frames. Past the capacity, `emit` blocks:
+/// backpressure paces the backend (and, behind it, the library's
+/// delivery worker) instead of dropping anything. No event kind
+/// is droppable (message upserts carry chat content, the *Changed
+/// events carry state assertions, receipts carry read state), so
+/// blocking is the only honest overflow behavior.
+const EVENT_CHANNEL_CAPACITY: usize = 8192;
+
 /// The sending half of the event channel, with the wake hook attached.
 ///
 /// Backends emit through this so every event wakes the UI exactly
 /// once. Cloning is cheap (channel sender + `Arc`).
 #[derive(Clone)]
 pub struct EventSink {
-    tx: Sender<BackendEvent>,
+    tx: SyncSender<BackendEvent>,
     wake: WakeFn,
 }
 
 impl EventSink {
-    /// Queues an event and fires the wake callback. Never blocks
-    /// meaningfully (unbounded channel); a closed receiver (UI gone)
-    /// silently drops the event.
+    /// Queues an event and fires the wake callback. Blocks while
+    /// the bounded channel is full (see [`EVENT_CHANNEL_CAPACITY`]),
+    /// which in practice means the UI has stalled; a closed
+    /// receiver (UI gone) silently drops the event and returns at
+    /// once.
     pub fn emit(&self, event: BackendEvent) {
         if self.tx.send(event).is_ok() {
             (self.wake)();
@@ -1061,7 +1400,7 @@ where
     F: Fn() -> Box<dyn Backend> + Send + 'static,
 {
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<BackendCommand>();
-    let (evt_tx, evt_rx) = std::sync::mpsc::channel::<BackendEvent>();
+    let (evt_tx, evt_rx) = std::sync::mpsc::sync_channel::<BackendEvent>(EVENT_CHANNEL_CAPACITY);
     let sink = EventSink { tx: evt_tx, wake };
     std::thread::Builder::new()
         .name("zaprust-backend".to_owned())
@@ -1229,6 +1568,15 @@ fn supervise<F>(
             Ok(Err(reason)) => reason,
             Err(payload) => panic_summary(&payload),
         };
+        // Both summary sources are free text: a panic payload can
+        // interpolate identifiers, and a startup reason is built
+        // from store and filesystem errors that can carry the
+        // data-dir path (the user's home path and username). The
+        // app renders the summary verbatim in the connection
+        // status, so scrub it here, at construction, with the
+        // same display scrubber the crash report banner uses:
+        // every consumer of the event receives the redacted form.
+        let summary = core::crash::scrub_for_display(&summary);
         if attempt == 1 {
             sink.emit(BackendEvent::Crashed { summary, restarted: true });
         } else {
@@ -1257,7 +1605,10 @@ fn supervise<F>(
     }
 }
 
-/// Extracts a short, redaction-safe summary from a panic payload.
+/// Extracts the panic message from a panic payload, verbatim.
+/// The text is not redaction-safe on its own: `supervise` runs
+/// every summary through the crash display scrubber before it
+/// leaves in a [`BackendEvent::Crashed`].
 fn panic_summary(payload: &Box<dyn std::any::Any + Send>) -> String {
     if let Some(s) = payload.downcast_ref::<&str>() {
         (*s).to_owned()
@@ -1284,6 +1635,55 @@ mod tests {
 
     fn no_wake() -> WakeFn {
         Arc::new(|| {})
+    }
+
+    /// The event channel is bounded, and a full channel makes
+    /// `emit` wait rather than drop: events carry chat content
+    /// and state assertions that no later event re-sends, so
+    /// losing one to make room would corrupt the UI's picture
+    /// silently. Once the UI drains, the blocked emit lands and
+    /// ordering is preserved.
+    #[test]
+    fn event_sink_blocks_at_capacity_instead_of_dropping() {
+        let (tx, rx) = std::sync::mpsc::sync_channel::<BackendEvent>(2);
+        let sink = EventSink { tx, wake: no_wake() };
+        sink.emit(BackendEvent::Connected { account: "a".to_owned() });
+        sink.emit(BackendEvent::Connected { account: "b".to_owned() });
+
+        let blocked_sink = sink.clone();
+        let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+        let emitter = std::thread::spawn(move || {
+            blocked_sink.emit(BackendEvent::Connected { account: "c".to_owned() });
+            let _ = done_tx.send(());
+        });
+        assert!(
+            done_rx.recv_timeout(Duration::from_millis(150)).is_err(),
+            "emit must block while the channel is full, not drop the event"
+        );
+
+        let first = rx.recv().expect("first event queued");
+        assert!(matches!(first, BackendEvent::Connected { ref account } if account == "a"));
+        done_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the blocked emit completes once the UI drains");
+        emitter.join().expect("emitter thread finishes");
+
+        let second = rx.recv().expect("second event queued");
+        let third = rx.recv().expect("the blocked emit was queued, not dropped");
+        assert!(matches!(second, BackendEvent::Connected { ref account } if account == "b"));
+        assert!(matches!(third, BackendEvent::Connected { ref account } if account == "c"));
+    }
+
+    /// With the UI gone (receiver dropped), `emit` returns at
+    /// once instead of blocking on a channel nobody will drain:
+    /// a closed bounded channel fails its sends immediately.
+    #[test]
+    fn event_sink_emit_returns_at_once_when_the_ui_is_gone() {
+        let (tx, rx) = std::sync::mpsc::sync_channel::<BackendEvent>(1);
+        let sink = EventSink { tx, wake: no_wake() };
+        drop(rx);
+        // Would hang the test if a closed channel blocked.
+        sink.emit(BackendEvent::Connected { account: "a".to_owned() });
     }
 
     #[test]
@@ -1341,6 +1741,96 @@ mod tests {
             matches!(second, Ok(BackendEvent::Connected { .. })),
             "restarted backend must emit events: {second:?}"
         );
+        drop(channels.commands);
+    }
+
+    /// A panic message stuffed with everything a payload can
+    /// interpolate: a bearer token, an API key, a phone number,
+    /// and the user's home path. The Crashed summary is rendered
+    /// verbatim by the app, so none of it may leave in the event.
+    struct LeakyPanicBackend;
+
+    impl Backend for LeakyPanicBackend {
+        fn run(
+            self: Box<Self>,
+            _config: &BackendConfig,
+            _commands: Receiver<BackendCommand>,
+            _events: EventSink,
+        ) -> Result<(), String> {
+            let home = std::env::var("HOME").unwrap_or_default();
+            panic!(
+                "auth failed: Bearer <redacted> key sk-proj-0123456789abcdef \
+                 for +62 812-3456-7890 at {home}/zaprust/session.db"
+            );
+        }
+    }
+
+    fn assert_summary_is_scrubbed(summary: &str) {
+        assert!(
+            !summary.contains("tok_live_0123456789abcdef"),
+            "bearer token leaked into the summary: {summary}"
+        );
+        assert!(
+            !summary.contains("sk-proj-0123456789abcdef"),
+            "API key leaked into the summary: {summary}"
+        );
+        assert!(!summary.contains("812-3456"), "phone number leaked into the summary: {summary}");
+        assert!(
+            summary.contains("***90"),
+            "the phone number should be masked to its last digits: {summary}"
+        );
+        if let Ok(home) = std::env::var("HOME") {
+            if !home.is_empty() && home != "/" {
+                assert!(!summary.contains(&home), "home path leaked into the summary: {summary}");
+                assert!(
+                    summary.contains("~/zaprust/session.db"),
+                    "the home prefix should be replaced with ~: {summary}"
+                );
+            }
+        }
+        // Scrubbing masks shapes; it does not blank the summary.
+        assert!(summary.contains("auth failed"), "summary must stay informative: {summary}");
+    }
+
+    #[test]
+    fn crashed_summary_is_scrubbed_before_it_is_emitted() {
+        let channels = spawn_backend(
+            || Box::new(LeakyPanicBackend) as Box<dyn Backend>,
+            test_config(),
+            no_wake(),
+        );
+        let first = channels
+            .events
+            .recv_timeout(Duration::from_secs(5))
+            .expect("a Crashed event must arrive");
+        match &first {
+            BackendEvent::Crashed { summary, restarted } => {
+                assert!(*restarted, "first crash must announce a restart");
+                assert_summary_is_scrubbed(summary);
+            }
+            other => panic!("expected Crashed, got {other:?}"),
+        }
+        // The restarted run fails the same way: the supervisor
+        // gives up (restart once, then stop), and the final
+        // summary is scrubbed too.
+        let mut saw_final_crash = false;
+        let mut saw_error = false;
+        for _ in 0..4 {
+            match channels.events.recv_timeout(Duration::from_secs(5)) {
+                Ok(BackendEvent::Crashed { summary, restarted: false }) => {
+                    assert_summary_is_scrubbed(&summary);
+                    saw_final_crash = true;
+                }
+                Ok(BackendEvent::Error { .. }) => saw_error = true,
+                Ok(_) => {}
+                Err(_) => break,
+            }
+            if saw_final_crash && saw_error {
+                break;
+            }
+        }
+        assert!(saw_final_crash, "second crash must be reported as not restarted");
+        assert!(saw_error, "a persistent Error event must follow the give-up");
         drop(channels.commands);
     }
 
@@ -1691,5 +2181,200 @@ mod tests {
         assert!(event.is_err(), "a clean exit must emit nothing: {event:?}");
         assert_eq!(runs.load(Ordering::SeqCst), 1, "a clean exit must not be restarted");
         drop(channels.commands);
+    }
+
+    /// A unique empty directory under the system temp dir for the
+    /// data-dir adoption and cleanup tests; removed on drop.
+    struct TempTree(PathBuf);
+
+    impl TempTree {
+        fn new(tag: &str) -> Self {
+            static COUNTER: AtomicUsize = AtomicUsize::new(0);
+            let dir = std::env::temp_dir().join(format!(
+                "zaprust-backend-test-{tag}-{}-{}",
+                std::process::id(),
+                COUNTER.fetch_add(1, Ordering::SeqCst)
+            ));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).expect("create temp tree");
+            Self(dir)
+        }
+
+        fn path(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempTree {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// A legacy tree shaped like a pre-rename install: an archive,
+    /// a per-account session store, and settings.
+    fn seed_legacy_tree(legacy: &std::path::Path) {
+        std::fs::create_dir_all(legacy.join("accounts").join("default")).expect("seed dirs");
+        std::fs::write(legacy.join("archive.db"), b"plaintext archive").expect("seed archive");
+        std::fs::write(
+            legacy.join("accounts").join("default").join("session.db"),
+            b"plaintext session",
+        )
+        .expect("seed session");
+        std::fs::write(legacy.join("settings.json"), b"{}").expect("seed settings");
+    }
+
+    /// Seeds a downloads folder the way the download path names
+    /// files: two media files for one chat (one of them for a
+    /// message id that is a prefix of the other's), one for a
+    /// chat whose user part starts with the same digits, and an
+    /// unrelated file.
+    fn seed_downloads(data: &std::path::Path) {
+        let dir = data.join("downloads");
+        std::fs::create_dir_all(&dir).expect("seed downloads dir");
+        for name in [
+            "6281234567890-ABC123.jpg",
+            "6281234567890-ABC1234.mp4",
+            "62812345678901-XYZ.png",
+            "notes.txt",
+        ] {
+            std::fs::write(dir.join(name), b"media").expect("seed download");
+        }
+    }
+
+    #[test]
+    fn download_removal_for_a_message_takes_only_its_file() {
+        let root = TempTree::new("dl-message");
+        seed_downloads(root.path());
+        let dir = root.path().join("downloads");
+        // The stem rule is the naming contract with the download
+        // path: protocol punctuation is sanitized the same way.
+        assert_eq!(
+            downloaded_media_stem("6281234567890@s.whatsapp.net", "ABC:123"),
+            "6281234567890-ABC_123"
+        );
+        assert!(remove_download_for_message(root.path(), "6281234567890@s.whatsapp.net", "ABC123"));
+        assert!(!dir.join("6281234567890-ABC123.jpg").exists(), "the message's file is gone");
+        assert!(
+            dir.join("6281234567890-ABC1234.mp4").exists(),
+            "a message whose id extends this one keeps its file"
+        );
+        assert!(
+            !remove_download_for_message(root.path(), "6281234567890@s.whatsapp.net", "ABC123"),
+            "a second removal reports nothing removed"
+        );
+    }
+
+    #[test]
+    fn download_removal_for_a_chat_takes_only_its_files() {
+        let root = TempTree::new("dl-chat");
+        seed_downloads(root.path());
+        let dir = root.path().join("downloads");
+        let removed = remove_downloads_for_chat(root.path(), "6281234567890@s.whatsapp.net");
+        assert_eq!(removed, 2, "both of the chat's downloads go");
+        assert!(!dir.join("6281234567890-ABC123.jpg").exists());
+        assert!(!dir.join("6281234567890-ABC1234.mp4").exists());
+        assert!(
+            dir.join("62812345678901-XYZ.png").exists(),
+            "a chat whose number starts with the same digits is a different chat"
+        );
+        assert!(dir.join("notes.txt").exists(), "unrelated files are untouched");
+        assert_eq!(
+            remove_downloads_for_chat(root.path(), "12025550123@s.whatsapp.net"),
+            0,
+            "an unknown chat removes nothing"
+        );
+    }
+
+    #[test]
+    fn adoption_then_cleanup_removes_the_legacy_tree() {
+        let root = TempTree::new("adopt-clean");
+        let legacy = root.path().join("zaplite");
+        let current = root.path().join("zaprust");
+        seed_legacy_tree(&legacy);
+
+        adopt_legacy_dir(&current, &legacy);
+        // The adoption copies and leaves the original in place.
+        assert_eq!(
+            std::fs::read(current.join("archive.db")).expect("copied archive"),
+            b"plaintext archive"
+        );
+        assert!(legacy.join("archive.db").exists(), "adoption alone must not remove the legacy");
+
+        // Once the app runs from the new directory, the cleanup
+        // removes the whole legacy tree and nothing else.
+        assert!(remove_legacy_dir(&current, &legacy));
+        assert!(!legacy.exists(), "the legacy copy must be gone");
+        assert_eq!(
+            std::fs::read(current.join("archive.db")).expect("current archive survives"),
+            b"plaintext archive"
+        );
+        assert!(current.join("accounts").join("default").join("session.db").exists());
+        // A later start finds nothing to do and does not error.
+        assert!(!remove_legacy_dir(&current, &legacy));
+    }
+
+    #[test]
+    fn cleanup_refuses_when_current_is_the_legacy_dir() {
+        let root = TempTree::new("clean-self");
+        let legacy = root.path().join("zaplite");
+        seed_legacy_tree(&legacy);
+        // The app still runs from the legacy directory itself:
+        // removing it would delete the live data.
+        assert!(!remove_legacy_dir(&legacy, &legacy));
+        assert_eq!(
+            std::fs::read(legacy.join("archive.db")).expect("legacy archive survives"),
+            b"plaintext archive"
+        );
+    }
+
+    #[test]
+    fn cleanup_refuses_when_current_is_inside_legacy() {
+        let root = TempTree::new("clean-nested");
+        let legacy = root.path().join("zaplite");
+        seed_legacy_tree(&legacy);
+        let nested = legacy.join("zaprust");
+        std::fs::create_dir_all(&nested).expect("nested current");
+        // Removing the legacy tree would remove the current
+        // directory with it; the nesting rail refuses.
+        assert!(!remove_legacy_dir(&nested, &legacy));
+        assert!(legacy.join("archive.db").exists());
+        assert!(nested.exists());
+    }
+
+    #[test]
+    fn cleanup_waits_until_adoption_has_completed() {
+        let root = TempTree::new("clean-early");
+        let legacy = root.path().join("zaplite");
+        seed_legacy_tree(&legacy);
+        let current = root.path().join("zaprust");
+        // The new directory does not exist: adoption never
+        // completed, so the legacy copy is the only one and stays.
+        assert!(!remove_legacy_dir(&current, &legacy));
+        assert!(legacy.join("archive.db").exists());
+    }
+
+    #[test]
+    fn cleanup_without_a_legacy_dir_is_a_no_op() {
+        let root = TempTree::new("clean-none");
+        let current = root.path().join("zaprust");
+        std::fs::create_dir_all(&current).expect("current dir");
+        assert!(!remove_legacy_dir(&current, &root.path().join("zaplite")));
+        assert!(current.exists());
+    }
+
+    #[test]
+    fn cleanup_failure_is_reported_not_raised() {
+        let root = TempTree::new("clean-fail");
+        let current = root.path().join("zaprust");
+        std::fs::create_dir_all(&current).expect("current dir");
+        // A legacy path that is a file, not a directory: the
+        // cleanup skips it and reports false instead of failing,
+        // which is what keeps a stuck legacy copy from ever
+        // blocking startup.
+        let legacy_file = root.path().join("zaplite");
+        std::fs::write(&legacy_file, b"not a directory").expect("legacy file");
+        assert!(!remove_legacy_dir(&current, &legacy_file));
+        assert_eq!(std::fs::read(&legacy_file).expect("file survives"), b"not a directory");
     }
 }

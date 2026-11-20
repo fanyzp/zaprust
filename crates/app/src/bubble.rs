@@ -1504,7 +1504,7 @@ pub(crate) fn message_album(
     ui: &mut egui::Ui,
     items: &[Message],
     t: Tokens,
-    textures: &std::collections::HashMap<u64, egui::TextureHandle>,
+    textures: &crate::extras::TextureCache<u64>,
     demo: Option<egui::TextureId>,
 ) -> Vec<BubbleAction> {
     let mut actions = Vec::new();

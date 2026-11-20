@@ -124,12 +124,6 @@ fn default_members() -> Vec<(String, String, bool)> {
     ]
 }
 
-/// The user part of a JID (before the `@`), used as a display
-/// fallback for participants the script does not name.
-fn user_part(jid: &str) -> String {
-    jid.split('@').next().unwrap_or(jid).to_owned()
-}
-
 /// The scripted chats, in display order.
 #[must_use]
 pub fn scripted_chats() -> Vec<LiveChat> {
@@ -623,6 +617,14 @@ impl Backend for FakeBackend {
             )]);
         let mut chat_state: std::collections::HashMap<String, LiveChat> =
             scripted_chats().into_iter().map(|c| (c.jid.clone(), c)).collect();
+        // Blocked contact JIDs, mirroring the server-side list the
+        // real backend fetches at connect: BlockContact mutates it
+        // and the full list is re-emitted as a Blocklist event.
+        let mut blocked_state: std::collections::HashSet<String> = std::collections::HashSet::new();
+        // The account's privacy settings, mirroring the real
+        // backend's fetch: SetPrivacy mutates one entry and the
+        // full map is re-emitted, as the real refetch reports it.
+        let mut privacy_state = baseline_privacy_state();
         let mut message_state: std::collections::HashMap<(String, String), LiveMessage> =
             scripted_messages()
                 .into_iter()
@@ -658,7 +660,7 @@ impl Backend for FakeBackend {
                 BackendCommand::ConnectQr => {
                     events.emit(BackendEvent::QrCode { payload: FAKE_QR_PAYLOAD.to_owned() });
                     if self.auto_connect {
-                        emit_linked_script(&events, &call_state);
+                        emit_linked_script(&events, &call_state, &privacy_state);
                         if self.demo_script && !script_started {
                             script_started = true;
                             let tick_events = events.clone();
@@ -673,7 +675,7 @@ impl Backend for FakeBackend {
                 BackendCommand::ConnectPairCode { phone } => {
                     events.emit(BackendEvent::PairCode { code: fake_pair_code(&phone) });
                     if self.auto_connect {
-                        emit_linked_script(&events, &call_state);
+                        emit_linked_script(&events, &call_state, &privacy_state);
                         if self.demo_script && !script_started {
                             script_started = true;
                             let tick_events = events.clone();
@@ -1068,9 +1070,8 @@ impl Backend for FakeBackend {
                             .unwrap_or_else(std::sync::PoisonError::into_inner)
                             .push(format!("privacy:{category}={value}"));
                     }
-                    let mut state = std::collections::BTreeMap::new();
-                    state.insert(category, value);
-                    events.emit(BackendEvent::PrivacyState(state));
+                    privacy_state.insert(category, value);
+                    events.emit(BackendEvent::PrivacyState(privacy_state.clone()));
                 }
                 BackendCommand::ForwardMessage { from_chat_jid, message_id, to_chat_jid } => {
                     if let Some(log) = &command_log {
@@ -1083,6 +1084,9 @@ impl Backend for FakeBackend {
                         .cloned()
                         .or_else(|| polls.values().find(|m| m.id == message_id).cloned());
                     match source {
+                        Some(msg) if msg.view_once => events.emit(BackendEvent::Error {
+                            message: "View-once media cannot be forwarded.".to_owned(),
+                        }),
                         Some(mut msg) => {
                             sent_counter += 1;
                             msg.id = format!("fake-fwd-{sent_counter}");
@@ -1159,6 +1163,14 @@ impl Backend for FakeBackend {
                             .unwrap_or_else(std::sync::PoisonError::into_inner)
                             .push(format!("block:{chat_jid}:{block}"));
                     }
+                    if block {
+                        blocked_state.insert(chat_jid);
+                    } else {
+                        blocked_state.remove(&chat_jid);
+                    }
+                    let mut list: Vec<String> = blocked_state.iter().cloned().collect();
+                    list.sort();
+                    events.emit(BackendEvent::Blocklist(list));
                 }
                 BackendCommand::CreateGroup { name, participants } => {
                     if let Some(log) = &command_log {
@@ -1170,7 +1182,7 @@ impl Backend for FakeBackend {
                     let new_jid = format!("200000000{group_counter}@g.us");
                     group_state.insert(
                         new_jid.clone(),
-                        participants.iter().map(|p| (p.clone(), user_part(p), false)).collect(),
+                        participants.iter().map(|p| (p.clone(), String::new(), false)).collect(),
                     );
                     chat_state.insert(
                         new_jid.clone(),
@@ -1217,7 +1229,7 @@ impl Backend for FakeBackend {
                         crate::ParticipantOp::Add => {
                             for p in &participants {
                                 if !members.iter().any(|(j, _, _)| j == p) {
-                                    members.push((p.clone(), user_part(p), false));
+                                    members.push((p.clone(), String::new(), false));
                                 }
                             }
                         }
@@ -1358,6 +1370,11 @@ impl Backend for FakeBackend {
                             .unwrap_or_else(std::sync::PoisonError::into_inner)
                             .push(format!("default_disappearing:{duration_secs}"));
                     }
+                    // The real backend hears its own change back
+                    // as the account sync notification; the fake
+                    // answers with the same event so the app's
+                    // adoption path runs in demo mode too.
+                    events.emit(BackendEvent::DefaultDisappearingTimerChanged { duration_secs });
                 }
                 BackendCommand::JoinGroupByLink { link } => {
                     if let Some(log) = &command_log {
@@ -1536,9 +1553,32 @@ fn emit_call_end(events: &EventSink, state: &mut FakeCallState, call: &FakeCall,
     events.emit(BackendEvent::MessageUpsert(msg));
 }
 
+/// The fake account's privacy settings at link time, spelled
+/// the way the real backend's `privacy_map` reports them. The
+/// run loop keeps the live copy: SetPrivacy mutates it and the
+/// full map is re-emitted, mirroring the real backend's
+/// refetch-after-change.
+fn baseline_privacy_state() -> std::collections::BTreeMap<String, String> {
+    let mut privacy = std::collections::BTreeMap::new();
+    privacy.insert("last".to_owned(), "contacts".to_owned());
+    privacy.insert("online".to_owned(), "match_last_seen".to_owned());
+    privacy.insert("profile".to_owned(), "contacts".to_owned());
+    privacy.insert("status".to_owned(), "contacts".to_owned());
+    privacy.insert("groupadd".to_owned(), "contacts".to_owned());
+    privacy.insert("readreceipts".to_owned(), "all".to_owned());
+    // The categories the Privacy page has no row for are part
+    // of the account state too: the real backend's `privacy_map`
+    // carries them, so the fake's baseline does as well.
+    privacy.insert("calladd".to_owned(), "known".to_owned());
+    privacy.insert("messages".to_owned(), "contacts".to_owned());
+    privacy.insert("defense".to_owned(), "off".to_owned());
+    privacy
+}
+
 fn emit_linked_script(
     events: &EventSink,
     call_state: &std::sync::Arc<std::sync::Mutex<FakeCallState>>,
+    privacy: &std::collections::BTreeMap<String, String>,
 ) {
     events.emit(BackendEvent::Connected { account: "Fake account (not WhatsApp)".to_owned() });
     for chat in scripted_chats() {
@@ -1556,12 +1596,12 @@ fn emit_linked_script(
         chat_jid: FAKE_DM_JID.to_owned(),
         message_id: "fake-promo-1".to_owned(),
     });
-    // Baseline privacy state, as the real backend reports it after
-    // fetching the account's settings.
-    let mut privacy = std::collections::BTreeMap::new();
-    privacy.insert("last".to_owned(), "contacts".to_owned());
-    privacy.insert("readreceipts".to_owned(), "all".to_owned());
-    events.emit(BackendEvent::PrivacyState(privacy));
+    // The account's privacy state, as the real backend reports
+    // it after fetching the account's settings.
+    events.emit(BackendEvent::PrivacyState(privacy.clone()));
+    // Baseline blocklist, as the real backend reports it after
+    // fetching the account's list at connect: nobody blocked.
+    events.emit(BackendEvent::Blocklist(Vec::new()));
     // One scripted incoming voice call from the DM contact, so
     // the whole call surface (ring, accept, talk, end, log entry)
     // is exercised in test mode without a phone. Registered in

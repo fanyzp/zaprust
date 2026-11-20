@@ -338,7 +338,11 @@ impl App {
                                             }
                                         }
                                         if let Some(i) = remove {
-                                            self.composer.staged.remove(i);
+                                            let item = self.composer.staged.remove(i);
+                                            // Unstaging ends the item's life: a
+                                            // pasted temp file backing it is
+                                            // deleted (picked files are not).
+                                            crate::attach::discard_pasted_temp(&item.path);
                                         }
                                         if self.composer.staged.len() == 1
                                             && self.composer.staged[0].kind

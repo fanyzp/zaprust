@@ -19,14 +19,7 @@ impl App {
                 |ui| switch(ui, &mut v, t),
             );
             if v != self.read_receipts {
-                self.read_receipts = v;
-                self.persist_settings();
-                if self.live_mode {
-                    self.send_backend(backend::BackendCommand::SetPrivacy {
-                        category: "readreceipts".to_owned(),
-                        value: if v { "all" } else { "none" }.to_owned(),
-                    });
-                }
+                self.set_read_receipts(v);
             }
             divider(ui, t);
             let mut tp = self.typing_indicators;
@@ -41,11 +34,7 @@ impl App {
                 |ui| switch(ui, &mut tp, t),
             );
             if tp != self.typing_indicators {
-                self.typing_indicators = tp;
-                if !tp {
-                    self.typing_sent_for = None;
-                }
-                self.persist_settings();
+                self.set_typing_indicators(tp);
             }
         });
         ui.add_space(16.0);
@@ -88,7 +77,7 @@ impl App {
             // These genuinely round-trip to WhatsApp through the
             // library's privacy API while linked.
             let state = self.privacy_state.clone();
-            let mut changes: Vec<(String, String)> = Vec::new();
+            let mut cycle: Vec<(&str, &str)> = Vec::new();
             settings_card(ui, t, |ui| {
                 for (label, key) in [
                     ("Last seen", "last"),
@@ -102,17 +91,12 @@ impl App {
                         if crate::widgets::button(
                             ui,
                             t,
-                            current.as_str(),
+                            &crate::live::privacy_value_label(&current),
                             crate::widgets::Btn::Secondary,
                         )
                         .clicked()
                         {
-                            let next = match current.as_str() {
-                                "all" => "contacts",
-                                "contacts" => "none",
-                                _ => "all",
-                            };
-                            changes.push((key.to_owned(), next.to_owned()));
+                            cycle.push((key, label));
                         }
                     });
                     divider(ui, t);
@@ -123,8 +107,8 @@ impl App {
                         .color(rgb(t.text_faint)),
                 );
             });
-            for (category, value) in changes {
-                self.send_backend(backend::BackendCommand::SetPrivacy { category, value });
+            for (category, label) in cycle {
+                self.request_cycle_privacy(category, label);
             }
         } else {
             settings_card(ui, t, |ui| {

@@ -67,6 +67,21 @@ mod widgets;
 
 use state::{App, Args};
 
+/// Wraps a debug-log writer so every line passes through the
+/// crash-report redaction pipeline before it reaches disk (the
+/// user's home prefix included, when the environment names
+/// one). Debug logs are the artifact users are asked to share
+/// when reporting bugs, so backend and library lines must not
+/// persist raw.
+fn scrub_log_writer<W: std::io::Write>(inner: W) -> core::debug::ScrubWriter<W> {
+    match std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
+        Some(home) if !home.is_empty() => {
+            core::debug::ScrubWriter::with_home(inner, std::path::PathBuf::from(home))
+        }
+        _ => core::debug::ScrubWriter::new(inner),
+    }
+}
+
 /// Initializes structured tracing to rotating daily log files
 /// under the app data dir's debug/ folder (only with --debug).
 /// The writer guard is leaked on purpose: logging lives as long
@@ -87,49 +102,69 @@ fn init_debug_tracing() {
         }
     }
     let appender = tracing_appender::rolling::daily(&dir, "zaprust-debug.log");
+    // The appender creates today's file eagerly, after the
+    // startup hardening pass has already run, so tighten the
+    // debug dir again now that the fresh file exists (privacy
+    // audit C4). A file created by a midnight rotation during a
+    // long session still lands with default permissions inside
+    // the 0700 data dir and is tightened at the next start.
+    #[cfg(unix)]
+    tighten_tree(&dir);
     let (writer, guard) = tracing_appender::non_blocking(appender);
     std::mem::forget(guard);
+    let writer = scrub_log_writer(writer);
     let filter = std::env::var("ZAPRUST_LOG").unwrap_or_else(|_| "info".to_owned());
     let _ = tracing_subscriber::fmt()
         .with_env_filter(filter)
-        .with_writer(writer)
+        .with_writer(move || writer.clone())
         .with_ansi(false)
         .try_init();
 }
 
 /// Tightens data-directory permissions on Unix (security audit
-/// SEC-06): the directory itself becomes owner-only (0700), and the
-/// files that hold chat history, session state and credentials
-/// (archive, secrets, per-account session databases, crash
-/// reports) become 0600. Runs at startup; files created later in
-/// the session are tightened on the next start, and the archive is
-/// tightened again when the store opens.
+/// SEC-06): the directory itself and every directory under it
+/// become owner-only (0700), and every file under it becomes
+/// 0600. That covers the archive and its sidecars, the secrets
+/// and key files, the per-account session databases under
+/// `accounts/<id>/` (an earlier version of this pass looked for
+/// them one level too shallow and never reached them, and never
+/// touched `crashes/` either; privacy audit A4), and every other
+/// artifact the app keeps there: settings, quick replies,
+/// plugin state, stickers, downloads, exports, pasted temps,
+/// crash reports and debug output (A5). Symlinks are not
+/// followed. Runs at startup; files created later in the
+/// session are tightened on the next start, and the writers of
+/// the most sensitive files (secrets, key, downloads, exports,
+/// crash reports, JSON state) also set 0600 at creation.
 #[cfg(unix)]
 fn harden_data_dir() {
-    use std::os::unix::fs::PermissionsExt;
     let dir = backend::data_dir();
     let _ = std::fs::create_dir_all(&dir);
-    let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
-    let sensitive = |p: &std::path::Path| {
-        let _ = std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o600));
+    tighten_tree(&dir);
+}
+
+/// The recursive tightening behind [`harden_data_dir`]:
+/// `dir` to 0700, then the same for everything below it,
+/// files to 0600. Best-effort throughout: a file that cannot
+/// be tightened is left as it is, never a startup failure.
+#[cfg(unix)]
+fn tighten_tree(dir: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
     };
-    for name in ["archive.db", "archive.db-wal", "archive.db-shm", "secrets.json"] {
-        let p = dir.join(name);
-        if p.exists() {
-            sensitive(&p);
-        }
-    }
-    if let Ok(entries) = std::fs::read_dir(&dir) {
-        for entry in entries.flatten() {
-            let p = entry.path();
-            if p.is_dir() {
-                for name in ["session.db", "session.db-wal", "session.db-shm"] {
-                    let f = p.join(name);
-                    if f.exists() {
-                        sensitive(&f);
-                    }
-                }
-            }
+    for entry in entries.flatten() {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        let path = entry.path();
+        if file_type.is_symlink() {
+            continue;
+        } else if file_type.is_dir() {
+            tighten_tree(&path);
+        } else if file_type.is_file() {
+            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
         }
     }
 }
@@ -138,6 +173,10 @@ fn main() -> eframe::Result {
     install_panic_hook();
     #[cfg(unix)]
     harden_data_dir();
+    // Pasted-image temp files from earlier sessions are
+    // orphans by construction (the stage is in-memory only);
+    // clear them before anything can stage a new paste.
+    crate::attach::sweep_stale_pasted_images();
     if std::env::args().any(|a| a == "--debug") {
         init_debug_tracing();
     }
@@ -165,6 +204,15 @@ fn main() -> eframe::Result {
 /// re-panics; worker-thread panics are additionally contained by the
 /// backend supervisor and the feature guard, so in practice this hook
 /// is the last resort for the UI thread itself.
+///
+/// Maintained invariant (privacy audit C3): the crash scrubber
+/// masks secret shapes, phone-like numbers, and the home prefix,
+/// but it is NOT a content filter: it does not mask names or
+/// message text. Panic messages must therefore never interpolate
+/// chat content (message bodies, contact or group names, chat
+/// titles). No production panic site does so today (every
+/// interpolating `panic!`/`expect`/`assert!` in the workspace is
+/// in test code); keep it that way.
 fn install_panic_hook() {
     let crash_dir = backend::data_dir().join("crashes");
     std::panic::set_hook(Box::new(move |info| {
@@ -189,4 +237,66 @@ fn install_panic_hook() {
         }
         eprintln!("zaprust: panic: {}", report.summary());
     }));
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::tighten_tree;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn mode_of(path: &std::path::Path) -> u32 {
+        std::fs::metadata(path).expect("metadata").permissions().mode() & 0o777
+    }
+
+    /// The hardening pass (privacy audit A4/A5) reaches the
+    /// files the old hand-listed version never did: a session
+    /// database nested two levels down under `accounts/<id>/`,
+    /// a crash report, and an ordinary artifact, all starting
+    /// at permissive default modes.
+    #[test]
+    fn hardening_reaches_nested_session_db_and_crash_reports() {
+        let root = std::env::temp_dir().join(format!("zaprust-harden-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let account = root.join("accounts").join("default");
+        let crashes = root.join("crashes");
+        std::fs::create_dir_all(&account).expect("account dir");
+        std::fs::create_dir_all(&crashes).expect("crashes dir");
+        let session = account.join("session.db");
+        let report = crashes.join("crash-1.json");
+        let settings = root.join("settings.json");
+        for f in [&session, &report, &settings] {
+            std::fs::write(f, b"x").expect("seed file");
+            std::fs::set_permissions(f, std::fs::Permissions::from_mode(0o644)).expect("loosen");
+        }
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755))
+            .expect("loosen root");
+        tighten_tree(&root);
+        assert_eq!(mode_of(&root), 0o700, "the data dir itself is owner-only");
+        assert_eq!(mode_of(&account), 0o700, "account dirs are owner-only");
+        assert_eq!(mode_of(&session), 0o600, "the nested session database is tightened");
+        assert_eq!(mode_of(&report), 0o600, "crash reports are tightened");
+        assert_eq!(mode_of(&settings), 0o600, "plain artifacts are tightened");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Privacy audit C4: the rolling appender creates today's
+    /// log file when it is built, which is after the startup
+    /// hardening pass, so the tightening call in
+    /// `init_debug_tracing` is what closes the gap. This mirrors
+    /// that sequence against a real appender: the fresh file
+    /// exists immediately, and tightening makes it owner-only.
+    #[test]
+    fn fresh_debug_log_is_tightened_after_appender_creation() {
+        let dir =
+            std::env::temp_dir().join(format!("zaprust-debuglog-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("debug dir");
+        let _appender = tracing_appender::rolling::daily(&dir, "zaprust-debug.log");
+        let logs: Vec<std::path::PathBuf> =
+            std::fs::read_dir(&dir).expect("read dir").flatten().map(|e| e.path()).collect();
+        assert_eq!(logs.len(), 1, "the appender creates today's file eagerly: {logs:?}");
+        tighten_tree(&dir);
+        assert_eq!(mode_of(&logs[0]), 0o600, "the fresh debug log is owner-only after tightening");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

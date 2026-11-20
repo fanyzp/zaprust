@@ -36,9 +36,30 @@ impl Version {
     pub fn parse(raw: &str) -> Option<Self> {
         let s = raw.trim();
         let s = s.strip_prefix('v').unwrap_or(s);
-        let s = s.split('+').next()?;
+        // Build metadata is accepted and ignored, per SemVer, but
+        // a `+` followed by nothing (or by an empty identifier) is
+        // malformed, not a release with empty metadata.
+        let s = match s.split_once('+') {
+            Some((head, build)) => {
+                let bad_build = build.split('.').any(|id| {
+                    id.is_empty() || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                });
+                if bad_build {
+                    return None;
+                }
+                head
+            }
+            None => s,
+        };
+        // Likewise a `-` must introduce a non-empty prerelease:
+        // `1.0.0-` is malformed, not the release `1.0.0` itself.
         let (core, pre) = match s.split_once('-') {
-            Some((core, pre)) => (core, pre),
+            Some((core, pre)) => {
+                if pre.is_empty() {
+                    return None;
+                }
+                (core, pre)
+            }
             None => (s, ""),
         };
         let mut parts = core.split('.');
@@ -195,9 +216,16 @@ impl ReleaseInfo {
 /// (release assets redirect to hosts such as
 /// `objects.githubusercontent.com`). Lookalike hosts such as
 /// `github.com.evil.example` or `evilgithubusercontent.com` are
-/// rejected: the suffix check requires a dot boundary.
+/// rejected: the suffix check requires a dot boundary. A backslash
+/// anywhere before the fragment is also rejected, with the shared
+/// check from `crate::net`: WHATWG-style parsers treat '\' as an
+/// authority delimiter and would name a different host than this
+/// validator does, so the two validators refuse the same URLs.
 #[must_use]
 pub(crate) fn is_trusted_download_url(url: &str) -> bool {
+    if crate::net::has_backslash_before_fragment(url) {
+        return false;
+    }
     let Some((scheme, rest)) = url.split_once("://") else {
         return false;
     };
@@ -296,7 +324,11 @@ pub fn parse_sha256sums(text: &str) -> Vec<(String, String)> {
             if line.len() < 66 {
                 return None;
             }
-            let (hash, rest) = line.split_at(64);
+            // `get`, not `split_at`: byte 64 can fall inside a
+            // multi-byte character, where `split_at` would panic.
+            // A malformed line is skipped, never a crash.
+            let hash = line.get(..64)?;
+            let rest = line.get(64..)?;
             if !hash.chars().all(|c| c.is_ascii_hexdigit()) {
                 return None;
             }
@@ -581,6 +613,42 @@ mod tests {
     }
 
     #[test]
+    fn version_parse_rejects_empty_prerelease_and_build() {
+        // A trailing separator with nothing after it used to parse
+        // as the plain release: `v1.0.0-` compared equal to
+        // `1.0.0`. Malformed tags are rejected outright.
+        assert!(Version::parse("1.0.0-").is_none());
+        assert!(Version::parse("v1.0.0-").is_none());
+        assert!(Version::parse("1.0.0+").is_none());
+        assert!(Version::parse("1.0.0+a..b").is_none());
+        assert!(Version::parse("1.0.0-alpha..1").is_none());
+        // The forms the project actually ships still parse: plain
+        // and `v` releases, and the nightly workflow's
+        // `<base>-nightly.<date>+<short sha>` tags.
+        assert!(Version::parse("v1.0.0").is_some());
+        assert_eq!(
+            Version::parse("0.20.0-nightly.20261114+abc1234"),
+            Version::parse("0.20.0-nightly.20261114")
+        );
+    }
+
+    #[test]
+    fn sums_parser_skips_lines_that_would_split_mid_character() {
+        // 63 ASCII bytes followed by a 2-byte character: byte 64
+        // falls inside the character, where `split_at` panicked.
+        // The line is malformed and skipped, never a crash.
+        let mid_char = format!("{}é rest of the line, padding", "a".repeat(63));
+        assert!(mid_char.len() >= 66);
+        assert!(parse_sha256sums(&mid_char).is_empty());
+        // Short and garbage lines are skipped; a valid line parses.
+        let good = format!("{}  zaprust-linux-x86_64", "b".repeat(64));
+        let parsed = parse_sha256sums(&format!("short\n{mid_char}\n{good}\n"));
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].0, "b".repeat(64));
+        assert_eq!(parsed[0].1, "zaprust-linux-x86_64");
+    }
+
+    #[test]
     fn release_fixture_parses_and_selects_assets() {
         let rel = ReleaseInfo::parse(RELEASE_FIXTURE).unwrap();
         assert_eq!(rel.tag, "v0.22.0");
@@ -633,6 +701,19 @@ mod tests {
         assert!(!is_trusted_download_url("https://[127.0.0.1]/x"));
         assert!(!is_trusted_download_url("github.com/no-scheme"));
         assert!(!is_trusted_download_url(""));
+        // Backslashes before the fragment: a WHATWG parser ends
+        // the authority at the '\' and would connect to the host
+        // before it, while this validator reads the name after
+        // the last '@'. The first URL below would otherwise pass
+        // as objects.githubusercontent.com. Same rule as the
+        // fetch validator in `crate::net`, shared helper included.
+        assert!(!is_trusted_download_url("https://evil.example\\@objects.githubusercontent.com/x"));
+        assert!(!is_trusted_download_url("https://github.com\\@evil.example/x"));
+        assert!(!is_trusted_download_url("https://github.com/fanyzp\\zaprust"));
+        // A backslash inside the fragment is never sent to a
+        // server and cannot move the authority; the shared rule
+        // exempts it, exactly as in `crate::net`.
+        assert!(is_trusted_download_url("https://github.com/x#frag\\ment"));
     }
 
     #[test]

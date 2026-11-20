@@ -44,6 +44,13 @@ const KEY_FILE_NAME: &str = "db.key";
 /// when a fresh key could be generated but neither the keyring
 /// nor the key file could store it.
 pub fn load_or_create_key(data_dir: &Path) -> Result<[u8; 32], StoreError> {
+    // A previous run can have died between writing a key temp
+    // file and renaming it into place, leaving a full copy of
+    // the key in `.db.key.tmp-*` (see `write_key_file`). The
+    // loader never reads those files, so sweep them here, at
+    // the one point every key load passes through, before this
+    // process can start a key write of its own.
+    sweep_stale_key_temp_files(data_dir);
     let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT).ok();
     if let Some(entry) = &entry {
         match entry.get_password() {
@@ -76,14 +83,92 @@ pub fn load_or_create_key(data_dir: &Path) -> Result<[u8; 32], StoreError> {
     let in_keyring = entry.as_ref().and_then(|e| e.set_password(&encoded).ok()).is_some();
     if !in_keyring {
         std::fs::create_dir_all(data_dir).map_err(StoreError::Io)?;
-        std::fs::write(&file, &encoded).map_err(StoreError::Io)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600));
-        }
+        write_key_file(&file, &encoded)?;
     }
     Ok(key)
+}
+
+/// Writes the key file atomically, owner-only from creation.
+///
+/// The pattern the credential store's secret writer already uses
+/// (`write_secret_file` in core's credentials module; that helper
+/// is private to its crate, so the pattern is applied here rather
+/// than the function reused): a fresh temp file in the SAME
+/// directory, mode 0600 before any key bytes land in it, fsync,
+/// then a rename over the target and a directory fsync. The old
+/// write truncated `db.key` in place with default permissions
+/// and chmodded afterwards: the key was briefly world-readable,
+/// and a crash mid-write left a torn file that `decode_key`
+/// rejects, after which the fail-closed loader refuses to mint a
+/// replacement and every database is stranded. Now a crash
+/// leaves the previous key file (or none) plus an orphaned temp
+/// file the loader never reads.
+fn write_key_file(file: &Path, encoded: &str) -> Result<(), StoreError> {
+    use std::io::Write;
+    static TEMP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let parent = file.parent().unwrap_or_else(|| Path::new("."));
+    let counter = TEMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let temp_path = parent.join(format!(".{KEY_FILE_NAME}.tmp-{}-{counter}", std::process::id()));
+
+    let write_temp = |temp_path: &Path| -> Result<(), StoreError> {
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        let mut temp = opts.open(temp_path).map_err(StoreError::Io)?;
+        #[cfg(unix)]
+        {
+            // Belt and braces: the mode above applies because the
+            // file is created new, but assert 0600 explicitly
+            // before writing any key bytes.
+            use std::os::unix::fs::PermissionsExt;
+            temp.set_permissions(std::fs::Permissions::from_mode(0o600)).map_err(StoreError::Io)?;
+        }
+        temp.write_all(encoded.as_bytes()).map_err(StoreError::Io)?;
+        temp.sync_all().map_err(StoreError::Io)?;
+        Ok(())
+    };
+
+    if let Err(e) = write_temp(&temp_path) {
+        let _ = std::fs::remove_file(&temp_path);
+        return Err(e);
+    }
+    if let Err(e) = std::fs::rename(&temp_path, file) {
+        let _ = std::fs::remove_file(&temp_path);
+        return Err(StoreError::Io(e));
+    }
+    // Fsync the directory so the rename itself is durable.
+    #[cfg(unix)]
+    if let Ok(dir) = std::fs::File::open(parent) {
+        let _ = dir.sync_all();
+    }
+    Ok(())
+}
+
+/// Removes orphaned key temp files (`.db.key.tmp-*`) from
+/// `data_dir`.
+///
+/// [`write_key_file`] writes the key to a temp file and renames
+/// it over `db.key`; a crash in between leaves the temp behind,
+/// holding the full database key at 0600, in a file no inventory
+/// lists and the loader never reads (privacy audit A9).
+/// Best-effort: anything that cannot be listed or removed is
+/// left for the next load to retry. Only the exact temp prefix
+/// is touched; `db.key` itself and unrelated files are never
+/// matched.
+pub fn sweep_stale_key_temp_files(data_dir: &Path) {
+    let prefix = format!(".{KEY_FILE_NAME}.tmp-");
+    let Ok(entries) = std::fs::read_dir(data_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if entry.file_name().to_string_lossy().starts_with(&prefix) {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
 }
 
 /// Reads the key stored in the key file.
@@ -205,6 +290,71 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn key_file_write_is_owner_only_and_leaves_no_temp() {
+        let dir = scratch_dir("atomic");
+        let file = dir.join(KEY_FILE_NAME);
+        let key: [u8; 32] = std::array::from_fn(|i| (i * 5) as u8);
+        write_key_file(&file, &encode_key(&key)).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&file).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600, "the key file is 0600 from creation");
+        }
+        assert_eq!(read_key_file(&file).unwrap(), Some(key));
+        let leftovers: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|e| e.file_name().to_string_lossy().contains(".tmp-"))
+            .collect();
+        assert!(leftovers.is_empty(), "temp files left behind: {leftovers:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn interrupted_key_write_leaves_the_real_key_untouched() {
+        // A crash between the temp write and the rename leaves an
+        // orphaned temp file holding torn bytes. The loader reads
+        // only `db.key`, so the stored key survives, and a later
+        // successful write still replaces it atomically.
+        let dir = scratch_dir("interrupted");
+        let file = dir.join(KEY_FILE_NAME);
+        let key: [u8; 32] = std::array::from_fn(|i| (i * 11) as u8);
+        write_key_file(&file, &encode_key(&key)).unwrap();
+        std::fs::write(
+            dir.join(format!(".{KEY_FILE_NAME}.tmp-{}-99", std::process::id())),
+            "torn partial key",
+        )
+        .unwrap();
+        assert_eq!(read_key_file(&file).unwrap(), Some(key));
+        let key2: [u8; 32] = std::array::from_fn(|i| (i * 13) as u8);
+        write_key_file(&file, &encode_key(&key2)).unwrap();
+        assert_eq!(read_key_file(&file).unwrap(), Some(key2));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn stale_key_temp_is_swept_and_the_real_key_still_loads() {
+        // A crashed key write left a temp file holding a full
+        // copy of the key (privacy audit A9). Loading sweeps it
+        // and still returns the real key; unrelated files and
+        // the key file itself are untouched.
+        let dir = scratch_dir("temp-sweep");
+        let key: [u8; 32] = std::array::from_fn(|i| (i * 17) as u8);
+        std::fs::write(dir.join(KEY_FILE_NAME), encode_key(&key)).unwrap();
+        std::fs::write(dir.join("archive.db"), b"encrypted archive bytes").unwrap();
+        let temp = dir.join(format!(".{KEY_FILE_NAME}.tmp-{}-0", std::process::id()));
+        std::fs::write(&temp, encode_key(&key)).unwrap();
+        let unrelated = dir.join("db.key.bak");
+        std::fs::write(&unrelated, b"not a key temp").unwrap();
+        assert_eq!(load_or_create_key(&dir).unwrap(), key, "the real key still loads");
+        assert!(!temp.exists(), "the orphaned key temp is swept on load");
+        assert!(unrelated.exists(), "files outside the temp prefix are left alone");
+        assert_eq!(read_key_file(&dir.join(KEY_FILE_NAME)).unwrap(), Some(key));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

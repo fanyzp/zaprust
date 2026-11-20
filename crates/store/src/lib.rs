@@ -14,6 +14,13 @@
 //!   databases under one key held in the OS keyring (see
 //!   [`dbkey`]). Archives written by older, plaintext builds are
 //!   converted in place on first open ([`encrypt_file_in_place`]).
+//! - **Physical deletion** (privacy audit A2): connections run
+//!   with `secure_delete` on, so a deleted row's content is
+//!   zeroed as its page is freed instead of lingering in the
+//!   file; mass deletions additionally checkpoint and VACUUM
+//!   (see [`Store::delete_chat`]), and a one-time purge on first
+//!   open clears the free pages archives accumulated before
+//!   this discipline existed (see [`Store::open`]).
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
@@ -141,7 +148,33 @@ impl From<std::io::Error> for StoreError {
 }
 
 /// The newest schema version this build migrates to.
-pub const SCHEMA_VERSION: i64 = 7;
+pub const SCHEMA_VERSION: i64 = 8;
+
+/// `store_meta` key recording that the one-time freelist purge
+/// (see [`Store::open`]) has run for this archive. The purge
+/// rewrites the whole file, so it must happen exactly once per
+/// archive, not on every startup; the flag is written only
+/// after the purge completes, so a crash mid-purge simply
+/// retries on the next open.
+const FREELIST_PURGED_KEY: &str = "freelist_purged";
+
+/// `store_meta` key recording that the one-time view-once
+/// caption scrub has run for this archive. Same discipline as
+/// [`FREELIST_PURGED_KEY`]: exactly once per archive, flag
+/// written only after the scrub completes.
+const VIEW_ONCE_CAPTIONS_SCRUBBED_KEY: &str = "view_once_captions_scrubbed";
+
+/// `store_meta` key holding the persisted blocked-chat set (a
+/// JSON array of chat ids). The set lives in this encrypted
+/// archive rather than in the plaintext settings file: a chat id
+/// is a fast non-cryptographic hash of a phone-number JID, and
+/// the phone-number space is small enough to reverse by
+/// dictionary, so the settings file would hand anyone who copies
+/// it the user's blocked phone numbers (privacy audit A6). The
+/// server's blocklist, fetched at every connect, stays the
+/// source of truth; this copy only covers the time before that
+/// fetch lands.
+const BLOCKED_CHATS_KEY: &str = "blocked_chats";
 
 /// Message flag bit 1 was the retired AI-generated marker; the
 /// bit stays unassigned so existing archives keep their meaning.
@@ -159,6 +192,11 @@ pub const FLAG_STARRED: i64 = 8;
 
 /// Message flag: this message is pinned in its chat.
 pub const FLAG_PINNED_MESSAGE: i64 = 16;
+
+/// Message flag: this view-once message has been opened. Once
+/// opened it stays opened, so the state is persisted with the
+/// message instead of living only in the session.
+pub const FLAG_VIEW_ONCE_OPENED: i64 = 32;
 
 /// The rich payload of one message, stored as JSON in the
 /// `messages.data` column (schema v2). Absence (NULL) means a plain
@@ -190,10 +228,41 @@ pub struct Store {
     conn: Connection,
 }
 
+/// Runs one `ALTER TABLE ... ADD COLUMN` unless the table
+/// already has the column.
+///
+/// Migration steps must converge from states the ladder itself
+/// did not produce: a file whose `user_version` disagrees with
+/// its actual tables (a pre-versioning archive, a downgraded or
+/// hand-repaired file) would otherwise fail every launch with
+/// "duplicate column name" and never open again. The version
+/// bookkeeping stays honest: the step still records its version
+/// bump in the same transaction, it just tolerates its own
+/// effects already being present.
+fn add_column_if_missing(
+    tx: &rusqlite::Transaction<'_>,
+    table: &str,
+    column: &str,
+    ddl: &str,
+) -> Result<(), StoreError> {
+    let exists = {
+        let mut stmt = tx.prepare(&format!("PRAGMA table_info({table})"))?;
+        let names = stmt.query_map([], |row| row.get::<_, String>(1))?;
+        names.collect::<Result<Vec<String>, _>>()?
+    };
+    if !exists.iter().any(|name| name == column) {
+        tx.execute_batch(ddl)?;
+    }
+    Ok(())
+}
+
 impl Store {
     /// Opens (or creates) the encrypted archive at `path` and runs
     /// migrations. A plaintext archive left by an older build is
     /// converted in place first (see [`encrypt_file_in_place`]).
+    /// The first open under a build with physical deletion also
+    /// runs the one-time freelist purge described in the crate
+    /// docs; later opens skip it.
     ///
     /// # Errors
     /// [`StoreError`] on SQLite failures (including a wrong `key`,
@@ -220,10 +289,182 @@ impl Store {
     }
 
     fn init(conn: Connection) -> Result<Self, StoreError> {
-        conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;")?;
+        // secure_delete is per-connection, and this connection
+        // is the only one the store ever uses, so setting it
+        // here covers every delete the archive performs: freed
+        // pages are zeroed as they are freed, instead of keeping
+        // the deleted rows' bytes until the page happens to be
+        // reused (privacy audit A2).
+        conn.execute_batch(
+            "PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA secure_delete = ON;",
+        )?;
         let store = Self { conn };
         store.migrate()?;
+        store.purge_freelist_once()?;
+        store.scrub_view_once_captions_once()?;
         Ok(store)
+    }
+
+    /// The one-time purge of free pages accumulated before
+    /// `secure_delete` was enabled: archives written by older
+    /// builds deleted rows logically only, so their bodies can
+    /// still sit in the file's free pages (ciphertext, but
+    /// recoverable by anyone holding file and key together).
+    /// VACUUM drops every free page, so one pass clears them
+    /// all. Gated on the [`FREELIST_PURGED_KEY`] flag in
+    /// `store_meta`: the flag is written after the purge, so
+    /// the purge runs exactly once per archive and a crash
+    /// mid-purge retries on the next open instead of marking
+    /// work done that never happened.
+    fn purge_freelist_once(&self) -> Result<(), StoreError> {
+        let done: bool = self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM store_meta WHERE key = ?1)",
+            params![FREELIST_PURGED_KEY],
+            |row| row.get(0),
+        )?;
+        if done {
+            return Ok(());
+        }
+        self.reclaim_deleted()?;
+        self.conn.execute(
+            "INSERT INTO store_meta (key, value) VALUES (?1, '1')",
+            params![FREELIST_PURGED_KEY],
+        )?;
+        Ok(())
+    }
+
+    /// The one-time scrub of view-once captions archived by
+    /// builds that still stored them: those builds wrote the
+    /// caption into the message row's body and kind payload, so
+    /// it survived restarts indefinitely, defeating the
+    /// sender's view-once intent. The rows are identifiable
+    /// (the view-once flag is part of the stored data), so the
+    /// scrub empties body and kind caption on exactly those
+    /// rows, and recomputes the preview of every chat whose
+    /// newest message is view-once: under the old builds that
+    /// preview was the caption itself. `secure_delete` zeroes
+    /// the freed pages as the rows are rewritten, and the WAL
+    /// is truncated afterwards. Gated on the
+    /// [`VIEW_ONCE_CAPTIONS_SCRUBBED_KEY`] flag, written after
+    /// the scrub completes; the scrub is idempotent, so a crash
+    /// mid-scrub simply retries on the next open.
+    fn scrub_view_once_captions_once(&self) -> Result<(), StoreError> {
+        let done: bool = self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM store_meta WHERE key = ?1)",
+            params![VIEW_ONCE_CAPTIONS_SCRUBBED_KEY],
+            |row| row.get(0),
+        )?;
+        if done {
+            return Ok(());
+        }
+        // Archives converge from states the ladder itself did
+        // not produce (see the migration steps): a hand-built or
+        // partial file can lack the messages table entirely, in
+        // which case there is nothing to scrub.
+        let has_messages: bool = self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'messages')",
+            [],
+            |row| row.get(0),
+        )?;
+        if !has_messages {
+            self.conn.execute(
+                "INSERT INTO store_meta (key, value) VALUES (?1, '1')",
+                params![VIEW_ONCE_CAPTIONS_SCRUBBED_KEY],
+            )?;
+            return Ok(());
+        }
+        let rows: Vec<(String, String, i64, String, Option<String>)> = {
+            let mut stmt =
+                self.conn.prepare("SELECT chat_jid, id, timestamp, body, data FROM messages")?;
+            let mapped = stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                ))
+            })?;
+            mapped.collect::<Result<_, _>>()?
+        };
+        // The newest message of each chat, in the same order
+        // `messages` reads them (timestamp, then id): the chat
+        // preview derives from it, so it decides whether the
+        // stored preview can be a leaked caption.
+        let mut newest: std::collections::HashMap<&str, (i64, &str, bool)> =
+            std::collections::HashMap::new();
+        let mut scrubbed_any = false;
+        let tx = self.conn.unchecked_transaction()?;
+        for (chat_jid, id, timestamp, body, data_text) in &rows {
+            let data: MessageData =
+                data_text.as_deref().and_then(|t| serde_json::from_str(t).ok()).unwrap_or_default();
+            let entry = newest.entry(chat_jid.as_str()).or_insert((*timestamp, id.as_str(), false));
+            if (*timestamp, id.as_str()) >= (entry.0, entry.1) {
+                *entry = (*timestamp, id.as_str(), data.view_once);
+            }
+            if !data.view_once {
+                continue;
+            }
+            let mut data = data;
+            let mut changed = !body.is_empty();
+            if let Some(backend::LiveMessageKind::Media { caption, .. }) = &mut data.kind {
+                if !caption.is_empty() {
+                    caption.clear();
+                    changed = true;
+                }
+            }
+            if changed {
+                let data_json = serde_json::to_string(&data).map_err(|e| {
+                    StoreError::Sqlite(rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
+                })?;
+                tx.execute(
+                    "UPDATE messages SET body = '', data = ?3 WHERE chat_jid = ?1 AND id = ?2",
+                    params![chat_jid, id, data_json],
+                )?;
+                scrubbed_any = true;
+            }
+        }
+        for (chat_jid, (_, _, view_once)) in &newest {
+            if *view_once {
+                tx.execute(
+                    "UPDATE chats SET preview = ?2 WHERE jid = ?1",
+                    params![chat_jid, core::model::VIEW_ONCE_PREVIEW],
+                )?;
+            }
+        }
+        tx.commit()?;
+        if scrubbed_any {
+            self.checkpoint_truncate()?;
+        }
+        self.conn.execute(
+            "INSERT INTO store_meta (key, value) VALUES (?1, '1')",
+            params![VIEW_ONCE_CAPTIONS_SCRUBBED_KEY],
+        )?;
+        Ok(())
+    }
+
+    /// Physically removes what deletions freed: truncates the
+    /// WAL (its frames still carry pre-delete page images) and
+    /// VACUUMs, which rebuilds the database file from live
+    /// pages only and drops every free page. VACUUM rewrites
+    /// the whole encrypted file, so it is tied to mass
+    /// deletions (a chat deleted or cleared, an expiry batch)
+    /// and to the one-time purge, never to single-row deletes;
+    /// those rely on `secure_delete` zeroing plus the WAL
+    /// truncation in [`Store::delete_message`].
+    fn reclaim_deleted(&self) -> Result<(), StoreError> {
+        self.checkpoint_truncate()?;
+        self.conn.execute_batch("VACUUM;")?;
+        self.checkpoint_truncate()?;
+        Ok(())
+    }
+
+    /// Flushes the WAL into the database file and truncates
+    /// the WAL to zero length, so frames written before a
+    /// deletion do not linger for the rest of the session.
+    fn checkpoint_truncate(&self) -> Result<(), StoreError> {
+        self.conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
+        Ok(())
     }
 
     /// The schema version stored in the database file.
@@ -235,7 +476,10 @@ impl Store {
     }
 
     /// Applies migrations until the schema reaches
-    /// [`SCHEMA_VERSION`]. Idempotent.
+    /// [`SCHEMA_VERSION`]. Idempotent, and tolerant of a file
+    /// whose recorded version disagrees with its actual tables:
+    /// each step converges from any partial state instead of
+    /// failing on its own already-applied effects.
     ///
     /// # Errors
     /// [`StoreError::SchemaTooNew`] if the file is ahead of this
@@ -252,8 +496,14 @@ impl Store {
             let tx = self.conn.unchecked_transaction()?;
             match version {
                 0 => {
+                    // IF NOT EXISTS (and the per-column checks in
+                    // the ALTER steps below): a file whose
+                    // user_version disagrees with its tables, like
+                    // a pre-versioning archive that already has
+                    // them, must converge instead of failing every
+                    // launch with "table already exists".
                     tx.execute_batch(
-                        "CREATE TABLE chats (
+                        "CREATE TABLE IF NOT EXISTS chats (
                             jid TEXT PRIMARY KEY,
                             title TEXT NOT NULL,
                             kind TEXT NOT NULL,
@@ -262,7 +512,7 @@ impl Store {
                             timestamp INTEGER NOT NULL DEFAULT 0,
                             unread INTEGER NOT NULL DEFAULT 0
                         );
-                        CREATE TABLE messages (
+                        CREATE TABLE IF NOT EXISTS messages (
                             chat_jid TEXT NOT NULL,
                             id TEXT NOT NULL,
                             sender TEXT,
@@ -271,7 +521,7 @@ impl Store {
                             from_me INTEGER NOT NULL DEFAULT 0,
                             PRIMARY KEY (chat_jid, id)
                         );
-                        CREATE INDEX idx_messages_chat_time
+                        CREATE INDEX IF NOT EXISTS idx_messages_chat_time
                             ON messages (chat_jid, timestamp);",
                     )?;
                     tx.execute_batch("PRAGMA user_version = 1;")?;
@@ -280,9 +530,17 @@ impl Store {
                     // v2: rich payloads (kind/reactions/quote/preview
                     // as JSON) + a flags bitfield (AI-generated,
                     // deleted-by-sender, deleted).
-                    tx.execute_batch(
-                        "ALTER TABLE messages ADD COLUMN data TEXT;
-                         ALTER TABLE messages ADD COLUMN flags INTEGER NOT NULL DEFAULT 0;",
+                    add_column_if_missing(
+                        &tx,
+                        "messages",
+                        "data",
+                        "ALTER TABLE messages ADD COLUMN data TEXT",
+                    )?;
+                    add_column_if_missing(
+                        &tx,
+                        "messages",
+                        "flags",
+                        "ALTER TABLE messages ADD COLUMN flags INTEGER NOT NULL DEFAULT 0",
                     )?;
                     tx.execute_batch("PRAGMA user_version = 2;")?;
                 }
@@ -298,9 +556,17 @@ impl Store {
                 3 => {
                     // v4: chat list state (archived / pinned) that
                     // the chat-actions surface writes through.
-                    tx.execute_batch(
-                        "ALTER TABLE chats ADD COLUMN archived INTEGER NOT NULL DEFAULT 0;
-                         ALTER TABLE chats ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0;",
+                    add_column_if_missing(
+                        &tx,
+                        "chats",
+                        "archived",
+                        "ALTER TABLE chats ADD COLUMN archived INTEGER NOT NULL DEFAULT 0",
+                    )?;
+                    add_column_if_missing(
+                        &tx,
+                        "chats",
+                        "pinned",
+                        "ALTER TABLE chats ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0",
                     )?;
                     tx.execute_batch("PRAGMA user_version = 4;")?;
                 }
@@ -310,9 +576,17 @@ impl Store {
                     // carries the unix second at which it expires
                     // (0 = never), computed by the backend from
                     // the wire expiration.
-                    tx.execute_batch(
-                        "ALTER TABLE chats ADD COLUMN ephemeral_secs INTEGER NOT NULL DEFAULT 0;
-                         ALTER TABLE messages ADD COLUMN expires_at INTEGER NOT NULL DEFAULT 0;",
+                    add_column_if_missing(
+                        &tx,
+                        "chats",
+                        "ephemeral_secs",
+                        "ALTER TABLE chats ADD COLUMN ephemeral_secs INTEGER NOT NULL DEFAULT 0",
+                    )?;
+                    add_column_if_missing(
+                        &tx,
+                        "messages",
+                        "expires_at",
+                        "ALTER TABLE messages ADD COLUMN expires_at INTEGER NOT NULL DEFAULT 0",
                     )?;
                     tx.execute_batch("PRAGMA user_version = 5;")?;
                 }
@@ -321,8 +595,11 @@ impl Store {
                     // archive, so a muted chat stays muted across
                     // restarts (it previously lived only in the
                     // running app's memory).
-                    tx.execute_batch(
-                        "ALTER TABLE chats ADD COLUMN muted INTEGER NOT NULL DEFAULT 0;",
+                    add_column_if_missing(
+                        &tx,
+                        "chats",
+                        "muted",
+                        "ALTER TABLE chats ADD COLUMN muted INTEGER NOT NULL DEFAULT 0",
                     )?;
                     tx.execute_batch("PRAGMA user_version = 6;")?;
                 }
@@ -336,6 +613,22 @@ impl Store {
                          DROP TABLE IF EXISTS reminders;",
                     )?;
                     tx.execute_batch("PRAGMA user_version = 7;")?;
+                }
+                7 => {
+                    // v8: the store_meta key/value table. Its
+                    // first resident records that the one-time
+                    // freelist purge has run (see
+                    // FREELIST_PURGED_KEY); the purge itself
+                    // cannot live in this ladder because VACUUM
+                    // is not allowed inside a transaction, so it
+                    // runs from the open path after migration.
+                    tx.execute_batch(
+                        "CREATE TABLE IF NOT EXISTS store_meta (
+                            key TEXT PRIMARY KEY,
+                            value TEXT NOT NULL
+                        );",
+                    )?;
+                    tx.execute_batch("PRAGMA user_version = 8;")?;
                 }
                 _ => return Err(StoreError::BadSchemaVersion(version)),
             }
@@ -412,11 +705,31 @@ impl Store {
     /// [`Store::upsert_messages`], against any connection handle
     /// (the store's own, or a transaction borrowing it).
     fn write_message(conn: &Connection, msg: &LiveMessage, flags: i64) -> Result<(), StoreError> {
+        // A view-once message's caption is part of its sealed
+        // payload: the live mirror keeps it (the viewer shows it
+        // with the media itself), but the archive must not. A
+        // view-once row is stored with an empty body and an
+        // empty kind caption; the kind and the view-once flag
+        // survive, so after a restart the message still renders
+        // as the view-once placeholder, with no caption left to
+        // leak. Rows written before this rule are scrubbed by
+        // the one-time pass in `init` (they are identifiable:
+        // the flag is part of the stored data).
+        let stored_kind = match &msg.kind {
+            backend::LiveMessageKind::Text => None,
+            backend::LiveMessageKind::Media { media, seconds, size_bytes, .. } if msg.view_once => {
+                Some(backend::LiveMessageKind::Media {
+                    media: *media,
+                    caption: String::new(),
+                    seconds: *seconds,
+                    size_bytes: *size_bytes,
+                })
+            }
+            other => Some(other.clone()),
+        };
+        let stored_body = if msg.view_once { "" } else { msg.body.as_str() };
         let data = MessageData {
-            kind: match &msg.kind {
-                backend::LiveMessageKind::Text => None,
-                other => Some(other.clone()),
-            },
+            kind: stored_kind,
             reactions: msg.reactions.clone(),
             my_reaction: msg.my_reaction.clone(),
             quoted_sender: msg.quoted_sender.clone(),
@@ -444,7 +757,7 @@ impl Store {
                 msg.chat_jid,
                 msg.id,
                 msg.sender,
-                msg.body,
+                stored_body,
                 msg.timestamp,
                 i64::from(msg.from_me),
                 data_json,
@@ -456,9 +769,17 @@ impl Store {
     }
 
     /// Deletes one stored message. Returns whether a row
-    /// existed. The disappearing-messages expiry pass uses this
-    /// so an expired message leaves the archive together with
-    /// the conversation.
+    /// existed. The deletion is physical, not just logical:
+    /// `secure_delete` zeroes the freed page in the database
+    /// file, and the WAL is truncated so the frames written
+    /// before the deletion do not keep the body for the rest
+    /// of the session. (The freed page itself is dropped by
+    /// the next mass deletion's VACUUM.) Single deletions like
+    /// a delete-for-me landing from another device take this
+    /// path; the disappearing-messages expiry pass removes its
+    /// whole catch through [`Store::delete_messages`] instead,
+    /// so a pass pays one commit and one reclaim, not one per
+    /// message.
     ///
     /// # Errors
     /// [`StoreError`] on SQLite failures.
@@ -467,7 +788,95 @@ impl Store {
             "DELETE FROM messages WHERE chat_jid = ?1 AND id = ?2",
             params![chat_jid, id],
         )?;
+        if changed > 0 {
+            self.checkpoint_truncate()?;
+        }
         Ok(changed > 0)
+    }
+
+    /// Deletes many stored messages, given as (chat JID,
+    /// message id) pairs, in a single transaction, and
+    /// reclaims what they freed (WAL truncation plus VACUUM;
+    /// see [`Store::delete_chat`] for why mass deletions pay
+    /// for the rewrite). Returns how many rows existed. An
+    /// empty batch is a no-op, matching
+    /// [`Store::upsert_messages`].
+    ///
+    /// # Errors
+    /// [`StoreError`] on SQLite failures.
+    pub fn delete_messages(&self, keys: &[(String, String)]) -> Result<usize, StoreError> {
+        if keys.is_empty() {
+            return Ok(0);
+        }
+        let tx = self.conn.unchecked_transaction()?;
+        let mut deleted = 0;
+        for (chat_jid, id) in keys {
+            deleted += tx.execute(
+                "DELETE FROM messages WHERE chat_jid = ?1 AND id = ?2",
+                params![chat_jid, id],
+            )?;
+        }
+        tx.commit()?;
+        if deleted > 0 {
+            self.reclaim_deleted()?;
+        }
+        Ok(deleted)
+    }
+
+    /// Deletes one stored chat and all its messages. Returns
+    /// whether a chat row existed. A chat deleted on another
+    /// device leaves the archive whole: the chat row and its
+    /// message rows go in one transaction, so the archive never
+    /// holds a chat without its messages or messages without
+    /// their chat. When anything was removed, the freed space
+    /// is reclaimed (WAL truncation plus VACUUM): a whole chat
+    /// is exactly the deletion whose bodies must not linger
+    /// in free pages, and it is rare and user-initiated, so
+    /// the file rewrite is worth its cost here and only here.
+    ///
+    /// # Errors
+    /// [`StoreError`] on SQLite failures.
+    pub fn delete_chat(&self, chat_jid: &str) -> Result<bool, StoreError> {
+        let tx = self.conn.unchecked_transaction()?;
+        let messages = tx.execute("DELETE FROM messages WHERE chat_jid = ?1", params![chat_jid])?;
+        let changed = tx.execute("DELETE FROM chats WHERE jid = ?1", params![chat_jid])?;
+        tx.commit()?;
+        if messages + changed > 0 {
+            self.reclaim_deleted()?;
+        }
+        Ok(changed > 0)
+    }
+
+    /// Deletes a chat's stored messages while keeping the chat
+    /// row itself. A chat cleared on another device empties
+    /// here the way it empties there: `up_to` bounds the clear
+    /// to messages stamped at or before it (Unix seconds;
+    /// `None` clears everything), and `keep_starred` spares
+    /// rows whose flags carry [`FLAG_STARRED`], the clearing
+    /// device's keep-starred choice. Returns how many message
+    /// rows were deleted. A clear that removed anything
+    /// reclaims the freed space like [`Store::delete_chat`]
+    /// does.
+    ///
+    /// # Errors
+    /// [`StoreError`] on SQLite failures.
+    pub fn delete_chat_messages(
+        &self,
+        chat_jid: &str,
+        keep_starred: bool,
+        up_to: Option<i64>,
+    ) -> Result<usize, StoreError> {
+        let changed = self.conn.execute(
+            "DELETE FROM messages
+             WHERE chat_jid = ?1
+               AND (?2 IS NULL OR timestamp <= ?2)
+               AND (?3 = 0 OR (flags & ?4) = 0)",
+            params![chat_jid, up_to, i64::from(keep_starred), FLAG_STARRED],
+        )?;
+        if changed > 0 {
+            self.reclaim_deleted()?;
+        }
+        Ok(changed)
     }
 
     /// Updates ONLY the flags bitfield of one stored message.
@@ -594,6 +1003,59 @@ impl Store {
         serde_json::to_string(&serde_json::json!({ "chats": chats_json }))
             .map_err(|e| StoreError::Sqlite(rusqlite::Error::ToSqlConversionFailure(Box::new(e))))
     }
+
+    /// The persisted blocked-chat set (chat ids), or `None` when
+    /// no set has ever been stored in this archive. The
+    /// distinction matters to the caller: a stored empty set is
+    /// the server's word that nothing is blocked, while `None`
+    /// means the archive has nothing to say and a legacy copy
+    /// elsewhere (the pre-A6 settings file) may still need
+    /// migrating in. See [`BLOCKED_CHATS_KEY`] for why the set
+    /// lives here and not in the settings file.
+    ///
+    /// # Errors
+    /// [`StoreError`] on SQLite failures or a stored value that
+    /// is not the JSON array [`Store::set_blocked_chats`] wrote.
+    pub fn blocked_chats(&self) -> Result<Option<Vec<u64>>, StoreError> {
+        let raw: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT value FROM store_meta WHERE key = ?1",
+                params![BLOCKED_CHATS_KEY],
+                |row| row.get(0),
+            )
+            .map(Some)
+            .or_else(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                other => Err(other),
+            })?;
+        let Some(raw) = raw else {
+            return Ok(None);
+        };
+        let ids: Vec<u64> = serde_json::from_str(&raw).map_err(|e| {
+            StoreError::Sqlite(rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
+        })?;
+        Ok(Some(ids))
+    }
+
+    /// Replaces the persisted blocked-chat set. Called whenever
+    /// the set changes locally and whenever the server's
+    /// connect-time blocklist is adopted, so the stored copy
+    /// always mirrors the last known truth.
+    ///
+    /// # Errors
+    /// [`StoreError`] on SQLite failures.
+    pub fn set_blocked_chats(&self, ids: &[u64]) -> Result<(), StoreError> {
+        let raw = serde_json::to_string(&ids).map_err(|e| {
+            StoreError::Sqlite(rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
+        })?;
+        self.conn.execute(
+            "INSERT INTO store_meta (key, value) VALUES (?1, ?2) \
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![BLOCKED_CHATS_KEY, raw],
+        )?;
+        Ok(())
+    }
 }
 
 fn kind_str(kind: LiveChatKind) -> &'static str {
@@ -675,6 +1137,84 @@ mod tests {
     }
 
     #[test]
+    fn migration_converges_when_version_zero_already_has_tables() {
+        // A pre-versioning archive: the v1 tables exist but
+        // user_version was never stamped, so it reads 0. The
+        // ladder must not die on "table already exists"; it adds
+        // the missing columns and reaches the current version.
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE chats (
+                jid TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                preview TEXT NOT NULL DEFAULT '',
+                preview_sender TEXT,
+                timestamp INTEGER NOT NULL DEFAULT 0,
+                unread INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE messages (
+                chat_jid TEXT NOT NULL,
+                id TEXT NOT NULL,
+                sender TEXT,
+                body TEXT NOT NULL,
+                timestamp INTEGER NOT NULL,
+                from_me INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (chat_jid, id)
+            );
+            CREATE INDEX idx_messages_chat_time ON messages (chat_jid, timestamp);
+            INSERT INTO chats (jid, title, kind) VALUES ('123@s.whatsapp.net', 'Ana', 'dm');",
+        )
+        .unwrap();
+        let store = Store { conn };
+        store.migrate().unwrap();
+        assert_eq!(store.schema_version().unwrap(), SCHEMA_VERSION);
+        // The converged schema is fully usable and the row kept.
+        store.upsert_chat(&scripted_chats()[0]).unwrap();
+        let chats = store.chats().unwrap();
+        assert!(chats.iter().any(|c| c.title == "Ana"), "pre-existing row survived: {chats:?}");
+        store.migrate().unwrap();
+    }
+
+    #[test]
+    fn migration_converges_when_a_step_was_already_applied() {
+        // Version says 3, but the v4 columns are already present
+        // (an interrupted or hand-repaired file): the v4 step
+        // must not die on "duplicate column name".
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE chats (
+                jid TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                preview TEXT NOT NULL DEFAULT '',
+                preview_sender TEXT,
+                timestamp INTEGER NOT NULL DEFAULT 0,
+                unread INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE messages (
+                chat_jid TEXT NOT NULL,
+                id TEXT NOT NULL,
+                sender TEXT,
+                body TEXT NOT NULL,
+                timestamp INTEGER NOT NULL,
+                from_me INTEGER NOT NULL DEFAULT 0,
+                data TEXT,
+                flags INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (chat_jid, id)
+            );
+            ALTER TABLE chats ADD COLUMN archived INTEGER NOT NULL DEFAULT 0;
+            ALTER TABLE chats ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0;
+            PRAGMA user_version = 3;",
+        )
+        .unwrap();
+        let store = Store { conn };
+        store.migrate().unwrap();
+        assert_eq!(store.schema_version().unwrap(), SCHEMA_VERSION);
+        store.upsert_chat(&scripted_chats()[0]).unwrap();
+    }
+
+    #[test]
     fn chat_and_message_round_trip() {
         let store = Store::open_in_memory().unwrap();
         for chat in scripted_chats() {
@@ -689,6 +1229,27 @@ mod tests {
         let msgs: Vec<LiveMessage> =
             store.messages(&scripted_chats()[0].jid).unwrap().into_iter().map(|(m, _)| m).collect();
         assert_eq!(msgs, scripted_messages());
+    }
+
+    #[test]
+    fn blocked_chats_round_trip_through_the_archive() {
+        // The blocked set's persisted home is this encrypted
+        // archive (privacy audit A6): a fresh archive has never
+        // stored a set, a stored set reads back exactly, a
+        // replacement replaces wholesale, and a stored empty set
+        // stays distinguishable from "never stored".
+        let store = Store::open_in_memory().unwrap();
+        assert_eq!(store.blocked_chats().unwrap(), None, "nothing stored yet");
+        store.set_blocked_chats(&[11, 22, 33]).unwrap();
+        assert_eq!(store.blocked_chats().unwrap(), Some(vec![11, 22, 33]));
+        store.set_blocked_chats(&[7]).unwrap();
+        assert_eq!(store.blocked_chats().unwrap(), Some(vec![7]), "replacement is wholesale");
+        store.set_blocked_chats(&[]).unwrap();
+        assert_eq!(
+            store.blocked_chats().unwrap(),
+            Some(Vec::new()),
+            "a stored empty set is a statement, not an absence"
+        );
     }
 
     #[test]
@@ -748,6 +1309,417 @@ mod tests {
         assert_eq!(loaded.body, msg.body);
         // Missing rows report false instead of fabricating one.
         assert!(!store.set_message_flags(&msg.chat_jid, "nope", 0).unwrap());
+    }
+
+    /// The view-once opened state persists with the message's
+    /// flags (privacy audit D13): set through the same targeted
+    /// flags update the app uses, it comes back on reload, so a
+    /// restart never presents an opened view-once message as
+    /// unopened again. The bit is independent of the others.
+    #[test]
+    fn view_once_opened_flag_survives_a_round_trip() {
+        let store = Store::open_in_memory().unwrap();
+        let msg = scripted_messages()[0].clone();
+        store.upsert_message(&msg, 0).unwrap();
+        assert!(store
+            .set_message_flags(&msg.chat_jid, &msg.id, FLAG_STARRED | FLAG_VIEW_ONCE_OPENED)
+            .unwrap());
+        let rows = store.messages(&msg.chat_jid).unwrap();
+        let flags = rows[0].1;
+        assert_ne!(flags & FLAG_VIEW_ONCE_OPENED, 0, "the opened bit is stored");
+        assert_ne!(flags & FLAG_STARRED, 0, "the other bits are untouched");
+        // Clearing just the opened bit leaves the rest alone.
+        assert!(store.set_message_flags(&msg.chat_jid, &msg.id, FLAG_STARRED).unwrap());
+        let rows = store.messages(&msg.chat_jid).unwrap();
+        assert_eq!(rows[0].1 & FLAG_VIEW_ONCE_OPENED, 0);
+        assert_eq!(rows[0].1, FLAG_STARRED);
+    }
+
+    #[test]
+    fn delete_chat_removes_the_chat_and_its_messages_only() {
+        let store = Store::open_in_memory().unwrap();
+        for chat in scripted_chats() {
+            store.upsert_chat(&chat).unwrap();
+        }
+        for msg in scripted_messages() {
+            store.upsert_message(&msg, 0).unwrap();
+        }
+        // A message in a second chat, to prove the deletion is
+        // scoped to the one chat (the scripted messages all live
+        // in the first chat).
+        let kept = scripted_chats()[1].clone();
+        let mut kept_msg = scripted_messages()[0].clone();
+        kept_msg.chat_jid = kept.jid.clone();
+        store.upsert_message(&kept_msg, 0).unwrap();
+        let gone = scripted_chats()[0].clone();
+        assert!(store.delete_chat(&gone.jid).unwrap(), "an existing chat reports true");
+        assert!(store.chats().unwrap().iter().all(|c| c.jid != gone.jid), "the chat row is gone");
+        assert!(store.messages(&gone.jid).unwrap().is_empty(), "its messages go with it");
+        // The other chats and their messages are untouched.
+        assert_eq!(store.chats().unwrap().len(), 2);
+        assert_eq!(store.messages(&kept.jid).unwrap().len(), 1);
+        // Deleting a chat that is not there reports false.
+        assert!(!store.delete_chat(&gone.jid).unwrap());
+        assert!(!store.delete_chat("nobody@s.whatsapp.net").unwrap());
+    }
+
+    #[test]
+    fn delete_chat_messages_keeps_the_chat_starred_and_newer_rows() {
+        let store = Store::open_in_memory().unwrap();
+        let chat = scripted_chats()[0].clone();
+        store.upsert_chat(&chat).unwrap();
+        // Three rows: an old plain one, an old starred one, and
+        // one newer than the clear bound. Flags ride the upsert.
+        let msg = |id: &str, ts: i64| {
+            LiveMessage::text(id, &chat.jid, Some("Sender".to_owned()), id, ts, false)
+        };
+        store.upsert_message(&msg("old-plain", 100), 0).unwrap();
+        store.upsert_message(&msg("old-starred", 200), FLAG_STARRED).unwrap();
+        store.upsert_message(&msg("new-plain", 300), 0).unwrap();
+
+        // Keep-starred clear bounded at 250: only the old plain
+        // row is the clear's to remove.
+        let deleted = store.delete_chat_messages(&chat.jid, true, Some(250)).unwrap();
+        assert_eq!(deleted, 1);
+        let remaining: Vec<String> =
+            store.messages(&chat.jid).unwrap().into_iter().map(|(m, _)| m.id).collect();
+        assert_eq!(remaining, ["old-starred", "new-plain"]);
+        assert_eq!(store.chats().unwrap().len(), 1, "the chat row itself stays");
+
+        // The same clear without the keep-starred choice takes
+        // the starred row too; the newer row is still out of
+        // the bound's reach.
+        let deleted = store.delete_chat_messages(&chat.jid, false, Some(250)).unwrap();
+        assert_eq!(deleted, 1);
+        let remaining: Vec<String> =
+            store.messages(&chat.jid).unwrap().into_iter().map(|(m, _)| m.id).collect();
+        assert_eq!(remaining, ["new-plain"]);
+
+        // Unbounded, the rest goes; a repeat clear is a no-op.
+        assert_eq!(store.delete_chat_messages(&chat.jid, false, None).unwrap(), 1);
+        assert!(store.messages(&chat.jid).unwrap().is_empty());
+        assert_eq!(store.delete_chat_messages(&chat.jid, false, None).unwrap(), 0);
+        assert_eq!(store.chats().unwrap().len(), 1, "the chat row still stays");
+    }
+
+    /// Whether `needle` appears in the bytes of the database
+    /// file at `path` or of its WAL sidecar. Used on plaintext
+    /// test databases, where a surviving body is directly
+    /// visible in the file.
+    fn db_files_contain(path: &Path, needle: &str) -> bool {
+        let needle = needle.as_bytes();
+        let hit = |p: &Path| {
+            std::fs::read(p).unwrap_or_default().windows(needle.len()).any(|w| w == needle)
+        };
+        hit(path) || hit(Path::new(&format!("{}-wal", path.display())))
+    }
+
+    #[test]
+    fn secure_delete_is_enabled_on_store_connections() {
+        // The pragma is per-connection; init must switch it on
+        // for the store's one connection, or every delete below
+        // silently degrades to logical-only.
+        let store = Store::open_in_memory().unwrap();
+        let on: i64 = store.conn.query_row("PRAGMA secure_delete", [], |row| row.get(0)).unwrap();
+        assert_eq!(on, 1, "store connections must run with secure_delete on");
+    }
+
+    #[test]
+    fn deleted_message_bodies_do_not_survive_in_the_file() {
+        // A plaintext file database (opened through the real
+        // init path, just without a key) so a surviving body
+        // would be directly visible in the raw bytes: this
+        // proves the physical-deletion property, not merely
+        // that a pragma was issued.
+        let path = temp_db_path("physical-delete");
+        let marker = "DELETION-MARKER-body-6f1a9c4e-never-meant-to-survive";
+        let marker2 = "DELETION-MARKER-chat-8b2d05f1-never-meant-to-survive";
+        let control = "CONTROL-body-41c77d2e-meant-to-survive";
+        let chat_a = scripted_chats()[0].clone();
+        let chat_b = scripted_chats()[1].clone();
+        let store = Store::init(Connection::open(&path).unwrap()).unwrap();
+        store.upsert_chat(&chat_a).unwrap();
+        store.upsert_chat(&chat_b).unwrap();
+        store
+            .upsert_message(&LiveMessage::text("m-del", &chat_a.jid, None, marker, 100, false), 0)
+            .unwrap();
+        store
+            .upsert_message(
+                &LiveMessage::text("m-del-chat", &chat_b.jid, None, marker2, 100, false),
+                0,
+            )
+            .unwrap();
+        store
+            .upsert_message(&LiveMessage::text("m-keep", &chat_a.jid, None, control, 101, false), 0)
+            .unwrap();
+        // Sanity: the scan can see the bodies while they live.
+        assert!(db_files_contain(&path, marker), "setup: marker body must be in the file");
+        assert!(db_files_contain(&path, control), "setup: control body must be in the file");
+
+        // Single delete (the delete-for-me path): secure_delete
+        // zeroes the page and the WAL truncation drops the
+        // pre-delete frames, so the body is gone from the raw
+        // bytes without any VACUUM.
+        assert!(store.delete_message(&chat_a.jid, "m-del").unwrap());
+        assert!(!db_files_contain(&path, marker), "deleted body must not survive in the file");
+        assert!(db_files_contain(&path, control), "the kept message's body must still be there");
+
+        // Whole-chat delete: the reclaim's VACUUM drops the
+        // freed pages entirely.
+        assert!(store.delete_chat(&chat_b.jid).unwrap());
+        assert!(!db_files_contain(&path, marker2), "deleted chat's body must not survive");
+        assert!(db_files_contain(&path, control), "the other chat must be untouched");
+        drop(store);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn one_time_purge_clears_prefixed_remnants_and_runs_once() {
+        let path = temp_db_path("purge-once");
+        let old_marker = "OLD-REMNANT-body-02fe91aa-from-before-the-fix";
+        let new_marker = "NEW-REMNANT-body-7d04b3c9-after-the-fix";
+        let chat = scripted_chats()[0].clone();
+        // Build a pre-fix archive: schema migrated, but the
+        // connection deletes the way old builds did (default
+        // secure_delete off, no reclaim, no purge flag).
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA secure_delete = OFF;").unwrap();
+            let store = Store { conn };
+            store.migrate().unwrap();
+            store.upsert_chat(&chat).unwrap();
+            store
+                .upsert_message(
+                    &LiveMessage::text("old-1", &chat.jid, None, old_marker, 100, false),
+                    0,
+                )
+                .unwrap();
+            drop(store);
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch("PRAGMA secure_delete = OFF;").unwrap();
+            conn.execute("DELETE FROM messages WHERE id = 'old-1'", []).unwrap();
+            drop(conn);
+        }
+        assert!(
+            db_files_contain(&path, old_marker),
+            "setup: the logically deleted body must linger in free pages"
+        );
+
+        // First open under the fixed build: the purge runs and
+        // the remnant is physically gone.
+        {
+            let store = Store::init(Connection::open(&path).unwrap()).unwrap();
+            assert!(store.messages(&chat.jid).unwrap().is_empty());
+        }
+        assert!(!db_files_contain(&path, old_marker), "the purge must clear pre-fix remnants");
+        let conn = Connection::open(&path).unwrap();
+        let flag: Option<String> = conn
+            .query_row(
+                "SELECT value FROM store_meta WHERE key = ?1",
+                params![FREELIST_PURGED_KEY],
+                |row| row.get(0),
+            )
+            .ok();
+        assert_eq!(flag.as_deref(), Some("1"), "the purge records itself in store_meta");
+        // Leave a fresh remnant the pre-fix way.
+        conn.execute_batch("PRAGMA secure_delete = OFF;").unwrap();
+        conn.execute(
+            "INSERT INTO messages (chat_jid, id, sender, body, timestamp, from_me)
+             VALUES (?1, 'new-1', NULL, ?2, 200, 0)",
+            params![chat.jid, new_marker],
+        )
+        .unwrap();
+        conn.execute("DELETE FROM messages WHERE id = 'new-1'", []).unwrap();
+        drop(conn);
+        assert!(db_files_contain(&path, new_marker), "setup: the new remnant must linger");
+
+        // Second open: the purge must NOT run again (it is a
+        // one-time migration, not a per-startup VACUUM), so the
+        // remnant left behind above survives this open.
+        {
+            let _store = Store::init(Connection::open(&path).unwrap()).unwrap();
+        }
+        assert!(
+            db_files_contain(&path, new_marker),
+            "the one-time purge must not repeat on the second open"
+        );
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn view_once_captions_are_not_archived() {
+        // Privacy finding D2: a view-once message's caption is
+        // part of its sealed payload. The archive keeps the row
+        // (kind + view-once flag, so the placeholder renders
+        // after a restart) but never the caption, in neither the
+        // body column nor the kind payload.
+        let store = Store::open_in_memory().unwrap();
+        let chat = scripted_chats()[0].clone();
+        store.upsert_chat(&chat).unwrap();
+        let mut vo = LiveMessage::text("vo-1", &chat.jid, None, "secret caption", 100, false);
+        vo.kind = backend::LiveMessageKind::Media {
+            media: backend::MediaKind::Photo,
+            caption: "secret caption".to_owned(),
+            seconds: 0,
+            size_bytes: 10,
+        };
+        vo.view_once = true;
+        store.upsert_message(&vo, 0).unwrap();
+        let mut photo = LiveMessage::text("ph-1", &chat.jid, None, "kept caption", 101, false);
+        photo.kind = backend::LiveMessageKind::Media {
+            media: backend::MediaKind::Photo,
+            caption: "kept caption".to_owned(),
+            seconds: 0,
+            size_bytes: 10,
+        };
+        store.upsert_message(&photo, 0).unwrap();
+
+        let msgs = store.messages(&chat.jid).unwrap();
+        let vo_back = &msgs.iter().find(|(m, _)| m.id == "vo-1").unwrap().0;
+        assert_eq!(vo_back.body, "", "the archived body must not be the caption");
+        assert!(vo_back.view_once, "the view-once flag survives the round trip");
+        match &vo_back.kind {
+            backend::LiveMessageKind::Media { caption, .. } => {
+                assert_eq!(caption, "", "the archived kind must not carry the caption");
+            }
+            other => panic!("expected the media kind to survive, got {other:?}"),
+        }
+        let photo_back = &msgs.iter().find(|(m, _)| m.id == "ph-1").unwrap().0;
+        assert_eq!(photo_back.body, "kept caption", "a normal photo's caption round-trips");
+        match &photo_back.kind {
+            backend::LiveMessageKind::Media { caption, .. } => {
+                assert_eq!(caption, "kept caption");
+            }
+            other => panic!("expected the media kind to survive, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn one_time_scrub_removes_archived_view_once_captions() {
+        // Archives written before the D2 fix hold view-once
+        // captions in the body column, the kind payload, and
+        // the chat preview. The rows are identifiable (the
+        // view-once flag is in the stored data), so the first
+        // open under the fixed build scrubs exactly those rows
+        // and recomputes the affected previews, exactly once.
+        let path = temp_db_path("vo-scrub");
+        let chat = scripted_chats()[0].clone();
+        let caption = "VO-LEGACY-caption-9f31c";
+        let late_caption = "VO-LATE-caption-51b8e";
+        let media_data = |caption: &str, view_once: bool| {
+            serde_json::to_string(&MessageData {
+                kind: Some(backend::LiveMessageKind::Media {
+                    media: backend::MediaKind::Photo,
+                    caption: caption.to_owned(),
+                    seconds: 0,
+                    size_bytes: 10,
+                }),
+                view_once,
+                ..Default::default()
+            })
+            .unwrap()
+        };
+        let insert_legacy = |conn: &Connection, id: &str, body: &str, data: &str, ts: i64| {
+            conn.execute(
+                "INSERT INTO messages (chat_jid, id, sender, body, timestamp, from_me, data, flags, expires_at)
+                 VALUES (?1, ?2, NULL, ?3, ?4, 0, ?5, 0, 0)",
+                params![chat.jid, id, body, ts, data],
+            )
+            .unwrap();
+        };
+        // Build the pre-fix archive by hand: schema migrated,
+        // rows written the way the old builds wrote them.
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch("PRAGMA journal_mode = WAL;").unwrap();
+            let store = Store { conn };
+            store.migrate().unwrap();
+            let mut legacy_chat = chat.clone();
+            legacy_chat.preview = caption.to_owned();
+            store.upsert_chat(&legacy_chat).unwrap();
+            insert_legacy(
+                &store.conn,
+                "photo-old",
+                "a normal caption",
+                &media_data("a normal caption", false),
+                200,
+            );
+            insert_legacy(&store.conn, "vo-old", caption, &media_data(caption, true), 300);
+            drop(store);
+        }
+
+        // First open under the fixed build: the scrub runs.
+        {
+            let store = Store::init(Connection::open(&path).unwrap()).unwrap();
+            let msgs = store.messages(&chat.jid).unwrap();
+            let vo_back = &msgs.iter().find(|(m, _)| m.id == "vo-old").unwrap().0;
+            assert_eq!(vo_back.body, "", "the legacy caption leaves the body column");
+            assert!(vo_back.view_once);
+            match &vo_back.kind {
+                backend::LiveMessageKind::Media { caption: stored, .. } => {
+                    assert_eq!(stored, "", "the legacy caption leaves the kind payload");
+                }
+                other => panic!("expected the media kind to survive, got {other:?}"),
+            }
+            let photo_back = &msgs.iter().find(|(m, _)| m.id == "photo-old").unwrap().0;
+            assert_eq!(photo_back.body, "a normal caption", "normal rows are untouched");
+            let chats = store.chats().unwrap();
+            let row = chats.iter().find(|c| c.jid == chat.jid).unwrap();
+            assert_eq!(
+                row.preview,
+                core::model::VIEW_ONCE_PREVIEW,
+                "the preview that was the caption becomes the placeholder"
+            );
+        }
+        let conn = Connection::open(&path).unwrap();
+        let flag: Option<String> = conn
+            .query_row(
+                "SELECT value FROM store_meta WHERE key = ?1",
+                params![VIEW_ONCE_CAPTIONS_SCRUBBED_KEY],
+                |row| row.get(0),
+            )
+            .ok();
+        assert_eq!(flag.as_deref(), Some("1"), "the scrub records itself in store_meta");
+        // A legacy-style row written after the scrub (by hand,
+        // standing in for any later writer) must survive the
+        // next open: the scrub is one-time, not per-startup.
+        insert_legacy(&conn, "vo-late", late_caption, &media_data(late_caption, true), 400);
+        drop(conn);
+        {
+            let store = Store::init(Connection::open(&path).unwrap()).unwrap();
+            let msgs = store.messages(&chat.jid).unwrap();
+            let late = &msgs.iter().find(|(m, _)| m.id == "vo-late").unwrap().0;
+            assert_eq!(late.body, late_caption, "the one-time scrub must not repeat");
+        }
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn delete_messages_removes_the_batch_and_reports_the_count() {
+        let store = Store::open_in_memory().unwrap();
+        let chat_a = scripted_chats()[0].clone();
+        let chat_b = scripted_chats()[1].clone();
+        for (chat, id) in [(&chat_a, "a1"), (&chat_a, "a2"), (&chat_b, "b1")] {
+            store
+                .upsert_message(&LiveMessage::text(id, &chat.jid, None, id, 100, false), 0)
+                .unwrap();
+        }
+        // The expiry pass's shape: one batch spanning chats,
+        // including a key that does not exist.
+        let deleted = store
+            .delete_messages(&[
+                (chat_a.jid.clone(), "a1".to_owned()),
+                (chat_b.jid.clone(), "b1".to_owned()),
+                (chat_a.jid.clone(), "missing".to_owned()),
+            ])
+            .unwrap();
+        assert_eq!(deleted, 2);
+        let remaining: Vec<String> =
+            store.messages(&chat_a.jid).unwrap().into_iter().map(|(m, _)| m.id).collect();
+        assert_eq!(remaining, ["a2"]);
+        assert!(store.messages(&chat_b.jid).unwrap().is_empty());
+        // An empty batch is a no-op, not an error.
+        assert_eq!(store.delete_messages(&[]).unwrap(), 0);
     }
 
     #[test]

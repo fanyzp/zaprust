@@ -160,13 +160,14 @@ impl App {
                 close = true;
             }
             Some("mute") => {
-                if let Some(c) = self.chats.iter_mut().find(|c| c.id == chat.id) {
-                    c.muted = !c.muted;
-                } else if let Some(c) = self.detached_chat.as_mut().filter(|c| c.id == chat.id) {
-                    // The announcement chat lives in the detached
-                    // slot; muting it is a local state change too.
-                    c.muted = !c.muted;
-                }
+                // Through apply_chat_action, like pin: the flip
+                // applies locally at once and, in live mode, the
+                // backend command follows, so the account's mute
+                // state changes too instead of only this window's.
+                // The detached announcement chat is covered by
+                // the same call's detached fallback (local-only,
+                // as before).
+                self.apply_chat_action(chat.id, chat.archived, chat.pinned, !chat.muted);
                 close = true;
             }
             Some("pinchat") => {
@@ -404,6 +405,45 @@ impl App {
                     Stroke::new(1.0_f32, rgb(t.border)),
                 );
 
+                // A blocked direct chat says so under its header,
+                // with the way back right there. The conversation
+                // stays readable and the history stays put
+                // (WhatsApp keeps blocked chats in the list and
+                // openable); the strip just stops it presenting
+                // as a normal conversation.
+                if chat.kind == core::model::ChatKind::Dm && self.blocked_chats.contains(&chat.id) {
+                    let mut unblock = false;
+                    egui::Frame::new()
+                        .fill(rgb(t.bg_panel_alt))
+                        .inner_margin(Margin::symmetric(12, 6))
+                        .show(ui, |ui| {
+                            ui.with_layout(
+                                Layout::left_to_right(Align::Center).with_main_align(Align::Center),
+                                |ui| {
+                                    ui.label(
+                                        RichText::new(crate::i18n::t("conversation.blocked_note"))
+                                            .size(12.5)
+                                            .color(rgb(t.text_secondary)),
+                                    );
+                                    ui.add_space(10.0);
+                                    if crate::widgets::button(
+                                        ui,
+                                        t,
+                                        &crate::i18n::t("common.unblock"),
+                                        crate::widgets::Btn::Secondary,
+                                    )
+                                    .clicked()
+                                    {
+                                        unblock = true;
+                                    }
+                                },
+                            );
+                        });
+                    if unblock {
+                        self.toggle_block_contact(chat.id);
+                    }
+                }
+
                 let (scroll_out, full_rect) = self.draw_stream(
                     ui,
                     &chat,
@@ -452,14 +492,24 @@ impl App {
 
 impl App {
     /// Export Chat feature action: renders the open conversation to
-    /// Markdown (through the feature guard) and writes it under
-    /// `<data dir>/exports/`. The result is reported via the notice
-    /// banner, the file is really written, or the error is shown.
+    /// Markdown (through the feature guard) and hands the write to
+    /// a worker thread, which writes it under `<data dir>/exports/`
+    /// and reports the outcome back through `poll_workers` as a
+    /// notice. The write used to happen inline in this click
+    /// handler, stalling the UI for a large chat, and the fixed
+    /// per-chat filename silently overwrote the previous export
+    /// (audit finding 16); the worker writes to a timestamped,
+    /// never-before-used name via a temp file plus rename, so a
+    /// crash mid-write cannot leave a truncated export behind.
     pub(crate) fn export_current_chat(&mut self) {
         if !self.feature_active("export-chat") {
             self.notice = Some(
                 "The Chat Export feature is off. Turn it on in Settings > Features.".to_owned(),
             );
+            return;
+        }
+        if self.export_rx.is_some() {
+            self.notice = Some("An export is already in progress.".to_owned());
             return;
         }
         let chat = self.selected().clone();
@@ -471,13 +521,70 @@ impl App {
             return;
         };
         let dir = backend::data_dir().join("exports");
-        let path = dir.join(export_chat::export_filename(&chat));
-        let result = std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&path, markdown));
-        self.notice = Some(match result {
-            Ok(()) => format!("Chat exported to {}", path.display()),
-            Err(e) => format!("Export failed: {e}"),
-        });
+        let base = export_chat::export_filename(&chat);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let spawned =
+            std::thread::Builder::new().name("zaprust-export".to_owned()).spawn(move || {
+                let result = write_export_file(&dir, &base, &markdown);
+                let _ = tx.send(result);
+            });
+        match spawned {
+            Ok(_) => self.export_rx = Some(rx),
+            Err(e) => self.notice = Some(format!("Export failed: {e}")),
+        }
     }
+}
+
+/// Picks a fresh export path for `base` (e.g.
+/// "zaprust-chat-foo.md") inside `dir`: the name gains a
+/// Unix-timestamp suffix, and if that file already exists (two
+/// exports of the same chat within one second) a counter is
+/// appended until the name is free. An earlier export is never
+/// overwritten.
+fn unique_export_path(dir: &std::path::Path, base: &str, now: u64) -> std::path::PathBuf {
+    let stem = base.strip_suffix(".md").unwrap_or(base);
+    let first = dir.join(format!("{stem}-{now}.md"));
+    if !first.exists() {
+        return first;
+    }
+    let mut n = 2;
+    loop {
+        let candidate = dir.join(format!("{stem}-{now}-{n}.md"));
+        if !candidate.exists() {
+            return candidate;
+        }
+        n += 1;
+    }
+}
+
+/// Writes one export: creates the exports dir, picks a unique
+/// timestamped name, writes the Markdown to a temp file in the
+/// same directory and renames it into place, so the visible
+/// file is never a half-written export.
+fn write_export_file(
+    dir: &std::path::Path,
+    base: &str,
+    markdown: &str,
+) -> Result<std::path::PathBuf, String> {
+    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    let path = unique_export_path(dir, base, crate::state::now_unix());
+    let file_name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let tmp = dir.join(format!(".{file_name}.tmp"));
+    std::fs::write(&tmp, markdown).map_err(|e| e.to_string())?;
+    // An export is the full chat in plaintext: owner-only on
+    // Unix, asserted on the temp so the renamed file inherits
+    // it (privacy audit A5).
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))
+            .map_err(|e| e.to_string())?;
+    }
+    std::fs::rename(&tmp, &path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        e.to_string()
+    })?;
+    Ok(path)
 }
 
 /// The conversation header avatar (AI chats get the sparkles
@@ -490,4 +597,50 @@ fn header_avatar(
     let (rect, response) = ui.allocate_exact_size(Vec2::splat(40.0), Sense::click());
     crate::widgets::paint_chat_avatar_photo(ui.painter(), rect.center(), 20.0, chat, photo);
     response.on_hover_text("View profile").clicked()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn export_test_dir(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(name);
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
+
+    #[test]
+    fn export_paths_are_timestamped_and_never_reused() {
+        // Audit finding 16: a second export of the same chat
+        // must not overwrite the first.
+        let dir = export_test_dir("zaprust-export-path-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let first = unique_export_path(&dir, "zaprust-chat-foo.md", 1_700_000_000);
+        assert_eq!(first.file_name().unwrap().to_string_lossy(), "zaprust-chat-foo-1700000000.md");
+        // The name is only taken once the file exists; a second
+        // export within the same second must move on to a
+        // counter suffix instead of reusing it.
+        std::fs::write(&first, "one").unwrap();
+        let second = unique_export_path(&dir, "zaprust-chat-foo.md", 1_700_000_000);
+        assert_eq!(
+            second.file_name().unwrap().to_string_lossy(),
+            "zaprust-chat-foo-1700000000-2.md"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn write_export_file_lands_the_full_markdown() {
+        let dir = export_test_dir("zaprust-export-write-test");
+        let path = write_export_file(&dir, "zaprust-chat-foo.md", "# Chat\nhello").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "# Chat\nhello");
+        // The temp file was renamed into place, not left behind.
+        let leftovers: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

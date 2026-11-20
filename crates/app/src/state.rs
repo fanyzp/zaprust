@@ -306,6 +306,12 @@ pub(crate) enum UiConfirm {
     /// Leave a group; confirming closes the info dock, as the
     /// chat is archived by the leave itself.
     LeaveGroup { chat_id: u64, name: String },
+    /// Cycle a privacy row away from `contact_blacklist`:
+    /// the value names an exception list configured on the
+    /// phone, and replacing it discards the association with
+    /// that list, which this client cannot restore. Confirming
+    /// performs the cycle the row click asked for.
+    ReplaceExceptionList { category: String, label: String },
 }
 
 /// Debug mode state (see debug_ui.rs): the trace ring, its clock and the inspector toggles.
@@ -370,11 +376,13 @@ pub(crate) struct MediaState {
     pub(crate) photo_texture: Option<egui::TextureHandle>,
     /// Decoded photo textures per app message ID: picked files and
     /// received media render their own pixels, everything else falls
-    /// back to the demo photo texture.
-    pub(crate) textures: std::collections::HashMap<u64, egui::TextureHandle>,
+    /// back to the demo photo texture. Bounded (see
+    /// `extras::TextureCache`): the oldest texture is evicted once
+    /// the cap is passed.
+    pub(crate) textures: crate::extras::TextureCache<u64>,
     /// Decoded demo persona portraits, keyed by display name (see
-    /// demo_avatars.rs).
-    pub(crate) avatar_textures: std::collections::HashMap<String, egui::TextureHandle>,
+    /// demo_avatars.rs). Bounded like `textures`.
+    pub(crate) avatar_textures: crate::extras::TextureCache<String>,
     /// View-once photos the user has already opened.
     pub(crate) opened_view_once: std::collections::HashSet<u64>,
     /// The view-once photo currently open in the viewer, if any.
@@ -388,11 +396,28 @@ pub(crate) struct MediaState {
     pub(crate) voice_rates: std::collections::HashMap<u64, f32>,
 }
 
+/// One resolved group-member row for the profile panel. The
+/// address is the participant JID, used only as the target of
+/// backend commands; it is never rendered. The label is the
+/// person's resolved display name, or a masked identifier when
+/// no name is known. The detail is the secondary line: the phone
+/// number, present only under a resolved name for a
+/// number-addressed participant (a LID-addressed row shows no
+/// number, matching how WhatsApp hides it).
+#[derive(Clone)]
+pub(crate) struct MemberRow {
+    pub(crate) address: String,
+    pub(crate) label: String,
+    pub(crate) detail: Option<String>,
+    pub(crate) admin: bool,
+}
+
 /// Group state: member lists, modes and invite data reported by the backend, plus the join-by-link and create-group dialog state.
 pub(crate) struct GroupsState {
     /// Live mode: real group member lists fetched on demand for
-    /// the profile panel: (address, display name, is admin).
-    pub(crate) live_members: std::collections::HashMap<u64, Vec<(String, String, bool)>>,
+    /// the profile panel, labels resolved on arrival (see
+    /// `MemberRow`).
+    pub(crate) live_members: std::collections::HashMap<u64, Vec<MemberRow>>,
     /// Chats whose member list was already requested this panel
     /// session (avoids re-requesting every frame).
     pub(crate) members_requested: std::collections::HashSet<u64>,
@@ -406,7 +431,8 @@ pub(crate) struct GroupsState {
     /// the backend.
     pub(crate) modes: std::collections::HashMap<u64, (bool, bool)>,
     /// Pending membership requests for the group whose dock is
-    /// open: (chat id, (jid, display name) rows).
+    /// open: (chat id, (jid, resolved display label) rows). The
+    /// JID is the review command's target and is never rendered.
     pub(crate) join_requests: Option<(u64, Vec<(String, String)>)>,
     /// The join-group-by-link dialog state.
     pub(crate) join_link_open: bool,
@@ -432,6 +458,10 @@ pub(crate) struct UpdateState {
     /// Self-update: last check time (Unix seconds), persisted; the
     /// silent startup check runs at most once a day.
     pub(crate) last_check: u64,
+    /// Self-update: whether the silent once-a-day check runs at
+    /// all, persisted; the user's opt-out from Settings > About.
+    /// Manual checks are unaffected. Default on.
+    pub(crate) auto_check: bool,
     /// Self-update: whether the running check was user-triggered
     /// (manual checks surface their failures, silent ones do not).
     pub(crate) manual: bool,
@@ -464,10 +494,22 @@ pub(crate) struct PickerState {
     pub(crate) giphy_items: Vec<giphy::GifItem>,
     /// Whether the GIPHY key was rejected (bad-key state).
     pub(crate) giphy_rejected: bool,
-    /// Decoded GIF preview textures by preview URL.
-    pub(crate) giphy_textures: std::collections::HashMap<String, egui::TextureHandle>,
-    /// Decoded sticker PNG textures, keyed by file path.
-    pub(crate) sticker_textures: std::collections::HashMap<std::path::PathBuf, egui::TextureHandle>,
+    /// Decoded GIF preview textures by preview URL. Bounded (see
+    /// `extras::TextureCache`).
+    pub(crate) giphy_textures: crate::extras::TextureCache<String>,
+    /// Decoded sticker PNG textures, keyed by file path. Bounded
+    /// (see `extras::TextureCache`).
+    pub(crate) sticker_textures: crate::extras::TextureCache<std::path::PathBuf>,
+    /// Sticker files whose preview decode failed, remembered
+    /// against the file's stamp so a bad file is attempted once,
+    /// not once per repaint, and a replaced file is retried.
+    pub(crate) sticker_failures: crate::extras::StickerFailureCache,
+    /// Sticker paths a preview worker is currently decoding.
+    pub(crate) sticker_pending: std::collections::HashSet<std::path::PathBuf>,
+    /// Shared sender handed to sticker preview workers.
+    pub(crate) sticker_tx: Option<std::sync::mpsc::Sender<crate::extras::StickerPreviewMsg>>,
+    /// In-flight sticker preview worker results.
+    pub(crate) sticker_rx: Option<std::sync::mpsc::Receiver<crate::extras::StickerPreviewMsg>>,
     /// In-flight GIPHY worker results.
     pub(crate) giphy_rx: Option<std::sync::mpsc::Receiver<crate::extras::GiphyMsg>>,
     /// In-flight live GIF download (MP4 bytes for one send).
@@ -669,16 +711,25 @@ pub(crate) struct App {
     /// Send typing indicators (Settings > Privacy). When OFF the
     /// app never emits composing/pause chat-states.
     pub(crate) typing_indicators: bool,
-    /// Fetch link previews for URLs in live messages
-    /// (Settings > Chats). Never fetches in demo mode.
+    /// Legacy link-previews preference. Received links are
+    /// never fetched (a fetch would hand the sender the user's
+    /// address and online timing), and previews render only
+    /// when the sender's client attached one, so this value no
+    /// longer gates anything. It is still loaded and persisted
+    /// so existing settings files keep round-tripping.
     pub(crate) link_previews: bool,
     /// Privacy values reported by the account (live mode), spelling
     /// per `backend::BackendCommand::SetPrivacy`.
     pub(crate) privacy_state: std::collections::BTreeMap<String, String>,
-    /// App message ID → protocol message ID (live mode).
+    /// App message ID → protocol message ID (live mode). Holds
+    /// an entry per message in the session mirror (plus, briefly,
+    /// a send whose binding landed before its upsert); when a
+    /// message leaves the mirror its entry is dropped with it
+    /// (see `App::forget_live_message`), so the map tracks the
+    /// mirror instead of the whole session history.
     pub(crate) protocol_ids: std::collections::HashMap<u64, String>,
     /// App message ID → author JID (live mode): the participant a
-    /// reply quotes.
+    /// reply quotes. Same lifecycle as `protocol_ids`.
     pub(crate) sender_jids: std::collections::HashMap<u64, String>,
     /// Chat ID → protocol IDs of unread incoming messages (live).
     pub(crate) unread_live: std::collections::HashMap<u64, Vec<String>>,
@@ -697,6 +748,12 @@ pub(crate) struct App {
     pub(crate) groups: GroupsState,
     /// Contacts blocked from this client (live: also sent to the
     /// backend; demo: local state with an honest caption).
+    /// Persisted in the encrypted archive store (privacy audit
+    /// A6; older builds kept it in the settings file, whose copy
+    /// is migrated on the first live start), and replaced by the
+    /// backend's connect-time Blocklist event when a live session
+    /// reports the server's list: the persisted copy only covers
+    /// the time before that fetch lands.
     pub(crate) blocked_chats: std::collections::HashSet<u64>,
     /// Profile panel group-edit form state.
     pub(crate) profile_form_for: Option<u64>,
@@ -794,10 +851,20 @@ pub(crate) struct App {
     /// conversation rebuild and the archive writes are coalesced
     /// to once per batch instead of once per event (see live.rs).
     pub(crate) event_batch: crate::live::EventBatch,
-    /// Link-preview cache by URL (bounded, see `extras::OgCache`).
-    pub(crate) og_cache: crate::extras::OgCache,
-    /// In-flight link-preview fetches: (message id, url, result).
-    pub(crate) og_rx: Option<std::sync::mpsc::Receiver<(u64, String, Option<core::rich::OgData>)>>,
+    /// In-flight chat export: a worker renders and writes the
+    /// file off the UI thread; the result is the written path or
+    /// the error text (see conversation/mod.rs).
+    pub(crate) export_rx: Option<std::sync::mpsc::Receiver<Result<std::path::PathBuf, String>>>,
+    /// Data & Storage page sizes (archive bytes, account bytes,
+    /// total bytes), measured once when the page opens and
+    /// dropped when another settings page is shown: walking the
+    /// whole data dir is far too expensive to repeat per repaint
+    /// (audit finding 13).
+    pub(crate) storage_sizes: Option<(u64, u64, u64)>,
+    /// In-flight staged album send: a worker thread reads the
+    /// staged files off the UI thread and `poll_staged_send`
+    /// applies the results in staging order (see attach.rs).
+    pub(crate) staged_send: Option<StagedSendState>,
     /// Message whose context menu is open (secondary click), if any.
     pub(crate) bubble_menu: Option<u64>,
     /// Message id waiting for a forward target (picker popup).
@@ -850,6 +917,21 @@ pub(crate) struct StagedMedia {
     pub(crate) view_once: bool,
     /// Decoded preview texture (photos only, lazy on first paint).
     pub(crate) thumb: Option<egui::TextureHandle>,
+}
+
+/// One staged album in flight (see attach.rs): the worker
+/// thread streams one read result per staged file through
+/// `rx`, and `pending` holds the matching send descriptors in
+/// the same order, so each result pairs with the file it
+/// belongs to. `sent` and `failed` accumulate the outcome for
+/// the summary notice shown when the worker finishes; a file
+/// whose result never arrives is counted as failed, never
+/// silently dropped.
+pub(crate) struct StagedSendState {
+    pub(crate) rx: std::sync::mpsc::Receiver<Result<Vec<u8>, String>>,
+    pub(crate) pending: std::collections::VecDeque<crate::attach::PendingStagedSend>,
+    pub(crate) sent: usize,
+    pub(crate) failed: Vec<(String, String)>,
 }
 
 /// The attach-menu location form: a place name plus coordinates,
@@ -1086,8 +1168,10 @@ impl App {
             cache_cleared: false,
             media: MediaState {
                 photo_texture: None,
-                textures: std::collections::HashMap::new(),
-                avatar_textures: std::collections::HashMap::new(),
+                textures: crate::extras::TextureCache::new(crate::extras::MAX_MEDIA_TEXTURES),
+                avatar_textures: crate::extras::TextureCache::new(
+                    crate::extras::MAX_AVATAR_TEXTURES,
+                ),
                 opened_view_once: std::collections::HashSet::new(),
                 viewing_photo: if args.open_viewonce { Some(112) } else { None },
                 voice_playing: None,
@@ -1166,8 +1250,14 @@ impl App {
                 giphy_query: String::new(),
                 giphy_items: Vec::new(),
                 giphy_rejected: false,
-                giphy_textures: std::collections::HashMap::new(),
-                sticker_textures: std::collections::HashMap::new(),
+                giphy_textures: crate::extras::TextureCache::new(crate::extras::MAX_GIPHY_TEXTURES),
+                sticker_textures: crate::extras::TextureCache::new(
+                    crate::extras::MAX_STICKER_TEXTURES,
+                ),
+                sticker_failures: crate::extras::StickerFailureCache::default(),
+                sticker_pending: std::collections::HashSet::new(),
+                sticker_tx: None,
+                sticker_rx: None,
                 giphy_rx: None,
                 media_fetch_rx: None,
             },
@@ -1191,8 +1281,9 @@ impl App {
             pending_notifications: Vec::new(),
             event_queue: std::collections::VecDeque::new(),
             event_batch: crate::live::EventBatch::default(),
-            og_cache: crate::extras::OgCache::default(),
-            og_rx: None,
+            export_rx: None,
+            storage_sizes: None,
+            staged_send: None,
             bubble_menu: None,
             forward_from: None,
             typing_sent_for: None,
@@ -1210,6 +1301,7 @@ impl App {
                 release: None,
                 rx: None,
                 last_check: 0,
+                auto_check: true,
                 manual: false,
                 startup_done: false,
                 target: None,
@@ -1359,11 +1451,22 @@ impl App {
     /// chat list directly, every other path through
     /// `select_chat_now`), so composer state follows its chat
     /// on every route and can never leak into the conversation
-    /// that happens to be open next.
+    /// that happens to be open next. A voice recording is the
+    /// one composer-adjacent state that does not park: it
+    /// belongs to the chat it was started in, so a switch
+    /// cancels it instead (see below).
     pub(crate) fn switch_composer_chat(&mut self, previous: u64, next: u64) {
         if previous == next {
             return;
         }
+        // A recording in progress is cancelled by the switch,
+        // through the same path as the composer's cancel
+        // button: the recorder is dropped, its capture thread
+        // stops and the partial take is discarded. Parking the
+        // take instead would let it be finished into the chat
+        // that happens to be open next, a wrong-recipient
+        // hazard; cancelling matches WhatsApp's own behavior.
+        self.cancel_recording();
         // The draft text keeps its existing parking rule (an
         // empty draft leaves no entry; the chat list's Draft row
         // state reads the same map).
@@ -1976,6 +2079,46 @@ mod tests {
         App::new(args, &ctx)
     }
 
+    fn media_msg(id: u64, view_once: bool) -> Message {
+        let mut msg = Message::theirs(id, "Sarah", "", "10:00");
+        msg.kind = core::model::MessageKind::Image { caption: String::new(), view_once };
+        msg
+    }
+
+    #[test]
+    fn forward_refuses_view_once_and_still_forwards_plain_media() {
+        let mut app = demo_app();
+        let source = app.chats[0].id;
+        let target = app.chats[1].id;
+        app.selected_chat = source;
+        app.conversation = vec![media_msg(9001, true), media_msg(9002, false)];
+        let count = |app: &App| app.chats.iter().find(|c| c.id == target).unwrap().messages.len();
+        let before = count(&app);
+
+        app.do_forward(9001, target);
+        assert_eq!(app.notice.as_deref(), Some("View-once media cannot be forwarded."));
+        assert_eq!(count(&app), before, "view-once media must not land in the target chat");
+
+        app.do_forward(9002, target);
+        assert_eq!(app.notice.as_deref(), Some("Message forwarded."));
+        assert_eq!(count(&app), before + 1, "ordinary media still forwards");
+    }
+
+    #[test]
+    fn save_refuses_view_once_and_passes_plain_media_through() {
+        let mut app = demo_app();
+        app.conversation = vec![media_msg(9001, true), media_msg(9002, false)];
+
+        app.download_media(9001);
+        assert_eq!(app.notice.as_deref(), Some("View-once media cannot be saved."));
+
+        // Demo mode has no live session, so ordinary media reaches
+        // the usual path and earns the session notice there: the
+        // view-once guard must not be what stops it.
+        app.download_media(9002);
+        assert_eq!(app.notice.as_deref(), Some("That media is not available in this session."));
+    }
+
     #[test]
     fn default_args_are_the_plain_live_user_run() {
         // The test process passes no mode flags, which is the
@@ -2218,5 +2361,48 @@ mod tests {
         app.send_staged(&mut engaged);
         assert!(engaged);
         assert_eq!(app.chats.iter().find(|c| c.id == 3).unwrap().messages.len(), stored_before + 1);
+    }
+
+    #[test]
+    fn switching_chats_cancels_an_active_recording() {
+        let mut app = demo_app();
+        app.select_chat_now(1);
+        // One second of captured audio stands in for a take in
+        // progress (tests have no microphone to record from).
+        app.recorder = Some(crate::recorder::Recorder::for_test(&vec![0; 48_000]));
+        app.select_chat_now(2);
+        assert!(app.recorder.is_none(), "the switch must cancel the recording");
+        // Nothing of the take can be sent afterwards: finishing
+        // is a no-op, no voice note lands in the newly opened
+        // chat, and no send is counted.
+        let conversation_before = app.conversation.len();
+        let sent_before = app.sent_counter;
+        let mut engaged = false;
+        app.finish_recording(&mut engaged);
+        assert!(!engaged);
+        assert_eq!(app.conversation.len(), conversation_before);
+        assert_eq!(app.sent_counter, sent_before);
+    }
+
+    #[test]
+    fn a_recording_finished_in_its_own_chat_still_sends() {
+        let mut app = demo_app();
+        app.select_chat_now(1);
+        app.recorder = Some(crate::recorder::Recorder::for_test(&vec![0; 48_000]));
+        // Re-selecting the chat already open is not a switch:
+        // the take survives it.
+        app.select_chat_now(1);
+        assert!(app.recorder.is_some(), "staying in the chat must keep the recording");
+        let before = app.conversation.len();
+        let mut engaged = false;
+        app.finish_recording(&mut engaged);
+        assert!(app.recorder.is_none(), "finishing consumes the recorder");
+        assert!(engaged);
+        assert_eq!(app.conversation.len(), before + 1, "the voice note lands in its own chat");
+        let last = app.conversation.last().expect("the sent note is last");
+        assert!(
+            matches!(last.kind, core::model::MessageKind::Voice { secs: 1, .. }),
+            "the sent note is the recorded second"
+        );
     }
 }

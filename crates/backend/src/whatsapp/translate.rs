@@ -6,34 +6,46 @@ use whatsapp_rust::prelude::*;
 use whatsapp_rust::wacore::types::events::Event;
 
 use crate::{
-    BackendEvent, EventSink, LiveChat, LiveChatKind, LiveMessage, LiveMessageKind, ReceiptKind,
+    BackendEvent, EventSink, LiveChat, LiveChatKind, LiveMessage, LiveMessageKind, LivePreview,
+    ReceiptKind,
 };
 
 /// Maps the library's privacy-settings response into our
-/// category → value spelling map.
+/// category → value spelling map. Every category the library
+/// returns is carried, including the ones the Privacy page has
+/// no row for (`calladd`, `messages`, `defense`): silently
+/// discarding fetched account state would lose settings the
+/// account actually has. A category or value this build does
+/// not know is carried under its wire spelling (the library's
+/// `Other` fallback), so nothing the server sent is dropped.
 pub(super) fn privacy_map(
     resp: &whatsapp_rust::privacy_settings::PrivacySettingsResponse,
 ) -> std::collections::BTreeMap<String, String> {
     use whatsapp_rust::privacy_settings::{PrivacyCategory, PrivacyValue};
     let mut out = std::collections::BTreeMap::new();
     for setting in &resp.settings {
-        let category = match setting.category {
+        let category = match &setting.category {
             PrivacyCategory::Last => "last",
             PrivacyCategory::Online => "online",
             PrivacyCategory::Profile => "profile",
             PrivacyCategory::Status => "status",
             PrivacyCategory::GroupAdd => "groupadd",
             PrivacyCategory::ReadReceipts => "readreceipts",
-            _ => continue,
+            PrivacyCategory::CallAdd => "calladd",
+            PrivacyCategory::Messages => "messages",
+            PrivacyCategory::DefenseMode => "defense",
+            PrivacyCategory::Other(name) => name.as_str(),
         };
-        let value = match setting.value {
+        let value = match &setting.value {
             PrivacyValue::All => "all",
             PrivacyValue::Contacts => "contacts",
             PrivacyValue::None => "none",
             PrivacyValue::ContactBlacklist => "contact_blacklist",
             PrivacyValue::MatchLastSeen => "match_last_seen",
             PrivacyValue::Known => "known",
-            _ => continue,
+            PrivacyValue::Off => "off",
+            PrivacyValue::OnStandard => "on_standard",
+            PrivacyValue::Other(v) => v.as_str(),
         };
         out.insert(category.to_owned(), value.to_owned());
     }
@@ -110,7 +122,12 @@ pub(super) fn translate_special(ctx: &MessageContext, sink: &EventSink) -> bool 
 }
 
 /// Maps a library event the typed handlers do not cover.
-pub(super) fn translate_event(event: &Event, sink: &EventSink) {
+/// `own_jids` are this account's own JIDs (phone number and
+/// LID, non-AD spellings): the disappearing-mode notification
+/// uses the same event for per-chat timers and for the
+/// account-wide default, told apart only by whose JID the
+/// change came from.
+pub(super) fn translate_event(event: &Event, sink: &EventSink, own_jids: &[String]) {
     match event {
         Event::Receipt(receipt) => {
             use whatsapp_rust::wacore::types::presence::ReceiptType;
@@ -133,10 +150,137 @@ pub(super) fn translate_event(event: &Event, sink: &EventSink) {
         Event::DisappearingModeChanged(change) => {
             // Group timer changes arrive as notifications (direct
             // chats come through the protocol-message path in
-            // translate_special instead).
-            sink.emit(BackendEvent::DisappearingChanged {
-                chat_jid: change.from.to_string(),
-                duration_secs: change.duration,
+            // translate_special instead). The same notification
+            // carries the account-wide default timer when it comes
+            // from our own JID (an account_sync change made on
+            // another device, the phone included); that is not a
+            // per-chat change and must not land on a chat keyed by
+            // our own JID.
+            let from = change.from.to_string();
+            if own_jids.iter().any(|own| own == &from) {
+                sink.emit(BackendEvent::DefaultDisappearingTimerChanged {
+                    duration_secs: change.duration,
+                });
+            } else {
+                sink.emit(BackendEvent::DisappearingChanged {
+                    chat_jid: from,
+                    duration_secs: change.duration,
+                });
+            }
+        }
+        Event::MuteUpdate(update) => {
+            // App-state sync reporting the account's mute state
+            // for one chat: a mute or unmute from another device,
+            // or the state as a full sync delivers it. This is
+            // the only wire path that knows mute; message arrivals
+            // do not carry it.
+            sink.emit(BackendEvent::MuteChanged {
+                chat_jid: update.jid.to_string(),
+                muted: mute_action_state(&update.action, now_millis()),
+            });
+        }
+        Event::PinUpdate(update) => {
+            // App-state sync reporting the account's pin state
+            // for one chat: a pin or unpin from another device,
+            // or the state as a full sync delivers it. This is
+            // the only wire path that knows pin; message arrivals
+            // do not carry it.
+            sink.emit(BackendEvent::PinChanged {
+                chat_jid: update.jid.to_string(),
+                pinned: pin_action_state(&update.action),
+            });
+        }
+        Event::ArchiveUpdate(update) => {
+            // App-state sync reporting the account's archive
+            // state for one chat: an archive or unarchive from
+            // another device, or the state as a full sync
+            // delivers it. This is the only wire path that knows
+            // archive; message arrivals do not carry it. The
+            // action's message range (which messages the archive
+            // spans) is not chat-list state and has no
+            // counterpart in the app's model, so only the flag
+            // crosses the boundary.
+            sink.emit(BackendEvent::ArchiveChanged {
+                chat_jid: update.jid.to_string(),
+                archived: archive_action_state(&update.action),
+            });
+        }
+        Event::StarUpdate(update) => {
+            // App-state sync reporting the account's star state
+            // for one message: a star or unstar from another
+            // device, or the state as a full sync delivers it.
+            // This is the only wire path that knows star; message
+            // arrivals do not carry it.
+            sink.emit(BackendEvent::StarChanged {
+                chat_jid: update.chat_jid.to_string(),
+                message_id: update.message_id.clone(),
+                starred: star_action_state(&update.action),
+            });
+        }
+        Event::MarkChatAsReadUpdate(update) => {
+            // App-state sync reporting the account's read state
+            // for one chat: marked read or unread from another
+            // device, or the state as a full sync delivers it.
+            // The device that made the change already sent its
+            // read receipts (this sync action is distinct from
+            // the receipt IQ), so the app adopts the state and
+            // sends nothing.
+            let (read, unread_count) = mark_read_action_state(&update.action);
+            sink.emit(BackendEvent::ChatReadChanged {
+                chat_jid: update.jid.to_string(),
+                read,
+                unread_count,
+            });
+        }
+        Event::DeleteChatUpdate(update) => {
+            // App-state sync reporting a chat deleted on
+            // another device. The action carries only a message
+            // range (the messages the deletion spans, on the
+            // phone the whole conversation) and the event adds a
+            // delete-media flag; neither crosses the boundary.
+            // The app has no partial-delete concept (clearing a
+            // chat is a separate sync action), so a deletion here
+            // removes the chat and its archive whole, and the app
+            // does not track downloaded media per chat, so there
+            // is nothing for the media flag to delete.
+            sink.emit(BackendEvent::ChatDeleted { chat_jid: update.jid.to_string() });
+        }
+        Event::ClearChatUpdate(update) => {
+            // App-state sync reporting a chat cleared on
+            // another device: the messages go, the chat stays.
+            // The starred policy lives in the mutation index,
+            // not the action, and the event carries it as a
+            // flag. The deletion bound is the action's message
+            // range (its last-message timestamp); the range's
+            // message list enumerates what the clearing device
+            // held and does not narrow the bound further. The
+            // delete-media flag does not cross: the app does
+            // not track downloaded media per chat, so there is
+            // nothing for it to delete (the same call as chat
+            // deletion). One wire nuance cannot cross either:
+            // the mutation timestamp, which WA Web reads only
+            // to spare a message starred after the clear was
+            // made; the app keeps no star times, so it cannot
+            // tell such a message from one starred before.
+            sink.emit(BackendEvent::ChatCleared {
+                chat_jid: update.jid.to_string(),
+                delete_starred: update.delete_starred,
+                last_message_timestamp: clear_chat_bound(&update.action),
+            });
+        }
+        Event::DeleteMessageForMeUpdate(update) => {
+            // App-state sync reporting one message deleted
+            // for the account on another device. The identity
+            // is the (chat, protocol ID) pair every other
+            // per-message sync uses; the participant and
+            // from-me fields stay behind, as with star. The
+            // action's delete-media flag does not cross: the
+            // app keeps no per-message media registry to
+            // delete from, and its message timestamp is not
+            // needed once the message is identified.
+            sink.emit(BackendEvent::MessageDeletedForMe {
+                chat_jid: update.chat_jid.to_string(),
+                message_id: update.message_id.clone(),
             });
         }
         Event::ChatPresence(update) => {
@@ -231,7 +375,13 @@ pub(super) fn translate_message(ctx: &MessageContext) -> Option<(LiveChat, LiveM
         }
     }
     if let LiveMessageKind::Media { caption, .. } = &msg.kind {
-        if !caption.is_empty() && msg.body == "[non-text message]" {
+        // A view-once caption is part of the sealed payload: it
+        // stays on the kind (the viewer shows it with the media)
+        // but is never promoted to the body, where previews,
+        // notifications and the archive would pick it up as
+        // ordinary text. The body keeps the generic non-text
+        // marker those consumers already handle.
+        if !view_once && !caption.is_empty() && msg.body == "[non-text message]" {
             msg.body = caption.clone();
         }
     }
@@ -240,6 +390,9 @@ pub(super) fn translate_message(ctx: &MessageContext) -> Option<(LiveChat, LiveM
         msg.quoted_sender = quoted.0;
         msg.quoted_body = quoted.1;
     }
+    // A link preview the sender's client attached travels with
+    // the message; surface it as carried, never fetch it here.
+    msg.link_preview = embedded_link_preview(&ctx.message);
     // The author JID travels with every message: replies quote it
     // as the context participant, group reactions target it.
     msg.sender_jid = Some(source.sender.to_string());
@@ -413,6 +566,25 @@ pub(super) fn classify_message(
     (LiveMessageKind::Text, false)
 }
 
+/// Extracts the link preview a sender's client attached to an
+/// extended-text message: the page title and description it
+/// generated, plus the URL it matched. This is the only source of
+/// link previews: the receiving side never fetches a URL itself,
+/// so a sender cannot learn the recipient's address or timing
+/// from a planted link. A message whose extended text carries no
+/// preview fields (an ordinary text or reply) yields `None`.
+pub(super) fn embedded_link_preview(
+    msg: &whatsapp_rust::prelude::wa::Message,
+) -> Option<LivePreview> {
+    let extended = msg.extended_text_message.as_option()?;
+    let title = extended.title.clone().unwrap_or_default();
+    let description = extended.description.clone().unwrap_or_default();
+    if title.is_empty() && description.is_empty() {
+        return None;
+    }
+    Some(LivePreview { title, description, url: extended.matched_text.clone().unwrap_or_default() })
+}
+
 /// Extracts (sender, excerpt) when a message quotes another one:
 /// the context info of an extended-text message carries the stanza
 /// id + participant + quoted payload.
@@ -424,6 +596,94 @@ pub(super) fn quoted_context(ctx: &MessageContext) -> Option<(Option<String>, Op
         context.quoted_message.as_option().and_then(|q| q.text_content().map(ToOwned::to_owned));
     let sender = context.participant.as_ref().map(|p| user_part(&p.clone()));
     Some((sender, excerpt))
+}
+
+/// The effective mute state of a sync `MuteAction` at
+/// `now_ms`. The action's flag alone is not the whole story: a
+/// timed mute carries a positive end timestamp and stops being
+/// a mute once it passes. The indefinite spelling is `-1` (what
+/// the library's own `mute_chat` sends); a missing end is read
+/// the same way.
+pub(super) fn mute_action_state(
+    action: &whatsapp_rust::prelude::wa::sync_action_value::MuteAction,
+    now_ms: i64,
+) -> bool {
+    if action.muted != Some(true) {
+        return false;
+    }
+    match action.mute_end_timestamp {
+        Some(end) if end > 0 => end > now_ms,
+        _ => true,
+    }
+}
+
+/// The pin state of a sync `PinAction`. The flag is the whole
+/// story: only an explicit `true` pins; `false` and an absent
+/// flag both report unpinned.
+pub(super) fn pin_action_state(
+    action: &whatsapp_rust::prelude::wa::sync_action_value::PinAction,
+) -> bool {
+    action.pinned == Some(true)
+}
+
+/// The archive state of a sync `ArchiveChatAction`. As with
+/// pin, only an explicit `true` archives; `false` and an absent
+/// flag both report unarchived. The action's message range is
+/// deliberately not read: it spans which messages the archive
+/// covers, not whether the chat is archived.
+pub(super) fn archive_action_state(
+    action: &whatsapp_rust::prelude::wa::sync_action_value::ArchiveChatAction,
+) -> bool {
+    action.archived == Some(true)
+}
+
+/// The star state of a sync `StarAction`. As with pin, only
+/// an explicit `true` stars; `false` and an absent flag both
+/// report unstarred.
+pub(super) fn star_action_state(
+    action: &whatsapp_rust::prelude::wa::sync_action_value::StarAction,
+) -> bool {
+    action.starred == Some(true)
+}
+
+/// The read state of a sync `MarkChatAsReadAction`, as
+/// `(read, unread_count)`. Only an explicit `read: true` marks
+/// the chat read, and then the count is 0. Anything else is the
+/// mark-as-unread form, whose count is the number of messages
+/// the action's message range lists as unread (0 when the
+/// range is absent or lists none); how a zero count renders as
+/// a badge is the app's decision, not the wire's.
+pub(super) fn mark_read_action_state(
+    action: &whatsapp_rust::prelude::wa::sync_action_value::MarkChatAsReadAction,
+) -> (bool, u32) {
+    if action.read == Some(true) {
+        return (true, 0);
+    }
+    let listed = action
+        .message_range
+        .as_option()
+        .map_or(0, |range| u32::try_from(range.messages.len()).unwrap_or(u32::MAX));
+    (false, listed)
+}
+
+/// The bound of a sync `ClearChatAction`: the message
+/// range's last-message timestamp (Unix seconds, the unit
+/// message timestamps use). Messages stamped after it are
+/// not the clear's to remove. `None` when the action carries
+/// no range, or the range carries no bound; the clear then
+/// covers the whole chat.
+pub(super) fn clear_chat_bound(
+    action: &whatsapp_rust::prelude::wa::sync_action_value::ClearChatAction,
+) -> Option<i64> {
+    action.message_range.as_option().and_then(|range| range.last_message_timestamp)
+}
+
+/// Wall-clock milliseconds since the Unix epoch (0 if the
+/// system clock is set before it).
+fn now_millis() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
 }
 
 pub(super) fn kind_of(jid: &str) -> LiveChatKind {
@@ -438,4 +698,275 @@ pub(super) fn kind_of(jid: &str) -> LiveChatKind {
 
 pub(super) fn user_part(jid: &str) -> String {
     jid.split('@').next().unwrap_or(jid).to_owned()
+}
+
+/// The display name the server rendered for a group participant:
+/// the participant details' display name, else the username.
+/// Empty when the server provided neither. The raw phone number
+/// or LID is never substituted here: the app resolves a label
+/// from its own data or masks the identifier, because a bare
+/// number must not be the rendered name (privacy finding D5).
+pub(super) fn participant_name(p: &whatsapp_rust::GroupParticipant) -> String {
+    if let Some(details) = &p.details {
+        if let Some(name) = &details.display_name {
+            let name = name.trim();
+            if !name.is_empty() {
+                return name.to_owned();
+            }
+        }
+    }
+    if let Some(username) = &p.username {
+        let username = username.trim();
+        if !username.is_empty() {
+            return username.to_owned();
+        }
+    }
+    String::new()
+}
+
+#[cfg(test)]
+mod mute_action_tests {
+    use super::mute_action_state;
+    use whatsapp_rust::prelude::wa::sync_action_value::MuteAction;
+
+    const NOW_MS: i64 = 1_700_000_000_000;
+
+    fn action(muted: Option<bool>, mute_end_timestamp: Option<i64>) -> MuteAction {
+        let mut action = MuteAction::default();
+        action.muted = muted;
+        action.mute_end_timestamp = mute_end_timestamp;
+        action
+    }
+
+    #[test]
+    fn indefinite_mute_is_muted() {
+        // -1 is the indefinite spelling the library itself sends.
+        assert!(mute_action_state(&action(Some(true), Some(-1)), NOW_MS));
+        // A missing end reads as indefinite too.
+        assert!(mute_action_state(&action(Some(true), None), NOW_MS));
+    }
+
+    #[test]
+    fn timed_mute_lasts_until_its_end() {
+        assert!(mute_action_state(&action(Some(true), Some(NOW_MS + 3_600_000)), NOW_MS));
+        assert!(!mute_action_state(&action(Some(true), Some(NOW_MS - 1)), NOW_MS));
+    }
+
+    #[test]
+    fn unmute_and_absent_flag_are_not_muted() {
+        assert!(!mute_action_state(&action(Some(false), Some(0)), NOW_MS));
+        assert!(!mute_action_state(&action(None, None), NOW_MS));
+    }
+}
+
+#[cfg(test)]
+mod pin_archive_action_tests {
+    use super::{archive_action_state, pin_action_state};
+    use whatsapp_rust::prelude::wa::sync_action_value::{ArchiveChatAction, PinAction};
+
+    fn pin(pinned: Option<bool>) -> PinAction {
+        let mut action = PinAction::default();
+        action.pinned = pinned;
+        action
+    }
+
+    fn archive(archived: Option<bool>) -> ArchiveChatAction {
+        let mut action = ArchiveChatAction::default();
+        action.archived = archived;
+        action
+    }
+
+    #[test]
+    fn only_an_explicit_true_pins() {
+        assert!(pin_action_state(&pin(Some(true))));
+        assert!(!pin_action_state(&pin(Some(false))));
+        assert!(!pin_action_state(&pin(None)));
+    }
+
+    #[test]
+    fn only_an_explicit_true_archives() {
+        assert!(archive_action_state(&archive(Some(true))));
+        assert!(!archive_action_state(&archive(Some(false))));
+        assert!(!archive_action_state(&archive(None)));
+    }
+}
+
+#[cfg(test)]
+mod star_mark_read_action_tests {
+    use super::{mark_read_action_state, star_action_state};
+    use whatsapp_rust::prelude::wa::sync_action_value::{
+        MarkChatAsReadAction, StarAction, SyncActionMessage, SyncActionMessageRange,
+    };
+
+    fn star(starred: Option<bool>) -> StarAction {
+        let mut action = StarAction::default();
+        action.starred = starred;
+        action
+    }
+
+    fn mark_read(read: Option<bool>, range_messages: Option<usize>) -> MarkChatAsReadAction {
+        let mut action = MarkChatAsReadAction::default();
+        action.read = read;
+        if let Some(count) = range_messages {
+            let mut range = SyncActionMessageRange::default();
+            range.messages = (0..count).map(|_| SyncActionMessage::default()).collect();
+            action.message_range = Some(range).into();
+        }
+        action
+    }
+
+    #[test]
+    fn only_an_explicit_true_stars() {
+        assert!(star_action_state(&star(Some(true))));
+        assert!(!star_action_state(&star(Some(false))));
+        assert!(!star_action_state(&star(None)));
+    }
+
+    #[test]
+    fn explicit_true_marks_read_with_no_unread() {
+        assert_eq!(mark_read_action_state(&mark_read(Some(true), None)), (true, 0));
+        // A range riding on a read mark changes nothing: the
+        // chat is read, the count is 0.
+        assert_eq!(mark_read_action_state(&mark_read(Some(true), Some(4))), (true, 0));
+    }
+
+    #[test]
+    fn mark_unread_counts_the_range_messages() {
+        assert_eq!(mark_read_action_state(&mark_read(Some(false), Some(3))), (false, 3));
+        // No range, or an empty one, lists no unread messages;
+        // the badge floor is the app's decision, not the wire's.
+        assert_eq!(mark_read_action_state(&mark_read(Some(false), None)), (false, 0));
+        assert_eq!(mark_read_action_state(&mark_read(Some(false), Some(0))), (false, 0));
+        assert_eq!(mark_read_action_state(&mark_read(None, Some(2))), (false, 2));
+    }
+}
+
+#[cfg(test)]
+mod clear_chat_action_tests {
+    use super::clear_chat_bound;
+    use whatsapp_rust::prelude::wa::sync_action_value::{ClearChatAction, SyncActionMessageRange};
+
+    fn clear(range: Option<SyncActionMessageRange>) -> ClearChatAction {
+        let mut action = ClearChatAction::default();
+        if let Some(range) = range {
+            action.message_range = Some(range).into();
+        }
+        action
+    }
+
+    #[test]
+    fn the_bound_is_the_range_last_message_timestamp() {
+        let mut range = SyncActionMessageRange::default();
+        range.last_message_timestamp = Some(1_700_000_000);
+        assert_eq!(clear_chat_bound(&clear(Some(range))), Some(1_700_000_000));
+    }
+
+    #[test]
+    fn no_range_or_no_bound_means_unbounded() {
+        assert_eq!(clear_chat_bound(&clear(None)), None);
+        // A range that lists messages but stamps no bound
+        // still bounds nothing: the list enumerates what the
+        // clearing device held, it does not narrow the clear.
+        let range = SyncActionMessageRange::default();
+        assert_eq!(clear_chat_bound(&clear(Some(range))), None);
+    }
+}
+
+#[cfg(test)]
+mod embedded_link_preview_tests {
+    use super::{embedded_link_preview, privacy_map};
+    use whatsapp_rust::prelude::wa;
+    use whatsapp_rust::prelude::{MessageBuilderExt, MessageField};
+
+    fn extended_text(
+        text: &str,
+        matched: Option<&str>,
+        title: Option<&str>,
+        description: Option<&str>,
+    ) -> wa::Message {
+        let mut extended = wa::message::ExtendedTextMessage::default();
+        extended.text = Some(text.to_owned());
+        extended.matched_text = matched.map(ToOwned::to_owned);
+        extended.title = title.map(ToOwned::to_owned);
+        extended.description = description.map(ToOwned::to_owned);
+        let mut msg = wa::Message::default();
+        msg.extended_text_message = MessageField::some(extended);
+        msg
+    }
+
+    #[test]
+    fn an_attached_preview_is_carried_through() {
+        let msg = extended_text(
+            "look at this https://example.com/page",
+            Some("https://example.com/page"),
+            Some("Example Page"),
+            Some("A page about examples"),
+        );
+        let preview = embedded_link_preview(&msg).expect("the wire carried a preview");
+        assert_eq!(preview.title, "Example Page");
+        assert_eq!(preview.description, "A page about examples");
+        assert_eq!(preview.url, "https://example.com/page");
+    }
+
+    #[test]
+    fn a_title_alone_still_counts_as_a_preview() {
+        let msg = extended_text(
+            "https://example.com",
+            Some("https://example.com"),
+            Some("Example"),
+            None,
+        );
+        let preview = embedded_link_preview(&msg).expect("title-only preview");
+        assert_eq!(preview.title, "Example");
+        assert_eq!(preview.description, "");
+    }
+
+    #[test]
+    fn extended_text_without_preview_fields_yields_none() {
+        // A plain reply or link text: the extended text carries
+        // no sender-generated preview, and the receiver must not
+        // manufacture one by fetching.
+        let msg = extended_text("just a reply with https://example.com inside", None, None, None);
+        assert!(embedded_link_preview(&msg).is_none());
+    }
+
+    #[test]
+    fn plain_conversation_text_yields_none() {
+        let msg = wa::Message::text("hello https://example.com");
+        assert!(embedded_link_preview(&msg).is_none());
+    }
+
+    /// Every category the library returns survives translation,
+    /// including the ones the Privacy page has no row for and the
+    /// value spellings only they use (audit finding D6). An
+    /// unknown category or value is carried under its wire
+    /// spelling instead of being dropped.
+    #[test]
+    fn privacy_map_carries_every_category() {
+        use whatsapp_rust::privacy_settings::{
+            PrivacyCategory, PrivacySetting, PrivacySettingsResponse, PrivacyValue,
+        };
+        let resp = PrivacySettingsResponse {
+            settings: vec![
+                PrivacySetting { category: PrivacyCategory::Last, value: PrivacyValue::Contacts },
+                PrivacySetting { category: PrivacyCategory::CallAdd, value: PrivacyValue::Known },
+                PrivacySetting { category: PrivacyCategory::Messages, value: PrivacyValue::All },
+                PrivacySetting {
+                    category: PrivacyCategory::DefenseMode,
+                    value: PrivacyValue::OnStandard,
+                },
+                PrivacySetting {
+                    category: PrivacyCategory::Other("futurecat".to_owned()),
+                    value: PrivacyValue::Other("futureval".to_owned()),
+                },
+            ],
+        };
+        let map = privacy_map(&resp);
+        assert_eq!(map.get("last").map(String::as_str), Some("contacts"));
+        assert_eq!(map.get("calladd").map(String::as_str), Some("known"));
+        assert_eq!(map.get("messages").map(String::as_str), Some("all"));
+        assert_eq!(map.get("defense").map(String::as_str), Some("on_standard"));
+        assert_eq!(map.get("futurecat").map(String::as_str), Some("futureval"));
+        assert_eq!(map.len(), 5, "nothing the server sent is dropped");
+    }
 }

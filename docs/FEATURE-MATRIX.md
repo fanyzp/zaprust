@@ -38,7 +38,7 @@ needs fixing.
 | Polls: vote on others' polls | Done (`vote_raw`; the creation secret travels inside the creation message's context info) | Done for polls received during the session: the backend caches the secret on receipt (see docs/research/poll-voting.md). Polls from before the session answer with an honest error | Done (local) | backend unit tests for secret extraction; runtime check pending the owner's pairing test |
 | Carousel receive / render | Done (proto oneof exists) | Done (render-only; the renderer shows at most 2 cards with up to 2 static buttons each) | Done (scripted) | contract (scripted carousel) |
 | Carousel send | Not supported through the library's public send path | Not supported (no menu entry) | Not supported | documented limit |
-| Link previews | n/a (app-side fetch) | Live-only, Settings > Chats toggle | Never fetched (scripted sample) | core OG parser fixtures |
+| Link previews | n/a (sender attaches) | Sender-attached previews render; never fetched | Scripted sample attached | backend translate + app live tests |
 | Location / contact cards receive | Done | Done | Done (scripted) | contract `scripted_group_delivers_location_carousel_and_contact_kinds` |
 | Location send | Done (proto `locationMessage`) | Done: the attach menu opens a name + coordinates form and sends a location message | Done (local card) | backend unit test `location_message_carries_degrees_and_optional_name` |
 | Paste image from clipboard | n/a (app-side) | Done: Ctrl+V stages the clipboard picture through the attach flow when the clipboard holds no text | Done (same staged path) | app `a_real_png_stages_as_a_photo` |

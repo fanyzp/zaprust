@@ -16,6 +16,23 @@ pub(crate) enum GiphyMsg {
     Preview(String, Vec<u8>),
 }
 
+/// One sticker preview decoded by a worker thread: the file it
+/// belongs to, the file's stamp when the worker read it, and the
+/// tile-sized RGBA pixels (None when the file could not be read
+/// or decoded). The draw path never decodes; it only queues
+/// requests and binds the textures this message produces.
+pub(crate) struct StickerPreviewMsg {
+    /// Sticker file the preview belongs to.
+    pub(crate) path: PathBuf,
+    /// The file's stamp at read time; a failure is remembered
+    /// against it, so a replaced file is retried and an unchanged
+    /// one is not.
+    pub(crate) stamp: Option<StickerFileStamp>,
+    /// Decoded RGBA pixels and their [width, height], or None
+    /// when the read or decode failed.
+    pub(crate) pixels: Option<(Vec<u8>, [usize; 2])>,
+}
+
 /// One finished live-media download: the MP4 bytes for a GIF send,
 /// targeted at the chat that was open when the user clicked.
 pub(crate) struct MediaFetchResult {
@@ -72,6 +89,15 @@ pub(crate) fn write_file_atomic(path: &std::path::Path, bytes: &[u8]) {
     let tmp = path.with_extension("tmp");
     let written = (|| -> std::io::Result<()> {
         let mut f = std::fs::File::create(&tmp)?;
+        // These files carry user content (settings, quick
+        // replies, plugin state): owner-only on Unix, asserted
+        // on the temp before any bytes land and inherited by the
+        // target through the rename (privacy audit A5).
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        }
         f.write_all(bytes)?;
         f.sync_all()?;
         drop(f);
@@ -228,7 +254,27 @@ impl App {
                 self.notify_messages = v["notify_messages"].as_bool().unwrap_or(true);
                 self.notify_groups = v["notify_groups"].as_bool().unwrap_or(true);
                 self.notify_sound = v["notify_sound"].as_bool().unwrap_or(true);
-                self.notify_preview = v["notify_preview"].as_bool().unwrap_or(true);
+                // The constructor default is false (message text
+                // in OS notifications is the privacy-sensitive
+                // behavior), so the loader fallback must agree: a
+                // settings file written without this key must not
+                // silently turn previews on (audit finding 11).
+                self.notify_preview = v["notify_preview"].as_bool().unwrap_or(false);
+                // Legacy blocked-contact copy. Builds before
+                // the A6 fix persisted the blocked set here, as
+                // chat ids; the set's home is now the encrypted
+                // archive (see `App::start_live`, which migrates
+                // this copy into the store on the first live
+                // start and never writes it back: settings_json
+                // no longer emits the field, so the next settings
+                // save scrubs it from this file). Reading it here
+                // keeps the panel's pre-connect display working
+                // until that migration runs. Chat ids are stored,
+                // not JIDs: the panel reasons in ids.
+                if let Some(blocked) = v["blocked_chats"].as_array() {
+                    self.blocked_chats =
+                        blocked.iter().filter_map(serde_json::Value::as_u64).collect();
+                }
                 self.composer.hint_dismissed =
                     v["composer_hint_dismissed"].as_bool().unwrap_or(false);
                 if let Some(m) = v["motion"].as_str() {
@@ -248,6 +294,7 @@ impl App {
                 if let Some(u) = v["update_last_check"].as_u64() {
                     self.update.last_check = u;
                 }
+                self.update.auto_check = v["update_auto_check"].as_bool().unwrap_or(true);
                 // "My profile" identity: seed the editor state
                 // once from the persisted keys. Absent keys leave
                 // the defaults (empty name/about, no photo).
@@ -323,7 +370,17 @@ impl App {
     /// Persists the settings the user can change (privacy toggles,
     /// appearance fine-tuning, feature configuration).
     pub(crate) fn persist_settings(&self) {
-        let v = serde_json::json!({
+        write_json_file(
+            &backend::data_dir().join("settings.json"),
+            &self.settings_json().to_string(),
+        );
+    }
+
+    /// The settings document exactly as [`App::persist_settings`]
+    /// writes it. Split out so tests can verify what a state
+    /// change puts on disk without touching the real data dir.
+    pub(crate) fn settings_json(&self) -> serde_json::Value {
+        serde_json::json!({
             "read_receipts": self.read_receipts,
             "default_ephemeral_secs": self.default_ephemeral_secs,
             "typing_indicators": self.typing_indicators,
@@ -336,89 +393,42 @@ impl App {
             "notify_groups": self.notify_groups,
             "notify_sound": self.notify_sound,
             "notify_preview": self.notify_preview,
+            // No "blocked_chats" here: the set persists in the
+            // encrypted archive store, not in this plaintext file
+            // (privacy audit A6). Omitting the field also scrubs
+            // the legacy copy older builds wrote, on the next
+            // save.
             "composer_hint_dismissed": self.composer.hint_dismissed,
             "motion": self.motion.as_str(),
             "language": self.language,
             "update_last_check": self.update.last_check,
+            "update_auto_check": self.update.auto_check,
             "features": self.feature_flags,
             "giphy_prefs": self.giphy_prefs,
             "my_name": self.my_profile.name,
             "my_about": self.my_profile.about,
             "my_photo_path": self.my_profile.photo_path,
-        });
-        write_json_file(&backend::data_dir().join("settings.json"), &v.to_string());
+        })
     }
 
-    /// Starts a link-preview fetch for a live message (worker
-    /// thread, 5s timeout, result cached by URL).
-    pub(crate) fn maybe_fetch_preview(&mut self, msg_id: u64, url: String) {
-        if let Some(cached) = self.og_cache.get(&url).cloned() {
-            self.apply_preview(msg_id, cached);
-            return;
-        }
-        if self.og_rx.is_some() {
-            return; // one fetch at a time; later messages retry next frame
-        }
-        let (tx, rx) = std::sync::mpsc::channel();
-        let fetch_url = url.clone();
-        std::thread::Builder::new()
-            .name("zaprust-og-fetch".to_owned())
-            .spawn(move || {
-                let data = fetch_open_graph(&fetch_url);
-                let _ = tx.send((msg_id, fetch_url, data));
-            })
-            .ok();
-        self.og_rx = Some(rx);
-    }
-
-    fn apply_preview(&mut self, msg_id: u64, data: Option<core::rich::OgData>) {
-        let Some(data) = data else {
-            return;
-        };
-        let preview = core::model::LinkPreview {
-            title: data.title,
-            description: data.description,
-            url: String::new(),
-            // Live fetches carry no image; the text card renders alone.
-            image: core::model::PreviewImage::None,
-        };
-        // Apply to the live session copy and the visible conversation.
-        if let Some(session) = &mut self.live {
-            for msgs in session.messages.values_mut() {
-                for (_, m) in msgs.iter_mut() {
-                    if m.id == msg_id {
-                        let mut p = preview.clone();
-                        if p.url.is_empty() {
-                            p.url = core::rich::first_url(&m.body).unwrap_or_default();
-                        }
-                        m.link_preview = Some(p);
-                    }
-                }
-            }
-        }
-        for m in &mut self.conversation {
-            if m.id == msg_id && m.link_preview.is_none() {
-                let mut p = preview.clone();
-                if p.url.is_empty() {
-                    p.url = core::rich::first_url(&m.body).unwrap_or_default();
-                }
-                m.link_preview = Some(p);
-            }
-        }
-    }
-
-    /// Polls all worker channels (GIPHY, previews).
+    /// Polls all worker channels (GIPHY, staged sends).
     /// Called every frame from the shell.
     pub(crate) fn poll_workers(&mut self, ctx: &egui::Context) {
-        if let Some(rx) = &self.og_rx {
+        // Chat export: the worker wrote the file (or failed);
+        // the outcome is reported via the notice banner, the
+        // same place the synchronous export used to report it.
+        if let Some(rx) = &self.export_rx {
             match rx.try_recv() {
-                Ok((msg_id, url, data)) => {
-                    self.og_cache.insert(url, data.clone());
-                    self.apply_preview(msg_id, data);
-                    self.og_rx = None;
+                Ok(Ok(path)) => {
+                    self.notice = Some(format!("Chat exported to {}", path.display()));
+                    self.export_rx = None;
+                }
+                Ok(Err(e)) => {
+                    self.notice = Some(format!("Export failed: {e}"));
+                    self.export_rx = None;
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    self.og_rx = None;
+                    self.export_rx = None;
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
             }
@@ -502,6 +512,45 @@ impl App {
                 self.picker.media_fetch_rx = None;
             }
         }
+        // Staged album sends: files the send worker has read.
+        self.poll_staged_send();
+        // Sticker previews: workers read and decode off the UI
+        // thread; here the finished pixels are only uploaded,
+        // and failures go into the negative cache so the picker
+        // does not queue them again.
+        if self.picker.sticker_rx.is_some() {
+            let mut drained: Vec<StickerPreviewMsg> = Vec::new();
+            if let Some(rx) = &self.picker.sticker_rx {
+                loop {
+                    match rx.try_recv() {
+                        Ok(msg) => drained.push(msg),
+                        Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                        Err(std::sync::mpsc::TryRecvError::Disconnected) => break,
+                    }
+                }
+            }
+            for msg in drained {
+                self.picker.sticker_pending.remove(&msg.path);
+                match msg.pixels {
+                    Some((rgba, size)) => {
+                        let name = msg
+                            .path
+                            .file_stem()
+                            .map(|s| s.to_string_lossy().into_owned())
+                            .unwrap_or_default();
+                        let color = egui::ColorImage::from_rgba_unmultiplied(size, &rgba);
+                        let handle = ctx.load_texture(
+                            format!("sticker-{name}"),
+                            color,
+                            egui::TextureOptions::LINEAR,
+                        );
+                        self.picker.sticker_textures.insert(msg.path.clone(), handle);
+                        self.picker.sticker_failures.forget(&msg.path);
+                    }
+                    None => self.picker.sticker_failures.record(&msg.path, msg.stamp),
+                }
+            }
+        }
     }
 
     /// Starts a GIPHY trending fetch (worker thread).
@@ -566,6 +615,49 @@ impl App {
             .ok();
         self.picker.giphy_rx = Some(rx);
         true
+    }
+
+    /// Queues sticker files for preview decoding on a worker
+    /// thread (the GIPHY preview pattern): the worker reads and
+    /// decodes each file at tile size and reports back through
+    /// the shared channel drained in `poll_workers`. Called from
+    /// the sticker tab's draw with the stickers that have no
+    /// texture, no remembered failure and no decode in flight;
+    /// the draw path itself never reads or decodes.
+    pub(crate) fn request_sticker_previews(&mut self, paths: Vec<PathBuf>) {
+        if paths.is_empty() {
+            return;
+        }
+        if self.picker.sticker_tx.is_none() {
+            let (tx, rx) = std::sync::mpsc::channel::<StickerPreviewMsg>();
+            self.picker.sticker_tx = Some(tx);
+            self.picker.sticker_rx = Some(rx);
+        }
+        let Some(tx) = self.picker.sticker_tx.clone() else {
+            return;
+        };
+        for path in &paths {
+            self.picker.sticker_pending.insert(path.clone());
+        }
+        let queued = paths.clone();
+        let spawned = std::thread::Builder::new()
+            .name("zaprust-sticker-previews".to_owned())
+            .spawn(move || {
+                for path in paths {
+                    let stamp = StickerFileStamp::of(&path);
+                    let pixels =
+                        std::fs::read(&path).ok().and_then(|bytes| decode_sticker_preview(&bytes));
+                    let _ = tx.send(StickerPreviewMsg { path, stamp, pixels });
+                }
+            });
+        if spawned.is_err() {
+            // No worker will report back; unmark the batch so a
+            // later draw can queue it again instead of waiting on
+            // results that will never arrive.
+            for path in &queued {
+                self.picker.sticker_pending.remove(path);
+            }
+        }
     }
 
     /// Per-frame expiry tick: disappearing messages expire on
@@ -682,29 +774,50 @@ impl App {
                     }
                 }
                 if let Some(store) = &session.store {
-                    for (chat_id, _, pid) in &work {
-                        if let (Some(jid), Some(pid)) = (session.jids.get(chat_id), pid) {
-                            let _ = store.delete_message(jid, pid);
-                        }
+                    // One batch for the whole pass: the store
+                    // deletes in a single transaction and
+                    // reclaims the freed pages once, instead of
+                    // paying a commit (and WAL truncation) per
+                    // expired message.
+                    let keys: Vec<(String, String)> = work
+                        .iter()
+                        .filter_map(|(chat_id, _, pid)| {
+                            Some((session.jids.get(chat_id)?.clone(), pid.clone()?))
+                        })
+                        .collect();
+                    let _ = store.delete_messages(&keys);
+                }
+            }
+            // The expired messages have left the mirror; their
+            // per-message helper entries go with them, so the
+            // helper maps stay scoped to the messages the mirror
+            // holds instead of growing by one entry per message
+            // ever seen. A saved download of an expired message
+            // goes too (privacy audit A3): expiry that left the
+            // plaintext file behind would not be expiry.
+            let data_dir = backend::data_dir();
+            for (chat_id, mid, pid) in &work {
+                self.forget_live_message(*chat_id, *mid, pid.as_deref());
+                if let (Some(pid), Some(session)) = (pid, &self.live) {
+                    if let Some(jid) = session.jids.get(chat_id) {
+                        backend::remove_download_for_message(&data_dir, jid, pid);
                     }
                 }
             }
             // A chat whose newest message expired shows the new
-            // newest message as its preview.
+            // newest message as its preview, in the list and in
+            // the archive: the shared removal rule recomputes
+            // the preview and writes the chat row through, so a
+            // restart cannot resurrect an expired message's
+            // body as the stored preview. This pass runs from
+            // the per-frame tick, after poll_backend has flushed
+            // and closed its event batch, so the helper's direct
+            // row write has no pending batch flush to fight.
+            let mut refreshed: Vec<u64> = Vec::new();
             for (chat_id, _, _) in &work {
-                let last = self.live.as_ref().and_then(|s| {
-                    s.messages.get(chat_id).and_then(|v| v.last().map(|(ts, m)| (*ts, m.clone())))
-                });
-                if let Some(chat) = self.chats.iter_mut().find(|c| c.id == *chat_id) {
-                    match last {
-                        Some((ts, m)) => {
-                            chat.preview = m.body.clone();
-                            chat.time = crate::live::fmt_time(ts);
-                        }
-                        None => {
-                            chat.preview = String::new();
-                        }
-                    }
+                if !refreshed.contains(chat_id) {
+                    refreshed.push(*chat_id);
+                    self.refresh_preview_after_removal(*chat_id);
                 }
             }
             if touched_selected {
@@ -767,35 +880,135 @@ pub(crate) fn decode_image_limited(bytes: &[u8]) -> Option<image::DynamicImage> 
     reader.decode().ok()
 }
 
-/// Cap on cached link previews. Past it the oldest entries are
-/// evicted; without a bound the cache grew for the whole session
-/// (SEC-F06).
-const MAX_OG_CACHE_ENTRIES: usize = 256;
+/// Edge bound for sticker previews, in pixels: twice the 52 px
+/// tile the picker renders, so high-DPI displays stay sharp
+/// without paying for the source resolution.
+pub(crate) const STICKER_PREVIEW_PX: u32 = 104;
 
-/// Bounded link-preview cache by URL. Insertion order is kept in
-/// a plain Vec and the oldest entry is evicted first once the
-/// cache grows past [`MAX_OG_CACHE_ENTRIES`]; at this size a
-/// linear lookup is cheap and no extra dependency is needed.
-/// A cached `None` means the URL was fetched and had no preview;
-/// it still counts as cached so it is not fetched again.
-#[derive(Default)]
-pub(crate) struct OgCache {
-    entries: Vec<(String, Option<core::rich::OgData>)>,
+/// Decodes sticker bytes into a tile-sized preview: the same
+/// limited decode as [`decode_image_limited`], then a downscale
+/// so neither edge exceeds [`STICKER_PREVIEW_PX`]. Runs on the
+/// preview worker thread, never on the draw path. Returns the
+/// RGBA pixels and their [width, height].
+pub(crate) fn decode_sticker_preview(bytes: &[u8]) -> Option<(Vec<u8>, [usize; 2])> {
+    let img = decode_image_limited(bytes)?;
+    let img =
+        img.resize(STICKER_PREVIEW_PX, STICKER_PREVIEW_PX, image::imageops::FilterType::Triangle);
+    let rgba = img.to_rgba8();
+    let size = [rgba.width() as usize, rgba.height() as usize];
+    Some((rgba.into_raw(), size))
 }
 
-impl OgCache {
-    pub(crate) fn get(&self, url: &str) -> Option<&Option<core::rich::OgData>> {
-        self.entries.iter().find(|(key, _)| key == url).map(|(_, data)| data)
+/// A file's identity for failure caching: length plus modified
+/// time. Two stamps are equal only while the file is untouched,
+/// so a sticker that is replaced or repaired gets a new stamp
+/// and is decoded again, while an unchanged bad file is not
+/// retried.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) struct StickerFileStamp {
+    len: u64,
+    modified: Option<std::time::SystemTime>,
+}
+
+impl StickerFileStamp {
+    /// The stamp of the file at `path` right now, or None when
+    /// its metadata cannot be read (missing or unstat-able).
+    pub(crate) fn of(path: &std::path::Path) -> Option<Self> {
+        let meta = std::fs::metadata(path).ok()?;
+        Some(Self { len: meta.len(), modified: meta.modified().ok() })
+    }
+}
+
+/// Negative cache for sticker previews: the paths whose decode
+/// failed, each remembered against the file's stamp at attempt
+/// time. The picker asks [`StickerFailureCache::still_failed`]
+/// before queueing a decode; a true answer means "do not retry",
+/// so one corrupt file costs one decode, not one per repaint.
+#[derive(Default)]
+pub(crate) struct StickerFailureCache {
+    entries: std::collections::HashMap<PathBuf, Option<StickerFileStamp>>,
+}
+
+impl StickerFailureCache {
+    /// Remembers that decoding `path` failed while the file had
+    /// the given stamp.
+    pub(crate) fn record(&mut self, path: &std::path::Path, stamp: Option<StickerFileStamp>) {
+        self.entries.insert(path.to_path_buf(), stamp);
     }
 
-    pub(crate) fn insert(&mut self, url: String, data: Option<core::rich::OgData>) {
-        if let Some(slot) = self.entries.iter_mut().find(|(key, _)| *key == url) {
-            slot.1 = data;
+    /// Drops any remembered failure for `path` (its decode has
+    /// since succeeded).
+    pub(crate) fn forget(&mut self, path: &std::path::Path) {
+        self.entries.remove(path);
+    }
+
+    /// True while `path` has a remembered failure and the file
+    /// still carries the stamp it failed with. When the file has
+    /// changed since (new length or mtime, or it vanished and
+    /// came back), the entry is dropped and the answer is false,
+    /// so the next draw queues a fresh decode.
+    pub(crate) fn still_failed(&mut self, path: &std::path::Path) -> bool {
+        let Some(&stamp) = self.entries.get(path) else {
+            return false;
+        };
+        if StickerFileStamp::of(path) == stamp {
+            true
+        } else {
+            self.entries.remove(path);
+            false
+        }
+    }
+}
+
+/// Caps for the GPU texture caches, in entries. Photo textures
+/// are full-size images, so the media cache stays small; avatars
+/// and stickers are tiny tiles and previews are downscaled, so
+/// they get more room. At these sizes a linear lookup is cheap.
+pub(crate) const MAX_MEDIA_TEXTURES: usize = 128;
+pub(crate) const MAX_AVATAR_TEXTURES: usize = 256;
+pub(crate) const MAX_GIPHY_TEXTURES: usize = 128;
+pub(crate) const MAX_STICKER_TEXTURES: usize = 256;
+
+/// A bounded GPU texture cache: insertion order is kept in a
+/// plain Vec and the oldest entry is evicted first once the
+/// cache grows past its cap. Without a bound these caches kept
+/// every texture decoded in the session alive until exit
+/// (audit finding 10).
+pub(crate) struct TextureCache<K> {
+    entries: Vec<(K, egui::TextureHandle)>,
+    cap: usize,
+}
+
+impl<K: PartialEq> TextureCache<K> {
+    pub(crate) fn new(cap: usize) -> Self {
+        Self { entries: Vec::new(), cap }
+    }
+
+    pub(crate) fn get<Q>(&self, key: &Q) -> Option<&egui::TextureHandle>
+    where
+        K: std::borrow::Borrow<Q>,
+        Q: PartialEq + ?Sized,
+    {
+        self.entries.iter().find(|(k, _)| k.borrow() == key).map(|(_, handle)| handle)
+    }
+
+    pub(crate) fn contains_key<Q>(&self, key: &Q) -> bool
+    where
+        K: std::borrow::Borrow<Q>,
+        Q: PartialEq + ?Sized,
+    {
+        self.entries.iter().any(|(k, _)| k.borrow() == key)
+    }
+
+    pub(crate) fn insert(&mut self, key: K, handle: egui::TextureHandle) {
+        if let Some(slot) = self.entries.iter_mut().find(|(k, _)| *k == key) {
+            slot.1 = handle;
             return;
         }
-        self.entries.push((url, data));
-        while self.entries.len() > MAX_OG_CACHE_ENTRIES {
-            self.entries.remove(0);
+        self.entries.push((key, handle));
+        while self.entries.len() > self.cap {
+            // Dropping the evicted handle frees its texture.
+            let _ = self.entries.remove(0);
         }
     }
 
@@ -804,102 +1017,118 @@ impl OgCache {
     }
 }
 
-/// Builds the link-preview client for one fetch hop: the hop's
-/// URL is validated and resolved once through `core::net`, and
-/// the client is pinned to exactly those addresses, so the name
-/// is never resolved a second time at connect and a rebinding
-/// answer cannot slip a private address past the check (SEC-F05).
-/// IP-literal hosts need no pin; there is no name to rebind.
-/// Returns `None` when the URL fails validation.
-fn pinned_preview_client(url: &str) -> Option<reqwest::blocking::Client> {
-    let target = core::net::validated_target(url)?;
-    let host = reqwest::Url::parse(url).ok()?.host_str()?.to_owned();
-    let mut builder = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(5))
-        .redirect(reqwest::redirect::Policy::none());
-    if host.parse::<std::net::IpAddr>().is_err() {
-        builder = builder.resolve_to_addrs(&host, &target.addrs);
-    }
-    builder.build().ok()
-}
-
-/// Fetches a page and parses its OpenGraph metadata (blocking,
-/// 5-second timeout). Never called in demo mode. Hardened per
-/// security audit SEC-01/SEC-13: https only, public hosts only,
-/// redirects followed manually so every hop is re-validated and
-/// pinned to its validated addresses (SEC-F05), and the body read
-/// is capped instead of buffered whole.
-fn fetch_open_graph(url: &str) -> Option<core::rich::OgData> {
-    use std::io::Read;
-    let mut current = url.to_owned();
-    for _ in 0..=3 {
-        let client = pinned_preview_client(&current)?;
-        let mut resp = client.get(&current).send().ok()?;
-        if resp.status().is_redirection() {
-            let location = resp.headers().get("location")?.to_str().ok()?.to_owned();
-            let next = reqwest::Url::parse(&current).ok()?.join(&location).ok()?;
-            current = next.to_string();
-            continue;
-        }
-        if !resp.status().is_success() {
-            return None;
-        }
-        let mut buf = Vec::new();
-        resp.by_ref().take(512 * 1024).read_to_end(&mut buf).ok()?;
-        let html = String::from_utf8_lossy(&buf);
-        return core::rich::parse_open_graph(&html);
-    }
-    None
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn pinned_client_builds_for_a_public_literal() {
-        // SEC-F05: client construction itself needs no network;
-        // a public literal passes validation and builds.
-        assert!(pinned_preview_client("https://8.8.8.8/page").is_some());
+    fn test_texture(ctx: &egui::Context, name: &str) -> egui::TextureHandle {
+        ctx.load_texture(
+            name,
+            egui::ColorImage::new([1, 1], vec![egui::Color32::RED]),
+            egui::TextureOptions::NEAREST,
+        )
     }
 
     #[test]
-    fn og_cache_evicts_the_oldest_entries_past_the_cap() {
-        // SEC-F06 regression: the cache must stay bounded, with
-        // the earliest inserts evicted first.
-        let mut cache = OgCache::default();
-        for i in 0..MAX_OG_CACHE_ENTRIES + 2 {
-            cache.insert(format!("https://example.com/{i}"), None);
-        }
-        assert!(cache.get("https://example.com/0").is_none());
-        assert!(cache.get("https://example.com/1").is_none());
-        assert!(cache.get("https://example.com/2").is_some());
-        let last = format!("https://example.com/{}", MAX_OG_CACHE_ENTRIES + 1);
-        assert!(cache.get(&last).is_some());
+    fn texture_cache_evicts_the_oldest_entries_past_the_cap() {
+        // Audit finding 10: the texture caches must stay
+        // bounded, with the earliest inserts evicted first.
+        let ctx = egui::Context::default();
+        let mut cache = TextureCache::new(2);
+        cache.insert(1u64, test_texture(&ctx, "a"));
+        cache.insert(2u64, test_texture(&ctx, "b"));
+        cache.insert(3u64, test_texture(&ctx, "c"));
+        assert!(cache.get(&1).is_none(), "the oldest entry is evicted");
+        assert!(cache.get(&2).is_some());
+        assert!(cache.get(&3).is_some());
     }
 
     #[test]
-    fn og_cache_reinsert_replaces_in_place() {
-        let mut cache = OgCache::default();
-        cache.insert("https://example.com/a".to_owned(), None);
-        let data = core::rich::OgData { title: "Title".to_owned(), description: "Desc".to_owned() };
-        cache.insert("https://example.com/a".to_owned(), Some(data));
-        let cached = cache.get("https://example.com/a").expect("entry stays cached");
-        assert_eq!(cached.as_ref().map(|d| d.title.as_str()), Some("Title"));
+    fn texture_cache_reinsert_replaces_and_clear_empties() {
+        let ctx = egui::Context::default();
+        let mut cache = TextureCache::new(2);
+        cache.insert("key".to_owned(), test_texture(&ctx, "a"));
+        let second = test_texture(&ctx, "b");
+        let second_id = second.id();
+        cache.insert("key".to_owned(), second);
+        assert_eq!(cache.get("key").map(|h| h.id()), Some(second_id));
+        assert!(cache.contains_key("key"));
         cache.clear();
-        assert!(cache.get("https://example.com/a").is_none());
+        assert!(cache.get("key").is_none());
+        assert!(!cache.contains_key("key"));
     }
 
     #[test]
-    fn pinned_client_rejects_non_public_targets() {
-        for bad in [
-            "http://8.8.8.8/page",
-            "https://127.0.0.1/admin",
-            "https://192.168.1.1/page",
-            "https://example.com@10.0.0.5/page",
-            "not a url",
-        ] {
-            assert!(pinned_preview_client(bad).is_none(), "{bad} must be rejected");
-        }
+    fn sticker_preview_decode_downscales_to_the_tile_bound() {
+        // A source far larger than the 52 px tile: the preview
+        // request must come back bounded, not at source size.
+        let img = image::RgbaImage::from_pixel(512, 300, image::Rgba([30, 200, 30, 255]));
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(img)
+            .write_to(&mut png, image::ImageFormat::Png)
+            .expect("png encode");
+        let (rgba, size) = decode_sticker_preview(&png.into_inner()).expect("preview decodes");
+        assert_eq!(size[0], STICKER_PREVIEW_PX as usize);
+        assert!(size[1] <= STICKER_PREVIEW_PX as usize, "height {} over the bound", size[1]);
+        assert!(size[1] < size[0], "aspect ratio preserved");
+        assert_eq!(rgba.len(), size[0] * size[1] * 4);
+    }
+
+    #[test]
+    fn sticker_preview_decode_rejects_non_image_bytes() {
+        assert!(decode_sticker_preview(b"not an image").is_none());
+    }
+
+    /// A fresh temp path for one failure-cache test (parallel
+    /// tests use distinct names).
+    fn sticker_test_path(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join("zaprust-sticker-failure-test");
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join(name);
+        let _ = std::fs::remove_file(&path);
+        path
+    }
+
+    #[test]
+    fn sticker_failure_cache_does_not_retry_an_unchanged_file() {
+        let path = sticker_test_path("unchanged.png");
+        std::fs::write(&path, b"corrupt").expect("write bad sticker");
+        let mut cache = StickerFailureCache::default();
+        assert!(!cache.still_failed(&path), "nothing recorded yet");
+        cache.record(&path, StickerFileStamp::of(&path));
+        // The picker queues a decode only when this is false, so
+        // staying true across draws is what stops the per-frame
+        // retry.
+        assert!(cache.still_failed(&path));
+        assert!(cache.still_failed(&path));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn sticker_failure_cache_retries_once_the_file_changes() {
+        let path = sticker_test_path("replaced.png");
+        std::fs::write(&path, b"corrupt").expect("write bad sticker");
+        let mut cache = StickerFailureCache::default();
+        cache.record(&path, StickerFileStamp::of(&path));
+        assert!(cache.still_failed(&path));
+        // Replacing the file (different length, new mtime) moves
+        // its stamp: the failure no longer applies and a fresh
+        // decode is due without an app restart.
+        std::fs::write(&path, b"a longer, still not valid, sticker body").expect("replace sticker");
+        assert!(!cache.still_failed(&path));
+        assert!(!cache.still_failed(&path), "the stale entry stays dropped");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn sticker_failure_cache_forget_clears_the_entry() {
+        let path = sticker_test_path("forgotten.png");
+        std::fs::write(&path, b"corrupt").expect("write bad sticker");
+        let mut cache = StickerFailureCache::default();
+        cache.record(&path, StickerFileStamp::of(&path));
+        assert!(cache.still_failed(&path));
+        cache.forget(&path);
+        assert!(!cache.still_failed(&path));
+        let _ = std::fs::remove_file(&path);
     }
 }

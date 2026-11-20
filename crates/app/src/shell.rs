@@ -427,9 +427,10 @@ impl App {
             });
         if close && !exiting {
             // Only a view-once photo consumes its allowance; regular
-            // photos reopen freely.
-            if view_once && !self.media.opened_view_once.contains(&id) {
-                self.media.opened_view_once.insert(id);
+            // photos reopen freely. The opened state is persisted
+            // with the message, so it survives a restart too.
+            if view_once {
+                self.mark_view_once_opened(id);
             }
             self.media.viewing_photo = None;
         }

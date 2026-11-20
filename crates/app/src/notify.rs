@@ -2,7 +2,8 @@
 //!
 //! The decision half is pure and unit-tested: it reads the
 //! existing Settings > Notifications toggles (messages, groups,
-//! sound, preview), the per-chat mute flag, and whether the user
+//! sound, preview), the per-chat mute flag, the blocked state
+//! of the chat or sender, and whether the user
 //! is already looking at the chat in a focused window. Two gates
 //! keep the past quiet: messages stamped before the current
 //! connection came up are history and never queue at all (the
@@ -30,6 +31,13 @@ pub(crate) struct NotifyRequest {
     pub kind: ChatKind,
     /// Whether the chat is muted (per-chat silent mode).
     pub muted: bool,
+    /// Whether the sender is blocked: the chat itself for a
+    /// direct chat with a blocked contact, or the message's
+    /// sender inside a group. The server stops delivering a
+    /// blocked contact's messages, but anything already in
+    /// flight or synced can still land here, and it must not
+    /// pop up.
+    pub blocked: bool,
     /// Sender display name for group messages, when known.
     pub sender: Option<String>,
     /// Message body (used only when the preview toggle is on).
@@ -53,7 +61,7 @@ pub(crate) fn should_notify(
     req: &NotifyRequest,
     looking_at_it: bool,
 ) -> bool {
-    if looking_at_it || req.muted {
+    if looking_at_it || req.muted || req.blocked {
         return false;
     }
     match req.kind {
@@ -239,6 +247,7 @@ mod tests {
             title: "Ada".to_owned(),
             kind,
             muted: false,
+            blocked: false,
             sender: None,
             body: "hello there".to_owned(),
         }
@@ -269,6 +278,15 @@ mod tests {
             !should_notify(settings(), &req(ChatKind::Dm), true),
             "the chat on screen in a focused window needs no popup"
         );
+    }
+
+    #[test]
+    fn blocked_sender_suppresses() {
+        let mut r = req(ChatKind::Dm);
+        r.blocked = true;
+        assert!(!should_notify(settings(), &r, false), "a blocked contact never pops up");
+        let popups = plan_popups(settings(), std::slice::from_ref(&r), None);
+        assert!(popups.is_empty(), "blocked requests do not contribute to counts either");
     }
 
     #[test]

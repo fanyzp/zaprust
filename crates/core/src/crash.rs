@@ -117,8 +117,10 @@ impl CrashReport {
         self.backtrace = scrub(&self.backtrace, home);
     }
 
-    /// Writes the report as `crash-<timestamp>.json` inside `dir`
-    /// (created if needed), after redacting `home` if given.
+    /// Writes the report as `crash-<timestamp>-<pid>-<counter>.json`
+    /// inside `dir` (created if needed), after redacting `home` if
+    /// given, and prunes the directory to the newest
+    /// [`MAX_KEPT_REPORTS`] reports.
     ///
     /// # Errors
     /// Returns I/O and serialization errors; the panic hook treats a
@@ -135,10 +137,32 @@ impl CrashReport {
             self.backtrace = scrub_secrets(&self.backtrace);
         }
         std::fs::create_dir_all(dir)?;
-        let path = dir.join(format!("crash-{}.json", self.timestamp_unix));
+        let path = unique_report_path(dir, self.timestamp_unix);
         let json = serde_json::to_string_pretty(&self)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        std::fs::write(&path, json)?;
+        // Owner-only from creation (0600 on Unix): a report is
+        // exactly the kind of file a user is asked to share, and
+        // the startup hardening pass should not be its only
+        // protection (privacy audit A4/A5, C4). The open mode
+        // applies when the file is created; the set_permissions
+        // after the write asserts it for a file that somehow
+        // already existed at the unique path.
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        let mut file = opts.open(&path)?;
+        use std::io::Write as _;
+        file.write_all(json.as_bytes())?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+        }
+        prune_reports(dir);
         Ok(path)
     }
 
@@ -163,11 +187,57 @@ impl CrashReport {
     }
 }
 
+/// Crash reports kept on disk: writing a new one prunes the
+/// oldest beyond this count, so a crash loop (start, panic,
+/// restart) cannot grow the `crashes/` directory without bound.
+const MAX_KEPT_REPORTS: usize = 10;
+
+/// A crash report path that no existing report uses. The name
+/// keeps the unix-seconds prefix (so lexical order stays
+/// chronological) and adds pid + a process counter, the naming
+/// precedent the pasted-image temp files use: two crashes in the
+/// same second, or from two app instances, get distinct files
+/// instead of the second silently overwriting the first.
+fn unique_report_path(dir: &Path, timestamp_unix: i64) -> PathBuf {
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    loop {
+        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path = dir.join(format!("crash-{timestamp_unix}-{}-{n}.json", std::process::id()));
+        if !path.exists() {
+            return path;
+        }
+    }
+}
+
+/// Deletes all but the newest [`MAX_KEPT_REPORTS`] crash reports
+/// in `dir`. Best effort: a report that cannot be listed or
+/// removed is left for the next write to retry.
+fn prune_reports(dir: &Path) {
+    let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("crash-") && n.ends_with(".json"))
+        })
+        .collect();
+    files.sort();
+    if files.len() > MAX_KEPT_REPORTS {
+        for old in &files[..files.len() - MAX_KEPT_REPORTS] {
+            let _ = std::fs::remove_file(old);
+        }
+    }
+}
+
 /// Home redaction plus the secret scrubber: panic payloads are
 /// free text and could interpolate a secret, so crash reports get
 /// the same treatment as log lines before they are written or
-/// shared.
-fn scrub(text: &str, home: &Path) -> String {
+/// shared. Also applied to every debug log line by
+/// [`crate::debug::ScrubWriter`].
+pub(crate) fn scrub(text: &str, home: &Path) -> String {
     scrub_secrets(&redact_home(text, home))
 }
 
@@ -180,7 +250,7 @@ fn scrub(text: &str, home: &Path) -> String {
 /// This layer masks those quoted-key values, `apiKey=`/`secret=`/
 /// `client_secret=` spellings, and `Authorization: Basic ...`
 /// values (the debug scrubber already handles `Bearer`).
-fn scrub_secrets(text: &str) -> String {
+pub(crate) fn scrub_secrets(text: &str) -> String {
     let s = redact_json_secrets(text);
     let s = redact_extended_assignments(&s);
     let s = redact_basic_tokens(&s);
@@ -191,10 +261,16 @@ fn scrub_secrets(text: &str) -> String {
 }
 
 /// Scrub for text that is about to be DISPLAYED or printed (the
-/// panic hook's stderr line, the crash banner, the details view):
-/// secret shapes plus the home prefix when the environment names
-/// one (`HOME`, or `USERPROFILE` on Windows).
-fn scrub_for_display(text: &str) -> String {
+/// panic hook's stderr line, the crash banner, the details view,
+/// and the backend supervisor's `BackendEvent::Crashed` summary,
+/// which the app renders verbatim in the connection status):
+/// secret shapes and phone-like numbers are masked, plus the
+/// home prefix when the environment names one (`HOME`, or
+/// `USERPROFILE` on Windows). It does not mask names or message
+/// text; it is a secrets-and-identifiers scrub, not a content
+/// filter.
+#[must_use]
+pub fn scrub_for_display(text: &str) -> String {
     let mut out = text.to_owned();
     if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
         if !home.is_empty() {
@@ -324,10 +400,14 @@ fn redact_extended_assignments(text: &str) -> String {
     ] {
         let mut search_from = 0;
         while search_from < masked.len() {
-            let Some(pos) = masked[search_from..].to_lowercase().find(key) else {
+            // ASCII case-insensitive search over the ORIGINAL
+            // string: offsets computed on a `to_lowercase()` copy
+            // shift whenever a character's lowercase form has a
+            // different byte length (e.g. `İ`), landing the mask
+            // on the wrong span or panicking inside the panic hook.
+            let Some(key_start) = crate::rich::find_ci(&masked, key, search_from) else {
                 break;
             };
-            let key_start = search_from + pos;
             let key_end = key_start + key.len();
             // The key must stand alone (not be part of a longer
             // word) and be followed by `=` or `:`.
@@ -352,10 +432,14 @@ fn redact_extended_assignments(text: &str) -> String {
             }
             // For an Authorization value, keep a Bearer/Basic
             // scheme word and mask only the credential after it.
+            // Compared on the original string, ASCII-insensitively,
+            // for the same offset-safety reason as the key search
+            // above (`j` only ever advances over ASCII bytes here,
+            // so it stays on a char boundary).
             if key == "authorization" {
-                let rest = masked[j..].to_lowercase();
                 for scheme in ["bearer ", "basic "] {
-                    if rest.starts_with(scheme) {
+                    let head = masked[j..].get(..scheme.len());
+                    if head.is_some_and(|h| h.eq_ignore_ascii_case(scheme)) {
                         j += scheme.len();
                         break;
                     }
@@ -389,10 +473,12 @@ fn redact_basic_tokens(text: &str) -> String {
     let mut masked = text.to_owned();
     let mut search_from = 0;
     while search_from < masked.len() {
-        let Some(pos) = masked[search_from..].to_lowercase().find("basic ") else {
+        // Same ASCII-insensitive search as the assignment
+        // scrubber: no offsets from a length-changing copy.
+        let Some(pos) = crate::rich::find_ci(&masked, "basic ", search_from) else {
             break;
         };
-        let token_start = search_from + pos + "basic ".len();
+        let token_start = pos + "basic ".len();
         let b = masked.as_bytes();
         let mut token_end = token_start;
         while token_end < b.len()
@@ -567,6 +653,20 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// Privacy audit C4: a written report is owner-only (0600)
+    /// from creation, not merely tightened by a later pass.
+    #[cfg(unix)]
+    #[test]
+    fn written_report_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = temp_dir("permissions");
+        let report = CrashReport::capture("boom".to_owned(), None, "bt".to_owned());
+        let path = report.write_to(&dir, None).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "a crash report is created owner-only: {path:?}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     #[test]
     fn unseen_report_respects_dismissal() {
         let dir = temp_dir("seen");
@@ -642,5 +742,69 @@ mod tests {
     #[test]
     fn percent_encoding_keeps_unreserved() {
         assert_eq!(percent_encode("a b&c~d"), "a%20b%26c~d");
+    }
+
+    #[test]
+    fn scrub_survives_length_changing_unicode_before_a_secret() {
+        // `İ` lowercases to a longer byte string. Offsets computed
+        // on a lowercased copy used to shift every later span: the
+        // mask landed on the wrong bytes (secret survives) or
+        // `replace_range` panicked, inside the panic hook itself.
+        let out = scrub_secrets("İstanbul apiKey=supersecretvalue99");
+        assert!(!out.contains("supersecretvalue99"), "{out}");
+        assert!(out.contains("apiKey=***"), "{out}");
+        let out = scrub_secrets("İ Basic dXNlcjpwYXNzd29yZA==");
+        assert!(!out.contains("dXNlcjpwYXNzd29yZA=="), "{out}");
+        // Degenerate inputs pass through untouched.
+        assert_eq!(scrub_secrets(""), "");
+        assert_eq!(scrub_secrets("İıß"), "İıß");
+    }
+
+    fn report_at(timestamp_unix: i64) -> CrashReport {
+        CrashReport {
+            app_version: "0.0.0".to_owned(),
+            os: "linux".to_owned(),
+            arch: "x86_64".to_owned(),
+            timestamp_unix,
+            panic_message: "boom".to_owned(),
+            location: None,
+            backtrace: "bt".to_owned(),
+        }
+    }
+
+    #[test]
+    fn same_second_reports_do_not_overwrite_each_other() {
+        let dir = temp_dir("same-second");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let first = report_at(1_700_000_000).write_to(&dir, None).unwrap();
+        let second = report_at(1_700_000_000).write_to(&dir, None).unwrap();
+        assert_ne!(first, second);
+        assert!(first.exists() && second.exists(), "both reports survive");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn reports_are_pruned_to_the_newest_few() {
+        let dir = temp_dir("prune");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for i in 0..MAX_KEPT_REPORTS as i64 + 3 {
+            report_at(1_700_000_000 + i).write_to(&dir, None).unwrap();
+        }
+        let names: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter_map(|e| e.file_name().into_string().ok())
+            .filter(|n| n.starts_with("crash-"))
+            .collect();
+        assert_eq!(names.len(), MAX_KEPT_REPORTS, "{names:?}");
+        let newest = format!("crash-{}-", 1_700_000_000 + MAX_KEPT_REPORTS as i64 + 2);
+        assert!(names.iter().any(|n| n.starts_with(&newest)), "newest kept: {names:?}");
+        assert!(
+            !names.iter().any(|n| n.starts_with("crash-1700000000-")),
+            "oldest pruned: {names:?}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

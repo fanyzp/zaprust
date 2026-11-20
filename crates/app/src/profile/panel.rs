@@ -726,13 +726,13 @@ impl App {
                                 ),
                                 None,
                                 |ui| {
-                                    for (address, name, is_admin) in live_list.iter() {
+                                    for row in live_list.iter() {
                                         let Some(kebab) = dock_member_row(
                                             ui,
                                             t,
-                                            name,
-                                            Some(address),
-                                            *is_admin,
+                                            &row.label,
+                                            row.detail.as_deref(),
+                                            row.admin,
                                             true,
                                         ) else {
                                             continue;
@@ -748,7 +748,7 @@ impl App {
                                                 let dm_id = self.live.as_ref().and_then(|s| {
                                                     s.jids
                                                         .iter()
-                                                        .find(|(_, jid)| *jid == address)
+                                                        .find(|(_, jid)| **jid == row.address)
                                                         .map(|(id, _)| *id)
                                                 });
                                                 if let Some(dm_id) = dm_id {
@@ -766,7 +766,7 @@ impl App {
                                                         ui.close();
                                                     }
                                                 }
-                                                let (label_key, op) = if *is_admin {
+                                                let (label_key, op) = if row.admin {
                                                     (
                                                         "profile.remove_admin",
                                                         backend::ParticipantOp::Demote,
@@ -787,7 +787,7 @@ impl App {
                                                 .clicked()
                                                 {
                                                     member_action = Some(MemberAction::Op(
-                                                        address.clone(),
+                                                        row.address.clone(),
                                                         op,
                                                     ));
                                                     ui.close();
@@ -813,8 +813,8 @@ impl App {
                                                 .clicked()
                                                 {
                                                     member_action = Some(MemberAction::Remove(
-                                                        address.clone(),
-                                                        name.clone(),
+                                                        row.address.clone(),
+                                                        row.label.clone(),
                                                     ));
                                                     ui.close();
                                                 }
@@ -969,11 +969,10 @@ impl App {
             export = true;
         }
         if toggle_mute {
-            if let Some(c) = self.chats.iter_mut().find(|c| c.id == chat.id) {
-                c.muted = !c.muted;
-            } else if let Some(c) = self.detached_chat.as_mut().filter(|c| c.id == chat.id) {
-                c.muted = !c.muted;
-            }
+            // Same routing as the header menu: apply_chat_action
+            // flips locally at once and sends the backend command
+            // in live mode.
+            self.apply_chat_action(chat.id, chat.archived, chat.pinned, !chat.muted);
         }
         if export {
             self.export_current_chat();
@@ -1120,6 +1119,11 @@ impl App {
                 block: now_blocked,
             });
         }
+        // The set is persisted (to the encrypted archive store,
+        // privacy audit A6) so the panel still shows the right
+        // state after a restart, before (or without) the
+        // backend's connect-time blocklist fetch.
+        self.persist_blocked_chats();
         self.notice = Some(if now_blocked {
             "Contact blocked.".to_owned()
         } else {

@@ -26,6 +26,11 @@ impl App {
 
     /// Records a backend event into the trace (stage + summary;
     /// message bodies attached for the local inspector only).
+    /// Summaries identify chats and senders by JID only, never by
+    /// display name or chat title: the ring is mirrored to the
+    /// debug log file and exported in bundles, and
+    /// `debug::redact` masks the phone digits inside JIDs but
+    /// cannot mask a name (privacy audit C7).
     pub(crate) fn trace_event(&mut self, event: &BackendEvent) {
         if !self.debug.mode {
             return;
@@ -46,14 +51,17 @@ impl App {
                 ("backend", format!("ConnectionLost: {reason}"), None)
             }
             BackendEvent::ChatUpsert(chat) => {
-                ("archive", format!("ChatUpsert {} {}", chat.jid, chat.title), None)
+                ("archive", format!("ChatUpsert {}", chat.jid), None)
             }
             BackendEvent::MessageUpsert(message) => (
                 "message",
                 format!(
                     "MessageUpsert in {} from {}",
                     message.chat_jid,
-                    message.sender.as_deref().unwrap_or("me")
+                    message
+                        .sender_jid
+                        .as_deref()
+                        .unwrap_or(if message.from_me { "me" } else { "unknown" })
                 ),
                 Some(message.body.clone()),
             ),
@@ -71,7 +79,49 @@ impl App {
             BackendEvent::DisappearingChanged { chat_jid, duration_secs } => {
                 ("message", format!("DisappearingChanged in {chat_jid}: {duration_secs}s"), None)
             }
+            BackendEvent::DefaultDisappearingTimerChanged { duration_secs } => (
+                "message",
+                format!("DefaultDisappearingTimerChanged: {duration_secs}s"),
+                None,
+            ),
+            BackendEvent::MuteChanged { chat_jid, muted } => {
+                ("message", format!("MuteChanged in {chat_jid}: muted={muted}"), None)
+            }
+            BackendEvent::PinChanged { chat_jid, pinned } => {
+                ("message", format!("PinChanged in {chat_jid}: pinned={pinned}"), None)
+            }
+            BackendEvent::ArchiveChanged { chat_jid, archived } => {
+                ("message", format!("ArchiveChanged in {chat_jid}: archived={archived}"), None)
+            }
+            BackendEvent::StarChanged { chat_jid, message_id, starred } => (
+                "message",
+                format!("StarChanged in {chat_jid}: {message_id} starred={starred}"),
+                None,
+            ),
+            BackendEvent::ChatReadChanged { chat_jid, read, unread_count } => (
+                "message",
+                format!("ChatReadChanged in {chat_jid}: read={read} unread={unread_count}"),
+                None,
+            ),
+            BackendEvent::ChatDeleted { chat_jid } => {
+                ("message", format!("ChatDeleted {chat_jid}"), None)
+            }
+            BackendEvent::ChatCleared { chat_jid, delete_starred, last_message_timestamp } => (
+                "message",
+                format!(
+                    "ChatCleared in {chat_jid}: delete_starred={delete_starred} bound={last_message_timestamp:?}"
+                ),
+                None,
+            ),
+            BackendEvent::MessageDeletedForMe { chat_jid, message_id } => (
+                "message",
+                format!("MessageDeletedForMe in {chat_jid}: {message_id}"),
+                None,
+            ),
             BackendEvent::PrivacyState(_) => ("backend", "PrivacyState".to_owned(), None),
+            BackendEvent::Blocklist(jids) => {
+                ("backend", format!("Blocklist: {} contacts", jids.len()), None)
+            }
             BackendEvent::Crashed { summary, restarted } => {
                 ("backend", format!("Crashed (restarted={restarted}): {summary}"), None)
             }
@@ -351,6 +401,16 @@ impl App {
         let path = dir.join("zaprust-debug-bundle.zip");
         match std::fs::write(&path, bytes) {
             Ok(()) => {
+                // The bundle can hold redacted message bodies
+                // (only with the user's opt-in above) and sits at
+                // this fixed path until the next export: make it
+                // owner-only on Unix instead of leaving it at
+                // default permissions (privacy audit A7).
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+                }
                 self.notice = Some(format!("Debug bundle written to {}", path.display()));
                 self.trace_push("ui", "debug bundle exported", None);
             }
@@ -358,5 +418,70 @@ impl App {
                 self.notice = Some(format!("Bundle export failed: {e}"));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::Args;
+    use backend::{LiveChat, LiveChatKind, LiveMessage};
+
+    fn debug_app() -> App {
+        let ctx = egui::Context::default();
+        crate::theme::install_fonts(&ctx);
+        let mut app = App::new(Args::parse(), &ctx);
+        app.debug.mode = true;
+        app
+    }
+
+    /// Privacy finding C7: trace summaries are mirrored to the
+    /// debug log file and exported in bundles, so they must not
+    /// carry contact names or group titles. Chats and senders
+    /// are identified by JID only, whose phone digits the ring's
+    /// redaction masks.
+    #[test]
+    fn trace_summaries_carry_no_names() {
+        let mut app = debug_app();
+        app.trace_event(&BackendEvent::ChatUpsert(LiveChat {
+            jid: "6281234567890@s.whatsapp.net".to_owned(),
+            title: "Alice Johnson".to_owned(),
+            kind: LiveChatKind::Dm,
+            preview: "hi".to_owned(),
+            preview_sender: None,
+            timestamp: 1_700_000_000,
+            unread: 0,
+            archived: false,
+            pinned: false,
+            ephemeral_secs: 0,
+            muted: false,
+        }));
+        let mut msg = LiveMessage::text(
+            "m1",
+            "6281234567890@s.whatsapp.net",
+            Some("Alice Johnson".to_owned()),
+            "hello".to_owned(),
+            1_700_000_000,
+            false,
+        );
+        msg.sender_jid = Some("6281234567890@s.whatsapp.net".to_owned());
+        app.trace_event(&BackendEvent::MessageUpsert(msg));
+
+        let entries = app.debug.trace.entries();
+        assert_eq!(entries.len(), 2);
+        for entry in &entries {
+            assert!(
+                !entry.summary.contains("Alice Johnson"),
+                "a display name reached the trace: {}",
+                entry.summary
+            );
+            assert!(
+                !entry.summary.contains("6281234567890"),
+                "an unmasked phone number reached the trace: {}",
+                entry.summary
+            );
+        }
+        assert!(entries[0].summary.starts_with("ChatUpsert "), "{}", entries[0].summary);
+        assert!(entries[1].summary.contains("from ***90@s.whatsapp.net"), "{}", entries[1].summary);
     }
 }

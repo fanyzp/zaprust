@@ -2,8 +2,8 @@
 
 Every release carries three assets besides the binaries:
 
-- `SHA256SUMS` — one `sha256sum`-format line per binary.
-- `SHA256SUMS.sig` — a base64 Ed25519 signature over the exact
+- `SHA256SUMS`: one `sha256sum`-format line per binary.
+- `SHA256SUMS.sig`: a base64 Ed25519 signature over the exact
   bytes of `SHA256SUMS`, made with the offline release key.
 - The binaries themselves.
 
@@ -46,3 +46,16 @@ Upload `SHA256SUMS.sig` to the release alongside `SHA256SUMS`
 before announcing the release. An unsigned release is visible on
 the releases page but every installed copy will refuse to update
 to it.
+
+Release checklist. The Release and Nightly workflows end with a
+"Signing reminder" step that repeats this warning in the run's
+job summary, but no workflow can sign for you. Do not announce a
+release until every box is ticked:
+
+- [ ] The workflow run finished and the release is published with
+  `SHA256SUMS` among its assets.
+- [ ] `SHA256SUMS` was downloaded from the published release (not
+  a local copy) and signed with the commands above.
+- [ ] `SHA256SUMS.sig` was uploaded to the release.
+- [ ] The release page lists `SHA256SUMS.sig` next to
+  `SHA256SUMS`.

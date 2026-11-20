@@ -109,6 +109,12 @@ pub(crate) struct EventBatch {
     /// lands later in the same batch is part of the stored row,
     /// exactly as if each write had happened in event order.
     pub(crate) store_writes: Vec<LiveMessage>,
+    /// Chats whose unread badge a batch upsert raised. The
+    /// badge lives in the mirror, but the archive row must carry
+    /// the same count (a restart reloads from the archive), so
+    /// the flush writes these chats' rows from the mirror once
+    /// per batch instead of once per message.
+    pub(crate) chat_rows_dirty: std::collections::HashSet<u64>,
 }
 
 /// One running live session: channels, link state, and the live data
@@ -170,12 +176,12 @@ fn message_id(chat_jid: &str, proto_id: &str) -> u64 {
     jid_id(&format!("{chat_jid}/{proto_id}"))
 }
 
-/// Maps a raw backend error string to a human sentence for the
-/// notice banner. The raw text still goes to the log and to the
-/// (pre-link) status line; the banner never shows library internals
-/// (typed-errors review, display layer). Unknown errors pass
-/// through, trimmed, because a specific honest message beats a
-/// generic one.
+/// Maps a backend error string to a human sentence for the
+/// notice banner. The caller (the BackendEvent::Error arm) has
+/// already scrubbed the text for display; this function only
+/// rewrites the known patterns to fixed sentences and passes the
+/// rest through, trimmed, because a specific honest message beats
+/// a generic one.
 pub(crate) fn human_error(message: &str) -> String {
     let m = message.to_lowercase();
     if m.contains("invalid chat address") || m.contains("invalid jid") {
@@ -397,6 +403,21 @@ pub(crate) fn to_message_with_flags(live: &LiveMessage, flags: i64) -> Message {
     }
 }
 
+/// The text a live message may contribute to glanceable
+/// surfaces: the chat-list preview and the notification body.
+/// A view-once message's caption is part of its sealed payload
+/// (shown only with the media itself, in the viewer), so it
+/// contributes only the placeholder its bubble shows, never
+/// the caption the backend carried on the body. Mirrors
+/// [`Message::preview_text`] for the converted mirror messages.
+fn glanceable_text(live: &LiveMessage) -> String {
+    if live.view_once {
+        core::model::VIEW_ONCE_PREVIEW.to_owned()
+    } else {
+        live.body.clone()
+    }
+}
+
 /// What a live start may do about its database key.
 enum KeyDecision {
     /// Start under this key.
@@ -469,6 +490,36 @@ impl crate::state::App {
             Ok(s) => (Some(s), None),
             Err(e) => (None, Some(format!("Chat archive unavailable: {e}"))),
         };
+        if store_opt.is_some() {
+            // The archive in the current data directory opened and
+            // unlocked, which proves the app runs from the
+            // post-rename directory: the legacy copy the one-time
+            // adoption left behind can be removed (privacy audit
+            // A1). Best-effort; a later start retries.
+            backend::remove_legacy_data_dir();
+        }
+        if let Some(store) = &store_opt {
+            // The blocked set's persisted home is this encrypted
+            // archive (privacy audit A6). A set already stored
+            // here is the last known truth and replaces whatever
+            // the settings file's legacy copy said. With nothing
+            // stored yet, a non-empty legacy copy (loaded from
+            // settings.json at startup) migrates in, so blocks
+            // made under an older build survive the move; from
+            // here on the settings file never carries the set
+            // again (settings_json omits it).
+            match store.blocked_chats() {
+                Ok(Some(ids)) => {
+                    self.blocked_chats = ids.into_iter().collect();
+                }
+                Ok(None) if !self.blocked_chats.is_empty() => {
+                    let mut ids: Vec<u64> = self.blocked_chats.iter().copied().collect();
+                    ids.sort_unstable();
+                    let _ = store.set_blocked_chats(&ids);
+                }
+                _ => {}
+            }
+        }
         let repaint_ctx = ctx.clone();
         let wake: backend::WakeFn = std::sync::Arc::new(move || repaint_ctx.request_repaint());
         let config = BackendConfig { data_dir, account_id: "default".to_owned(), db_key };
@@ -521,6 +572,13 @@ impl crate::state::App {
                             if *flags != 0 {
                                 session.flags.insert(message_id(&m.chat_jid, &m.id), *flags);
                             }
+                            // An opened view-once message stays
+                            // opened across restarts: seed the
+                            // session's opened set from the stored
+                            // flag (privacy audit D13).
+                            if *flags & store::FLAG_VIEW_ONCE_OPENED != 0 {
+                                self.media.opened_view_once.insert(message_id(&m.chat_jid, &m.id));
+                            }
                             // Archived messages must stay actionable
                             // after a restart: per-message live actions
                             // look the protocol id up here, and before
@@ -552,6 +610,12 @@ impl crate::state::App {
         // clean composer, never with demo state inside it.
         let first_live = self.chats.first().map_or(0, |c| c.id);
         let previous = self.selected_chat;
+        // A new session never inherits a recording: cancel any
+        // take in progress outright, even when the first live
+        // chat's id matches the current selection and the
+        // switch below would be a no-op. A take recorded before
+        // this session must not be sendable inside it.
+        self.cancel_recording();
         self.switch_composer_chat(previous, first_live);
         self.selected_chat = first_live;
         self.sync_conversation();
@@ -790,16 +854,16 @@ impl crate::state::App {
             }
         }
         if let Some(id) = self.pending_select_chat {
+            // The deferred selection resolves only to the exact
+            // chat id it was given. There is deliberately no
+            // fallback: an earlier version treated a small id as
+            // a 1-based index into the chat list, which silently
+            // opened an unrelated chat when the requested one
+            // never arrived (audit finding 15). An id that never
+            // resolves simply stays pending.
             if self.chats.iter().any(|c| c.id == id) {
                 self.pending_select_chat = None;
                 self.select_chat_now(id);
-            } else if id >= 1 && (id as usize) < self.chats.len() {
-                // Live chat ids are JID hashes, so a small number is
-                // a 1-based index into the chat list (index 0 is the
-                // pinned AI Assistant).
-                let target = self.chats[id as usize].id;
-                self.pending_select_chat = None;
-                self.select_chat_now(target);
             }
         }
     }
@@ -842,6 +906,25 @@ impl crate::state::App {
                     let rows: Vec<(LiveMessage, i64)> =
                         order.into_iter().filter_map(|mid| latest.remove(&mid)).collect();
                     let _ = store.upsert_messages(&rows);
+                }
+            }
+            if !batch.chat_rows_dirty.is_empty() {
+                if let Some(store) = &session.store {
+                    // Written from the mirror as it stands now,
+                    // so the stored count is the badge the list
+                    // shows after the whole batch, whatever order
+                    // the increments and read changes arrived in.
+                    // A chat the batch went on to delete is no
+                    // longer in the list and is skipped: its rows
+                    // are already gone.
+                    for chat_id in &batch.chat_rows_dirty {
+                        let Some(jid) = session.jids.get(chat_id) else { continue };
+                        let Some(chat) = self.chats.iter().find(|c| c.id == *chat_id) else {
+                            continue;
+                        };
+                        let ts = session.times.get(chat_id).copied().unwrap_or(0);
+                        let _ = store.upsert_chat(&chat_to_live(chat, jid, ts));
+                    }
                 }
             }
         }
@@ -913,16 +996,10 @@ impl crate::state::App {
             }
             BackendEvent::ChatUpsert(chat) => self.apply_chat_upsert(&chat),
             BackendEvent::MessageUpsert(msg) => {
-                let chat_id = jid_id(&msg.chat_jid);
-                let msg_key = message_id(&msg.chat_jid, &msg.id);
-                // Side effects (preview fetches) run only for
-                // genuinely new messages, not
-                // for every re-upsert of a known one (logic review
-                // F8). The upsert itself reports which case this is.
-                let new_incoming = self.apply_message_upsert(&msg);
-                if new_incoming {
-                    self.on_incoming_live_message(chat_id, msg_key, &msg);
-                }
+                // Applying an upsert never triggers a network
+                // fetch: a link preview renders only when the
+                // sender's client attached one to the message.
+                self.apply_message_upsert(&msg);
             }
             BackendEvent::MessageSent { chat_jid, message_id } => {
                 self.apply_message_sent(&chat_jid, &message_id);
@@ -1013,7 +1090,7 @@ impl crate::state::App {
                     }
                 }
                 {
-                    let actors = self.reaction_actors.entry(key).or_default();
+                    let actors = self.reaction_actors.entry(key.clone()).or_default();
                     if emoji.is_empty() {
                         actors.remove(&actor);
                     } else {
@@ -1028,6 +1105,14 @@ impl crate::state::App {
                                 m.reactions = counts.clone();
                             }
                         }
+                    }
+                    if counts.is_empty() {
+                        // The last actor removed their reaction:
+                        // the entry itself goes too, so the map
+                        // holds only messages with live reactions
+                        // instead of an empty set per message ever
+                        // reacted to.
+                        self.reaction_actors.remove(&key);
                     }
                 }
                 if self.selected_chat == chat_id {
@@ -1058,8 +1143,58 @@ impl crate::state::App {
                 let chat_id = jid_id(&chat_jid);
                 self.apply_disappearing_changed(chat_id, duration_secs);
             }
+            BackendEvent::DefaultDisappearingTimerChanged { duration_secs } => {
+                self.apply_default_disappearing_timer(duration_secs);
+            }
+            BackendEvent::MuteChanged { chat_jid, muted } => {
+                let chat_id = jid_id(&chat_jid);
+                self.apply_mute_changed(chat_id, muted);
+            }
+            BackendEvent::PinChanged { chat_jid, pinned } => {
+                let chat_id = jid_id(&chat_jid);
+                self.apply_pin_changed(chat_id, pinned);
+            }
+            BackendEvent::ArchiveChanged { chat_jid, archived } => {
+                let chat_id = jid_id(&chat_jid);
+                self.apply_archive_changed(chat_id, archived);
+            }
+            BackendEvent::StarChanged { chat_jid, message_id: pid, starred } => {
+                let chat_id = jid_id(&chat_jid);
+                let mid = message_id(&chat_jid, &pid);
+                self.apply_star_changed(chat_id, mid, &pid, starred);
+            }
+            BackendEvent::ChatReadChanged { chat_jid, read, unread_count } => {
+                let chat_id = jid_id(&chat_jid);
+                self.apply_chat_read_changed(chat_id, read, unread_count);
+            }
+            BackendEvent::ChatDeleted { chat_jid } => {
+                let chat_id = jid_id(&chat_jid);
+                self.apply_chat_deleted(chat_id, &chat_jid);
+            }
+            BackendEvent::ChatCleared { chat_jid, delete_starred, last_message_timestamp } => {
+                let chat_id = jid_id(&chat_jid);
+                self.apply_chat_cleared(chat_id, &chat_jid, delete_starred, last_message_timestamp);
+            }
+            BackendEvent::MessageDeletedForMe { chat_jid, message_id: pid } => {
+                let chat_id = jid_id(&chat_jid);
+                let mid = message_id(&chat_jid, &pid);
+                self.apply_message_deleted_for_me(chat_id, &chat_jid, mid, &pid);
+            }
             BackendEvent::PrivacyState(map) => {
-                self.privacy_state = map;
+                self.apply_privacy_state(map);
+            }
+            BackendEvent::Blocklist(jids) => {
+                // The server's list is the source of truth for
+                // blocks: adopt it wholesale, replacing the
+                // persisted copy that covered the time before
+                // this fetch landed. Chat ids are JID hashes, so
+                // the adoption needs no chat list. The adopted
+                // set is written through to the persisted copy
+                // (the encrypted archive store, privacy audit
+                // A6), so the stored truth is the server's, not
+                // merely the last local toggle's.
+                self.blocked_chats = jids.iter().map(|j| jid_id(j)).collect();
+                self.persist_blocked_chats();
             }
             BackendEvent::MediaSaved { path, .. } => {
                 self.notice = Some(format!("Saved to {path}"));
@@ -1073,7 +1208,8 @@ impl crate::state::App {
                 }
             }
             BackendEvent::GroupMembers { chat_jid, members } => {
-                self.groups.live_members.insert(jid_id(&chat_jid), members);
+                let rows = self.resolve_member_rows(members);
+                self.groups.live_members.insert(jid_id(&chat_jid), rows);
             }
             BackendEvent::GroupInviteLink { chat_jid, link } => {
                 self.groups.invite_link = Some((jid_id(&chat_jid), link));
@@ -1085,7 +1221,8 @@ impl crate::state::App {
                 self.groups.modes.insert(jid_id(&chat_jid), (announce, locked));
             }
             BackendEvent::JoinRequests { chat_jid, requests } => {
-                self.groups.join_requests = Some((jid_id(&chat_jid), requests));
+                let rows = self.resolve_request_rows(requests);
+                self.groups.join_requests = Some((jid_id(&chat_jid), rows));
             }
             BackendEvent::ConnectionLost { reason } => {
                 if let Some(session) = &mut self.live {
@@ -1107,6 +1244,16 @@ impl crate::state::App {
                 }
             }
             BackendEvent::Error { message } => {
+                // Backend error text is largely library error
+                // Display output and can embed server-supplied
+                // strings and identifiers. Everything below
+                // displays it (the notice banner via human_error,
+                // the pre-link status line), so it passes through
+                // the crash display scrubber first, the same
+                // treatment the Crashed summary gets (privacy
+                // audit C6). App-authored strings contain no
+                // secret or phone shapes and pass unchanged.
+                let message = core::crash::scrub_for_display(&message);
                 tracing::warn!("backend error: {message}");
                 // An error while a call action is unconfirmed almost
                 // always belongs to it; release the buttons (F18).
@@ -1151,11 +1298,49 @@ impl crate::state::App {
         }
         // Same protection for mute: an arrival upsert reports
         // `false` without knowing better, so it must not unmute
-        // a chat this client knows is muted. Unmuting has its
-        // own path (the chat action and its upsert).
+        // a chat this client knows is muted. Server-side mute
+        // changes have their own authoritative path
+        // (MuteChanged events); this merge only protects the
+        // stored value, exactly as for the timer above.
         if !merged.muted {
             if let Some(known) = self.chats.iter().find(|c| c.id == id) {
                 merged.muted = known.muted;
+            }
+        }
+        // Same protection for pin and archive: an arrival upsert
+        // reports `false` for both without knowing better, so it
+        // must not unpin or unarchive a chat this client knows
+        // is pinned or archived. Server-side changes have their
+        // own authoritative path (PinChanged / ArchiveChanged
+        // events); this merge only protects the stored value. An
+        // upsert that does know the state (the fake's chat-action
+        // and LeaveGroup echoes carry its full state) still
+        // lands, because the protection only ever preserves a
+        // known `true` against a reported `false`.
+        if !merged.pinned {
+            if let Some(known) = self.chats.iter().find(|c| c.id == id) {
+                merged.pinned = known.pinned;
+            }
+        }
+        if !merged.archived {
+            if let Some(known) = self.chats.iter().find(|c| c.id == id) {
+                merged.archived = known.archived;
+            }
+        }
+        // Same protection for the unread count: a message-arrival
+        // upsert reports 0 without knowing the count (the wire
+        // does not carry it there), so it must not reset a count
+        // this client already knows. Message upserts own the
+        // increments, and read state has its own authoritative
+        // path (ChatReadChanged events, which set the count
+        // outright, to 0 included); this merge only protects the
+        // known value. An upsert that does report a count (the
+        // fake's initial chat list carries the real counts)
+        // still lands, because the protection only ever
+        // preserves a known count against a reported 0.
+        if merged.unread == 0 {
+            if let Some(known) = self.chats.iter().find(|c| c.id == id) {
+                merged.unread = known.unread;
             }
         }
         if let Some(session) = &mut self.live {
@@ -1172,9 +1357,12 @@ impl crate::state::App {
             chat.preview_sender = fresh.preview_sender;
             chat.time = fresh.time;
             chat.unread = fresh.unread;
-            // The backend row is authoritative for these two; dropping
-            // them here made phone-side archive/pin (and the fake's
-            // LeaveGroup) invisible until restart (logic review F14).
+            // These take the merged values, so the protection
+            // above (known state survives an uninformed upsert)
+            // reaches the mirror too, while an informed upsert
+            // still lands. Dropping them here once made
+            // phone-side archive/pin (and the fake's LeaveGroup)
+            // invisible until restart (logic review F14).
             chat.archived = fresh.archived;
             chat.pinned = fresh.pinned;
             chat.ephemeral_secs = fresh.ephemeral_secs;
@@ -1217,6 +1405,390 @@ impl crate::state::App {
         }
     }
 
+    /// Applies a mute change the server reported (a mute or
+    /// unmute done on another device, or the account state from
+    /// a full sync). The reported value wins over the local
+    /// mirror unconditionally, including over an optimistic
+    /// local toggle whose backend command failed: this event is
+    /// the reconciliation path for mute, the counterpart of
+    /// DisappearingChanged for the timer. State and archive
+    /// update either way. A mute set from this client does not
+    /// wait for this event; it applies through apply_chat_action
+    /// at once.
+    pub(crate) fn apply_mute_changed(&mut self, chat_id: u64, muted: bool) {
+        if let Some(c) = self.chats.iter_mut().find(|c| c.id == chat_id) {
+            c.muted = muted;
+        }
+        if let Some(c) = self.detached_chat.as_mut().filter(|c| c.id == chat_id) {
+            c.muted = muted;
+        }
+        if let Some(session) = &self.live {
+            if let (Some(store), Some(jid)) = (&session.store, session.jids.get(&chat_id)) {
+                if let Some(chat) = self.chats.iter().find(|c| c.id == chat_id) {
+                    let ts = session.times.get(&chat_id).copied().unwrap_or(0);
+                    let _ = store.upsert_chat(&chat_to_live(chat, jid, ts));
+                }
+            }
+        }
+    }
+
+    /// Applies a pin change the server reported (a pin or unpin
+    /// done on another device, or the account state from a full
+    /// sync). The reported value wins over the local mirror
+    /// unconditionally, including over an optimistic local
+    /// toggle whose backend command failed: this event is the
+    /// reconciliation path for pin, the counterpart of
+    /// MuteChanged for mute. State and archive update either
+    /// way; the pinned-first list order reads the field at
+    /// render time, so no re-sort is needed here. A pin set
+    /// from this client does not wait for this event; it
+    /// applies through apply_chat_action at once.
+    pub(crate) fn apply_pin_changed(&mut self, chat_id: u64, pinned: bool) {
+        if let Some(c) = self.chats.iter_mut().find(|c| c.id == chat_id) {
+            c.pinned = pinned;
+        }
+        if let Some(c) = self.detached_chat.as_mut().filter(|c| c.id == chat_id) {
+            c.pinned = pinned;
+        }
+        if let Some(session) = &self.live {
+            if let (Some(store), Some(jid)) = (&session.store, session.jids.get(&chat_id)) {
+                if let Some(chat) = self.chats.iter().find(|c| c.id == chat_id) {
+                    let ts = session.times.get(&chat_id).copied().unwrap_or(0);
+                    let _ = store.upsert_chat(&chat_to_live(chat, jid, ts));
+                }
+            }
+        }
+    }
+
+    /// Applies an archive change the server reported (an
+    /// archive or unarchive done on another device, or the
+    /// account state from a full sync). The reported value wins
+    /// over the local mirror unconditionally, including over an
+    /// optimistic local toggle whose backend command failed:
+    /// this event is the reconciliation path for archive, the
+    /// counterpart of MuteChanged for mute. State and archive
+    /// update either way; the list filters read the field at
+    /// render time, so an archived chat leaves the main list
+    /// views (and an unarchived one returns) exactly as with a
+    /// local archive action. An archive set from this client
+    /// does not wait for this event; it applies through
+    /// apply_chat_action at once.
+    pub(crate) fn apply_archive_changed(&mut self, chat_id: u64, archived: bool) {
+        if let Some(c) = self.chats.iter_mut().find(|c| c.id == chat_id) {
+            c.archived = archived;
+        }
+        if let Some(c) = self.detached_chat.as_mut().filter(|c| c.id == chat_id) {
+            c.archived = archived;
+        }
+        if let Some(session) = &self.live {
+            if let (Some(store), Some(jid)) = (&session.store, session.jids.get(&chat_id)) {
+                if let Some(chat) = self.chats.iter().find(|c| c.id == chat_id) {
+                    let ts = session.times.get(&chat_id).copied().unwrap_or(0);
+                    let _ = store.upsert_chat(&chat_to_live(chat, jid, ts));
+                }
+            }
+        }
+    }
+
+    /// Applies a star change the server reported (a star or
+    /// unstar done on another device, or the account state from
+    /// a full sync). The reported value wins over the local
+    /// mirror unconditionally, exactly as a local toggle would
+    /// land it, minus the backend command: the session mirror
+    /// flips, and the flag write-through (`set_live_flag`)
+    /// updates the session flag map and the archive row, which
+    /// is also what protects the value from uninformed arrival
+    /// upserts (they resolve their flags from that map). A star
+    /// set from this client does not wait for this event; it
+    /// applies through the composer's toggle at once.
+    pub(crate) fn apply_star_changed(
+        &mut self,
+        chat_id: u64,
+        msg_id: u64,
+        protocol_id: &str,
+        starred: bool,
+    ) {
+        // The protocol-id bookkeeping an upsert would have done,
+        // so the flag write-through below finds the archive row
+        // even for a message this session has not re-upserted.
+        self.protocol_ids.insert(msg_id, protocol_id.to_owned());
+        if let Some(entry) = self.live.as_mut().and_then(|s| s.messages.get_mut(&chat_id)) {
+            for (_, m) in entry.iter_mut() {
+                if m.id == msg_id {
+                    m.starred = starred;
+                }
+            }
+        }
+        self.set_live_flag(chat_id, msg_id, store::FLAG_STARRED, starred);
+        if self.selected_chat == chat_id {
+            self.sync_conversation();
+        }
+    }
+
+    /// Writes one chat's archive row from the mirror, so the
+    /// stored row carries the state the list shows. For mirror
+    /// changes that arrive without a chat upsert of their own
+    /// (the unread badge an incoming message raised), whose own
+    /// write-through would otherwise never happen.
+    fn persist_chat_row(&self, chat_id: u64) {
+        if let Some(session) = &self.live {
+            if let (Some(store), Some(jid)) = (&session.store, session.jids.get(&chat_id)) {
+                if let Some(chat) = self.chats.iter().find(|c| c.id == chat_id) {
+                    let ts = session.times.get(&chat_id).copied().unwrap_or(0);
+                    let _ = store.upsert_chat(&chat_to_live(chat, jid, ts));
+                }
+            }
+        }
+    }
+
+    /// Applies a read-state change the server reported (a chat
+    /// marked read or unread on another device, or the account
+    /// state from a full sync). State adoption only, in both
+    /// directions: the mirror and the archive take the reported
+    /// state, and nothing is ever sent from here. A remote read
+    /// in particular must not produce read receipts from this
+    /// client (the other device already sent them), so the
+    /// chat's pending receipt queue is dropped, not flushed:
+    /// those messages are read, and a later local engagement
+    /// finds nothing left to mark. A remote mark-as-unread
+    /// adopts the reported count, floored at one: the chat IS
+    /// unread, so a zero badge would hide the state the server
+    /// just asserted.
+    pub(crate) fn apply_chat_read_changed(&mut self, chat_id: u64, read: bool, unread_count: u32) {
+        let unread = if read { 0 } else { unread_count.max(1) };
+        if let Some(c) = self.chats.iter_mut().find(|c| c.id == chat_id) {
+            c.unread = unread;
+        }
+        if let Some(c) = self.detached_chat.as_mut().filter(|c| c.id == chat_id) {
+            c.unread = unread;
+        }
+        if read {
+            self.unread_live.remove(&chat_id);
+        }
+        if let Some(session) = &self.live {
+            if let (Some(store), Some(jid)) = (&session.store, session.jids.get(&chat_id)) {
+                if let Some(chat) = self.chats.iter().find(|c| c.id == chat_id) {
+                    let ts = session.times.get(&chat_id).copied().unwrap_or(0);
+                    let _ = store.upsert_chat(&chat_to_live(chat, jid, ts));
+                }
+            }
+        }
+    }
+
+    /// Applies a chat deletion the server reported (the chat
+    /// was deleted on the phone). This client has no
+    /// delete-chat action of its own, so there is no local
+    /// behavior to mirror and nothing is sent back; the
+    /// adoption is the removal itself, everywhere the chat
+    /// exists locally: the chat list, the detached slot, the
+    /// session mirror and its per-message helper entries, the
+    /// pending receipt queue (receipts for a deleted chat must
+    /// never go out), the parked composer state (a chat that
+    /// later reappears under the same JID starts clean), and
+    /// the archive rows. The event's own JID keys the archive
+    /// deletion, so a chat that exists only in the archive is
+    /// removed too. If the deleted chat was open, the selection
+    /// moves to the first remaining chat, as a live start does.
+    pub(crate) fn apply_chat_deleted(&mut self, chat_id: u64, chat_jid: &str) {
+        // Per-message helper entries go first, while the mirror
+        // still lists the messages they belong to.
+        let helpers: Vec<(u64, Option<String>)> = self
+            .live
+            .as_ref()
+            .and_then(|s| s.messages.get(&chat_id))
+            .map(|msgs| {
+                msgs.iter().map(|(_, m)| (m.id, self.protocol_ids.get(&m.id).cloned())).collect()
+            })
+            .unwrap_or_default();
+        for (msg_id, protocol_id) in helpers {
+            self.forget_live_message(chat_id, msg_id, protocol_id.as_deref());
+        }
+        if let Some(session) = &mut self.live {
+            session.messages.remove(&chat_id);
+            session.jids.remove(&chat_id);
+            session.times.remove(&chat_id);
+            session.engaged_chats.remove(&chat_id);
+            if let Some(store) = &session.store {
+                let _ = store.delete_chat(chat_jid);
+            }
+        }
+        // Media the user saved from this chat sits in the
+        // downloads folder as plaintext files of their own: the
+        // chat's deletion takes them too, or the messages would
+        // survive their own deletion indefinitely (privacy
+        // audit A3). Chat exports are not touched: an export is
+        // a document the user deliberately created, and the
+        // Storage page already discloses that exports are not
+        // encrypted.
+        backend::remove_downloads_for_chat(&backend::data_dir(), chat_jid);
+        self.unread_live.remove(&chat_id);
+        self.live_typing.remove(&chat_id);
+        self.pending_notifications.retain(|n| n.chat_id != chat_id);
+        self.chats.retain(|c| c.id != chat_id);
+        if self.detached_chat.as_ref().is_some_and(|c| c.id == chat_id) {
+            self.detached_chat = None;
+        }
+        self.composer.chat_drafts.remove(&chat_id);
+        self.composer.chat_parked.remove(&chat_id);
+        if self.selected_chat == chat_id {
+            let next = self.chats.first().map_or(0, |c| c.id);
+            self.switch_composer_chat(chat_id, next);
+            // The switch parked the deleted chat's composer
+            // state under its id; a deleted chat keeps nothing.
+            self.composer.chat_drafts.remove(&chat_id);
+            self.composer.chat_parked.remove(&chat_id);
+            self.selected_chat = next;
+            self.sync_conversation();
+        }
+    }
+
+    /// Applies a chat clearing the server reported (the chat
+    /// was cleared on the phone). This client has no
+    /// clear-chat action of its own, so there is no local
+    /// behavior to mirror and nothing is sent back; the
+    /// adoption is the removal of the cleared messages,
+    /// everywhere they live locally: the session mirror, the
+    /// per-message helper entries, and the archive rows. The
+    /// chat itself stays: its row, its recorded activity stamp
+    /// (its list position), and its settings (pin, mute,
+    /// archive, disappearing timer) are exactly as they were,
+    /// and its unread state is untouched (clearing asserts
+    /// nothing about read state; a read change arrives as its
+    /// own sync event). The clear's own terms are honored:
+    /// messages stamped after the bound are not the clear's to
+    /// remove, and starred messages survive unless the
+    /// clearing device deleted them too. The event's own JID
+    /// keys the archive deletion, so rows the mirror does not
+    /// hold are cleared too.
+    pub(crate) fn apply_chat_cleared(
+        &mut self,
+        chat_id: u64,
+        chat_jid: &str,
+        delete_starred: bool,
+        last_message_timestamp: Option<i64>,
+    ) {
+        // Collect the doomed messages first (app id + protocol
+        // id), while the mirror still lists them: the helper
+        // cleanup below needs both.
+        let doomed: Vec<(u64, Option<String>)> = self
+            .live
+            .as_ref()
+            .and_then(|s| s.messages.get(&chat_id))
+            .map(|msgs| {
+                msgs.iter()
+                    .filter(|(ts, m)| {
+                        last_message_timestamp.is_none_or(|bound| *ts <= bound)
+                            && (delete_starred || !m.starred)
+                    })
+                    .map(|(_, m)| (m.id, self.protocol_ids.get(&m.id).cloned()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if let Some(msgs) = self.live.as_mut().and_then(|s| s.messages.get_mut(&chat_id)) {
+            let doomed_ids: std::collections::HashSet<u64> =
+                doomed.iter().map(|(id, _)| *id).collect();
+            msgs.retain(|(_, m)| !doomed_ids.contains(&m.id));
+        }
+        if let Some(session) = &self.live {
+            if let Some(store) = &session.store {
+                let _ =
+                    store.delete_chat_messages(chat_jid, !delete_starred, last_message_timestamp);
+            }
+        }
+        for (msg_id, protocol_id) in &doomed {
+            self.forget_live_message(chat_id, *msg_id, protocol_id.as_deref());
+            // A cleared message's saved download goes with it
+            // (privacy audit A3); kept (starred) messages are
+            // not in `doomed`, so their downloads stay, exactly
+            // like their archive rows.
+            if let Some(protocol_id) = protocol_id {
+                backend::remove_download_for_message(&backend::data_dir(), chat_jid, protocol_id);
+            }
+        }
+        if !doomed.is_empty() {
+            self.refresh_preview_after_removal(chat_id);
+            if self.selected_chat == chat_id {
+                self.sync_conversation();
+            }
+        }
+    }
+
+    /// Applies a delete-for-me the server reported (one
+    /// message deleted for the account on the phone). This
+    /// client has no delete-for-me action of its own, so there
+    /// is no local behavior to mirror and nothing is sent
+    /// back; the adoption is the removal of exactly that
+    /// message: from the session mirror, from its per-message
+    /// helper entries, and from the archive. The store
+    /// deletion is keyed by the event's own JID and protocol
+    /// ID, so a row the mirror does not hold is removed too.
+    /// Neighbouring messages, the chat, and its settings are
+    /// untouched.
+    pub(crate) fn apply_message_deleted_for_me(
+        &mut self,
+        chat_id: u64,
+        chat_jid: &str,
+        msg_id: u64,
+        protocol_id: &str,
+    ) {
+        let mut removed_newest = false;
+        if let Some(msgs) = self.live.as_mut().and_then(|s| s.messages.get_mut(&chat_id)) {
+            if let Some(pos) = msgs.iter().position(|(_, m)| m.id == msg_id) {
+                removed_newest = pos + 1 == msgs.len();
+                msgs.remove(pos);
+            }
+        }
+        if let Some(session) = &self.live {
+            if let Some(store) = &session.store {
+                let _ = store.delete_message(chat_jid, protocol_id);
+            }
+        }
+        // The message's saved download, if any, goes with it
+        // (privacy audit A3).
+        backend::remove_download_for_message(&backend::data_dir(), chat_jid, protocol_id);
+        self.forget_live_message(chat_id, msg_id, Some(protocol_id));
+        if removed_newest {
+            self.refresh_preview_after_removal(chat_id);
+        }
+        if self.selected_chat == chat_id {
+            self.sync_conversation();
+        }
+    }
+
+    /// Points the chat list row at the mirror's newest
+    /// surviving message after messages were removed from a
+    /// chat (the expiry pass's rule: the new newest message
+    /// becomes the preview, or the preview empties when none
+    /// survive), and writes the row through to the archive so
+    /// its stored preview cannot resurrect a removed message's
+    /// body on the next start. The row's timestamp is the
+    /// session's recorded one, so the chat keeps its list
+    /// position.
+    pub(crate) fn refresh_preview_after_removal(&mut self, chat_id: u64) {
+        let last = self.live.as_ref().and_then(|s| {
+            s.messages.get(&chat_id).and_then(|v| v.last().map(|(ts, m)| (*ts, m.clone())))
+        });
+        if let Some(chat) = self.chats.iter_mut().find(|c| c.id == chat_id) {
+            match &last {
+                Some((ts, m)) => {
+                    chat.preview = m.preview_text();
+                    chat.time = fmt_time(*ts);
+                }
+                None => {
+                    chat.preview = String::new();
+                }
+            }
+        }
+        if let Some(session) = &self.live {
+            if let (Some(store), Some(jid)) = (&session.store, session.jids.get(&chat_id)) {
+                if let Some(chat) = self.chats.iter().find(|c| c.id == chat_id) {
+                    let ts = session.times.get(&chat_id).copied().unwrap_or(0);
+                    let _ = store.upsert_chat(&chat_to_live(chat, jid, ts));
+                }
+            }
+        }
+    }
+
     /// Applies one backend message upsert. Returns true only when
     /// the upsert pushed a genuinely new incoming message (not an
     /// echo replacement and not a re-upsert of a known id).
@@ -1238,7 +1810,13 @@ impl crate::state::App {
                 flags |= store::FLAG_PINNED_MESSAGE;
             }
             if flags != session.flags.get(&msg_id).copied().unwrap_or(0) {
-                session.flags.insert(msg_id, flags);
+                if flags == 0 {
+                    // Same rule as `set_live_flag`: the flag map
+                    // holds only messages that carry flags.
+                    session.flags.remove(&msg_id);
+                } else {
+                    session.flags.insert(msg_id, flags);
+                }
             }
             if session.store.is_some() {
                 if self.event_batch.active {
@@ -1327,7 +1905,7 @@ impl crate::state::App {
                 } else {
                     LiveChatKind::Dm
                 },
-                preview: live.body.clone(),
+                preview: glanceable_text(live),
                 preview_sender: None,
                 timestamp: live.timestamp,
                 unread: 0,
@@ -1365,18 +1943,35 @@ impl crate::state::App {
             .is_some_and(|s| !s.fake && crate::notify::is_history(live.timestamp, s.connected_at));
         if new_incoming && !history {
             if let Some(chat) = self.chats.iter().find(|c| c.id == chat_id) {
+                // Blocked state gates the popup like mute does:
+                // the chat itself for a direct chat with a
+                // blocked contact, the message's sender inside a
+                // group. The server stops delivering a blocked
+                // contact's messages, but anything already in
+                // flight or synced can still land here.
+                let blocked = self.blocked_chats.contains(&chat_id)
+                    || live
+                        .sender_jid
+                        .as_deref()
+                        .is_some_and(|j| self.blocked_chats.contains(&jid_id(j)));
                 self.pending_notifications.push(crate::notify::NotifyRequest {
                     chat_id,
                     title: chat.title.clone(),
                     kind: chat.kind,
                     muted: chat.muted,
+                    blocked,
                     sender: live.sender.clone(),
-                    body: live.body.clone(),
+                    // The queued body is the only text the popup
+                    // planner can ever show, so a view-once
+                    // message queues its placeholder here: its
+                    // caption cannot reach a popup (or the lock
+                    // screen) whatever the preview toggle says.
+                    body: glanceable_text(live),
                 });
             }
         }
         if let Some(chat) = self.chats.iter_mut().find(|c| c.id == chat_id) {
-            chat.preview = live.body.clone();
+            chat.preview = glanceable_text(live);
             chat.time = fmt_time(live.timestamp);
             // Snippet anatomy for the row: ticks when the latest
             // message is ours, a media label when it is not text.
@@ -1392,6 +1987,21 @@ impl crate::state::App {
             // conversation.rs).
             if new_incoming {
                 chat.unread += 1;
+            }
+        }
+        // The archive row must carry the badge the mirror now
+        // shows: the increment above is the only place the count
+        // grows, and the arrival upsert's own row write carries
+        // the pre-increment count (merged from the known value,
+        // see apply_chat_upsert), so without this write a restart
+        // would reload a smaller count than the list showed.
+        // Inside a batch the write defers to the flush, like the
+        // message rows.
+        if new_incoming {
+            if self.event_batch.active {
+                self.event_batch.chat_rows_dirty.insert(chat_id);
+            } else {
+                self.persist_chat_row(chat_id);
             }
         }
         self.sort_live_chats();
@@ -1424,18 +2034,63 @@ impl crate::state::App {
         }
     }
 
+    /// Drops every per-message helper entry kept for one live
+    /// message: its protocol ID, sender JID, receipt log,
+    /// reaction state, archive flags, and any pending read
+    /// receipt. Called when a message leaves the session mirror
+    /// (today: a disappearing message whose timer ran out), so
+    /// the helper maps stay scoped to the messages the mirror
+    /// actually holds instead of gaining an entry for every
+    /// message ever seen. Nothing here is consulted for a
+    /// message that is no longer rendered, so lookups for the
+    /// messages that remain are unaffected.
+    pub(crate) fn forget_live_message(
+        &mut self,
+        chat_id: u64,
+        msg_id: u64,
+        protocol_id: Option<&str>,
+    ) {
+        self.protocol_ids.remove(&msg_id);
+        self.sender_jids.remove(&msg_id);
+        self.receipt_log.remove(&msg_id);
+        self.my_reactions.remove(&msg_id);
+        self.reaction_actors.remove(&format!("{chat_id}:{msg_id}"));
+        if let Some(pid) = protocol_id {
+            let mut drained = false;
+            if let Some(pending) = self.unread_live.get_mut(&chat_id) {
+                pending.retain(|p| p != pid);
+                drained = pending.is_empty();
+            }
+            if drained {
+                self.unread_live.remove(&chat_id);
+            }
+        }
+        if let Some(session) = &mut self.live {
+            session.flags.remove(&msg_id);
+        }
+    }
+
     /// Sets (or clears with `flags = 0`) archive flags for one
     /// message and persists them when a store row exists.
     pub(crate) fn set_live_flag(&mut self, chat_id: u64, msg_id: u64, bit: i64, on: bool) {
         let protocol_id = self.protocol_ids.get(&msg_id).cloned();
         if let Some(session) = &mut self.live {
-            let entry = session.flags.entry(msg_id).or_insert(0);
-            if on {
-                *entry |= bit;
-            } else {
-                *entry &= !bit;
+            let flags = {
+                let entry = session.flags.entry(msg_id).or_insert(0);
+                if on {
+                    *entry |= bit;
+                } else {
+                    *entry &= !bit;
+                }
+                *entry
+            };
+            if flags == 0 {
+                // Absence and zero mean the same to every reader
+                // (all read with `unwrap_or(0)`); keep the map
+                // scoped to messages that actually carry flags.
+                // The store write below still persists the zero.
+                session.flags.remove(&msg_id);
             }
-            let flags = *entry;
             // Persist through a targeted flags-only UPDATE. The old
             // path rebuilt the whole row from the UI model, which
             // zeroed the timestamp and erased quote, preview and
@@ -1446,6 +2101,29 @@ impl crate::state::App {
             {
                 let _ = store.set_message_flags(jid, &pid, flags);
             }
+        }
+    }
+
+    /// Marks a view-once message opened, in memory and in the
+    /// archive. The in-memory set drives the bubble's opened
+    /// presentation for this session; the stored flag
+    /// ([`store::FLAG_VIEW_ONCE_OPENED`]) is what start_live
+    /// seeds that set from after a restart, so an opened
+    /// view-once message never presents as unopened again:
+    /// once opened, it stays opened (privacy audit D13).
+    pub(crate) fn mark_view_once_opened(&mut self, msg_id: u64) {
+        if !self.media.opened_view_once.insert(msg_id) {
+            return;
+        }
+        let chat_id = self.live.as_ref().and_then(|session| {
+            session
+                .messages
+                .iter()
+                .find(|(_, msgs)| msgs.iter().any(|(_, m)| m.id == msg_id))
+                .map(|(chat_id, _)| *chat_id)
+        });
+        if let Some(chat_id) = chat_id {
+            self.set_live_flag(chat_id, msg_id, store::FLAG_VIEW_ONCE_OPENED, true);
         }
     }
 
@@ -1464,22 +2142,6 @@ impl crate::state::App {
         self.set_live_flag(chat_id, msg_id, store::FLAG_DELETED, true);
         if self.selected_chat == chat_id {
             self.sync_conversation();
-        }
-    }
-
-    /// Per-message work for one incoming live message: the
-    /// link-preview fetch.
-    pub(crate) fn on_incoming_live_message(
-        &mut self,
-        _chat_id: u64,
-        msg_id: u64,
-        live: &LiveMessage,
-    ) {
-        // Link preview fetch (live mode only, setting-gated).
-        if self.link_previews && !self.live.as_ref().is_some_and(|s| s.fake) {
-            if let Some(url) = core::rich::first_url(&live.body) {
-                self.maybe_fetch_preview(msg_id, url);
-            }
         }
     }
 
@@ -1511,6 +2173,223 @@ impl crate::state::App {
         if let Some(jid) = self.live.as_ref().and_then(|s| s.jids.get(&chat_id).cloned()) {
             self.send_backend(BackendCommand::SetTyping { chat_jid: jid, typing });
         }
+    }
+
+    /// Applies a typing-indicators toggle change from the
+    /// Privacy page. Turning the toggle off must also retract a
+    /// composing state already sent: the peer would otherwise
+    /// keep seeing "typing..." until it times out server-side,
+    /// from a client whose user just said indicators are off.
+    /// The retraction goes through [`App::send_typing_to`], which
+    /// does not consult the toggle: the gate in
+    /// [`App::set_typing`] would swallow it.
+    pub(crate) fn set_typing_indicators(&mut self, on: bool) {
+        self.typing_indicators = on;
+        if !on {
+            if let Some(chat_id) = self.typing_sent_for.take() {
+                self.send_typing_to(chat_id, false);
+            }
+        }
+        self.persist_settings();
+    }
+
+    /// Adopts a privacy state fetched from the account. The map
+    /// itself drives the account rows on the Privacy page, and
+    /// one value in it is also a local setting: read receipts.
+    /// That flag gates whether this client sends read receipts at
+    /// all, and it is loaded from the settings file at startup,
+    /// before any fetch lands, so the server's value (the user
+    /// may have changed it on their phone) is adopted into the
+    /// flag and written through to the persisted settings. Left
+    /// unreconciled the two silently disagree in the exposing
+    /// direction: receipts the account has off keep going out
+    /// until the toggle here happens to be flipped. Only the
+    /// spellings the toggle itself writes are adopted; an
+    /// unrecognized value leaves the flag alone. Demo mode never
+    /// adopts: the fake backend's scripted state is not an
+    /// account and must not rewrite real settings.
+    fn apply_privacy_state(&mut self, map: std::collections::BTreeMap<String, String>) {
+        if self.live_mode {
+            if let Some(on) = server_read_receipts(map.get("readreceipts")) {
+                if on != self.read_receipts {
+                    self.read_receipts = on;
+                    self.persist_settings();
+                }
+            }
+        }
+        self.privacy_state = map;
+    }
+
+    /// Adopts the account-wide default disappearing timer the
+    /// server pushed (a change made on another device, the phone
+    /// included). The control is a local value loaded from the
+    /// settings file at startup; without this adoption a default
+    /// changed on the phone and the value this client applies to
+    /// new chats silently disagree, in the exposing direction
+    /// both ways. There is no fetch for the account default (the
+    /// library offers only the set), so this push is the only
+    /// reconciliation channel, the same server-wins rule as
+    /// [`App::apply_privacy_state`]. Demo mode never adopts.
+    fn apply_default_disappearing_timer(&mut self, duration_secs: u32) {
+        if self.live_mode && duration_secs != self.default_ephemeral_secs {
+            self.default_ephemeral_secs = duration_secs;
+            self.persist_settings();
+        }
+    }
+
+    /// Persists the blocked-chat set to its home, the encrypted
+    /// archive store (privacy audit A6: the set used to ride in
+    /// the plaintext settings file as FNV-1a hashes of
+    /// phone-number JIDs, reversible by dictionary over the
+    /// phone-number space). No live session (demo mode, or the
+    /// archive failed to open) means no persisted copy: the set
+    /// then lives in memory for the session, and in live mode
+    /// the server's connect-time blocklist re-seeds it anyway.
+    pub(crate) fn persist_blocked_chats(&self) {
+        if let Some(store) = self.live.as_ref().and_then(|s| s.store.as_ref()) {
+            let mut ids: Vec<u64> = self.blocked_chats.iter().copied().collect();
+            ids.sort_unstable();
+            let _ = store.set_blocked_chats(&ids);
+        }
+    }
+
+    /// Names this session already knows for people, keyed by
+    /// JID: the titles of 1:1 chats (the push name the chat list
+    /// resolved for that partner) and the sender names carried
+    /// on mirrored messages. Built once per member/request
+    /// fetch so resolving a whole list stays a single pass over
+    /// the mirror. A chat title that is just the partner's own
+    /// number (the fallback when no push name was ever seen) is
+    /// not a name and is skipped.
+    fn known_person_names(&self) -> HashMap<String, String> {
+        let mut names: HashMap<String, String> = HashMap::new();
+        let Some(session) = &self.live else {
+            return names;
+        };
+        for (chat_id, jid) in &session.jids {
+            let Some(chat) = self.chats.iter().find(|c| c.id == *chat_id) else {
+                continue;
+            };
+            if chat.kind != ChatKind::Dm {
+                continue;
+            }
+            let title = chat.title.trim();
+            if !title.is_empty() && title != jid_user_part(jid) {
+                names.insert(jid.clone(), chat.title.clone());
+            }
+        }
+        for messages in session.messages.values() {
+            for (_, msg) in messages {
+                let Some(name) = &msg.sender else { continue };
+                if name.trim().is_empty() {
+                    continue;
+                }
+                if let Some(jid) = self.sender_jids.get(&msg.id) {
+                    names.entry(jid.clone()).or_insert_with(|| name.clone());
+                }
+            }
+        }
+        names
+    }
+
+    /// Resolves backend member rows into renderable rows (see
+    /// [`crate::state::MemberRow`]): the label is the best name
+    /// available for the participant and the detail the number
+    /// line. Backend addresses pass through untouched; they are
+    /// command targets, never labels.
+    fn resolve_member_rows(
+        &self,
+        members: Vec<(String, String, bool)>,
+    ) -> Vec<crate::state::MemberRow> {
+        let known = self.known_person_names();
+        members
+            .into_iter()
+            .map(|(address, name, admin)| {
+                let (label, named) = resolve_person_label(&name, &address, &known);
+                crate::state::MemberRow {
+                    detail: member_detail(&address, named),
+                    address,
+                    label,
+                    admin,
+                }
+            })
+            .collect()
+    }
+
+    /// Resolves backend join-request rows into (jid, label)
+    /// rows, with the same label rule as member rows.
+    fn resolve_request_rows(&self, requests: Vec<(String, String)>) -> Vec<(String, String)> {
+        let known = self.known_person_names();
+        requests
+            .into_iter()
+            .map(|(jid, name)| {
+                let (label, _) = resolve_person_label(&name, &jid, &known);
+                (jid, label)
+            })
+            .collect()
+    }
+
+    /// Applies a read-receipts toggle change from the Privacy
+    /// page. The local flag flips at once (it gates receipt
+    /// sending, so turning receipts off takes effect immediately),
+    /// the choice is persisted, and in live mode the account
+    /// setting follows via SetPrivacy. The backend answers a
+    /// successful change with a fresh PrivacyState, which
+    /// [`App::apply_privacy_state`] adopts as confirmation; a
+    /// failure surfaces as a notice and the same fetch re-adopts
+    /// the value the server kept, so the toggle never keeps
+    /// claiming a state the server rejected.
+    pub(crate) fn set_read_receipts(&mut self, on: bool) {
+        self.read_receipts = on;
+        self.persist_settings();
+        if self.live_mode {
+            self.send_backend(BackendCommand::SetPrivacy {
+                category: "readreceipts".to_owned(),
+                value: if on { "all" } else { "none" }.to_owned(),
+            });
+        }
+    }
+
+    /// Cycles one account-privacy row on the Privacy page to its
+    /// next audience and sends it to the account. The displayed
+    /// value is not touched here: it comes from `privacy_state`,
+    /// which only a fresh fetch updates, on success and on failure
+    /// alike (the backend re-asserts the fetched state after a
+    /// rejected change), so the page never claims a value the
+    /// server did not take.
+    pub(crate) fn cycle_privacy(&mut self, category: &str) {
+        let current = self.privacy_state.get(category).cloned().unwrap_or_default();
+        let Some(next) = next_privacy_audience(category, &current) else {
+            return;
+        };
+        if self.live_mode {
+            self.send_backend(BackendCommand::SetPrivacy {
+                category: category.to_owned(),
+                value: next.to_owned(),
+            });
+        }
+    }
+
+    /// The Privacy page's entry point for cycling a row. Leaving
+    /// `contact_blacklist` is the one cycle step that destroys
+    /// data this client cannot restore: the value names an
+    /// exception list configured on the phone, and replacing it
+    /// with a plain audience discards the association with that
+    /// list (the backend refuses to set the list back without
+    /// its contacts). That step asks first, through the same
+    /// confirmation the other destructive actions use; every
+    /// other step is a reversible value-to-value change and
+    /// cycles at once.
+    pub(crate) fn request_cycle_privacy(&mut self, category: &str, label: &str) {
+        let current = self.privacy_state.get(category).cloned().unwrap_or_default();
+        if current == "contact_blacklist" {
+            self.ui_confirm = Some(crate::state::UiConfirm::ReplaceExceptionList {
+                category: category.to_owned(),
+                label: label.to_owned(),
+            });
+            return;
+        }
+        self.cycle_privacy(category);
     }
 
     /// Records a real read action in the selected chat (the
@@ -1594,6 +2473,146 @@ pub(crate) fn count_reactions(
 #[must_use]
 pub(crate) fn should_mark_read(read_receipts: bool, live_mode: bool) -> bool {
     read_receipts && live_mode
+}
+
+/// The user part of a JID (before the `@`).
+fn jid_user_part(jid: &str) -> &str {
+    jid.split('@').next().unwrap_or(jid)
+}
+
+/// A masked stand-in label for a person whose name is unknown:
+/// enough of the identifier to tell rows apart, never the full
+/// number or LID and never a full JID (`6281234567890@…` becomes
+/// `+628 ••• 7890`; a LID is masked the same way without the
+/// `+`). A user part that is not a long digit string is not a
+/// phone-like identifier and is returned unchanged.
+#[must_use]
+pub(crate) fn masked_identifier(jid: &str) -> String {
+    let user = jid_user_part(jid);
+    if user.len() < 7 || !user.bytes().all(|b| b.is_ascii_digit()) {
+        return user.to_owned();
+    }
+    let masked = format!("{} ••• {}", &user[..3], &user[user.len() - 4..]);
+    if jid.ends_with("@s.whatsapp.net") {
+        format!("+{masked}")
+    } else {
+        masked
+    }
+}
+
+/// The rendered label for one member or join-request row, and
+/// whether that label is a real name. The name the backend
+/// carried wins (for members, the name the server rendered);
+/// next, a name this session already knows for the JID (see
+/// `known_person_names`); last, a masked identifier, so
+/// a raw phone number or LID is never the label (privacy
+/// finding D5).
+#[must_use]
+pub(crate) fn resolve_person_label(
+    backend_name: &str,
+    jid: &str,
+    known: &HashMap<String, String>,
+) -> (String, bool) {
+    let backend_name = backend_name.trim();
+    if !backend_name.is_empty() {
+        return (backend_name.to_owned(), true);
+    }
+    if let Some(name) = known.get(jid) {
+        return (name.clone(), true);
+    }
+    (masked_identifier(jid), false)
+}
+
+/// The secondary line under a member row's label: the phone
+/// number, only under a resolved name and only for a
+/// number-addressed participant. A masked label never gets the
+/// full number beneath it (that would undo the masking), and a
+/// LID-addressed row shows no number at all, matching how
+/// WhatsApp hides numbers in LID-mode groups.
+#[must_use]
+pub(crate) fn member_detail(jid: &str, named: bool) -> Option<String> {
+    if named && jid.ends_with("@s.whatsapp.net") {
+        Some(format!("+{}", jid_user_part(jid)))
+    } else {
+        None
+    }
+}
+
+/// What a fetched `readreceipts` value means for the local
+/// read-receipts toggle: `all` is ON and `none` is OFF, the two
+/// spellings the toggle itself writes. Any other value (or a
+/// state that does not carry the category) is not the toggle's
+/// to adopt and returns `None`.
+#[must_use]
+pub(crate) fn server_read_receipts(fetched: Option<&String>) -> Option<bool> {
+    match fetched.map(String::as_str) {
+        Some("all") => Some(true),
+        Some("none") => Some(false),
+        _ => None,
+    }
+}
+
+/// The audiences one account-privacy category accepts, in cycle
+/// order (protocol spellings), matching the library's validity
+/// table for the categories the Privacy page shows. `online`
+/// accepts only `all` and `match_last_seen`; the other four rows
+/// share `all`, `contacts`, `none`. `contact_blacklist` is
+/// deliberately not a stop on any cycle: it names a per-contact
+/// exception list that a bare value change cannot express, and
+/// sending it without the list would discard the list the phone
+/// configured. It is display-only here (see
+/// [`privacy_value_label`]).
+#[must_use]
+pub(crate) fn privacy_audiences(category: &str) -> &'static [&'static str] {
+    match category {
+        "online" => &["all", "match_last_seen"],
+        "last" | "profile" | "status" | "groupadd" => &["all", "contacts", "none"],
+        _ => &[],
+    }
+}
+
+/// The next audience for a privacy row, cycling within
+/// [`privacy_audiences`]. A current value outside the cycle is
+/// never "corrected" in place; cycling from it lands somewhere
+/// valid and predictable: `contact_blacklist` (contacts with an
+/// exception list this page cannot edit) advances to the stop
+/// after "contacts", and any other unrecognized value restarts
+/// the cycle at its first audience.
+#[must_use]
+pub(crate) fn next_privacy_audience(category: &str, current: &str) -> Option<&'static str> {
+    let cycle = privacy_audiences(category);
+    if cycle.is_empty() {
+        return None;
+    }
+    let pos = cycle.iter().position(|v| *v == current).or_else(|| {
+        // `contact_blacklist` refines the "contacts" audience, so
+        // its cycle position is that of "contacts".
+        if current == "contact_blacklist" {
+            cycle.iter().position(|v| *v == "contacts")
+        } else {
+            None
+        }
+    });
+    Some(match pos {
+        Some(i) => cycle[(i + 1) % cycle.len()],
+        None => cycle[0],
+    })
+}
+
+/// The button label for a fetched privacy value: the audience's
+/// plain name, in the wording WhatsApp itself uses. A value this
+/// page does not know is shown verbatim, never silently presented
+/// as a neighboring audience.
+#[must_use]
+pub(crate) fn privacy_value_label(value: &str) -> String {
+    match value {
+        "all" => "Everyone".to_owned(),
+        "contacts" => "My contacts".to_owned(),
+        "none" => "Nobody".to_owned(),
+        "contact_blacklist" => "My contacts except…".to_owned(),
+        "match_last_seen" => "Same as last seen".to_owned(),
+        other => other.to_owned(),
+    }
 }
 
 /// The full receipt gate: the privacy contract above, plus the
@@ -1765,7 +2784,6 @@ mod burst_drain_tests {
             engaged_chats: std::collections::HashSet::new(),
         });
         app.live_mode = true;
-        app.link_previews = false;
         (app, evt_tx, ctx, cmd_rx)
     }
 
@@ -1792,6 +2810,227 @@ mod burst_drain_tests {
 
     fn stored_messages(app: &App) -> &Vec<(i64, Message)> {
         app.live.as_ref().unwrap().messages.get(&jid_id(CHAT_JID)).expect("the chat has messages")
+    }
+
+    /// Privacy finding B1: a received message containing a URL
+    /// must never make the client fetch a preview from the
+    /// sender-chosen host (that leaks the recipient's address and
+    /// online timing). Applying the upsert leaves the message
+    /// without a preview; previews exist only when the sender's
+    /// client attached one.
+    #[test]
+    fn received_url_message_gets_no_fetched_preview() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        tx.send(BackendEvent::MessageUpsert(LiveMessage::text(
+            "url-1",
+            CHAT_JID,
+            Some("Sender".to_owned()),
+            "look at https://example.com/page".to_owned(),
+            BASE_TS,
+            false,
+        )))
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        let (_, msg) =
+            stored_messages(&app).iter().find(|(_, m)| m.body.contains("example.com")).unwrap();
+        assert!(msg.link_preview.is_none(), "a received link must not be fetched");
+    }
+
+    /// The other half of B1: a preview the sender's client
+    /// attached to the message is carried through to the mirror
+    /// untouched, so it can render with no network call.
+    #[test]
+    fn sender_attached_preview_reaches_the_mirror() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        let mut live = LiveMessage::text(
+            "prev-1",
+            CHAT_JID,
+            Some("Sender".to_owned()),
+            "look at https://example.com/page".to_owned(),
+            BASE_TS,
+            false,
+        );
+        live.link_preview = Some(backend::LivePreview {
+            title: "Example Page".to_owned(),
+            description: "A page about examples".to_owned(),
+            url: "https://example.com/page".to_owned(),
+        });
+        tx.send(BackendEvent::MessageUpsert(live)).unwrap();
+        drain_all(&mut app, &ctx);
+        let (_, msg) =
+            stored_messages(&app).iter().find(|(_, m)| m.body.contains("example.com")).unwrap();
+        let preview = msg.link_preview.as_ref().expect("the attached preview survives");
+        assert_eq!(preview.title, "Example Page");
+        assert_eq!(preview.description, "A page about examples");
+        assert_eq!(preview.url, "https://example.com/page");
+    }
+
+    /// Builds a view-once photo upsert whose body is its
+    /// caption, the way the backend delivered it before the D2
+    /// fix taught it not to promote the caption. The app must
+    /// stay safe whatever body a view-once message carries.
+    fn view_once_photo(id: &str, caption: &str, ts: i64) -> LiveMessage {
+        let mut live =
+            LiveMessage::text(id, CHAT_JID, Some("Sender".to_owned()), caption, ts, false);
+        live.kind = backend::LiveMessageKind::Media {
+            media: backend::MediaKind::Photo,
+            caption: caption.to_owned(),
+            seconds: 0,
+            size_bytes: 42_000,
+        };
+        live.view_once = true;
+        live
+    }
+
+    /// Privacy finding D2: a view-once message's caption is part
+    /// of its sealed payload and must not reach the chat-list
+    /// preview, a notification popup (the lock screen), or the
+    /// archive. The preview and the popup body carry only the
+    /// generic placeholder; the archive row keeps the kind and
+    /// the view-once flag but no caption.
+    #[test]
+    fn view_once_caption_stays_out_of_preview_popups_and_archive() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        tx.send(BackendEvent::MessageUpsert(view_once_photo("vo-1", "a secret caption", BASE_TS)))
+            .unwrap();
+        drain_all(&mut app, &ctx);
+        let chat_id = jid_id(CHAT_JID);
+        let chat = app.chats.iter().find(|c| c.id == chat_id).unwrap();
+        assert_eq!(chat.preview, core::model::VIEW_ONCE_PREVIEW, "the preview is the placeholder");
+        assert!(!chat.preview.contains("secret"), "the caption must not be the preview");
+
+        // The popup plan with the preview toggle on and off: the
+        // caption appears in neither. On shows the placeholder,
+        // off the generic notice.
+        let on = crate::notify::NotifySettings {
+            messages: true,
+            groups: true,
+            sound: false,
+            preview: true,
+        };
+        let popups = crate::notify::plan_popups(on, &app.pending_notifications, None);
+        assert_eq!(popups.len(), 1, "one popup for the one new message");
+        assert_eq!(popups[0].1, core::model::VIEW_ONCE_PREVIEW);
+        assert!(
+            !popups[0].0.contains("secret") && !popups[0].1.contains("secret"),
+            "the caption must not reach the popup: {popups:?}"
+        );
+        let off = crate::notify::NotifySettings { preview: false, ..on };
+        let popups = crate::notify::plan_popups(off, &app.pending_notifications, None);
+        assert_eq!(popups.len(), 1);
+        assert_eq!(popups[0].1, "New message");
+
+        // The archive row: kind + flag survive, the caption does not.
+        let session = app.live.as_ref().unwrap();
+        let stored = session.store.as_ref().unwrap().messages(CHAT_JID).unwrap();
+        let row = &stored.iter().find(|(m, _)| m.id == "vo-1").unwrap().0;
+        assert_eq!(row.body, "", "the archived body must not be the caption");
+        assert!(row.view_once, "the view-once flag survives archiving");
+        match &row.kind {
+            backend::LiveMessageKind::Media { caption, .. } => {
+                assert_eq!(caption, "", "the archived kind must not carry the caption");
+            }
+            other => panic!("expected the media kind to survive, got {other:?}"),
+        }
+    }
+
+    /// Privacy finding D13: opening a view-once message
+    /// persists the opened state with the message's stored
+    /// flags, so the archive load after a restart seeds the
+    /// opened set from it and the message never presents as
+    /// unopened again.
+    #[test]
+    fn view_once_opened_state_persists_with_the_message() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        tx.send(BackendEvent::MessageUpsert(view_once_photo("vo-1", "a caption", BASE_TS)))
+            .unwrap();
+        drain_all(&mut app, &ctx);
+        let msg_id = message_id(CHAT_JID, "vo-1");
+
+        app.mark_view_once_opened(msg_id);
+        assert!(app.media.opened_view_once.contains(&msg_id), "the session set knows");
+
+        let session = app.live.as_ref().unwrap();
+        let stored = session.store.as_ref().unwrap().messages(CHAT_JID).unwrap();
+        let (_, flags) = stored.iter().find(|(m, _)| m.id == "vo-1").unwrap();
+        assert_ne!(
+            flags & store::FLAG_VIEW_ONCE_OPENED,
+            0,
+            "the opened state is persisted with the message's flags"
+        );
+    }
+
+    /// Privacy finding C6: backend error text is largely library
+    /// Display output and can embed server-supplied strings,
+    /// phone numbers, and secret shapes. The surfaces that
+    /// display it (the notice banner, the pre-link status line)
+    /// must receive the scrubbed form.
+    #[test]
+    fn backend_error_text_is_scrubbed_before_display() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        // Pre-link, so the status line takes the message too.
+        app.live.as_mut().unwrap().status = LinkStatus::Starting;
+        tx.send(BackendEvent::Error {
+            message: "server refused the call from +62 812-3456-7890, token=zzz999888".to_owned(),
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        let notice = app.notice.clone().expect("the error surfaces as a notice");
+        assert!(!notice.contains("812-3456"), "phone leaked into the notice: {notice}");
+        assert!(!notice.contains("zzz999888"), "secret leaked into the notice: {notice}");
+        let status = app.live.as_ref().unwrap().status.label();
+        assert!(!status.contains("812-3456"), "phone leaked into the status line: {status}");
+        assert!(!status.contains("zzz999888"), "secret leaked into the status line: {status}");
+    }
+
+    /// The other half of C6: a plain error string with no secret
+    /// or phone shapes (the shape of the app's own authored
+    /// errors) reaches the notice banner byte-identical.
+    #[test]
+    fn plain_backend_error_text_is_displayed_unchanged() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        tx.send(BackendEvent::Error {
+            message: "The group settings could not be changed.".to_owned(),
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(app.notice.as_deref(), Some("The group settings could not be changed."));
+    }
+
+    /// The removal-refresh path (delete-for-me, clear, expiry)
+    /// recomputes the preview from the mirror: falling back to
+    /// a view-once message must yield its placeholder, not the
+    /// caption its mirror body still carries for the viewer,
+    /// and the refreshed preview is written through to the
+    /// archive row.
+    #[test]
+    fn preview_falls_back_to_the_view_once_placeholder() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        let chat_id = jid_id(CHAT_JID);
+        tx.send(BackendEvent::MessageUpsert(view_once_photo("vo-1", "a secret caption", BASE_TS)))
+            .unwrap();
+        tx.send(incoming("m2", BASE_TS + 10)).unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(
+            app.chats.iter().find(|c| c.id == chat_id).unwrap().preview,
+            "message m2",
+            "the newer text message previews as itself"
+        );
+        tx.send(BackendEvent::MessageDeletedForMe {
+            chat_jid: CHAT_JID.to_owned(),
+            message_id: "m2".to_owned(),
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        let chat = app.chats.iter().find(|c| c.id == chat_id).unwrap();
+        assert_eq!(chat.preview, core::model::VIEW_ONCE_PREVIEW, "the fallback is the placeholder");
+        let session = app.live.as_ref().unwrap();
+        let stored = session.store.as_ref().unwrap().chats().unwrap();
+        assert_eq!(
+            stored.iter().find(|c| c.jid == CHAT_JID).unwrap().preview,
+            core::model::VIEW_ONCE_PREVIEW,
+            "and the archive row follows"
+        );
     }
 
     /// The audit's freeze scenario, shrunk: a 600-message history
@@ -1906,6 +3145,160 @@ mod burst_drain_tests {
         assert_eq!(app.pending_notifications.len(), 1, "only the live message queues a popup");
         assert_eq!(app.pending_notifications[0].body, "message fresh-1");
     }
+
+    /// Privacy finding D5: member and join-request rows lead
+    /// with a name, never the raw phone number or the full JID.
+    /// The backend leaves the name empty when the server
+    /// rendered none; resolution falls back to names the session
+    /// already knows (a 1:1 chat's title, a message sender's
+    /// push name) and finally to a masked identifier.
+    const GROUP_JID: &str = "120207777777777777@g.us";
+    const ALICE_JID: &str = "6281111111111@s.whatsapp.net";
+    const BOB_JID: &str = "6282222222222@s.whatsapp.net";
+    const CAROL_JID: &str = "6283333333333@s.whatsapp.net";
+    const STRANGER_JID: &str = "6284444444444@s.whatsapp.net";
+    const LID_JID: &str = "555555555555555@lid";
+
+    /// Alice has a 1:1 chat (its title is her push name) and Bob
+    /// has spoken in the group (his push name rides his message).
+    fn seed_named_people(
+        app: &mut App,
+        tx: &std::sync::mpsc::Sender<BackendEvent>,
+        ctx: &egui::Context,
+    ) {
+        tx.send(BackendEvent::ChatUpsert(LiveChat {
+            jid: ALICE_JID.to_owned(),
+            title: "Alice Johnson".to_owned(),
+            kind: LiveChatKind::Dm,
+            preview: "hi".to_owned(),
+            preview_sender: None,
+            timestamp: BASE_TS,
+            unread: 0,
+            archived: false,
+            pinned: false,
+            ephemeral_secs: 0,
+            muted: false,
+        }))
+        .unwrap();
+        let mut bob_msg = LiveMessage::text(
+            "bob-1",
+            GROUP_JID,
+            Some("Bob Carter".to_owned()),
+            "hello group".to_owned(),
+            BASE_TS,
+            false,
+        );
+        bob_msg.sender_jid = Some(BOB_JID.to_owned());
+        tx.send(BackendEvent::MessageUpsert(bob_msg)).unwrap();
+        drain_all(app, ctx);
+    }
+
+    #[test]
+    fn member_rows_lead_with_names_and_mask_the_unknown() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        seed_named_people(&mut app, &tx, &ctx);
+        tx.send(BackendEvent::GroupMembers {
+            chat_jid: GROUP_JID.to_owned(),
+            members: vec![
+                (ALICE_JID.to_owned(), String::new(), false),
+                (BOB_JID.to_owned(), String::new(), true),
+                (CAROL_JID.to_owned(), "Carol Danvers".to_owned(), false),
+                (STRANGER_JID.to_owned(), String::new(), false),
+                (LID_JID.to_owned(), String::new(), false),
+            ],
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        let rows =
+            app.groups.live_members.get(&jid_id(GROUP_JID)).expect("the member rows are stored");
+        assert_eq!(rows.len(), 5);
+        // Resolved from the 1:1 chat title; the number is only
+        // the secondary line under a real name.
+        assert_eq!(rows[0].label, "Alice Johnson");
+        assert_eq!(rows[0].detail.as_deref(), Some("+6281111111111"));
+        assert!(!rows[0].admin);
+        // Resolved from the push name on his group message; the
+        // admin flag survives resolution.
+        assert_eq!(rows[1].label, "Bob Carter");
+        assert_eq!(rows[1].detail.as_deref(), Some("+6282222222222"));
+        assert!(rows[1].admin);
+        // The name the server rendered is carried through.
+        assert_eq!(rows[2].label, "Carol Danvers");
+        assert_eq!(rows[2].detail.as_deref(), Some("+6283333333333"));
+        // Unknown: a masked identifier, and no number line
+        // beneath it (that would undo the masking).
+        assert_eq!(rows[3].label, "+628 ••• 4444");
+        assert_eq!(rows[3].detail, None);
+        // LID-addressed and unknown: masked without a plus, and
+        // no number line at all.
+        assert_eq!(rows[4].label, "555 ••• 5555");
+        assert_eq!(rows[4].detail, None);
+        for row in rows {
+            assert!(!row.label.contains('@'), "no label is a JID: {}", row.label);
+            assert_ne!(row.address, row.label, "the address is never the label");
+        }
+    }
+
+    #[test]
+    fn join_request_rows_use_the_same_label_rule() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        seed_named_people(&mut app, &tx, &ctx);
+        tx.send(BackendEvent::JoinRequests {
+            chat_jid: GROUP_JID.to_owned(),
+            requests: vec![
+                (BOB_JID.to_owned(), String::new()),
+                (STRANGER_JID.to_owned(), String::new()),
+            ],
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        let (_, rows) = app.groups.join_requests.as_ref().expect("the requests are stored");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].1, "Bob Carter", "a requester who has spoken resolves to his name");
+        assert_eq!(rows[1].1, "+628 ••• 4444", "an unknown requester is masked");
+        for (_, label) in rows {
+            assert!(!label.contains('@'), "no request label is a JID: {label}");
+            assert!(!label.contains("6284444444444"), "no request label is a full number");
+        }
+        // The JID survives as the review command's target.
+        assert_eq!(rows[1].0, STRANGER_JID);
+    }
+
+    #[test]
+    fn masked_identifier_never_shows_a_full_number_or_jid() {
+        assert_eq!(masked_identifier("6281234567890@s.whatsapp.net"), "+628 ••• 7890");
+        assert_eq!(masked_identifier("123456789012345@lid"), "123 ••• 2345");
+        // Not phone-like: returned as the bare user part.
+        assert_eq!(masked_identifier("12345@s.whatsapp.net"), "12345");
+        let masked = masked_identifier(STRANGER_JID);
+        assert!(!masked.contains("6284444444444"));
+        assert!(!masked.contains('@'));
+    }
+
+    #[test]
+    fn person_label_prefers_backend_then_known_then_masked() {
+        let known = HashMap::from([(BOB_JID.to_owned(), "Bob Carter".to_owned())]);
+        assert_eq!(
+            resolve_person_label("Server Name", BOB_JID, &known),
+            ("Server Name".to_owned(), true),
+            "the carried name wins"
+        );
+        assert_eq!(
+            resolve_person_label("", BOB_JID, &known),
+            ("Bob Carter".to_owned(), true),
+            "a known name fills an empty one"
+        );
+        assert_eq!(
+            resolve_person_label("  ", STRANGER_JID, &known),
+            ("+628 ••• 4444".to_owned(), false),
+            "nothing known means the masked identifier"
+        );
+        // The detail line follows the label kind and the
+        // address form.
+        assert_eq!(member_detail(BOB_JID, true).as_deref(), Some("+6282222222222"));
+        assert_eq!(member_detail(BOB_JID, false), None, "no number under a masked label");
+        assert_eq!(member_detail(LID_JID, true), None, "no number for a LID row");
+    }
 }
 
 #[cfg(test)]
@@ -1950,5 +3343,1523 @@ mod key_decision_tests {
     #[test]
     fn demo_start_proceeds_despite_a_key_load_error() {
         assert!(matches!(key_decision(&Err(unreadable_key()), true), KeyDecision::Run(_)));
+    }
+}
+
+#[cfg(test)]
+mod chat_state_routing_tests {
+    use super::*;
+    use crate::state::{App, Args};
+    use backend::ChatAction;
+
+    const CHAT_JID: &str = "6281234567890@s.whatsapp.net";
+    const BASE_TS: i64 = 1_700_000_000;
+
+    /// The same live-mode harness as the burst tests: an app
+    /// whose backend channels the test feeds and reads by hand,
+    /// with an in-memory archive attached.
+    fn live_app() -> (
+        App,
+        std::sync::mpsc::Sender<BackendEvent>,
+        egui::Context,
+        std::sync::mpsc::Receiver<BackendCommand>,
+    ) {
+        let ctx = egui::Context::default();
+        crate::theme::install_fonts(&ctx);
+        let mut app = App::new(Args::parse(), &ctx);
+        let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<BackendCommand>();
+        let (evt_tx, evt_rx) = std::sync::mpsc::channel::<BackendEvent>();
+        app.live = Some(LiveSession {
+            channels: BackendChannels { commands: cmd_tx, events: evt_rx },
+            status: LinkStatus::Linked,
+            qr: None,
+            pair_code: None,
+            pair_code_at: None,
+            account: "Test account".to_owned(),
+            connected_at: None,
+            store: Some(store::Store::open_in_memory().unwrap()),
+            jids: HashMap::new(),
+            messages: HashMap::new(),
+            times: HashMap::new(),
+            fake: true,
+            flags: HashMap::new(),
+            engaged_chats: std::collections::HashSet::new(),
+        });
+        app.live_mode = true;
+        (app, evt_tx, ctx, cmd_rx)
+    }
+
+    fn drain_all(app: &mut App, ctx: &egui::Context) {
+        for _ in 0..64 {
+            app.poll_backend(ctx);
+            if app.event_queue.is_empty() {
+                return;
+            }
+        }
+        panic!("the event queue did not drain");
+    }
+
+    /// An arrival-style chat upsert: it carries no chat-action
+    /// state (mute least of all), exactly like the real
+    /// backend's message-arrival upserts.
+    fn arrival_upsert() -> BackendEvent {
+        BackendEvent::ChatUpsert(LiveChat {
+            jid: CHAT_JID.to_owned(),
+            title: "Sender".to_owned(),
+            kind: LiveChatKind::Dm,
+            preview: "hello".to_owned(),
+            preview_sender: None,
+            timestamp: BASE_TS,
+            unread: 0,
+            archived: false,
+            pinned: false,
+            ephemeral_secs: 0,
+            muted: false,
+        })
+    }
+
+    /// An informed chat upsert: it carries a real unread
+    /// count, the way the fake's initial chat list does.
+    fn counted_upsert(unread: u32) -> BackendEvent {
+        BackendEvent::ChatUpsert(LiveChat {
+            jid: CHAT_JID.to_owned(),
+            title: "Sender".to_owned(),
+            kind: LiveChatKind::Dm,
+            preview: "hello".to_owned(),
+            preview_sender: None,
+            timestamp: BASE_TS,
+            unread,
+            archived: false,
+            pinned: false,
+            ephemeral_secs: 0,
+            muted: false,
+        })
+    }
+
+    fn seed_chat(app: &mut App, tx: &std::sync::mpsc::Sender<BackendEvent>, ctx: &egui::Context) {
+        tx.send(arrival_upsert()).unwrap();
+        drain_all(app, ctx);
+        assert!(app.chats.iter().any(|c| c.id == jid_id(CHAT_JID)), "the upsert seeds the chat");
+    }
+
+    fn chat_muted(app: &App) -> bool {
+        app.chats.iter().find(|c| c.id == jid_id(CHAT_JID)).expect("chat exists").muted
+    }
+
+    fn archived_muted(app: &App) -> bool {
+        let store = app.live.as_ref().unwrap().store.as_ref().unwrap();
+        store
+            .chats()
+            .unwrap()
+            .iter()
+            .find(|c| c.jid == CHAT_JID)
+            .expect("the chat reached the archive")
+            .muted
+    }
+
+    fn chat_pinned(app: &App) -> bool {
+        app.chats.iter().find(|c| c.id == jid_id(CHAT_JID)).expect("chat exists").pinned
+    }
+
+    fn chat_archived(app: &App) -> bool {
+        app.chats.iter().find(|c| c.id == jid_id(CHAT_JID)).expect("chat exists").archived
+    }
+
+    fn store_row(app: &App) -> LiveChat {
+        let store = app.live.as_ref().unwrap().store.as_ref().unwrap();
+        store
+            .chats()
+            .unwrap()
+            .into_iter()
+            .find(|c| c.jid == CHAT_JID)
+            .expect("the chat reached the archive")
+    }
+
+    fn archived_pinned(app: &App) -> bool {
+        store_row(app).pinned
+    }
+
+    fn archived_archived(app: &App) -> bool {
+        store_row(app).archived
+    }
+
+    /// An informed chat upsert: it carries real chat-action
+    /// state, the way the fake's chat-action and LeaveGroup
+    /// echoes do (they clone the fake's full chat state).
+    fn state_upsert(archived: bool, pinned: bool) -> BackendEvent {
+        BackendEvent::ChatUpsert(LiveChat {
+            jid: CHAT_JID.to_owned(),
+            title: "Sender".to_owned(),
+            kind: LiveChatKind::Dm,
+            preview: "hello".to_owned(),
+            preview_sender: None,
+            timestamp: BASE_TS,
+            unread: 0,
+            archived,
+            pinned,
+            ephemeral_secs: 0,
+            muted: false,
+        })
+    }
+
+    /// The header-menu / profile-panel toggle path: both call
+    /// apply_chat_action with the flipped value. In live mode
+    /// that must put the matching ChatAction command on the
+    /// backend channel, flip the local mirror at once, and
+    /// write the state through to the archive.
+    #[test]
+    fn mute_toggle_sends_the_backend_command() {
+        let (mut app, tx, ctx, cmd_rx) = live_app();
+        seed_chat(&mut app, &tx, &ctx);
+        let chat_id = jid_id(CHAT_JID);
+
+        app.apply_chat_action(chat_id, false, false, true);
+        assert_eq!(
+            cmd_rx.try_recv(),
+            Ok(BackendCommand::ChatAction {
+                chat_jid: CHAT_JID.to_owned(),
+                action: ChatAction::Mute
+            }),
+            "muting in live mode must reach the backend"
+        );
+        assert!(chat_muted(&app), "the local flip applies at once");
+        assert!(archived_muted(&app), "the archive write-through carries the mute");
+
+        app.apply_chat_action(chat_id, false, false, false);
+        assert_eq!(
+            cmd_rx.try_recv(),
+            Ok(BackendCommand::ChatAction {
+                chat_jid: CHAT_JID.to_owned(),
+                action: ChatAction::Unmute
+            }),
+            "unmuting in live mode must reach the backend"
+        );
+        assert!(!chat_muted(&app));
+        assert!(!archived_muted(&app));
+    }
+
+    /// A mute change the server reports (another device, or a
+    /// full sync) adopts unconditionally, even over a local
+    /// optimistic toggle: the server value is the truth the
+    /// local mirror reconciles to.
+    #[test]
+    fn server_mute_changed_overrides_local_state() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        seed_chat(&mut app, &tx, &ctx);
+        let chat_id = jid_id(CHAT_JID);
+
+        tx.send(BackendEvent::MuteChanged { chat_jid: CHAT_JID.to_owned(), muted: true }).unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(chat_muted(&app), "a server mute lands in the mirror");
+        assert!(archived_muted(&app), "and in the archive");
+
+        // The user unmutes here (optimistic local flip plus the
+        // backend command), then the server re-asserts the mute,
+        // as it would if that command failed or another device
+        // muted again: the server value wins.
+        app.apply_chat_action(chat_id, false, false, false);
+        assert!(!chat_muted(&app));
+        tx.send(BackendEvent::MuteChanged { chat_jid: CHAT_JID.to_owned(), muted: true }).unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(chat_muted(&app), "the server value overrides the local toggle");
+        assert!(archived_muted(&app));
+    }
+
+    /// The counterpart rule: an arrival upsert knows nothing
+    /// about mute, so it must not unmute a chat the mirror
+    /// knows is muted (the merge protection stays).
+    #[test]
+    fn arrival_upsert_keeps_the_known_mute() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        seed_chat(&mut app, &tx, &ctx);
+
+        tx.send(BackendEvent::MuteChanged { chat_jid: CHAT_JID.to_owned(), muted: true }).unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(chat_muted(&app));
+
+        tx.send(arrival_upsert()).unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(chat_muted(&app), "an arrival upsert must not unmute");
+        assert!(archived_muted(&app), "nor rewrite the archive row as unmuted");
+    }
+
+    /// The connect-time blocklist adopts wholesale: the
+    /// server's set replaces the locally persisted copy, so a
+    /// block made on another device (or before a restart)
+    /// shows correctly, and an unblock elsewhere clears it
+    /// (audit finding 12).
+    #[test]
+    fn server_blocklist_replaces_the_local_set() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        seed_chat(&mut app, &tx, &ctx);
+        let chat_id = jid_id(CHAT_JID);
+
+        // A stale local entry the server does not report.
+        app.blocked_chats.insert(424_242);
+        tx.send(BackendEvent::Blocklist(vec![CHAT_JID.to_owned()])).unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(app.blocked_chats, std::collections::HashSet::from([chat_id]));
+
+        tx.send(BackendEvent::Blocklist(Vec::new())).unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(app.blocked_chats.is_empty(), "an empty server list clears the set");
+    }
+
+    /// The blocked set no longer persists in the plaintext
+    /// settings document (privacy audit A6): its ids are FNV-1a
+    /// hashes of phone-number JIDs, and the phone-number space
+    /// is small enough to dictionary-reverse, so the set's home
+    /// is the encrypted archive store (covered by the store
+    /// round-trip test). The settings JSON must not carry the
+    /// field at all, which also scrubs the legacy copy older
+    /// builds wrote on the next settings save.
+    #[test]
+    fn settings_json_never_carries_the_blocked_set() {
+        let (mut app, _tx, _ctx, _cmd_rx) = live_app();
+        app.blocked_chats.insert(424_242);
+        let json = app.settings_json();
+        assert!(
+            json.get("blocked_chats").is_none(),
+            "the settings document must not hold the blocked set: {json}"
+        );
+        assert!(
+            !json.to_string().contains("424242"),
+            "no blocked id leaks into any other settings field"
+        );
+    }
+
+    /// The connect-time privacy fetch reconciles the local
+    /// read-receipts toggle with the account's setting (audit
+    /// finding D3): the server value is adopted into the flag
+    /// that gates receipt sending and into the settings document
+    /// persist_settings writes, in both directions, and adopting
+    /// sends nothing back to the backend.
+    #[test]
+    fn server_read_receipts_setting_is_adopted() {
+        let (mut app, tx, ctx, cmd_rx) = live_app();
+        // Set the starting flag explicitly: adoption persists,
+        // and a parallel test's write must not leak into this
+        // one's starting state through the settings file.
+        app.read_receipts = true;
+
+        // The account has receipts off (changed on the phone):
+        // the fetch adopts that.
+        let mut state = std::collections::BTreeMap::new();
+        state.insert("last".to_owned(), "contacts".to_owned());
+        state.insert("readreceipts".to_owned(), "none".to_owned());
+        tx.send(BackendEvent::PrivacyState(state)).unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(!app.read_receipts, "the server value drives the toggle");
+        assert_eq!(
+            app.settings_json()["read_receipts"],
+            serde_json::json!(false),
+            "the adopted value is what persist_settings writes"
+        );
+        assert_eq!(app.privacy_state.get("last").map(String::as_str), Some("contacts"));
+        assert!(cmd_rx.try_recv().is_err(), "adopting a fetched state sends nothing back");
+
+        // And back on, the same way.
+        let mut state = std::collections::BTreeMap::new();
+        state.insert("readreceipts".to_owned(), "all".to_owned());
+        tx.send(BackendEvent::PrivacyState(state)).unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(app.read_receipts);
+        assert_eq!(app.settings_json()["read_receipts"], serde_json::json!(true));
+    }
+
+    /// A fetched readreceipts value the toggle cannot represent
+    /// (and a state that does not carry the category at all)
+    /// leaves the local flag alone.
+    #[test]
+    fn unrecognized_server_read_receipts_value_is_not_adopted() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        app.read_receipts = true;
+
+        let mut state = std::collections::BTreeMap::new();
+        state.insert("readreceipts".to_owned(), "contact_blacklist".to_owned());
+        tx.send(BackendEvent::PrivacyState(state)).unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(app.read_receipts, "an unrepresentable value changes nothing");
+
+        let mut state = std::collections::BTreeMap::new();
+        state.insert("last".to_owned(), "none".to_owned());
+        tx.send(BackendEvent::PrivacyState(state)).unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(app.read_receipts, "a missing category changes nothing");
+    }
+
+    /// The Privacy page toggle path: flipping the switch flips
+    /// the local gate at once and puts the matching SetPrivacy
+    /// command on the backend channel, so the account setting
+    /// follows the toggle.
+    #[test]
+    fn read_receipts_toggle_sends_set_privacy() {
+        let (mut app, _tx, _ctx, cmd_rx) = live_app();
+
+        app.set_read_receipts(false);
+        assert!(!app.read_receipts, "the local gate flips at once");
+        assert_eq!(
+            cmd_rx.try_recv(),
+            Ok(BackendCommand::SetPrivacy {
+                category: "readreceipts".to_owned(),
+                value: "none".to_owned(),
+            }),
+            "turning receipts off must reach the account setting"
+        );
+
+        app.set_read_receipts(true);
+        assert!(app.read_receipts);
+        assert_eq!(
+            cmd_rx.try_recv(),
+            Ok(BackendCommand::SetPrivacy {
+                category: "readreceipts".to_owned(),
+                value: "all".to_owned(),
+            }),
+            "turning receipts on must reach the account setting"
+        );
+    }
+
+    /// The categories the Privacy page has no row for still
+    /// survive into app state (audit finding D6): the fetched
+    /// map is stored whole, so the account's call-add, messages
+    /// and defense-mode settings are there for anything that
+    /// needs the account's actual state.
+    #[test]
+    fn rowless_privacy_categories_survive_into_app_state() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        let mut state = std::collections::BTreeMap::new();
+        state.insert("calladd".to_owned(), "known".to_owned());
+        state.insert("messages".to_owned(), "contacts".to_owned());
+        state.insert("defense".to_owned(), "on_standard".to_owned());
+        tx.send(BackendEvent::PrivacyState(state)).unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(app.privacy_state.get("calladd").map(String::as_str), Some("known"));
+        assert_eq!(app.privacy_state.get("messages").map(String::as_str), Some("contacts"));
+        assert_eq!(app.privacy_state.get("defense").map(String::as_str), Some("on_standard"));
+    }
+
+    /// The server-pushed account default timer is adopted into
+    /// the local control and persisted (audit finding D8), the
+    /// same server-wins rule as read receipts, and adopting it
+    /// sends nothing back.
+    #[test]
+    fn server_default_timer_is_adopted() {
+        let (mut app, tx, ctx, cmd_rx) = live_app();
+        app.default_ephemeral_secs = 0;
+        tx.send(BackendEvent::DefaultDisappearingTimerChanged { duration_secs: 86_400 }).unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(app.default_ephemeral_secs, 86_400);
+        assert_eq!(
+            app.settings_json()["default_ephemeral_secs"],
+            serde_json::json!(86_400),
+            "the adopted value is what persist_settings writes"
+        );
+        assert!(cmd_rx.try_recv().is_err(), "adopting a pushed value sends nothing back");
+    }
+
+    /// Turning typing indicators off retracts a composing state
+    /// already sent (audit finding D10): the peer must not keep
+    /// seeing "typing..." until the server-side timeout from a
+    /// client whose user just turned indicators off.
+    #[test]
+    fn typing_off_retracts_the_composing_chat() {
+        let (mut app, _tx, _ctx, cmd_rx) = live_app();
+        let chat_id = 4242;
+        app.live.as_mut().unwrap().jids.insert(chat_id, "6281234567890@s.whatsapp.net".to_owned());
+        app.typing_indicators = true;
+        app.typing_sent_for = Some(chat_id);
+
+        app.set_typing_indicators(false);
+        assert!(!app.typing_indicators);
+        assert_eq!(app.typing_sent_for, None);
+        assert_eq!(
+            cmd_rx.try_recv(),
+            Ok(BackendCommand::SetTyping {
+                chat_jid: "6281234567890@s.whatsapp.net".to_owned(),
+                typing: false,
+            }),
+            "flipping the toggle off must retract the composing state"
+        );
+
+        // Turning it back on sends nothing by itself.
+        app.set_typing_indicators(true);
+        assert!(cmd_rx.try_recv().is_err());
+    }
+
+    /// Cycling away from `contact_blacklist` asks first (audit
+    /// finding D7): the value names an exception list configured
+    /// on the phone, and replacing it discards the association
+    /// with that list, which this client cannot restore. Any
+    /// other current value cycles at once, without asking.
+    #[test]
+    fn leaving_contact_blacklist_asks_first() {
+        let (mut app, _tx, _ctx, cmd_rx) = live_app();
+        app.privacy_state.insert("last".to_owned(), "contact_blacklist".to_owned());
+        app.request_cycle_privacy("last", "Last seen");
+        assert!(
+            matches!(app.ui_confirm, Some(crate::state::UiConfirm::ReplaceExceptionList { .. })),
+            "leaving the exception list parks a confirmation"
+        );
+        assert!(cmd_rx.try_recv().is_err(), "nothing is sent before the user confirms");
+
+        app.ui_confirm = None;
+        app.privacy_state.insert("last".to_owned(), "contacts".to_owned());
+        app.request_cycle_privacy("last", "Last seen");
+        assert!(app.ui_confirm.is_none(), "an ordinary value cycles without asking");
+        assert_eq!(
+            cmd_rx.try_recv(),
+            Ok(BackendCommand::SetPrivacy {
+                category: "last".to_owned(),
+                value: "none".to_owned(),
+            })
+        );
+    }
+
+    /// The Online row's cycle is exactly the set the category
+    /// accepts: `all` and `match_last_seen`, wrapping. The values
+    /// the shared cycle used to offer it (`contacts`, `none`) are
+    /// not in the set, and the sibling rows keep their own set.
+    #[test]
+    fn online_cycle_visits_exactly_its_valid_set_and_wraps() {
+        assert_eq!(privacy_audiences("online"), ["all", "match_last_seen"]);
+        assert_eq!(next_privacy_audience("online", "all"), Some("match_last_seen"));
+        assert_eq!(next_privacy_audience("online", "match_last_seen"), Some("all"));
+
+        for category in ["last", "profile", "status", "groupadd"] {
+            assert_eq!(privacy_audiences(category), ["all", "contacts", "none"], "{category}");
+            assert_eq!(next_privacy_audience(category, "all"), Some("contacts"));
+            assert_eq!(next_privacy_audience(category, "contacts"), Some("none"));
+            assert_eq!(next_privacy_audience(category, "none"), Some("all"));
+        }
+
+        // `contact_blacklist` is a real fetched value for the
+        // four list categories, but it is never a cycle stop:
+        // sending it bare would discard the exception list it
+        // names.
+        for category in ["online", "last", "profile", "status", "groupadd"] {
+            assert!(
+                !privacy_audiences(category).contains(&"contact_blacklist"),
+                "{category} must not offer contact_blacklist"
+            );
+        }
+        // Categories the page does not show have no cycle.
+        assert_eq!(next_privacy_audience("readreceipts", "all"), None);
+    }
+
+    /// A fetched value the page cannot represent is shown as
+    /// itself and never silently presented as a neighbor, and
+    /// cycling away from it lands somewhere valid and predictable:
+    /// an exception list advances past "contacts", anything else
+    /// unknown restarts the cycle at its first audience.
+    #[test]
+    fn unrecognized_privacy_value_is_not_coerced() {
+        assert_eq!(privacy_value_label("all"), "Everyone");
+        assert_eq!(privacy_value_label("contacts"), "My contacts");
+        assert_eq!(privacy_value_label("none"), "Nobody");
+        assert_eq!(privacy_value_label("match_last_seen"), "Same as last seen");
+        assert_eq!(privacy_value_label("contact_blacklist"), "My contacts except…");
+        // Unknown spellings display verbatim: the page does not
+        // pretend they are an audience it knows.
+        assert_eq!(privacy_value_label("known"), "known");
+        assert_eq!(privacy_value_label("some_future_value"), "some_future_value");
+
+        assert_eq!(next_privacy_audience("last", "contact_blacklist"), Some("none"));
+        assert_eq!(next_privacy_audience("profile", "contact_blacklist"), Some("none"));
+        assert_eq!(next_privacy_audience("online", "some_future_value"), Some("all"));
+        assert_eq!(next_privacy_audience("last", "some_future_value"), Some("all"));
+    }
+
+    /// The Privacy page's Online row: cycling sends SetPrivacy
+    /// with the server's exact spelling for "same as last seen",
+    /// the value the old shared cycle could never produce.
+    #[test]
+    fn cycling_online_sends_match_last_seen_with_exact_spelling() {
+        let (mut app, _tx, _ctx, cmd_rx) = live_app();
+        app.privacy_state.insert("online".to_owned(), "all".to_owned());
+
+        app.cycle_privacy("online");
+        assert_eq!(
+            cmd_rx.try_recv(),
+            Ok(BackendCommand::SetPrivacy {
+                category: "online".to_owned(),
+                value: "match_last_seen".to_owned(),
+            }),
+            "cycling Online from Everyone must offer same-as-last-seen"
+        );
+        // The displayed value does not move on its own: only the
+        // backend's answering PrivacyState moves it.
+        assert_eq!(app.privacy_state.get("online").map(String::as_str), Some("all"));
+
+        app.privacy_state.insert("online".to_owned(), "match_last_seen".to_owned());
+        app.cycle_privacy("online");
+        assert_eq!(
+            cmd_rx.try_recv(),
+            Ok(BackendCommand::SetPrivacy {
+                category: "online".to_owned(),
+                value: "all".to_owned()
+            }),
+            "the cycle wraps back to Everyone"
+        );
+    }
+
+    /// The Settings cache-clear must empty every in-memory
+    /// cache, including the media and avatar texture caches it
+    /// used to miss (audit finding 10).
+    #[test]
+    fn cache_clear_covers_all_caches() {
+        let (mut app, _tx, ctx, _cmd_rx) = live_app();
+        let handle = ctx.load_texture(
+            "test",
+            egui::ColorImage::new([1, 1], vec![egui::Color32::RED]),
+            egui::TextureOptions::NEAREST,
+        );
+        app.media.textures.insert(1, handle.clone());
+        app.media.avatar_textures.insert("Sender".to_owned(), handle.clone());
+        app.picker.giphy_textures.insert("https://example.com/g".to_owned(), handle.clone());
+        app.picker.sticker_textures.insert(std::path::PathBuf::from("sticker.png"), handle);
+
+        app.clear_in_memory_caches();
+
+        assert!(app.media.textures.get(&1).is_none());
+        assert!(app.media.avatar_textures.get("Sender").is_none());
+        assert!(app.picker.giphy_textures.get("https://example.com/g").is_none());
+        assert!(app
+            .picker
+            .sticker_textures
+            .get(&std::path::PathBuf::from("sticker.png"))
+            .is_none());
+        assert!(app.cache_cleared);
+    }
+
+    /// A pin change the server reports (another device, or a
+    /// full sync) adopts unconditionally, even over a local
+    /// optimistic toggle: the server value is the truth the
+    /// local mirror reconciles to.
+    #[test]
+    fn server_pin_changed_overrides_local_state() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        seed_chat(&mut app, &tx, &ctx);
+        let chat_id = jid_id(CHAT_JID);
+
+        tx.send(BackendEvent::PinChanged { chat_jid: CHAT_JID.to_owned(), pinned: true }).unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(chat_pinned(&app), "a server pin lands in the mirror");
+        assert!(archived_pinned(&app), "and in the archive");
+
+        // The user unpins here (optimistic local flip plus the
+        // backend command), then the server re-asserts the pin,
+        // as it would if that command failed or another device
+        // pinned again: the server value wins.
+        app.apply_chat_action(chat_id, false, false, false);
+        assert!(!chat_pinned(&app));
+        tx.send(BackendEvent::PinChanged { chat_jid: CHAT_JID.to_owned(), pinned: true }).unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(chat_pinned(&app), "the server value overrides the local toggle");
+        assert!(archived_pinned(&app));
+
+        // And an unpin from another device unpins here too.
+        tx.send(BackendEvent::PinChanged { chat_jid: CHAT_JID.to_owned(), pinned: false }).unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(!chat_pinned(&app), "a server unpin lands in the mirror");
+        assert!(!archived_pinned(&app), "and in the archive");
+    }
+
+    /// An archive change the server reports adopts
+    /// unconditionally, in both directions, exactly like pin.
+    #[test]
+    fn server_archive_changed_overrides_local_state() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        seed_chat(&mut app, &tx, &ctx);
+        let chat_id = jid_id(CHAT_JID);
+
+        tx.send(BackendEvent::ArchiveChanged { chat_jid: CHAT_JID.to_owned(), archived: true })
+            .unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(chat_archived(&app), "a server archive lands in the mirror");
+        assert!(archived_archived(&app), "and in the archive");
+
+        // The user unarchives here, then the server re-asserts
+        // the archive: the server value wins.
+        app.apply_chat_action(chat_id, false, false, false);
+        assert!(!chat_archived(&app));
+        tx.send(BackendEvent::ArchiveChanged { chat_jid: CHAT_JID.to_owned(), archived: true })
+            .unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(chat_archived(&app), "the server value overrides the local toggle");
+        assert!(archived_archived(&app));
+
+        // And an unarchive from another device restores the
+        // chat to the main list here too.
+        tx.send(BackendEvent::ArchiveChanged { chat_jid: CHAT_JID.to_owned(), archived: false })
+            .unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(!chat_archived(&app), "a server unarchive lands in the mirror");
+        assert!(!archived_archived(&app), "and in the archive");
+    }
+
+    /// The counterpart rule for pin and archive: an arrival
+    /// upsert knows nothing about either, so it must not unpin
+    /// or unarchive a chat the mirror knows is pinned and
+    /// archived (the merge protection).
+    #[test]
+    fn arrival_upsert_keeps_the_known_pin_and_archive() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        seed_chat(&mut app, &tx, &ctx);
+
+        tx.send(BackendEvent::PinChanged { chat_jid: CHAT_JID.to_owned(), pinned: true }).unwrap();
+        tx.send(BackendEvent::ArchiveChanged { chat_jid: CHAT_JID.to_owned(), archived: true })
+            .unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(chat_pinned(&app) && chat_archived(&app));
+
+        tx.send(arrival_upsert()).unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(chat_pinned(&app), "an arrival upsert must not unpin");
+        assert!(chat_archived(&app), "an arrival upsert must not unarchive");
+        assert!(archived_pinned(&app), "nor rewrite the archive row as unpinned");
+        assert!(archived_archived(&app), "nor rewrite the archive row as unarchived");
+    }
+
+    const OTHER_JID: &str = "6281987654321@s.whatsapp.net";
+
+    /// An arrival-style chat upsert for an arbitrary JID, the
+    /// `arrival_upsert` shape with a different identity.
+    fn arrival_upsert_jid(jid: &str) -> BackendEvent {
+        BackendEvent::ChatUpsert(LiveChat {
+            jid: jid.to_owned(),
+            title: "Other".to_owned(),
+            kind: LiveChatKind::Dm,
+            preview: "hello".to_owned(),
+            preview_sender: None,
+            timestamp: BASE_TS,
+            unread: 0,
+            archived: false,
+            pinned: false,
+            ephemeral_secs: 0,
+            muted: false,
+        })
+    }
+
+    fn chat_unread(app: &App) -> u32 {
+        app.chats.iter().find(|c| c.id == jid_id(CHAT_JID)).expect("chat exists").unread
+    }
+
+    fn mirror_starred(app: &App, chat_id: u64, msg_id: u64) -> bool {
+        app.live
+            .as_ref()
+            .unwrap()
+            .messages
+            .get(&chat_id)
+            .and_then(|msgs| msgs.iter().find(|(_, m)| m.id == msg_id))
+            .expect("message exists")
+            .1
+            .starred
+    }
+
+    fn archived_flags(app: &App, protocol_id: &str) -> i64 {
+        let store = app.live.as_ref().unwrap().store.as_ref().unwrap();
+        store
+            .messages(CHAT_JID)
+            .unwrap()
+            .into_iter()
+            .find(|(m, _)| m.id == protocol_id)
+            .expect("the message reached the archive")
+            .1
+    }
+
+    fn mirror_bodies(app: &App, chat_id: u64) -> Vec<String> {
+        app.live
+            .as_ref()
+            .unwrap()
+            .messages
+            .get(&chat_id)
+            .map(|msgs| msgs.iter().map(|(_, m)| m.body.clone()).collect())
+            .unwrap_or_default()
+    }
+
+    fn archived_bodies(app: &App) -> Vec<String> {
+        let store = app.live.as_ref().unwrap().store.as_ref().unwrap();
+        store.messages(CHAT_JID).unwrap().into_iter().map(|(m, _)| m.body).collect()
+    }
+
+    /// A star change the server reports (another device, or a
+    /// full sync) adopts unconditionally in both directions:
+    /// the session mirror flips and the archive flags follow,
+    /// and the adoption sends no command back (the change is
+    /// already on the server).
+    #[test]
+    fn server_star_changed_overrides_local_state() {
+        let (mut app, tx, ctx, cmd_rx) = live_app();
+        seed_chat(&mut app, &tx, &ctx);
+        let chat_id = jid_id(CHAT_JID);
+        let mid = message_id(CHAT_JID, "s1");
+        tx.send(BackendEvent::MessageUpsert(LiveMessage::text(
+            "s1",
+            CHAT_JID,
+            Some("Sender".to_owned()),
+            "star me",
+            BASE_TS,
+            false,
+        )))
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(!mirror_starred(&app, chat_id, mid));
+        assert_eq!(archived_flags(&app, "s1"), 0);
+
+        tx.send(BackendEvent::StarChanged {
+            chat_jid: CHAT_JID.to_owned(),
+            message_id: "s1".to_owned(),
+            starred: true,
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(mirror_starred(&app, chat_id, mid), "a server star lands in the mirror");
+        assert_eq!(archived_flags(&app, "s1"), store::FLAG_STARRED, "and in the archive flags");
+        assert!(cmd_rx.try_recv().is_err(), "adopting a server star sends nothing back");
+
+        tx.send(BackendEvent::StarChanged {
+            chat_jid: CHAT_JID.to_owned(),
+            message_id: "s1".to_owned(),
+            starred: false,
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(!mirror_starred(&app, chat_id, mid), "a server unstar lands in the mirror");
+        assert_eq!(archived_flags(&app, "s1"), 0, "and the archive flags clear");
+    }
+
+    /// The counterpart rule for star: an arrival upsert reports
+    /// `starred: false` without knowing better, so it must not
+    /// unstar a message the session flag map knows is starred
+    /// (the upsert resolves its flags from that map).
+    #[test]
+    fn arrival_upsert_keeps_the_known_star() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        seed_chat(&mut app, &tx, &ctx);
+        let chat_id = jid_id(CHAT_JID);
+        let mid = message_id(CHAT_JID, "s1");
+        let upsert = || {
+            BackendEvent::MessageUpsert(LiveMessage::text(
+                "s1",
+                CHAT_JID,
+                Some("Sender".to_owned()),
+                "star me",
+                BASE_TS,
+                false,
+            ))
+        };
+        tx.send(upsert()).unwrap();
+        tx.send(BackendEvent::StarChanged {
+            chat_jid: CHAT_JID.to_owned(),
+            message_id: "s1".to_owned(),
+            starred: true,
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(mirror_starred(&app, chat_id, mid));
+
+        tx.send(upsert()).unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(mirror_starred(&app, chat_id, mid), "an arrival upsert must not unstar");
+        assert_eq!(archived_flags(&app, "s1"), store::FLAG_STARRED);
+    }
+
+    /// A chat read on another device adopts as read here: the
+    /// badge clears in the mirror and the archive, the pending
+    /// receipt queue is dropped rather than flushed, and no
+    /// MarkAsRead command ever goes out for it (the other
+    /// device already sent the receipts).
+    #[test]
+    fn server_chat_read_changed_clears_unread_without_sending_receipts() {
+        let (mut app, tx, ctx, cmd_rx) = live_app();
+        seed_chat(&mut app, &tx, &ctx);
+        let chat_id = jid_id(CHAT_JID);
+        for (pid, ts) in [("r1", BASE_TS), ("r2", BASE_TS + 60)] {
+            tx.send(BackendEvent::MessageUpsert(LiveMessage::text(
+                pid,
+                CHAT_JID,
+                Some("Sender".to_owned()),
+                "unread",
+                ts,
+                false,
+            )))
+            .unwrap();
+        }
+        drain_all(&mut app, &ctx);
+        assert_eq!(chat_unread(&app), 2, "two arrivals raise the badge");
+        assert_eq!(
+            app.unread_live.get(&chat_id).map(Vec::len),
+            Some(2),
+            "both receipts are pending locally"
+        );
+
+        tx.send(BackendEvent::ChatReadChanged {
+            chat_jid: CHAT_JID.to_owned(),
+            read: true,
+            unread_count: 0,
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(chat_unread(&app), 0, "the remote read clears the badge");
+        assert_eq!(store_row(&app).unread, 0, "and the archive row follows");
+        assert!(
+            !app.unread_live.contains_key(&chat_id),
+            "the pending receipts are dropped, not kept for a later flush"
+        );
+        assert!(cmd_rx.try_recv().is_err(), "adopting a remote read sends nothing back");
+
+        // Even a genuine local read action afterwards finds
+        // nothing to mark: the receipts are gone for good.
+        app.selected_chat = chat_id;
+        app.note_read_engagement();
+        assert!(cmd_rx.try_recv().is_err(), "no receipts go out after the remote read");
+    }
+
+    /// A chat marked unread on another device adopts the
+    /// reported count (floored at one: the chat IS unread, so a
+    /// zero badge would hide the asserted state), in the mirror
+    /// and the archive.
+    #[test]
+    fn server_chat_read_changed_marks_unread_with_the_reported_count() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        seed_chat(&mut app, &tx, &ctx);
+
+        tx.send(BackendEvent::ChatReadChanged {
+            chat_jid: CHAT_JID.to_owned(),
+            read: false,
+            unread_count: 3,
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(chat_unread(&app), 3, "the reported count lands in the mirror");
+        assert_eq!(store_row(&app).unread, 3, "and in the archive");
+
+        tx.send(BackendEvent::ChatReadChanged {
+            chat_jid: CHAT_JID.to_owned(),
+            read: false,
+            unread_count: 0,
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(chat_unread(&app), 1, "a count of zero still shows the chat as unread");
+        assert_eq!(store_row(&app).unread, 1);
+    }
+
+    /// An upsert that reports a real count (the fake's initial
+    /// chat list is the informed form) is adopted as reported,
+    /// in the mirror and the archive, even over a known count:
+    /// adoption is not a max rule. Only a reported 0 is treated
+    /// as "not carried" (see the next test).
+    #[test]
+    fn informed_upsert_adopts_the_reported_unread_count() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        tx.send(counted_upsert(4)).unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(chat_unread(&app), 4, "the reported count lands in the mirror");
+        assert_eq!(store_row(&app).unread, 4, "and in the archive");
+
+        tx.send(counted_upsert(2)).unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(chat_unread(&app), 2, "a later informed count replaces the known one");
+        assert_eq!(store_row(&app).unread, 2);
+    }
+
+    /// The real backend pairs every incoming message with an
+    /// arrival chat upsert that reports unread 0 (the wire
+    /// carries no count there). Those upserts must not reset
+    /// the badge: a burst accumulates the full count on top of
+    /// the count the chat already had, in the mirror and in the
+    /// archive row, and a ChatReadChanged afterwards still
+    /// overrides the accumulated count outright, in both
+    /// directions.
+    #[test]
+    fn arrival_upserts_do_not_reset_the_unread_count() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        // Initial load: an informed upsert reports 2 unread.
+        tx.send(counted_upsert(2)).unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(chat_unread(&app), 2);
+        assert_eq!(store_row(&app).unread, 2);
+
+        // Three arrivals, each preceded by its arrival upsert,
+        // exactly the real backend's pairing.
+        for (pid, ts) in [("b1", BASE_TS), ("b2", BASE_TS + 60), ("b3", BASE_TS + 120)] {
+            tx.send(arrival_upsert()).unwrap();
+            tx.send(BackendEvent::MessageUpsert(LiveMessage::text(
+                pid,
+                CHAT_JID,
+                Some("Sender".to_owned()),
+                "burst",
+                ts,
+                false,
+            )))
+            .unwrap();
+        }
+        drain_all(&mut app, &ctx);
+        assert_eq!(chat_unread(&app), 5, "the burst accumulates on top of the known count");
+        assert_eq!(store_row(&app).unread, 5, "the archive row carries the same count");
+
+        // The authoritative read path still wins outright.
+        tx.send(BackendEvent::ChatReadChanged {
+            chat_jid: CHAT_JID.to_owned(),
+            read: true,
+            unread_count: 0,
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(chat_unread(&app), 0, "a remote read clears the accumulated badge");
+        assert_eq!(store_row(&app).unread, 0);
+
+        tx.send(BackendEvent::ChatReadChanged {
+            chat_jid: CHAT_JID.to_owned(),
+            read: false,
+            unread_count: 3,
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(chat_unread(&app), 3, "a remote mark-unread sets its count");
+        assert_eq!(store_row(&app).unread, 3);
+    }
+
+    /// A chat deleted on the phone leaves everywhere it exists
+    /// locally: the chat list, the session mirror and helper
+    /// maps, and the archive rows; the open selection moves to
+    /// a surviving chat, other chats are untouched, and the
+    /// adoption sends nothing back.
+    #[test]
+    fn server_chat_deleted_removes_the_chat_everywhere() {
+        let (mut app, tx, ctx, cmd_rx) = live_app();
+        seed_chat(&mut app, &tx, &ctx);
+        tx.send(arrival_upsert_jid(OTHER_JID)).unwrap();
+        let chat_id = jid_id(CHAT_JID);
+        let mid = message_id(CHAT_JID, "d1");
+        tx.send(BackendEvent::MessageUpsert(LiveMessage::text(
+            "d1",
+            CHAT_JID,
+            Some("Sender".to_owned()),
+            "delete me",
+            BASE_TS,
+            false,
+        )))
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        app.selected_chat = chat_id;
+        app.sync_conversation();
+        assert_eq!(app.conversation.len(), 1, "the doomed chat is open");
+
+        tx.send(BackendEvent::ChatDeleted { chat_jid: CHAT_JID.to_owned() }).unwrap();
+        drain_all(&mut app, &ctx);
+
+        assert!(app.chats.iter().all(|c| c.id != chat_id), "the chat leaves the list");
+        assert_eq!(app.chats.len(), 1, "the other chat stays");
+        let session = app.live.as_ref().unwrap();
+        assert!(!session.messages.contains_key(&chat_id), "the mirror drops its messages");
+        assert!(!session.jids.contains_key(&chat_id), "and its JID mapping");
+        assert!(!session.times.contains_key(&chat_id), "and its activity stamp");
+        assert!(!session.flags.contains_key(&mid), "and its message flags");
+        assert!(!app.protocol_ids.contains_key(&mid), "and its protocol-id entry");
+        assert!(!app.unread_live.contains_key(&chat_id), "and its pending receipts");
+        let store = session.store.as_ref().unwrap();
+        assert!(
+            store.chats().unwrap().iter().all(|c| c.jid != CHAT_JID),
+            "the archive chat row is gone"
+        );
+        assert!(store.messages(CHAT_JID).unwrap().is_empty(), "and its archive messages");
+        assert_eq!(store.chats().unwrap().len(), 1, "the other archive row stays");
+        assert_eq!(app.selected_chat, jid_id(OTHER_JID), "the selection moves to a survivor");
+        assert!(app.conversation.is_empty(), "the open conversation follows the selection");
+        assert!(cmd_rx.try_recv().is_err(), "adopting a deletion sends nothing back");
+    }
+
+    /// A chat cleared on the phone empties here too, on the
+    /// clear's own terms: messages past the bound survive,
+    /// starred messages survive a keep-starred clear, and the
+    /// chat itself (row, settings, list position) is exactly
+    /// as it was. A second, unbounded delete-starred clear
+    /// takes the rest. Nothing is sent back at any point.
+    #[test]
+    fn server_chat_cleared_empties_messages_but_keeps_the_chat() {
+        let (mut app, tx, ctx, cmd_rx) = live_app();
+        seed_chat(&mut app, &tx, &ctx);
+        let chat_id = jid_id(CHAT_JID);
+        // Settings the clear must not disturb, set the way the
+        // server reports them.
+        tx.send(BackendEvent::PinChanged { chat_jid: CHAT_JID.to_owned(), pinned: true }).unwrap();
+        tx.send(BackendEvent::MuteChanged { chat_jid: CHAT_JID.to_owned(), muted: true }).unwrap();
+        for (pid, body, ts) in [
+            ("c1", "first", BASE_TS),
+            ("c2", "starred", BASE_TS + 60),
+            ("c3", "newest", BASE_TS + 120),
+        ] {
+            tx.send(BackendEvent::MessageUpsert(LiveMessage::text(
+                pid,
+                CHAT_JID,
+                Some("Sender".to_owned()),
+                body,
+                ts,
+                false,
+            )))
+            .unwrap();
+        }
+        tx.send(BackendEvent::StarChanged {
+            chat_jid: CHAT_JID.to_owned(),
+            message_id: "c2".to_owned(),
+            starred: true,
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        app.selected_chat = chat_id;
+        app.sync_conversation();
+        assert_eq!(app.conversation.len(), 3, "the chat is open with all three messages");
+
+        // Keep-starred clear bounded at the starred message:
+        // the plain message at the bound goes, the starred one
+        // at the bound stays, the newer one is out of reach.
+        tx.send(BackendEvent::ChatCleared {
+            chat_jid: CHAT_JID.to_owned(),
+            delete_starred: false,
+            last_message_timestamp: Some(BASE_TS + 60),
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(mirror_bodies(&app, chat_id), ["starred", "newest"]);
+        assert_eq!(
+            archived_bodies(&app),
+            ["starred", "newest"],
+            "the archive clears with the mirror"
+        );
+        assert_eq!(
+            app.conversation.len(),
+            2,
+            "the open conversation rebuilds without the cleared message"
+        );
+        assert!(
+            !app.protocol_ids.contains_key(&message_id(CHAT_JID, "c1")),
+            "the cleared message's helper entries go with it"
+        );
+        let chat = app.chats.iter().find(|c| c.id == chat_id).expect("the chat stays in the list");
+        assert!(chat.pinned && chat.muted, "its settings are untouched");
+        assert_eq!(chat.preview, "newest", "the preview follows the newest survivor");
+        let row = store_row(&app);
+        assert!(row.pinned && row.muted, "the archive row keeps its settings");
+        assert_eq!(row.preview, "newest", "and its preview follows too");
+        assert_eq!(
+            row.timestamp,
+            BASE_TS + 120,
+            "its list position input is the activity stamp the session already held"
+        );
+        assert!(cmd_rx.try_recv().is_err(), "adopting a clear sends nothing back");
+
+        // An unbounded delete-starred clear takes the rest;
+        // the chat still stays.
+        tx.send(BackendEvent::ChatCleared {
+            chat_jid: CHAT_JID.to_owned(),
+            delete_starred: true,
+            last_message_timestamp: None,
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(mirror_bodies(&app, chat_id).is_empty(), "the mirror empties");
+        assert!(archived_bodies(&app).is_empty(), "and so does the archive");
+        assert!(app.conversation.is_empty(), "the open conversation empties with it");
+        let chat = app.chats.iter().find(|c| c.id == chat_id).expect("the chat still stays");
+        assert_eq!(chat.preview, "", "with nothing left, the preview empties");
+        assert!(chat.pinned && chat.muted, "and its settings still survive");
+        assert!(cmd_rx.try_recv().is_err(), "adopting a clear sends nothing back");
+    }
+
+    /// A message deleted for the account on the phone is
+    /// removed here too: exactly that message, from the
+    /// mirror, its helper entries, and the archive; its
+    /// neighbours and the chat are untouched, the open
+    /// conversation rebuilds, and deleting the newest message
+    /// moves the preview to the new newest. Nothing is sent
+    /// back.
+    #[test]
+    fn server_message_deleted_for_me_removes_exactly_that_message() {
+        let (mut app, tx, ctx, cmd_rx) = live_app();
+        seed_chat(&mut app, &tx, &ctx);
+        let chat_id = jid_id(CHAT_JID);
+        for (pid, body, ts) in
+            [("m1", "one", BASE_TS), ("m2", "two", BASE_TS + 60), ("m3", "three", BASE_TS + 120)]
+        {
+            tx.send(BackendEvent::MessageUpsert(LiveMessage::text(
+                pid,
+                CHAT_JID,
+                Some("Sender".to_owned()),
+                body,
+                ts,
+                false,
+            )))
+            .unwrap();
+        }
+        drain_all(&mut app, &ctx);
+        app.selected_chat = chat_id;
+        app.sync_conversation();
+        assert_eq!(app.conversation.len(), 3);
+
+        // The middle message goes; its neighbours stay.
+        tx.send(BackendEvent::MessageDeletedForMe {
+            chat_jid: CHAT_JID.to_owned(),
+            message_id: "m2".to_owned(),
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(mirror_bodies(&app, chat_id), ["one", "three"]);
+        assert_eq!(archived_bodies(&app), ["one", "three"], "the archive removes it too");
+        assert_eq!(app.conversation.len(), 2, "the open conversation rebuilds without it");
+        assert!(
+            !app.protocol_ids.contains_key(&message_id(CHAT_JID, "m2")),
+            "its helper entries go with it"
+        );
+        assert_eq!(
+            app.chats.iter().find(|c| c.id == chat_id).unwrap().preview,
+            "three",
+            "the preview still shows the newest message"
+        );
+        assert!(cmd_rx.try_recv().is_err(), "adopting a delete-for-me sends nothing back");
+
+        // Deleting the newest moves the preview back.
+        tx.send(BackendEvent::MessageDeletedForMe {
+            chat_jid: CHAT_JID.to_owned(),
+            message_id: "m3".to_owned(),
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(mirror_bodies(&app, chat_id), ["one"]);
+        assert_eq!(
+            app.chats.iter().find(|c| c.id == chat_id).unwrap().preview,
+            "one",
+            "the preview follows the new newest message"
+        );
+        assert_eq!(store_row(&app).preview, "one", "and the archive row follows");
+
+        // A delete for a message that is not here changes
+        // nothing and does not panic.
+        tx.send(BackendEvent::MessageDeletedForMe {
+            chat_jid: CHAT_JID.to_owned(),
+            message_id: "nope".to_owned(),
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(mirror_bodies(&app, chat_id), ["one"]);
+        assert_eq!(archived_bodies(&app), ["one"]);
+        assert!(cmd_rx.try_recv().is_err());
+    }
+
+    /// The other half of the merge rule: an upsert that does
+    /// carry the state (the fake's chat-action and LeaveGroup
+    /// echoes) still lands, so demo-mode flows that report
+    /// archive/pin through upserts keep working (logic review
+    /// F14).
+    #[test]
+    fn informed_upsert_still_lands() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        seed_chat(&mut app, &tx, &ctx);
+
+        tx.send(state_upsert(true, true)).unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(chat_archived(&app), "an informed upsert archives the mirror");
+        assert!(chat_pinned(&app), "an informed upsert pins the mirror");
+        assert!(archived_archived(&app), "and the archive row follows");
+        assert!(archived_pinned(&app));
+    }
+}
+
+#[cfg(test)]
+mod mirror_pruning_tests {
+    use super::*;
+    use crate::state::{App, Args};
+
+    const CHAT_JID: &str = "6281234567890@s.whatsapp.net";
+
+    /// The same live-mode harness as the burst tests: an app
+    /// whose backend channels the test feeds and reads by hand,
+    /// with an in-memory archive attached.
+    fn live_app() -> (
+        App,
+        std::sync::mpsc::Sender<BackendEvent>,
+        egui::Context,
+        std::sync::mpsc::Receiver<BackendCommand>,
+    ) {
+        let ctx = egui::Context::default();
+        crate::theme::install_fonts(&ctx);
+        let mut app = App::new(Args::parse(), &ctx);
+        let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<BackendCommand>();
+        let (evt_tx, evt_rx) = std::sync::mpsc::channel::<BackendEvent>();
+        app.live = Some(LiveSession {
+            channels: BackendChannels { commands: cmd_tx, events: evt_rx },
+            status: LinkStatus::Linked,
+            qr: None,
+            pair_code: None,
+            pair_code_at: None,
+            account: "Test account".to_owned(),
+            connected_at: None,
+            store: Some(store::Store::open_in_memory().unwrap()),
+            jids: HashMap::new(),
+            messages: HashMap::new(),
+            times: HashMap::new(),
+            fake: true,
+            flags: HashMap::new(),
+            engaged_chats: std::collections::HashSet::new(),
+        });
+        app.live_mode = true;
+        (app, evt_tx, ctx, cmd_rx)
+    }
+
+    fn drain_all(app: &mut App, ctx: &egui::Context) {
+        for _ in 0..64 {
+            app.poll_backend(ctx);
+            if app.event_queue.is_empty() {
+                return;
+            }
+        }
+        panic!("the event queue did not drain");
+    }
+
+    /// The one path that removes messages from the live mirror
+    /// (a disappearing message expiring) must take the message's
+    /// helper entries with it, and only that message's: every
+    /// per-message map is seeded for an expiring and a surviving
+    /// message, and after the pass the survivor's entries must
+    /// still resolve while the expired one's are all gone.
+    #[test]
+    fn expiry_prunes_helper_entries_of_the_expired_message_only() {
+        let (mut app, _tx, _ctx, _cmd_rx) = live_app();
+        let chat_id = jid_id(CHAT_JID);
+        let old_mid = message_id(CHAT_JID, "old-pid");
+        let new_mid = message_id(CHAT_JID, "new-pid");
+        let old = Message { expires_at: 100, ..Message::mine(old_mid, "about to vanish", "09:00") };
+        let new = Message { expires_at: 0, ..Message::mine(new_mid, "stays", "09:01") };
+        {
+            let session = app.live.as_mut().unwrap();
+            session.jids.insert(chat_id, CHAT_JID.to_owned());
+            session.messages.insert(chat_id, vec![(1_000, old), (1_060, new)]);
+            session.flags.insert(old_mid, store::FLAG_STARRED);
+            session.flags.insert(new_mid, store::FLAG_STARRED);
+        }
+        for mid in [old_mid, new_mid] {
+            let pid = if mid == old_mid { "old-pid" } else { "new-pid" };
+            app.protocol_ids.insert(mid, pid.to_owned());
+            app.sender_jids.insert(mid, "6281234567890@s.whatsapp.net".to_owned());
+            app.receipt_log.insert(mid, vec![(ReceiptKind::Read, "09:05".to_owned())]);
+            app.my_reactions.insert(mid, "thumbs-up".to_owned());
+            app.reaction_actors.insert(
+                format!("{chat_id}:{mid}"),
+                HashMap::from([("Alice".to_owned(), "thumbs-up".to_owned())]),
+            );
+        }
+        app.unread_live.insert(chat_id, vec!["old-pid".to_owned()]);
+
+        app.expire_disappearing_messages(200);
+
+        let session = app.live.as_ref().unwrap();
+        let mirror = session.messages.get(&chat_id).unwrap();
+        assert_eq!(mirror.len(), 1, "only the expired message leaves the mirror");
+        assert_eq!(mirror[0].1.id, new_mid);
+        assert!(!session.flags.contains_key(&old_mid), "expired flags are pruned");
+        assert!(session.flags.contains_key(&new_mid), "surviving flags stay");
+        for (map, mid) in
+            [("protocol", old_mid), ("sender", old_mid), ("receipt", old_mid), ("mine", old_mid)]
+        {
+            let present = match map {
+                "protocol" => app.protocol_ids.contains_key(&mid),
+                "sender" => app.sender_jids.contains_key(&mid),
+                "receipt" => app.receipt_log.contains_key(&mid),
+                _ => app.my_reactions.contains_key(&mid),
+            };
+            assert!(!present, "the expired message's {map} entry is pruned");
+        }
+        assert!(
+            !app.reaction_actors.contains_key(&format!("{chat_id}:{old_mid}")),
+            "the expired message's reaction entry is pruned"
+        );
+        assert!(
+            !app.unread_live.contains_key(&chat_id),
+            "the expired message's pending read receipt is pruned with it"
+        );
+
+        // Lookups for the retained message still resolve, through
+        // the same paths the UI uses: the protocol map itself,
+        // the flag path that reads it to persist, and the quote
+        // resolution for a reply aimed at the survivor.
+        assert_eq!(app.protocol_ids.get(&new_mid).map(String::as_str), Some("new-pid"));
+        assert_eq!(
+            app.sender_jids.get(&new_mid).map(String::as_str),
+            Some("6281234567890@s.whatsapp.net")
+        );
+        assert!(app.receipt_log.contains_key(&new_mid));
+        assert!(app.my_reactions.contains_key(&new_mid));
+        assert!(app.reaction_actors.contains_key(&format!("{chat_id}:{new_mid}")));
+        app.set_live_flag(chat_id, new_mid, store::FLAG_PINNED_MESSAGE, true);
+        assert_eq!(
+            app.live.as_ref().unwrap().flags.get(&new_mid).copied().unwrap_or(0),
+            store::FLAG_STARRED | store::FLAG_PINNED_MESSAGE,
+            "the flag path still finds the survivor's protocol id"
+        );
+        app.selected_chat = chat_id;
+        app.sync_conversation();
+        app.composer.reply_to = Some((new_mid, "Sender".to_owned(), "stays".to_owned()));
+        let quote = app.live_quote_for_reply().expect("a reply to the survivor still resolves");
+        assert_eq!(quote.message_id, "new-pid");
+        app.composer.reply_to = Some((old_mid, "Sender".to_owned(), "gone".to_owned()));
+        assert!(
+            app.live_quote_for_reply().is_none(),
+            "a reply to the expired message resolves to nothing, as before"
+        );
+    }
+
+    /// The expiry pass writes the refreshed preview through to
+    /// the archive chat row, not just the in-memory list: after
+    /// the newest message expires, the stored preview is the
+    /// newest survivor's body (a restart must not resurrect the
+    /// expired body), and when the last message expires the
+    /// stored preview empties with the mirror's.
+    #[test]
+    fn expiry_writes_the_refreshed_preview_through_to_the_archive() {
+        let (mut app, _tx, _ctx, _cmd_rx) = live_app();
+        let chat_id = jid_id(CHAT_JID);
+        let older_mid = message_id(CHAT_JID, "older-pid");
+        let newer_mid = message_id(CHAT_JID, "newer-pid");
+        let older = Message {
+            expires_at: 300,
+            ..Message::mine(older_mid, "older, expires later", "09:00")
+        };
+        let newer = Message {
+            expires_at: 100,
+            ..Message::mine(newer_mid, "newest, expires first", "09:01")
+        };
+        // The list row and the archive row both still preview
+        // the newest message, as they did before the pass runs.
+        let live_row = LiveChat {
+            jid: CHAT_JID.to_owned(),
+            title: "Sender".to_owned(),
+            kind: LiveChatKind::Dm,
+            preview: "newest, expires first".to_owned(),
+            preview_sender: None,
+            timestamp: 1_060,
+            unread: 0,
+            archived: false,
+            pinned: false,
+            ephemeral_secs: 0,
+            muted: false,
+        };
+        app.chats.push(to_chat(&live_row));
+        {
+            let session = app.live.as_mut().unwrap();
+            session.jids.insert(chat_id, CHAT_JID.to_owned());
+            session.times.insert(chat_id, 1_060);
+            session.messages.insert(chat_id, vec![(1_000, older), (1_060, newer)]);
+            session.store.as_ref().unwrap().upsert_chat(&live_row).unwrap();
+        }
+        app.protocol_ids.insert(older_mid, "older-pid".to_owned());
+        app.protocol_ids.insert(newer_mid, "newer-pid".to_owned());
+
+        let mirror_preview =
+            |app: &App| app.chats.iter().find(|c| c.id == chat_id).unwrap().preview.clone();
+        let stored_preview = |app: &App| {
+            app.live
+                .as_ref()
+                .unwrap()
+                .store
+                .as_ref()
+                .unwrap()
+                .chats()
+                .unwrap()
+                .into_iter()
+                .find(|c| c.jid == CHAT_JID)
+                .expect("the archive chat row stays")
+                .preview
+        };
+
+        app.expire_disappearing_messages(200);
+        assert_eq!(mirror_preview(&app), "older, expires later");
+        assert_eq!(
+            stored_preview(&app),
+            "older, expires later",
+            "the stored preview follows the newest survivor, not the expired message"
+        );
+
+        app.expire_disappearing_messages(400);
+        assert_eq!(mirror_preview(&app), "");
+        assert_eq!(stored_preview(&app), "", "with no survivors the stored preview empties too");
+    }
+
+    /// When the last actor removes their reaction, the
+    /// per-message actor entry itself is dropped, so the map
+    /// holds only messages with live reactions.
+    #[test]
+    fn removing_the_last_reaction_drops_the_actor_entry() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        let chat_id = jid_id(CHAT_JID);
+        let mid = message_id(CHAT_JID, "r1");
+        tx.send(BackendEvent::MessageUpsert(LiveMessage::text(
+            "r1",
+            CHAT_JID,
+            Some("Alice".to_owned()),
+            "react to me",
+            1_700_000_000,
+            false,
+        )))
+        .unwrap();
+        tx.send(BackendEvent::ReactionUpdate {
+            chat_jid: CHAT_JID.to_owned(),
+            message_id: "r1".to_owned(),
+            actor: "Alice".to_owned(),
+            emoji: "thumbs-up".to_owned(),
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        let key = format!("{chat_id}:{mid}");
+        assert!(app.reaction_actors.contains_key(&key), "the reaction registers its entry");
+        let mirror = app.live.as_ref().unwrap().messages.get(&chat_id).unwrap();
+        assert_eq!(mirror[0].1.reactions, vec![("thumbs-up".to_owned(), 1)]);
+
+        tx.send(BackendEvent::ReactionUpdate {
+            chat_jid: CHAT_JID.to_owned(),
+            message_id: "r1".to_owned(),
+            actor: "Alice".to_owned(),
+            emoji: String::new(),
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(!app.reaction_actors.contains_key(&key), "the emptied entry is dropped");
+        let mirror = app.live.as_ref().unwrap().messages.get(&chat_id).unwrap();
+        assert!(mirror[0].1.reactions.is_empty(), "the mirror count still clears");
+    }
+
+    /// Toggling a flag off removes the in-memory entry (absence
+    /// and zero are the same to every reader) while the zero
+    /// itself is still persisted to the archive row.
+    #[test]
+    fn clearing_the_last_flag_removes_the_entry_but_persists_zero() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        let chat_id = jid_id(CHAT_JID);
+        let mid = message_id(CHAT_JID, "f1");
+        tx.send(BackendEvent::MessageUpsert(LiveMessage::text(
+            "f1",
+            CHAT_JID,
+            Some("Sender".to_owned()),
+            "star me",
+            1_700_000_000,
+            false,
+        )))
+        .unwrap();
+        drain_all(&mut app, &ctx);
+
+        app.set_live_flag(chat_id, mid, store::FLAG_STARRED, true);
+        assert_eq!(
+            app.live.as_ref().unwrap().flags.get(&mid).copied().unwrap_or(0),
+            store::FLAG_STARRED
+        );
+        app.set_live_flag(chat_id, mid, store::FLAG_STARRED, false);
+        assert!(
+            !app.live.as_ref().unwrap().flags.contains_key(&mid),
+            "a zeroed flag entry leaves the map"
+        );
+        let archived =
+            app.live.as_ref().unwrap().store.as_ref().unwrap().messages(CHAT_JID).unwrap();
+        let row = archived.iter().find(|(m, _)| m.id == "f1").expect("the row is archived");
+        assert_eq!(row.1, 0, "the archive row still records the cleared flag");
     }
 }

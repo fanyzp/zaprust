@@ -296,6 +296,7 @@ pub fn community_home(
             ui,
             announcement,
             false,
+            false,
             t,
             None,
             Some(crate::icons::Icon::Megaphone),
@@ -319,7 +320,7 @@ pub fn community_home(
         // The groups the user is in.
         section_label(ui, t, &crate::i18n::t("community.your_groups"));
         for group in groups {
-            if crate::chat_list::chat_row(ui, group, false, t, None, None, None).clicked() {
+            if crate::chat_list::chat_row(ui, group, false, false, t, None, None, None).clicked() {
                 intents.open_chat = Some(group.id);
             }
         }

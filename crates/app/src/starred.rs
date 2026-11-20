@@ -22,10 +22,15 @@ const ROW_H: f32 = 56.0;
 /// not get a kind chip: the body text (an image caption counts
 /// as the text), with the deleted placeholder the bubble also
 /// substitutes, and the name for the kinds whose text lives
-/// outside the body.
+/// outside the body. A view-once message shows only its
+/// placeholder: starring one must not pin its caption into
+/// this list, where it would outlive the sealed payload.
 fn snippet(msg: &Message) -> String {
     if msg.deleted && !msg.deleted_by_sender {
         return "This message was deleted".to_owned();
+    }
+    if msg.is_view_once() {
+        return core::model::VIEW_ONCE_PREVIEW.to_owned();
     }
     if let MessageKind::Image { caption, .. } = &msg.kind {
         if !caption.is_empty() {
@@ -334,7 +339,22 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_full_date, twelve_hour};
+    use super::{parse_full_date, snippet, twelve_hour};
+    use core::model::{Message, MessageKind};
+
+    #[test]
+    fn view_once_snippet_is_only_the_placeholder() {
+        // Privacy finding D2: starring a view-once message must
+        // not pin its caption into this list.
+        let mut vo = Message::theirs(1, "Sarah", "a secret caption", "10:00");
+        vo.kind = MessageKind::Image { caption: "a secret caption".to_owned(), view_once: true };
+        assert_eq!(snippet(&vo), "View once");
+        // A normal photo's caption still serves as its snippet.
+        let mut photo = Message::theirs(2, "Sarah", "a normal caption", "10:01");
+        photo.kind =
+            MessageKind::Image { caption: "a normal caption".to_owned(), view_once: false };
+        assert_eq!(snippet(&photo), "a normal caption");
+    }
 
     #[test]
     fn clocks_convert_to_12_hour() {

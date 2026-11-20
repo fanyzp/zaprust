@@ -355,6 +355,11 @@ impl App {
         if packs.is_empty() {
             ui.label("No sticker packs yet, create one below.");
         }
+        // Stickers with no texture yet, queued for the preview
+        // worker after the draw. The draw path only binds
+        // already-decoded textures; reading and decoding happen
+        // on the worker (see extras::request_sticker_previews).
+        let mut missing: Vec<std::path::PathBuf> = Vec::new();
         for pack in &packs {
             ui.label(RichText::new(&pack.name).size(13.0).strong());
             ui.horizontal_wrapped(|ui| {
@@ -363,26 +368,17 @@ impl App {
                         .file_stem()
                         .map(|s| s.to_string_lossy().into_owned())
                         .unwrap_or_default();
-                    if !self.picker.sticker_textures.contains_key(sticker) {
-                        if let Ok(bytes) = std::fs::read(sticker) {
-                            if let Ok(img) = image::load_from_memory(&bytes) {
-                                let rgba = img.to_rgba8();
-                                let size = [rgba.width() as usize, rgba.height() as usize];
-                                let color =
-                                    egui::ColorImage::from_rgba_unmultiplied(size, rgba.as_raw());
-                                let handle = ui.ctx().load_texture(
-                                    format!("sticker-{name}"),
-                                    color,
-                                    egui::TextureOptions::LINEAR,
-                                );
-                                self.picker.sticker_textures.insert(sticker.clone(), handle);
-                            }
-                        }
+                    let texture_id = self.picker.sticker_textures.get(sticker).map(|h| h.id());
+                    if texture_id.is_none()
+                        && !self.picker.sticker_pending.contains(sticker)
+                        && !self.picker.sticker_failures.still_failed(sticker)
+                    {
+                        missing.push(sticker.clone());
                     }
-                    let clicked = match self.picker.sticker_textures.get(sticker) {
-                        Some(handle) => tile_add(ui, t, |ui| {
+                    let clicked = match texture_id {
+                        Some(id) => tile_add(ui, t, |ui| {
                             ui.add(egui::Button::image(egui::load::SizedTexture::new(
-                                handle.id(),
+                                id,
                                 Vec2::new(52.0, 52.0),
                             )))
                             .on_hover_text(&name)
@@ -410,6 +406,7 @@ impl App {
                 }
             });
         }
+        self.request_sticker_previews(missing);
         ui.separator();
         ui.label(RichText::new("New pack name").size(11.5).color(rgb(t.text_secondary)));
         ui.horizontal(|ui| {

@@ -253,13 +253,34 @@ fn download_error_message(error: whatsapp_rust::download::ClientDownloadError) -
     }
 }
 
+/// Removes the file at `path` on drop unless disarmed. A
+/// download can end three ways: success (disarm, keep the file),
+/// failure (the error path returns and the drop removes the
+/// partial file), and abandonment, where the download task is
+/// dropped mid-transfer when the session runtime goes down and
+/// no error path ever runs. The guard is what makes the third
+/// way end like the second: no partial file that looks complete.
+struct PartialFileGuard {
+    path: std::path::PathBuf,
+    armed: bool,
+}
+
+impl Drop for PartialFileGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
+
 /// Downloads the media inside a protocol message into a new file
 /// named `<stem>.<ext>` inside `dir`, returning the saved path.
 /// The library streams the decrypted plaintext straight into the
 /// file, so no whole-file buffer ever sits in memory, and the byte
 /// budget bounds the transfer even when the declared length lies.
-/// On failure the partial file is removed, so a broken download
-/// never leaves a file behind that looks complete.
+/// On failure (or abandonment, see [`PartialFileGuard`]) the
+/// partial file is removed, so a broken download never leaves a
+/// file behind that looks complete.
 pub(super) async fn download_proto(
     client: &whatsapp_rust::Client,
     proto: &whatsapp_rust::prelude::wa::Message,
@@ -280,12 +301,13 @@ pub(super) async fn download_proto(
         .map_err(|e| format!("Could not create the downloads folder: {e}"))?;
     let file = std::fs::File::create(&path)
         .map_err(|e| format!("Could not create the download file: {e}"))?;
+    let mut guard = PartialFileGuard { path: path.clone(), armed: true };
     match client.download_to_writer(media, file, download_limits()).await {
-        Ok(_file) => Ok(path),
-        Err(e) => {
-            let _ = std::fs::remove_file(&path);
-            Err(download_error_message(e))
+        Ok(_file) => {
+            guard.armed = false;
+            Ok(path)
         }
+        Err(e) => Err(download_error_message(e)),
     }
 }
 

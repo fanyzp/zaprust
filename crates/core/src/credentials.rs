@@ -659,7 +659,7 @@ impl CredentialStore {
                 return keys;
             }
         }
-        self.pools.get(slot).map(|p| p.values().to_vec()).unwrap_or_default()
+        self.stored_keys(slot)
     }
 
     /// A ready-to-use pool for a slot (env override applied).
@@ -682,26 +682,41 @@ impl CredentialStore {
         self.persist()
     }
 
-    /// Adds one key to a slot and persists.
+    /// The slot's persisted keys, with no environment override
+    /// applied: the pool that add/remove mutate and that saves
+    /// write. Environment overrides are a read-time overlay for
+    /// [`keys_for`](Self::keys_for) only; persisting them would
+    /// bake ephemeral env secrets into the stored backend, and a
+    /// removal under an override would replace the stored pool
+    /// with the env-derived list.
+    fn stored_keys(&self, slot: &str) -> Vec<String> {
+        self.pools.get(slot).map(|p| p.values().to_vec()).unwrap_or_default()
+    }
+
+    /// Adds one key to a slot's persisted pool and persists.
+    /// An active environment override for the slot is unaffected
+    /// and keeps winning at read time.
     ///
     /// # Errors
     ///
     /// Returns [`CredentialError`] when persistence fails.
     pub fn add_key(&mut self, slot: &str, key: String) -> Result<(), CredentialError> {
-        let mut keys = self.keys_for(slot);
+        let mut keys = self.stored_keys(slot);
         if !key.is_empty() && !keys.contains(&key) {
             keys.push(key);
         }
         self.set_keys(slot, keys)
     }
 
-    /// Removes one key (by value) from a slot and persists.
+    /// Removes one key (by value) from a slot's persisted pool
+    /// and persists. An active environment override for the slot
+    /// is unaffected and keeps winning at read time.
     ///
     /// # Errors
     ///
     /// Returns [`CredentialError`] when persistence fails.
     pub fn remove_key(&mut self, slot: &str, key: &str) -> Result<(), CredentialError> {
-        let keys: Vec<String> = self.keys_for(slot).into_iter().filter(|k| k != key).collect();
+        let keys: Vec<String> = self.stored_keys(slot).into_iter().filter(|k| k != key).collect();
         self.set_keys(slot, keys)
     }
 
@@ -849,6 +864,53 @@ mod tests {
         let backend = FileBackend::new(path.clone());
         let reopened = CredentialStore::open(Box::new(backend)).expect("reopen");
         assert_eq!(reopened.keys_for("example_api_key").len(), 2);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn add_and_remove_never_persist_env_overrides() {
+        // With an override active, add/remove used to start from
+        // the env-provided list and write it back, baking the
+        // throwaway env key into the stored file. The `.env.local`
+        // override map stands in for the real
+        // `ZAPRUST_CRED_EXAMPLE_API_KEY` variable here (same seam
+        // `keys_for` reads).
+        let dir =
+            std::env::temp_dir().join(format!("zaprust-cred-env-test-{}", std::process::id()));
+        let path = dir.join("secrets.json");
+        let backend = FileBackend::new(path.clone());
+        let mut store = CredentialStore::open(Box::new(backend)).expect("open");
+        store.declare(
+            "community.example",
+            &[CredentialSlot {
+                id: "example_api_key".into(),
+                label: "Example key".into(),
+                kind: CredentialKind::ApiKey,
+            }],
+        );
+        let override_map = BTreeMap::from([(
+            "ZAPRUST_CRED_EXAMPLE_API_KEY".to_string(),
+            "env-only-key".to_string(),
+        )]);
+        store.set_overrides(override_map.clone());
+        assert_eq!(store.keys_for("example_api_key"), vec!["env-only-key".to_string()]);
+
+        store.add_key("example_api_key", "stored-key".into()).expect("add");
+        let text = std::fs::read_to_string(&path).expect("read secrets");
+        assert!(text.contains("stored-key"), "{text}");
+        assert!(!text.contains("env-only-key"), "env override must not persist: {text}");
+        // Reads still serve the override while it is set, and the
+        // stored pool once it is gone.
+        assert_eq!(store.keys_for("example_api_key"), vec!["env-only-key".to_string()]);
+        store.set_overrides(BTreeMap::new());
+        assert_eq!(store.keys_for("example_api_key"), vec!["stored-key".to_string()]);
+
+        // Removal under an override edits the stored pool only.
+        store.set_overrides(override_map);
+        store.remove_key("example_api_key", "stored-key").expect("remove");
+        let text = std::fs::read_to_string(&path).expect("read secrets");
+        assert!(!text.contains("stored-key"), "{text}");
+        assert!(!text.contains("env-only-key"), "env override must not persist: {text}");
         std::fs::remove_dir_all(&dir).ok();
     }
 

@@ -134,6 +134,28 @@ mod tests {
     }
 
     #[test]
+    fn nav_title_keys_resolve_to_real_strings() {
+        // The rail labels and panel headers look these keys up; a
+        // missing entry would render the raw key as the title
+        // (this is how "nav.calls.entries" once shipped).
+        const NAV_TITLE_KEYS: &[&str] = &[
+            "nav.chats",
+            "nav.calls",
+            "nav.channels",
+            "nav.groups",
+            "nav.communities",
+            "nav.starred",
+            "nav.archived",
+            "nav.settings",
+        ];
+        for key in NAV_TITLE_KEYS {
+            let value = en_map().get(*key).unwrap_or_else(|| panic!("{key} missing from en"));
+            assert_ne!(*value, *key, "{key} resolves to itself");
+            assert!(!value.is_empty(), "{key} is empty");
+        }
+    }
+
+    #[test]
     fn fallback_resolution_uses_english_for_missing_keys() {
         set_locale("id");
         // A key Indonesian has not translated falls back to English.

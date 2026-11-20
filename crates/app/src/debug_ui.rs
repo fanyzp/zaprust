@@ -93,6 +93,18 @@ impl App {
             BackendEvent::ChatDeleted { chat_jid } => {
                 ("message", format!("ChatDeleted {chat_jid}"), None)
             }
+            BackendEvent::ChatCleared { chat_jid, delete_starred, last_message_timestamp } => (
+                "message",
+                format!(
+                    "ChatCleared in {chat_jid}: delete_starred={delete_starred} bound={last_message_timestamp:?}"
+                ),
+                None,
+            ),
+            BackendEvent::MessageDeletedForMe { chat_jid, message_id } => (
+                "message",
+                format!("MessageDeletedForMe in {chat_jid}: {message_id}"),
+                None,
+            ),
             BackendEvent::PrivacyState(_) => ("backend", "PrivacyState".to_owned(), None),
             BackendEvent::Crashed { summary, restarted } => {
                 ("backend", format!("Crashed (restarted={restarted}): {summary}"), None)

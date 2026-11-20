@@ -969,6 +969,41 @@ pub enum BackendEvent {
         /// Chat JID.
         chat_jid: String,
     },
+    /// A chat's messages were cleared on the server (cleared
+    /// on the phone; the chat itself stays in the list). The
+    /// app removes the cleared messages from its session
+    /// mirror and its archive; the chat, its list position
+    /// and its settings are untouched. There is no local
+    /// counterpart: this client has no clear-chat action of
+    /// its own, so nothing here echoes back to the backend.
+    ChatCleared {
+        /// Chat JID.
+        chat_jid: String,
+        /// Whether the clear deleted starred messages too
+        /// (the clearing device's choice). When this is
+        /// false, starred messages survive the clear.
+        delete_starred: bool,
+        /// The clear's bound, from the sync action's message
+        /// range: messages stamped at or before this Unix
+        /// timestamp (seconds) are cleared; later messages
+        /// are not the clear's to remove. `None` when the
+        /// action carries no bound; the clear then covers
+        /// the whole chat.
+        last_message_timestamp: Option<i64>,
+    },
+    /// One message was deleted for the account on the server
+    /// (deleted with "delete for me" on the phone): it is
+    /// gone from the account's own view but was not revoked
+    /// for anyone else. The app removes it from its session
+    /// mirror and its archive. There is no local counterpart:
+    /// this client has no delete-for-me action of its own, so
+    /// nothing here echoes back to the backend.
+    MessageDeletedForMe {
+        /// Chat JID the message belongs to.
+        chat_jid: String,
+        /// Protocol ID of the message.
+        message_id: String,
+    },
     /// Current privacy settings as fetched from the account
     /// (category → value spellings; see [`BackendCommand::SetPrivacy`]).
     PrivacyState(std::collections::BTreeMap<String, String>),

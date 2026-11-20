@@ -1091,6 +1091,15 @@ impl crate::state::App {
                 let chat_id = jid_id(&chat_jid);
                 self.apply_chat_deleted(chat_id, &chat_jid);
             }
+            BackendEvent::ChatCleared { chat_jid, delete_starred, last_message_timestamp } => {
+                let chat_id = jid_id(&chat_jid);
+                self.apply_chat_cleared(chat_id, &chat_jid, delete_starred, last_message_timestamp);
+            }
+            BackendEvent::MessageDeletedForMe { chat_jid, message_id: pid } => {
+                let chat_id = jid_id(&chat_jid);
+                let mid = message_id(&chat_jid, &pid);
+                self.apply_message_deleted_for_me(chat_id, &chat_jid, mid, &pid);
+            }
             BackendEvent::PrivacyState(map) => {
                 self.privacy_state = map;
             }
@@ -1484,6 +1493,143 @@ impl crate::state::App {
             self.composer.chat_parked.remove(&chat_id);
             self.selected_chat = next;
             self.sync_conversation();
+        }
+    }
+
+    /// Applies a chat clearing the server reported (the chat
+    /// was cleared on the phone). This client has no
+    /// clear-chat action of its own, so there is no local
+    /// behavior to mirror and nothing is sent back; the
+    /// adoption is the removal of the cleared messages,
+    /// everywhere they live locally: the session mirror, the
+    /// per-message helper entries, and the archive rows. The
+    /// chat itself stays: its row, its recorded activity stamp
+    /// (its list position), and its settings (pin, mute,
+    /// archive, disappearing timer) are exactly as they were,
+    /// and its unread state is untouched (clearing asserts
+    /// nothing about read state; a read change arrives as its
+    /// own sync event). The clear's own terms are honored:
+    /// messages stamped after the bound are not the clear's to
+    /// remove, and starred messages survive unless the
+    /// clearing device deleted them too. The event's own JID
+    /// keys the archive deletion, so rows the mirror does not
+    /// hold are cleared too.
+    pub(crate) fn apply_chat_cleared(
+        &mut self,
+        chat_id: u64,
+        chat_jid: &str,
+        delete_starred: bool,
+        last_message_timestamp: Option<i64>,
+    ) {
+        // Collect the doomed messages first (app id + protocol
+        // id), while the mirror still lists them: the helper
+        // cleanup below needs both.
+        let doomed: Vec<(u64, Option<String>)> = self
+            .live
+            .as_ref()
+            .and_then(|s| s.messages.get(&chat_id))
+            .map(|msgs| {
+                msgs.iter()
+                    .filter(|(ts, m)| {
+                        last_message_timestamp.is_none_or(|bound| *ts <= bound)
+                            && (delete_starred || !m.starred)
+                    })
+                    .map(|(_, m)| (m.id, self.protocol_ids.get(&m.id).cloned()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if let Some(msgs) = self.live.as_mut().and_then(|s| s.messages.get_mut(&chat_id)) {
+            let doomed_ids: std::collections::HashSet<u64> =
+                doomed.iter().map(|(id, _)| *id).collect();
+            msgs.retain(|(_, m)| !doomed_ids.contains(&m.id));
+        }
+        if let Some(session) = &self.live {
+            if let Some(store) = &session.store {
+                let _ =
+                    store.delete_chat_messages(chat_jid, !delete_starred, last_message_timestamp);
+            }
+        }
+        for (msg_id, protocol_id) in &doomed {
+            self.forget_live_message(chat_id, *msg_id, protocol_id.as_deref());
+        }
+        if !doomed.is_empty() {
+            self.refresh_preview_after_removal(chat_id);
+            if self.selected_chat == chat_id {
+                self.sync_conversation();
+            }
+        }
+    }
+
+    /// Applies a delete-for-me the server reported (one
+    /// message deleted for the account on the phone). This
+    /// client has no delete-for-me action of its own, so there
+    /// is no local behavior to mirror and nothing is sent
+    /// back; the adoption is the removal of exactly that
+    /// message: from the session mirror, from its per-message
+    /// helper entries, and from the archive. The store
+    /// deletion is keyed by the event's own JID and protocol
+    /// ID, so a row the mirror does not hold is removed too.
+    /// Neighbouring messages, the chat, and its settings are
+    /// untouched.
+    pub(crate) fn apply_message_deleted_for_me(
+        &mut self,
+        chat_id: u64,
+        chat_jid: &str,
+        msg_id: u64,
+        protocol_id: &str,
+    ) {
+        let mut removed_newest = false;
+        if let Some(msgs) = self.live.as_mut().and_then(|s| s.messages.get_mut(&chat_id)) {
+            if let Some(pos) = msgs.iter().position(|(_, m)| m.id == msg_id) {
+                removed_newest = pos + 1 == msgs.len();
+                msgs.remove(pos);
+            }
+        }
+        if let Some(session) = &self.live {
+            if let Some(store) = &session.store {
+                let _ = store.delete_message(chat_jid, protocol_id);
+            }
+        }
+        self.forget_live_message(chat_id, msg_id, Some(protocol_id));
+        if removed_newest {
+            self.refresh_preview_after_removal(chat_id);
+        }
+        if self.selected_chat == chat_id {
+            self.sync_conversation();
+        }
+    }
+
+    /// Points the chat list row at the mirror's newest
+    /// surviving message after messages were removed from a
+    /// chat (the expiry pass's rule: the new newest message
+    /// becomes the preview, or the preview empties when none
+    /// survive), and writes the row through to the archive so
+    /// its stored preview cannot resurrect a removed message's
+    /// body on the next start. The row's timestamp is the
+    /// session's recorded one, so the chat keeps its list
+    /// position.
+    fn refresh_preview_after_removal(&mut self, chat_id: u64) {
+        let last = self.live.as_ref().and_then(|s| {
+            s.messages.get(&chat_id).and_then(|v| v.last().map(|(ts, m)| (*ts, m.clone())))
+        });
+        if let Some(chat) = self.chats.iter_mut().find(|c| c.id == chat_id) {
+            match &last {
+                Some((ts, m)) => {
+                    chat.preview = m.body.clone();
+                    chat.time = fmt_time(*ts);
+                }
+                None => {
+                    chat.preview = String::new();
+                }
+            }
+        }
+        if let Some(session) = &self.live {
+            if let (Some(store), Some(jid)) = (&session.store, session.jids.get(&chat_id)) {
+                if let Some(chat) = self.chats.iter().find(|c| c.id == chat_id) {
+                    let ts = session.times.get(&chat_id).copied().unwrap_or(0);
+                    let _ = store.upsert_chat(&chat_to_live(chat, jid, ts));
+                }
+            }
         }
     }
 
@@ -2630,6 +2776,21 @@ mod chat_state_routing_tests {
             .1
     }
 
+    fn mirror_bodies(app: &App, chat_id: u64) -> Vec<String> {
+        app.live
+            .as_ref()
+            .unwrap()
+            .messages
+            .get(&chat_id)
+            .map(|msgs| msgs.iter().map(|(_, m)| m.body.clone()).collect())
+            .unwrap_or_default()
+    }
+
+    fn archived_bodies(app: &App) -> Vec<String> {
+        let store = app.live.as_ref().unwrap().store.as_ref().unwrap();
+        store.messages(CHAT_JID).unwrap().into_iter().map(|(m, _)| m.body).collect()
+    }
+
     /// A star change the server reports (another device, or a
     /// full sync) adopts unconditionally in both directions:
     /// the session mirror flips and the archive flags follow,
@@ -2841,6 +3002,182 @@ mod chat_state_routing_tests {
         assert_eq!(app.selected_chat, jid_id(OTHER_JID), "the selection moves to a survivor");
         assert!(app.conversation.is_empty(), "the open conversation follows the selection");
         assert!(cmd_rx.try_recv().is_err(), "adopting a deletion sends nothing back");
+    }
+
+    /// A chat cleared on the phone empties here too, on the
+    /// clear's own terms: messages past the bound survive,
+    /// starred messages survive a keep-starred clear, and the
+    /// chat itself (row, settings, list position) is exactly
+    /// as it was. A second, unbounded delete-starred clear
+    /// takes the rest. Nothing is sent back at any point.
+    #[test]
+    fn server_chat_cleared_empties_messages_but_keeps_the_chat() {
+        let (mut app, tx, ctx, cmd_rx) = live_app();
+        seed_chat(&mut app, &tx, &ctx);
+        let chat_id = jid_id(CHAT_JID);
+        // Settings the clear must not disturb, set the way the
+        // server reports them.
+        tx.send(BackendEvent::PinChanged { chat_jid: CHAT_JID.to_owned(), pinned: true }).unwrap();
+        tx.send(BackendEvent::MuteChanged { chat_jid: CHAT_JID.to_owned(), muted: true }).unwrap();
+        for (pid, body, ts) in [
+            ("c1", "first", BASE_TS),
+            ("c2", "starred", BASE_TS + 60),
+            ("c3", "newest", BASE_TS + 120),
+        ] {
+            tx.send(BackendEvent::MessageUpsert(LiveMessage::text(
+                pid,
+                CHAT_JID,
+                Some("Sender".to_owned()),
+                body,
+                ts,
+                false,
+            )))
+            .unwrap();
+        }
+        tx.send(BackendEvent::StarChanged {
+            chat_jid: CHAT_JID.to_owned(),
+            message_id: "c2".to_owned(),
+            starred: true,
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        app.selected_chat = chat_id;
+        app.sync_conversation();
+        assert_eq!(app.conversation.len(), 3, "the chat is open with all three messages");
+
+        // Keep-starred clear bounded at the starred message:
+        // the plain message at the bound goes, the starred one
+        // at the bound stays, the newer one is out of reach.
+        tx.send(BackendEvent::ChatCleared {
+            chat_jid: CHAT_JID.to_owned(),
+            delete_starred: false,
+            last_message_timestamp: Some(BASE_TS + 60),
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(mirror_bodies(&app, chat_id), ["starred", "newest"]);
+        assert_eq!(
+            archived_bodies(&app),
+            ["starred", "newest"],
+            "the archive clears with the mirror"
+        );
+        assert_eq!(
+            app.conversation.len(),
+            2,
+            "the open conversation rebuilds without the cleared message"
+        );
+        assert!(
+            !app.protocol_ids.contains_key(&message_id(CHAT_JID, "c1")),
+            "the cleared message's helper entries go with it"
+        );
+        let chat = app.chats.iter().find(|c| c.id == chat_id).expect("the chat stays in the list");
+        assert!(chat.pinned && chat.muted, "its settings are untouched");
+        assert_eq!(chat.preview, "newest", "the preview follows the newest survivor");
+        let row = store_row(&app);
+        assert!(row.pinned && row.muted, "the archive row keeps its settings");
+        assert_eq!(row.preview, "newest", "and its preview follows too");
+        assert_eq!(
+            row.timestamp,
+            BASE_TS + 120,
+            "its list position input is the activity stamp the session already held"
+        );
+        assert!(cmd_rx.try_recv().is_err(), "adopting a clear sends nothing back");
+
+        // An unbounded delete-starred clear takes the rest;
+        // the chat still stays.
+        tx.send(BackendEvent::ChatCleared {
+            chat_jid: CHAT_JID.to_owned(),
+            delete_starred: true,
+            last_message_timestamp: None,
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(mirror_bodies(&app, chat_id).is_empty(), "the mirror empties");
+        assert!(archived_bodies(&app).is_empty(), "and so does the archive");
+        assert!(app.conversation.is_empty(), "the open conversation empties with it");
+        let chat = app.chats.iter().find(|c| c.id == chat_id).expect("the chat still stays");
+        assert_eq!(chat.preview, "", "with nothing left, the preview empties");
+        assert!(chat.pinned && chat.muted, "and its settings still survive");
+        assert!(cmd_rx.try_recv().is_err(), "adopting a clear sends nothing back");
+    }
+
+    /// A message deleted for the account on the phone is
+    /// removed here too: exactly that message, from the
+    /// mirror, its helper entries, and the archive; its
+    /// neighbours and the chat are untouched, the open
+    /// conversation rebuilds, and deleting the newest message
+    /// moves the preview to the new newest. Nothing is sent
+    /// back.
+    #[test]
+    fn server_message_deleted_for_me_removes_exactly_that_message() {
+        let (mut app, tx, ctx, cmd_rx) = live_app();
+        seed_chat(&mut app, &tx, &ctx);
+        let chat_id = jid_id(CHAT_JID);
+        for (pid, body, ts) in
+            [("m1", "one", BASE_TS), ("m2", "two", BASE_TS + 60), ("m3", "three", BASE_TS + 120)]
+        {
+            tx.send(BackendEvent::MessageUpsert(LiveMessage::text(
+                pid,
+                CHAT_JID,
+                Some("Sender".to_owned()),
+                body,
+                ts,
+                false,
+            )))
+            .unwrap();
+        }
+        drain_all(&mut app, &ctx);
+        app.selected_chat = chat_id;
+        app.sync_conversation();
+        assert_eq!(app.conversation.len(), 3);
+
+        // The middle message goes; its neighbours stay.
+        tx.send(BackendEvent::MessageDeletedForMe {
+            chat_jid: CHAT_JID.to_owned(),
+            message_id: "m2".to_owned(),
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(mirror_bodies(&app, chat_id), ["one", "three"]);
+        assert_eq!(archived_bodies(&app), ["one", "three"], "the archive removes it too");
+        assert_eq!(app.conversation.len(), 2, "the open conversation rebuilds without it");
+        assert!(
+            !app.protocol_ids.contains_key(&message_id(CHAT_JID, "m2")),
+            "its helper entries go with it"
+        );
+        assert_eq!(
+            app.chats.iter().find(|c| c.id == chat_id).unwrap().preview,
+            "three",
+            "the preview still shows the newest message"
+        );
+        assert!(cmd_rx.try_recv().is_err(), "adopting a delete-for-me sends nothing back");
+
+        // Deleting the newest moves the preview back.
+        tx.send(BackendEvent::MessageDeletedForMe {
+            chat_jid: CHAT_JID.to_owned(),
+            message_id: "m3".to_owned(),
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(mirror_bodies(&app, chat_id), ["one"]);
+        assert_eq!(
+            app.chats.iter().find(|c| c.id == chat_id).unwrap().preview,
+            "one",
+            "the preview follows the new newest message"
+        );
+        assert_eq!(store_row(&app).preview, "one", "and the archive row follows");
+
+        // A delete for a message that is not here changes
+        // nothing and does not panic.
+        tx.send(BackendEvent::MessageDeletedForMe {
+            chat_jid: CHAT_JID.to_owned(),
+            message_id: "nope".to_owned(),
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(mirror_bodies(&app, chat_id), ["one"]);
+        assert_eq!(archived_bodies(&app), ["one"]);
+        assert!(cmd_rx.try_recv().is_err());
     }
 
     /// The other half of the merge rule: an upsert that does

@@ -216,6 +216,44 @@ pub(super) fn translate_event(event: &Event, sink: &EventSink) {
             // is nothing for the media flag to delete.
             sink.emit(BackendEvent::ChatDeleted { chat_jid: update.jid.to_string() });
         }
+        Event::ClearChatUpdate(update) => {
+            // App-state sync reporting a chat cleared on
+            // another device: the messages go, the chat stays.
+            // The starred policy lives in the mutation index,
+            // not the action, and the event carries it as a
+            // flag. The deletion bound is the action's message
+            // range (its last-message timestamp); the range's
+            // message list enumerates what the clearing device
+            // held and does not narrow the bound further. The
+            // delete-media flag does not cross: the app does
+            // not track downloaded media per chat, so there is
+            // nothing for it to delete (the same call as chat
+            // deletion). One wire nuance cannot cross either:
+            // the mutation timestamp, which WA Web reads only
+            // to spare a message starred after the clear was
+            // made; the app keeps no star times, so it cannot
+            // tell such a message from one starred before.
+            sink.emit(BackendEvent::ChatCleared {
+                chat_jid: update.jid.to_string(),
+                delete_starred: update.delete_starred,
+                last_message_timestamp: clear_chat_bound(&update.action),
+            });
+        }
+        Event::DeleteMessageForMeUpdate(update) => {
+            // App-state sync reporting one message deleted
+            // for the account on another device. The identity
+            // is the (chat, protocol ID) pair every other
+            // per-message sync uses; the participant and
+            // from-me fields stay behind, as with star. The
+            // action's delete-media flag does not cross: the
+            // app keeps no per-message media registry to
+            // delete from, and its message timestamp is not
+            // needed once the message is identified.
+            sink.emit(BackendEvent::MessageDeletedForMe {
+                chat_jid: update.chat_jid.to_string(),
+                message_id: update.message_id.clone(),
+            });
+        }
         Event::ChatPresence(update) => {
             use whatsapp_rust::wacore::types::presence::ChatActivity;
             sink.emit(BackendEvent::TypingReceived {
@@ -571,6 +609,18 @@ pub(super) fn mark_read_action_state(
     (false, listed)
 }
 
+/// The bound of a sync `ClearChatAction`: the message
+/// range's last-message timestamp (Unix seconds, the unit
+/// message timestamps use). Messages stamped after it are
+/// not the clear's to remove. `None` when the action carries
+/// no range, or the range carries no bound; the clear then
+/// covers the whole chat.
+pub(super) fn clear_chat_bound(
+    action: &whatsapp_rust::prelude::wa::sync_action_value::ClearChatAction,
+) -> Option<i64> {
+    action.message_range.as_option().and_then(|range| range.last_message_timestamp)
+}
+
 /// Wall-clock milliseconds since the Unix epoch (0 if the
 /// system clock is set before it).
 fn now_millis() -> i64 {
@@ -707,5 +757,36 @@ mod star_mark_read_action_tests {
         assert_eq!(mark_read_action_state(&mark_read(Some(false), None)), (false, 0));
         assert_eq!(mark_read_action_state(&mark_read(Some(false), Some(0))), (false, 0));
         assert_eq!(mark_read_action_state(&mark_read(None, Some(2))), (false, 2));
+    }
+}
+
+#[cfg(test)]
+mod clear_chat_action_tests {
+    use super::clear_chat_bound;
+    use whatsapp_rust::prelude::wa::sync_action_value::{ClearChatAction, SyncActionMessageRange};
+
+    fn clear(range: Option<SyncActionMessageRange>) -> ClearChatAction {
+        let mut action = ClearChatAction::default();
+        if let Some(range) = range {
+            action.message_range = Some(range).into();
+        }
+        action
+    }
+
+    #[test]
+    fn the_bound_is_the_range_last_message_timestamp() {
+        let mut range = SyncActionMessageRange::default();
+        range.last_message_timestamp = Some(1_700_000_000);
+        assert_eq!(clear_chat_bound(&clear(Some(range))), Some(1_700_000_000));
+    }
+
+    #[test]
+    fn no_range_or_no_bound_means_unbounded() {
+        assert_eq!(clear_chat_bound(&clear(None)), None);
+        // A range that lists messages but stamps no bound
+        // still bounds nothing: the list enumerates what the
+        // clearing device held, it does not narrow the clear.
+        let range = SyncActionMessageRange::default();
+        assert_eq!(clear_chat_bound(&clear(Some(range))), None);
     }
 }

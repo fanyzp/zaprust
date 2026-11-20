@@ -487,6 +487,33 @@ impl Store {
         Ok(changed > 0)
     }
 
+    /// Deletes a chat's stored messages while keeping the chat
+    /// row itself. A chat cleared on another device empties
+    /// here the way it empties there: `up_to` bounds the clear
+    /// to messages stamped at or before it (Unix seconds;
+    /// `None` clears everything), and `keep_starred` spares
+    /// rows whose flags carry [`FLAG_STARRED`], the clearing
+    /// device's keep-starred choice. Returns how many message
+    /// rows were deleted.
+    ///
+    /// # Errors
+    /// [`StoreError`] on SQLite failures.
+    pub fn delete_chat_messages(
+        &self,
+        chat_jid: &str,
+        keep_starred: bool,
+        up_to: Option<i64>,
+    ) -> Result<usize, StoreError> {
+        let changed = self.conn.execute(
+            "DELETE FROM messages
+             WHERE chat_jid = ?1
+               AND (?2 IS NULL OR timestamp <= ?2)
+               AND (?3 = 0 OR (flags & ?4) = 0)",
+            params![chat_jid, up_to, i64::from(keep_starred), FLAG_STARRED],
+        )?;
+        Ok(changed)
+    }
+
     /// Updates ONLY the flags bitfield of one stored message.
     /// Returns whether a row existed. This is the only correct way
     /// to star/pin/flag a message after the fact: a full re-upsert
@@ -793,6 +820,45 @@ mod tests {
         // Deleting a chat that is not there reports false.
         assert!(!store.delete_chat(&gone.jid).unwrap());
         assert!(!store.delete_chat("nobody@s.whatsapp.net").unwrap());
+    }
+
+    #[test]
+    fn delete_chat_messages_keeps_the_chat_starred_and_newer_rows() {
+        let store = Store::open_in_memory().unwrap();
+        let chat = scripted_chats()[0].clone();
+        store.upsert_chat(&chat).unwrap();
+        // Three rows: an old plain one, an old starred one, and
+        // one newer than the clear bound. Flags ride the upsert.
+        let msg = |id: &str, ts: i64| {
+            LiveMessage::text(id, &chat.jid, Some("Sender".to_owned()), id, ts, false)
+        };
+        store.upsert_message(&msg("old-plain", 100), 0).unwrap();
+        store.upsert_message(&msg("old-starred", 200), FLAG_STARRED).unwrap();
+        store.upsert_message(&msg("new-plain", 300), 0).unwrap();
+
+        // Keep-starred clear bounded at 250: only the old plain
+        // row is the clear's to remove.
+        let deleted = store.delete_chat_messages(&chat.jid, true, Some(250)).unwrap();
+        assert_eq!(deleted, 1);
+        let remaining: Vec<String> =
+            store.messages(&chat.jid).unwrap().into_iter().map(|(m, _)| m.id).collect();
+        assert_eq!(remaining, ["old-starred", "new-plain"]);
+        assert_eq!(store.chats().unwrap().len(), 1, "the chat row itself stays");
+
+        // The same clear without the keep-starred choice takes
+        // the starred row too; the newer row is still out of
+        // the bound's reach.
+        let deleted = store.delete_chat_messages(&chat.jid, false, Some(250)).unwrap();
+        assert_eq!(deleted, 1);
+        let remaining: Vec<String> =
+            store.messages(&chat.jid).unwrap().into_iter().map(|(m, _)| m.id).collect();
+        assert_eq!(remaining, ["new-plain"]);
+
+        // Unbounded, the rest goes; a repeat clear is a no-op.
+        assert_eq!(store.delete_chat_messages(&chat.jid, false, None).unwrap(), 1);
+        assert!(store.messages(&chat.jid).unwrap().is_empty());
+        assert_eq!(store.delete_chat_messages(&chat.jid, false, None).unwrap(), 0);
+        assert_eq!(store.chats().unwrap().len(), 1, "the chat row still stays");
     }
 
     #[test]

@@ -40,6 +40,10 @@ fn summarize(event: &BackendEvent) -> String {
             format!("ChatReadChanged read={read} unread={unread_count}")
         }
         BackendEvent::ChatDeleted { .. } => "ChatDeleted".to_owned(),
+        BackendEvent::ChatCleared { delete_starred, .. } => {
+            format!("ChatCleared delete_starred={delete_starred}")
+        }
+        BackendEvent::MessageDeletedForMe { .. } => "MessageDeletedForMe".to_owned(),
         BackendEvent::PrivacyState(_) => "PrivacyState".to_owned(),
         BackendEvent::IncomingCall { .. } => "IncomingCall".to_owned(),
         BackendEvent::CallChanged { phase, .. } => format!("CallChanged {phase:?}"),

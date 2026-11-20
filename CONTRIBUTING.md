@@ -186,8 +186,10 @@ type(scope): subject
   `fix(backend): queue supervisor commands instead of dropping them`,
   `feat(app): motion settings, micro-animations and localization`,
   `docs: fix contributor guide references and changelog structure`.
-- CI checks pull request subjects with `scripts/check-commits.sh`;
-  run it locally before pushing: `scripts/check-commits.sh origin/nightly..HEAD`.
+- Check your subjects before pushing with
+  `scripts/check-commits.sh origin/nightly..HEAD`. All workflows are
+  manual-only, so no CI job runs this check; the maintainer verifies
+  commit subjects again at review.
 
 ### Branches and releases
 

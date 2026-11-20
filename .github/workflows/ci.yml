@@ -7,17 +7,6 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # Pull requests: every commit subject must be Conventional Commits.
-  commit-messages:
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Check commit subjects
-        run: scripts/check-commits.sh "origin/${{ github.base_ref }}..HEAD"
-
   # Linux is the strict gate: fmt + clippy -D warnings + tests
   # + release build.
   linux:

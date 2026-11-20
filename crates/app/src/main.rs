@@ -67,6 +67,21 @@ mod widgets;
 
 use state::{App, Args};
 
+/// Wraps a debug-log writer so every line passes through the
+/// crash-report redaction pipeline before it reaches disk (the
+/// user's home prefix included, when the environment names
+/// one). Debug logs are the artifact users are asked to share
+/// when reporting bugs, so backend and library lines must not
+/// persist raw.
+fn scrub_log_writer<W: std::io::Write>(inner: W) -> core::debug::ScrubWriter<W> {
+    match std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
+        Some(home) if !home.is_empty() => {
+            core::debug::ScrubWriter::with_home(inner, std::path::PathBuf::from(home))
+        }
+        _ => core::debug::ScrubWriter::new(inner),
+    }
+}
+
 /// Initializes structured tracing to rotating daily log files
 /// under the app data dir's debug/ folder (only with --debug).
 /// The writer guard is leaked on purpose: logging lives as long
@@ -89,10 +104,11 @@ fn init_debug_tracing() {
     let appender = tracing_appender::rolling::daily(&dir, "zaprust-debug.log");
     let (writer, guard) = tracing_appender::non_blocking(appender);
     std::mem::forget(guard);
+    let writer = scrub_log_writer(writer);
     let filter = std::env::var("ZAPRUST_LOG").unwrap_or_else(|_| "info".to_owned());
     let _ = tracing_subscriber::fmt()
         .with_env_filter(filter)
-        .with_writer(writer)
+        .with_writer(move || writer.clone())
         .with_ansi(false)
         .try_init();
 }

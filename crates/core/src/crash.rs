@@ -214,8 +214,9 @@ fn prune_reports(dir: &Path) {
 /// Home redaction plus the secret scrubber: panic payloads are
 /// free text and could interpolate a secret, so crash reports get
 /// the same treatment as log lines before they are written or
-/// shared.
-fn scrub(text: &str, home: &Path) -> String {
+/// shared. Also applied to every debug log line by
+/// [`crate::debug::ScrubWriter`].
+pub(crate) fn scrub(text: &str, home: &Path) -> String {
     scrub_secrets(&redact_home(text, home))
 }
 
@@ -228,7 +229,7 @@ fn scrub(text: &str, home: &Path) -> String {
 /// This layer masks those quoted-key values, `apiKey=`/`secret=`/
 /// `client_secret=` spellings, and `Authorization: Basic ...`
 /// values (the debug scrubber already handles `Bearer`).
-fn scrub_secrets(text: &str) -> String {
+pub(crate) fn scrub_secrets(text: &str) -> String {
     let s = redact_json_secrets(text);
     let s = redact_extended_assignments(&s);
     let s = redact_basic_tokens(&s);

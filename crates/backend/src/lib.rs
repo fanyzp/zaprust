@@ -26,10 +26,12 @@
 //! polls.
 //!
 //! Crash containment: [`spawn_backend`] supervises the worker thread.
-//! If the backend panics, the supervisor emits [`BackendEvent::Crashed`]
-//! and restarts the backend **once** from its factory. A second panic
-//! produces a final `Crashed` + [`BackendEvent::Error`] and the worker
-//! stops, the UI stays alive and shows a persistent error state.
+//! If the backend panics, or its run returns an error (the startup
+//! failure path, see [`Backend::run`]), the supervisor emits
+//! [`BackendEvent::Crashed`] and restarts the backend **once** from
+//! its factory. A second failure produces a final `Crashed` +
+//! [`BackendEvent::Error`] and the worker stops, the UI stays alive
+//! and shows a persistent error state.
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
@@ -1008,17 +1010,32 @@ impl EventSink {
 /// owned by [`spawn_backend`]; `run` blocks until
 /// [`BackendCommand::Shutdown`] or until every command sender drops.
 ///
-/// Implementations must not panic for recoverable failures, return
-/// them as [`BackendEvent::Error`]. (If one does panic anyway, the
+/// Implementations must not panic for recoverable failures. A failure
+/// that ends the run is returned as `Err` from `run`; a failure the
+/// session survives is reported as [`BackendEvent::Error`] and the
+/// run continues. (If an implementation panics anyway, the
 /// supervisor contains it; see the crate docs.)
 pub trait Backend: Send {
     /// Runs the backend until shutdown. Called on the worker thread.
+    ///
+    /// The return value tells the supervisor how the run ended.
+    /// `Ok(())` means the run ended on purpose: Shutdown was
+    /// requested, the command channel closed, or the session
+    /// completed on its own (a logout, a stopped connection). The
+    /// supervisor does not restart after a clean exit. `Err(reason)`
+    /// means the run died, typically before the session was ever
+    /// established (the store would not open, the client would not
+    /// build): the supervisor treats it exactly like a crash,
+    /// restarting once and surfacing `reason` as the
+    /// [`BackendEvent::Crashed`] summary, so a startup failure can
+    /// never look like a clean exit and leave the command channel
+    /// queueing into a dead backend.
     fn run(
         self: Box<Self>,
         config: &BackendConfig,
         commands: Receiver<BackendCommand>,
         events: EventSink,
-    );
+    ) -> Result<(), String>;
 }
 
 /// Channels the UI holds after spawning a backend.
@@ -1032,7 +1049,8 @@ pub struct BackendChannels {
 /// Spawns a supervised backend worker thread.
 ///
 /// `factory` builds a fresh backend instance, it is called once at
-/// start and, if the worker panics, once more for the single restart.
+/// start and, if the worker panics or its run returns an error, once
+/// more for the single restart.
 /// The returned channels stay valid across the restart.
 ///
 /// # Panics
@@ -1052,8 +1070,10 @@ where
     BackendChannels { commands: cmd_tx, events: evt_rx }
 }
 
-/// The supervisor: run the backend, contain a panic, restart once,
-/// then give up loudly (via events) rather than silently.
+/// The supervisor: run the backend, contain a panic or an error
+/// return, restart once, then give up loudly (via events) rather
+/// than silently. A run that returns `Ok(())` ended on purpose and
+/// is not restarted.
 ///
 /// Commands flow UI → outer channel → pump thread → per-run channel →
 /// backend. The pump exists so the outer receiver survives a crash:
@@ -1189,7 +1209,7 @@ fn supervise<F>(
         let factory_ref = &factory;
         let result = catch_unwind(AssertUnwindSafe(move || {
             let backend = factory_ref();
-            backend.run(&cfg, run_rx, run_sink);
+            backend.run(&cfg, run_rx, run_sink)
         }));
         {
             let (m, _cv) = &*shared;
@@ -1198,36 +1218,41 @@ fn supervise<F>(
                 state.1 = None;
             }
         }
-        match result {
-            Ok(()) => return,
-            Err(payload) => {
-                let summary = panic_summary(&payload);
-                if attempt == 1 {
-                    sink.emit(BackendEvent::Crashed { summary, restarted: true });
-                } else {
-                    // Giving up: shut the shared queue down first.
-                    // The flag makes the pump drop the outer
-                    // receiver (closing the command channel, so
-                    // later sends fail visibly instead of queueing
-                    // to nowhere) and the drainer stop, and any
-                    // commands still queued are discarded with it.
-                    queue_dead.store(true, Ordering::SeqCst);
-                    {
-                        let (m, cv) = &*shared;
-                        let mut state = m.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                        state.0.clear();
-                        state.1 = None;
-                        cv.notify_all();
-                    }
-                    sink.emit(BackendEvent::Crashed { summary, restarted: false });
-                    sink.emit(BackendEvent::Error {
-                        message: "The connection worker crashed twice and stopped. \
-                                  Restart Zaprust to reconnect."
-                            .to_owned(),
-                    });
-                    return;
-                }
+        // A clean Ok(()) return ends the supervision: the run ended
+        // on purpose and must not be restarted. Every other outcome
+        // is a failure with a summary: a panic payload, or the Err a
+        // run returns when it died before or outside a session (the
+        // startup failure path). Both get the same restart-once,
+        // then-give-up treatment below.
+        let summary = match result {
+            Ok(Ok(())) => return,
+            Ok(Err(reason)) => reason,
+            Err(payload) => panic_summary(&payload),
+        };
+        if attempt == 1 {
+            sink.emit(BackendEvent::Crashed { summary, restarted: true });
+        } else {
+            // Giving up: shut the shared queue down first.
+            // The flag makes the pump drop the outer
+            // receiver (closing the command channel, so
+            // later sends fail visibly instead of queueing
+            // to nowhere) and the drainer stop, and any
+            // commands still queued are discarded with it.
+            queue_dead.store(true, Ordering::SeqCst);
+            {
+                let (m, cv) = &*shared;
+                let mut state = m.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                state.0.clear();
+                state.1 = None;
+                cv.notify_all();
             }
+            sink.emit(BackendEvent::Crashed { summary, restarted: false });
+            sink.emit(BackendEvent::Error {
+                message: "The connection worker failed twice and stopped. \
+                          Restart Zaprust to reconnect."
+                    .to_owned(),
+            });
+            return;
         }
     }
 }
@@ -1280,15 +1305,16 @@ mod tests {
             _config: &BackendConfig,
             commands: Receiver<BackendCommand>,
             events: EventSink,
-        ) {
+        ) -> Result<(), String> {
             let n = self.runs.fetch_add(1, Ordering::SeqCst);
             assert!(n != 0, "first run explodes");
             events.emit(BackendEvent::Connected { account: "restarted".to_owned() });
             while let Ok(cmd) = commands.recv() {
                 if matches!(cmd, BackendCommand::Shutdown) {
-                    return;
+                    return Ok(());
                 }
             }
+            Ok(())
         }
     }
 
@@ -1356,7 +1382,7 @@ mod tests {
             _config: &BackendConfig,
             commands: Receiver<BackendCommand>,
             events: EventSink,
-        ) {
+        ) -> Result<(), String> {
             // Simulate a slow-starting worker: commands sent during
             // this window used to be dropped by the supervisor pump.
             std::thread::sleep(Duration::from_millis(300));
@@ -1366,6 +1392,7 @@ mod tests {
                 }
                 other => panic!("expected the queued ConnectQr, got {other:?}"),
             }
+            Ok(())
         }
     }
 
@@ -1413,7 +1440,7 @@ mod tests {
             _config: &BackendConfig,
             _commands: Receiver<BackendCommand>,
             _events: EventSink,
-        ) {
+        ) -> Result<(), String> {
             panic!("always explodes");
         }
     }
@@ -1483,5 +1510,186 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(25));
         }
+    }
+
+    struct StartupFailOnceBackend {
+        runs: Arc<AtomicUsize>,
+    }
+
+    impl Backend for StartupFailOnceBackend {
+        fn run(
+            self: Box<Self>,
+            _config: &BackendConfig,
+            commands: Receiver<BackendCommand>,
+            events: EventSink,
+        ) -> Result<(), String> {
+            let n = self.runs.fetch_add(1, Ordering::SeqCst);
+            if n == 0 {
+                // The startup failure path: the run dies before the
+                // session exists, the way run_async returning Err for
+                // a store that will not open does. No panic, no
+                // events, just the error return.
+                return Err("Could not open the session store: file is locked".to_owned());
+            }
+            events.emit(BackendEvent::Connected { account: "restarted".to_owned() });
+            while let Ok(cmd) = commands.recv() {
+                if matches!(cmd, BackendCommand::Shutdown) {
+                    return Ok(());
+                }
+            }
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn startup_failure_is_restarted_once_with_its_reason() {
+        let runs = Arc::new(AtomicUsize::new(0));
+        let runs2 = runs.clone();
+        let channels = spawn_backend(
+            move || Box::new(StartupFailOnceBackend { runs: runs2.clone() }) as Box<dyn Backend>,
+            test_config(),
+            no_wake(),
+        );
+        let first = channels
+            .events
+            .recv_timeout(Duration::from_secs(5))
+            .expect("a Crashed event must arrive for a startup failure");
+        match &first {
+            BackendEvent::Crashed { summary, restarted } => {
+                assert!(*restarted, "first startup failure must announce a restart");
+                assert!(
+                    summary.contains("session store"),
+                    "the Crashed summary must carry the failure's real reason: {summary}"
+                );
+            }
+            other => panic!("expected Crashed, got {other:?}"),
+        }
+        // The restart is a fresh run from the factory, so a transient
+        // failure (here: only the first attempt fails) recovers.
+        let second = channels.events.recv_timeout(Duration::from_secs(5));
+        assert!(
+            matches!(second, Ok(BackendEvent::Connected { .. })),
+            "restarted backend must emit events: {second:?}"
+        );
+        assert_eq!(runs.load(Ordering::SeqCst), 2, "exactly one restart");
+        drop(channels.commands);
+    }
+
+    struct AlwaysStartupFailBackend;
+
+    impl Backend for AlwaysStartupFailBackend {
+        fn run(
+            self: Box<Self>,
+            _config: &BackendConfig,
+            _commands: Receiver<BackendCommand>,
+            _events: EventSink,
+        ) -> Result<(), String> {
+            Err("Could not open the session store: file is locked".to_owned())
+        }
+    }
+
+    #[test]
+    fn second_startup_failure_surfaces_a_persistent_error() {
+        let channels = spawn_backend(
+            || Box::new(AlwaysStartupFailBackend) as Box<dyn Backend>,
+            test_config(),
+            no_wake(),
+        );
+        let mut saw_final_crash = false;
+        let mut saw_error = false;
+        for _ in 0..4 {
+            match channels.events.recv_timeout(Duration::from_secs(5)) {
+                Ok(BackendEvent::Crashed { summary, restarted: false }) => {
+                    assert!(
+                        summary.contains("session store"),
+                        "the final Crashed summary must carry the reason: {summary}"
+                    );
+                    saw_final_crash = true;
+                }
+                Ok(BackendEvent::Error { .. }) => saw_error = true,
+                Ok(_) => {}
+                Err(_) => break,
+            }
+            if saw_final_crash && saw_error {
+                break;
+            }
+        }
+        assert!(saw_final_crash, "second startup failure must be reported as not restarted");
+        assert!(saw_error, "a persistent Error event must follow");
+    }
+
+    #[test]
+    fn commands_fail_visibly_after_startup_failures_give_up() {
+        // The silent-death regression this fix exists for: before it,
+        // a startup failure returned cleanly, the supervisor exited,
+        // and UI commands queued forever into a channel nobody
+        // drained. After the give-up the sends must fail instead.
+        let channels = spawn_backend(
+            || Box::new(AlwaysStartupFailBackend) as Box<dyn Backend>,
+            test_config(),
+            no_wake(),
+        );
+        let mut saw_final_crash = false;
+        let mut saw_error = false;
+        for _ in 0..4 {
+            match channels.events.recv_timeout(Duration::from_secs(5)) {
+                Ok(BackendEvent::Crashed { restarted: false, .. }) => saw_final_crash = true,
+                Ok(BackendEvent::Error { .. }) => saw_error = true,
+                Ok(_) => {}
+                Err(_) => break,
+            }
+            if saw_final_crash && saw_error {
+                break;
+            }
+        }
+        assert!(saw_final_crash && saw_error, "the give-up must be announced first");
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            if channels.commands.send(BackendCommand::ConnectQr).is_err() {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "sends must fail once the supervisor has given up"
+            );
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    }
+
+    struct CleanExitBackend {
+        runs: Arc<AtomicUsize>,
+    }
+
+    impl Backend for CleanExitBackend {
+        fn run(
+            self: Box<Self>,
+            _config: &BackendConfig,
+            _commands: Receiver<BackendCommand>,
+            _events: EventSink,
+        ) -> Result<(), String> {
+            self.runs.fetch_add(1, Ordering::SeqCst);
+            // Ends at once and on purpose, the way a run that was
+            // asked to shut down before anything else happened does.
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn clean_exit_is_not_restarted_and_emits_no_crash() {
+        let runs = Arc::new(AtomicUsize::new(0));
+        let runs2 = runs.clone();
+        let channels = spawn_backend(
+            move || Box::new(CleanExitBackend { runs: runs2.clone() }) as Box<dyn Backend>,
+            test_config(),
+            no_wake(),
+        );
+        // No Crashed, no Error, no event of any kind: a clean exit
+        // is silent (the receiver either times out or disconnects
+        // when the supervisor thread drops the event sink on its way
+        // out), and the factory is never called a second time.
+        let event = channels.events.recv_timeout(Duration::from_millis(500));
+        assert!(event.is_err(), "a clean exit must emit nothing: {event:?}");
+        assert_eq!(runs.load(Ordering::SeqCst), 1, "a clean exit must not be restarted");
+        drop(channels.commands);
     }
 }

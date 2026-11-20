@@ -474,6 +474,33 @@ pub(crate) struct PickerState {
     pub(crate) media_fetch_rx: Option<std::sync::mpsc::Receiver<crate::extras::MediaFetchResult>>,
 }
 
+/// The send-relevant composer attachments of one chat, parked
+/// while another chat is open: staged files and their caption,
+/// the quote and edit targets, and the poll and location drafts.
+/// Every one of these is consumed against the open chat at send
+/// time, so each belongs to exactly one chat and travels with
+/// it, exactly like the parked draft text in
+/// [`ComposerState::chat_drafts`].
+pub(crate) struct ParkedComposer {
+    pub(crate) staged: Vec<StagedMedia>,
+    pub(crate) staged_caption: String,
+    pub(crate) reply_to: Option<(u64, String, String)>,
+    pub(crate) editing_id: Option<u64>,
+    pub(crate) poll_draft: Option<PollDraft>,
+    pub(crate) location_draft: Option<LocationDraft>,
+}
+
+impl ParkedComposer {
+    fn is_empty(&self) -> bool {
+        self.staged.is_empty()
+            && self.staged_caption.is_empty()
+            && self.reply_to.is_none()
+            && self.editing_id.is_none()
+            && self.poll_draft.is_none()
+            && self.location_draft.is_none()
+    }
+}
+
 /// Composer state: the draft and parked per-chat drafts, staged media and captions, the poll and location drafts, quote and edit targets, and the composer's measured stack heights.
 pub(crate) struct ComposerState {
     pub(crate) draft: String,
@@ -483,6 +510,17 @@ pub(crate) struct ComposerState {
     /// draft lives in `draft`; this map holds the parked ones,
     /// and the chat list reads it for its Draft row state.
     pub(crate) chat_drafts: std::collections::HashMap<u64, String>,
+    /// Composer attachments parked per chat while another chat
+    /// is open (see [`ParkedComposer`]). Switching chats parks
+    /// the live attachments here and restores the target chat's,
+    /// so staged files, a quote, or an edit target created in
+    /// one chat can never be sent into another.
+    pub(crate) chat_parked: std::collections::HashMap<u64, ParkedComposer>,
+    /// The chat the currently staged files were attached in.
+    /// Recorded at stage time and checked again in
+    /// `send_staged`: the hard backstop that refuses the send
+    /// if the stage ever outlives a switch that did not park it.
+    pub(crate) staged_chat: Option<u64>,
     /// The composer's shortcut hint bar was dismissed (persisted;
     /// re-showable from Settings > Chats).
     pub(crate) hint_dismissed: bool,
@@ -746,6 +784,16 @@ pub(crate) struct App {
     /// OS notification requests queued by the upsert path for new
     /// incoming messages; drained per frame by the notify module.
     pub(crate) pending_notifications: Vec<crate::notify::NotifyRequest>,
+    /// Backend events received but not yet applied. `poll_backend`
+    /// applies them in per-frame budgeted batches, so a history
+    /// sync burst cannot freeze the UI; the rest wait here, in
+    /// order, for the following frames (see live.rs).
+    pub(crate) event_queue: std::collections::VecDeque<backend::BackendEvent>,
+    /// Side effects deferred while one event batch is being
+    /// applied: per-chat sorts, the chat-list sort, the
+    /// conversation rebuild and the archive writes are coalesced
+    /// to once per batch instead of once per event (see live.rs).
+    pub(crate) event_batch: crate::live::EventBatch,
     /// Link-preview cache by URL (bounded, see `extras::OgCache`).
     pub(crate) og_cache: crate::extras::OgCache,
     /// In-flight link-preview fetches: (message id, url, result).
@@ -988,6 +1036,8 @@ impl App {
                     String::new()
                 },
                 chat_drafts: std::collections::HashMap::new(),
+                chat_parked: std::collections::HashMap::new(),
+                staged_chat: None,
                 hint_dismissed: false,
                 stack_h: 84.0,
                 hint_bar_h: 0.0,
@@ -1139,6 +1189,8 @@ impl App {
             community_origin: None,
             header_menu_open: args.header_menu,
             pending_notifications: Vec::new(),
+            event_queue: std::collections::VecDeque::new(),
+            event_batch: crate::live::EventBatch::default(),
             og_cache: crate::extras::OgCache::default(),
             og_rx: None,
             bubble_menu: None,
@@ -1285,6 +1337,72 @@ impl App {
         }
     }
 
+    /// Whether a message id belongs to the OPEN conversation.
+    /// Message ids are unique per chat in both modes (demo ids
+    /// are namespaced per chat, live ids are derived from the
+    /// chat JID and the protocol id), so membership is an
+    /// identity check: an id minted in another chat is never
+    /// found here. Send paths that resolve a composer target
+    /// against global maps (the edit command, the wire quote)
+    /// gate on this, so a target can never be paired with the
+    /// wrong chat even if the per-chat parking is bypassed.
+    pub(crate) fn in_open_conversation(&self, msg_id: u64) -> bool {
+        self.conversation.iter().any(|m| m.id == msg_id)
+    }
+
+    /// Moves the composer state between chats: everything the
+    /// composer holds for the chat being left (the draft text,
+    /// staged files and their caption, the quote and edit
+    /// targets, the poll and location drafts) is parked under
+    /// that chat, and whatever was parked for the chat being
+    /// entered is restored. Every chat switch runs this (the
+    /// chat list directly, every other path through
+    /// `select_chat_now`), so composer state follows its chat
+    /// on every route and can never leak into the conversation
+    /// that happens to be open next.
+    pub(crate) fn switch_composer_chat(&mut self, previous: u64, next: u64) {
+        if previous == next {
+            return;
+        }
+        // The draft text keeps its existing parking rule (an
+        // empty draft leaves no entry; the chat list's Draft row
+        // state reads the same map).
+        let leaving = std::mem::take(&mut self.composer.draft);
+        if leaving.trim().is_empty() {
+            self.composer.chat_drafts.remove(&previous);
+        } else {
+            self.composer.chat_drafts.insert(previous, leaving);
+        }
+        self.composer.draft = self.composer.chat_drafts.remove(&next).unwrap_or_default();
+        // The attachments park as one bundle; a chat with
+        // nothing attached leaves no entry behind.
+        let parked = ParkedComposer {
+            staged: std::mem::take(&mut self.composer.staged),
+            staged_caption: std::mem::take(&mut self.composer.staged_caption),
+            reply_to: self.composer.reply_to.take(),
+            editing_id: self.composer.editing_id.take(),
+            poll_draft: self.composer.poll_draft.take(),
+            location_draft: self.composer.location_draft.take(),
+        };
+        self.composer.staged_chat = None;
+        if parked.is_empty() {
+            self.composer.chat_parked.remove(&previous);
+        } else {
+            self.composer.chat_parked.insert(previous, parked);
+        }
+        if let Some(parked) = self.composer.chat_parked.remove(&next) {
+            self.composer.staged = parked.staged;
+            self.composer.staged_caption = parked.staged_caption;
+            self.composer.reply_to = parked.reply_to;
+            self.composer.editing_id = parked.editing_id;
+            self.composer.poll_draft = parked.poll_draft;
+            self.composer.location_draft = parked.location_draft;
+            if !self.composer.staged.is_empty() {
+                self.composer.staged_chat = Some(next);
+            }
+        }
+    }
+
     /// Selects a chat and loads its conversation (live: from the
     /// archive; demo: the chat's messages). Selection alone never
     /// marks anything read: in live mode the unread badge and the
@@ -1297,6 +1415,11 @@ impl App {
         // The switch fade is armed here; the conversation draw
         // starts it on the next frame (it owns the egui clock).
         self.anim.chat_fade_pending = true;
+        // The composer state belongs to the chat being left:
+        // park it and restore the target chat's before anything
+        // else observes the new selection.
+        let previous = self.selected_chat;
+        self.switch_composer_chat(previous, id);
         self.selected_chat = id;
         // The unread count at open time, from the chat store or
         // the detached slot: captured before the demo branch
@@ -1933,5 +2056,167 @@ mod tests {
         let stored: Vec<u64> =
             app.chats.iter().find(|c| c.id == 1).unwrap().messages.iter().map(|m| m.id).collect();
         assert!(stored.contains(&990_003), "demo mode writes the working copy back on switch");
+    }
+
+    fn staged_photo(name: &str) -> StagedMedia {
+        StagedMedia {
+            kind: StagedKind::Photo,
+            name: name.to_owned(),
+            path: std::path::PathBuf::from(format!("/tmp/{name}")),
+            mime: "image/png".to_owned(),
+            view_once: false,
+            thumb: None,
+        }
+    }
+
+    /// The composer scoping guarantee (audit finding: composer
+    /// state leaked across chats): everything composed in one
+    /// chat parks on switch and restores on return, on the
+    /// centralized selection path every panel switch uses.
+    #[test]
+    fn composer_state_parks_and_restores_per_chat() {
+        let mut app = demo_app();
+        app.select_chat_now(2);
+        app.composer.draft = "draft for two".to_owned();
+        app.composer.staged.push(staged_photo("two.png"));
+        app.composer.staged_caption = "caption for two".to_owned();
+        app.composer.staged_chat = Some(2);
+        app.composer.reply_to = Some((2001, "Sarah Miller".to_owned(), "quoted".to_owned()));
+        app.composer.editing_id = Some(2001);
+        app.composer.poll_draft = Some(PollDraft {
+            question: "Lunch?".to_owned(),
+            options: vec!["Yes".to_owned(), "No".to_owned()],
+            multiple: false,
+        });
+        app.composer.location_draft = Some(LocationDraft {
+            name: "Office".to_owned(),
+            latitude: "0".to_owned(),
+            longitude: "0".to_owned(),
+        });
+
+        // Switching away leaves a clean composer behind: nothing
+        // composed for chat 2 is visible, let alone sendable,
+        // in chat 3.
+        app.select_chat_now(3);
+        assert!(app.composer.draft.is_empty(), "the draft must park with its chat");
+        assert!(app.composer.staged.is_empty(), "staged files must park with their chat");
+        assert!(app.composer.staged_caption.is_empty());
+        assert_eq!(app.composer.staged_chat, None);
+        assert!(app.composer.reply_to.is_none(), "the quote target must park with its chat");
+        assert!(app.composer.editing_id.is_none(), "the edit target must park with its chat");
+        assert!(app.composer.poll_draft.is_none(), "the poll draft must park with its chat");
+        assert!(app.composer.location_draft.is_none());
+        assert_eq!(app.composer.chat_drafts.get(&2).map(String::as_str), Some("draft for two"));
+        assert!(app.composer.chat_parked.contains_key(&2));
+
+        // A draft typed in chat 3 parks under 3, and returning
+        // to chat 2 restores its full composer state.
+        app.composer.draft = "draft for three".to_owned();
+        app.select_chat_now(2);
+        assert_eq!(app.composer.draft, "draft for two");
+        assert_eq!(app.composer.staged.len(), 1);
+        assert_eq!(app.composer.staged[0].name, "two.png");
+        assert_eq!(app.composer.staged_caption, "caption for two");
+        assert_eq!(app.composer.staged_chat, Some(2));
+        assert_eq!(app.composer.reply_to.as_ref().map(|(id, _, _)| *id), Some(2001));
+        assert_eq!(app.composer.editing_id, Some(2001));
+        assert_eq!(app.composer.poll_draft.as_ref().map(|d| d.question.as_str()), Some("Lunch?"));
+        assert_eq!(app.composer.location_draft.as_ref().map(|d| d.name.as_str()), Some("Office"));
+        assert_eq!(app.composer.chat_drafts.get(&3).map(String::as_str), Some("draft for three"));
+
+        // And chat 3's draft comes back on the next switch.
+        app.select_chat_now(3);
+        assert_eq!(app.composer.draft, "draft for three");
+        assert!(app.composer.staged.is_empty());
+    }
+
+    /// The edit boundary guard: an edit target minted in one
+    /// chat must not edit anything while another chat is open,
+    /// and must still work in its own chat.
+    #[test]
+    fn apply_edit_ignores_a_target_from_another_chat() {
+        let mut app = demo_app();
+        app.select_chat_now(2);
+        app.start_edit(2001);
+        assert_eq!(app.composer.editing_id, Some(2001));
+
+        // In chat 3 the same call is a no-op everywhere: not in
+        // the open conversation, not in chat 3's store copy, and
+        // not in chat 2's store copy either.
+        app.select_chat_now(3);
+        let before_3: Vec<String> = app.conversation.iter().map(|m| m.body.clone()).collect();
+        app.apply_edit(2001, "edited from afar");
+        let after_3: Vec<String> = app.conversation.iter().map(|m| m.body.clone()).collect();
+        assert_eq!(before_3, after_3, "a foreign edit target must not touch the open chat");
+        let stored_2 = app.chats.iter().find(|c| c.id == 2).unwrap();
+        assert!(
+            !stored_2.messages.iter().any(|m| m.body == "edited from afar"),
+            "a foreign edit target must not reach its own chat from afar either"
+        );
+
+        // Back in its own chat the edit applies normally.
+        app.select_chat_now(2);
+        app.apply_edit(2001, "edited properly");
+        let msg = app.conversation.iter().find(|m| m.id == 2001).unwrap();
+        assert_eq!(msg.body, "edited properly");
+        assert!(msg.edited);
+    }
+
+    /// The wire-quote boundary guard: the protocol id map is
+    /// global, so a reply target from another chat must resolve
+    /// to no quote while this chat is open.
+    #[test]
+    fn live_quote_for_reply_rejects_a_foreign_target() {
+        let mut app = demo_app();
+        app.select_chat_now(2);
+        app.protocol_ids.insert(2001, "proto-2001".to_owned());
+        app.protocol_ids.insert(3001, "proto-3001".to_owned());
+        app.sender_jids.insert(2001, "sarah@s.whatsapp.net".to_owned());
+
+        // A target from the open conversation resolves.
+        app.composer.reply_to = Some((2001, "Sarah Miller".to_owned(), "hi".to_owned()));
+        let quoted = app.live_quote_for_reply().expect("an in-chat target must resolve");
+        assert_eq!(quoted.message_id, "proto-2001");
+        assert_eq!(quoted.sender_jid.as_deref(), Some("sarah@s.whatsapp.net"));
+
+        // A target minted in chat 3 resolves to nothing here,
+        // even though its protocol id is known globally.
+        app.composer.reply_to = Some((3001, "Alex".to_owned(), "hi".to_owned()));
+        assert!(app.live_quote_for_reply().is_none(), "a foreign quote must not resolve");
+    }
+
+    /// The staged-send backstop: a stage whose owning chat is
+    /// not the open one (a switch that never parked) is refused
+    /// and dropped, never delivered into the open chat.
+    #[test]
+    fn send_staged_refuses_a_stage_from_another_chat() {
+        let mut app = demo_app();
+        app.select_chat_now(2);
+        app.composer.staged.push(staged_photo("for-two.png"));
+        app.composer.staged_chat = Some(2);
+
+        // Simulate a switch that bypassed the parking entirely:
+        // selection and conversation move, the stage stays live.
+        app.selected_chat = 3;
+        app.conversation = app.chats.iter().find(|c| c.id == 3).unwrap().messages.clone();
+        let stored_before = app.chats.iter().find(|c| c.id == 3).unwrap().messages.len();
+        let mut engaged = false;
+        app.send_staged(&mut engaged);
+        assert!(!engaged, "a refused send is not an engagement");
+        assert!(app.composer.staged.is_empty(), "the foreign stage is dropped");
+        assert_eq!(app.composer.staged_chat, None);
+        assert!(app.notice.is_some(), "the refusal is surfaced, not silent");
+        assert_eq!(
+            app.chats.iter().find(|c| c.id == 3).unwrap().messages.len(),
+            stored_before,
+            "nothing may be delivered into the open chat"
+        );
+
+        // A stage owned by the open chat sends normally.
+        app.composer.staged.push(staged_photo("for-three.png"));
+        app.composer.staged_chat = Some(3);
+        app.send_staged(&mut engaged);
+        assert!(engaged);
+        assert_eq!(app.chats.iter().find(|c| c.id == 3).unwrap().messages.len(), stored_before + 1);
     }
 }

@@ -796,6 +796,18 @@ impl App {
                                 } else {
                                     raw
                                 };
+                                // The reply target is honored only
+                                // while its message is in the open
+                                // conversation: the per-chat parking
+                                // keeps it local, and this check is
+                                // the boundary behind the parking, so
+                                // a foreign quote can neither ride on
+                                // the wire nor decorate the local echo.
+                                let reply_in_chat = self
+                                    .composer
+                                    .reply_to
+                                    .as_ref()
+                                    .is_some_and(|(id, _, _)| self.in_open_conversation(*id));
                                 if let Some(edit_id) = self.composer.editing_id.take() {
                                     // Editing one of my
                                     // messages replaces
@@ -806,25 +818,18 @@ impl App {
                                     // id and author JID so the quote rides
                                     // on the wire (extendedText context),
                                     // not just on the local echo.
-                                    let quoted =
-                                        self.composer.reply_to.as_ref().and_then(|(id, _, qb)| {
-                                            let message_id = self.protocol_ids.get(id)?.clone();
-                                            let sender_jid = self.sender_jids.get(id).cloned();
-                                            Some(backend::QuotedRef {
-                                                message_id,
-                                                sender_jid,
-                                                excerpt: qb.chars().take(200).collect(),
-                                            })
-                                        });
+                                    let quoted = self.live_quote_for_reply();
                                     self.send_live_text(&body, quoted);
                                     // Attach the quote
                                     // context to the local
                                     // echo; the backend's
                                     // own upsert replaces it.
                                     if let Some((_, qs, qb)) = self.composer.reply_to.take() {
-                                        if let Some(echo) = self.conversation.last_mut() {
-                                            echo.quoted_sender = Some(qs);
-                                            echo.quoted_body = Some(qb);
+                                        if reply_in_chat {
+                                            if let Some(echo) = self.conversation.last_mut() {
+                                                echo.quoted_sender = Some(qs);
+                                                echo.quoted_body = Some(qb);
+                                            }
                                         }
                                     }
                                     self.set_typing(false);
@@ -844,8 +849,10 @@ impl App {
                                         )
                                     };
                                     if let Some((_, qs, qb)) = self.composer.reply_to.take() {
-                                        msg.quoted_sender = Some(qs);
-                                        msg.quoted_body = Some(qb);
+                                        if reply_in_chat {
+                                            msg.quoted_sender = Some(qs);
+                                            msg.quoted_body = Some(qb);
+                                        }
                                     }
                                     self.conversation.push(msg.clone());
                                     let chat_id = self.selected_chat;

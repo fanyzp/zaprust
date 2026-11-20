@@ -111,7 +111,11 @@ impl CallAudio {
     /// output device at open time when one exists. Errors are
     /// user-readable: no device, a busy device, or a denied
     /// microphone permission all land here.
-    pub(crate) fn real(speaker_on: bool) -> Result<Self, String> {
+    ///
+    /// Async because the readiness wait is bounded (see
+    /// [`await_ready`]): a hung audio stack must fail the call
+    /// setup, never wedge the session loop behind it.
+    pub(crate) async fn real(speaker_on: bool) -> Result<Self, String> {
         let frames_played = Arc::new(AtomicU64::new(0));
         let speaker = Arc::new(AtomicBool::new(speaker_on));
         let (frame_tx, frame_rx) = whatsapp_rust::async_channel::bounded::<Vec<i16>>(32);
@@ -128,9 +132,15 @@ impl CallAudio {
                 })
                 .map_err(|e| format!("Could not start the audio thread: {e}"))?;
         }
-        ready_rx
-            .recv()
-            .map_err(|_| "The audio thread stopped before opening the devices.".to_owned())??;
+        if let Err(e) = await_ready(ready_rx, AUDIO_READY_TIMEOUT).await {
+            // If the audio thread did open the devices in the
+            // meantime, tell it to stop instead of parking for a
+            // call that will never start. (Dropping the sender
+            // would also end it, through the disconnect arm of
+            // its park loop.)
+            let _ = stop_tx.send(());
+            return Err(e);
+        }
         Ok(Self {
             source: ChannelSource { rx: frame_rx },
             sink: ChannelSink { tx: play_tx },
@@ -138,6 +148,58 @@ impl CallAudio {
             speaker,
             stop: stop_tx,
         })
+    }
+}
+
+/// How long call setup waits for the audio thread to open the
+/// devices before giving up. Generous on purpose: an audio
+/// server waking from suspend can take seconds to answer, and a
+/// false timeout would kill a call that was about to work. The
+/// point is the hard bound, not the exact value: the failure it
+/// replaces was an infinite wait.
+const AUDIO_READY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Waits for the audio thread's readiness report, with a hard
+/// bound. The report arrives on a std channel (the audio thread
+/// is a plain OS thread, because cpal streams are not `Send`),
+/// so it is bridged through a oneshot: a bare blocking `recv`
+/// here would pin a runtime worker for the whole device open,
+/// and a hung audio stack (a device unplugged mid-open, an
+/// audio server stalled after suspend/resume) sends nothing at
+/// all, which used to wedge the session loop permanently, with
+/// no panic for the supervisor to catch and no Shutdown ever
+/// processed.
+///
+/// A closed channel (the audio thread died before reporting)
+/// resolves immediately as an error, never as a retry, so this
+/// cannot spin. On timeout the caller stops the audio thread;
+/// if the thread is itself the thing that is stuck, it is left
+/// behind and cleans up whenever it returns, because every
+/// channel it would report or park on is gone by then.
+async fn await_ready(
+    ready_rx: std::sync::mpsc::Receiver<Result<(), String>>,
+    timeout: std::time::Duration,
+) -> Result<(), String> {
+    let (report_tx, report_rx) = tokio::sync::oneshot::channel();
+    std::thread::Builder::new()
+        .name("zaprust-audio-ready".to_owned())
+        .spawn(move || {
+            let report = ready_rx.recv().unwrap_or_else(|_| {
+                Err("The audio thread stopped before opening the devices.".to_owned())
+            });
+            let _ = report_tx.send(report);
+        })
+        .map_err(|e| format!("Could not start the audio bridge thread: {e}"))?;
+    match tokio::time::timeout(timeout, report_rx).await {
+        Ok(Ok(report)) => report,
+        // The bridge thread ended without sending: same failure
+        // as the audio thread dying, reported the same way.
+        Ok(Err(_)) => Err("The audio thread stopped before opening the devices.".to_owned()),
+        Err(_) => Err(format!(
+            "The audio devices did not open within {} seconds. The microphone or \
+             speaker may be busy or stalled; check the device and try again.",
+            timeout.as_secs()
+        )),
     }
 }
 
@@ -542,5 +604,68 @@ mod tests {
         }
         assert_eq!(audio.frames_played.load(Ordering::Relaxed), 3);
         audio.shutdown();
+    }
+
+    /// Runs `await_ready` on a throwaway current-thread runtime
+    /// (the crate does not enable tokio's macros feature, so no
+    /// `#[tokio::test]`).
+    fn run_await_ready(
+        ready_rx: std::sync::mpsc::Receiver<Result<(), String>>,
+        timeout: std::time::Duration,
+    ) -> Result<(), String> {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .expect("test runtime")
+            .block_on(await_ready(ready_rx, timeout))
+    }
+
+    #[test]
+    fn ready_wait_passes_reports_through() {
+        let (tx, rx) = std::sync::mpsc::channel::<Result<(), String>>();
+        tx.send(Ok(())).expect("receiver alive");
+        assert_eq!(run_await_ready(rx, std::time::Duration::from_secs(5)), Ok(()));
+
+        let (tx, rx) = std::sync::mpsc::channel::<Result<(), String>>();
+        tx.send(Err("no microphone".to_owned())).expect("receiver alive");
+        assert_eq!(
+            run_await_ready(rx, std::time::Duration::from_secs(5)),
+            Err("no microphone".to_owned())
+        );
+    }
+
+    #[test]
+    fn ready_wait_returns_within_its_bound_on_a_silent_channel() {
+        // The sender stays alive but never reports: the hung
+        // audio stack case. The wait must fail on its own bound
+        // instead of blocking forever.
+        let (_tx, rx) = std::sync::mpsc::channel::<Result<(), String>>();
+        let started = std::time::Instant::now();
+        let result = run_await_ready(rx, std::time::Duration::from_millis(100));
+        let err = result.expect_err("a silent channel must fail");
+        assert!(err.contains("did not open"), "unexpected error: {err}");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "the wait must return promptly after its bound, took {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn ready_wait_detects_a_closed_channel_immediately() {
+        // The audio thread died before reporting: the wait must
+        // resolve as an error at once, not sit out the timeout
+        // and not spin.
+        let (tx, rx) = std::sync::mpsc::channel::<Result<(), String>>();
+        drop(tx);
+        let started = std::time::Instant::now();
+        let result = run_await_ready(rx, std::time::Duration::from_secs(60));
+        let err = result.expect_err("a closed channel must fail");
+        assert!(err.contains("stopped before opening"), "unexpected error: {err}");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "a closed channel must resolve immediately, took {:?}",
+            started.elapsed()
+        );
     }
 }

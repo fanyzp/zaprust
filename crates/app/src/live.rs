@@ -68,6 +68,49 @@ impl LinkStatus {
 /// from receipt; WhatsApp codes live for roughly three minutes.
 pub(crate) const PAIR_CODE_TTL: std::time::Duration = std::time::Duration::from_secs(180);
 
+/// Per-frame budget for applying backend events. A first link or a
+/// reconnect can queue thousands of upserts at once; applying all
+/// of them in one frame froze the UI for seconds to minutes. One
+/// batch applies at most this much wall time (and never more than
+/// [`MAX_EVENTS_PER_FRAME`] events), then the rest of the queue
+/// waits for the next frame, which `poll_backend` requests itself
+/// while a backlog remains.
+const EVENT_FRAME_BUDGET: std::time::Duration = std::time::Duration::from_millis(8);
+
+/// Hard cap on events applied in one frame, whatever the clock
+/// says: the wall-time budget alone would let a burst of trivial
+/// events (typing, receipts) run far past a frame's share.
+const MAX_EVENTS_PER_FRAME: usize = 256;
+
+/// Side effects deferred while one batch of backend events is
+/// being applied, coalesced to once per batch by
+/// `App::finish_event_batch`. Without this, every upsert in a
+/// burst paid a full sort of its chat's messages, a full sort of
+/// the chat list, a full clone of the open conversation and its
+/// own archive transaction: quadratic work on the UI thread.
+#[derive(Default)]
+pub(crate) struct EventBatch {
+    /// True between the first and the last event of a batch.
+    pub(crate) active: bool,
+    /// Chats whose message vec a batch upsert appended to; each is
+    /// sorted once when the batch finishes. Order inside the batch
+    /// does not matter: every in-batch reader of a chat's messages
+    /// (echo matching, receipts, reactions, edits) looks messages
+    /// up by ID or by minimum timestamp, never by position.
+    pub(crate) unsorted_chats: std::collections::HashSet<u64>,
+    /// The chat list needs its one sort for this batch.
+    pub(crate) chats_dirty: bool,
+    /// The open conversation needs its one rebuild for this batch.
+    pub(crate) conversation_dirty: bool,
+    /// Message upserts whose archive write is deferred to the
+    /// batch flush, which writes them in a single transaction.
+    /// Flags are NOT captured here: they are resolved from the
+    /// session's flag map at flush time, so a star or revoke that
+    /// lands later in the same batch is part of the stored row,
+    /// exactly as if each write had happened in event order.
+    pub(crate) store_writes: Vec<LiveMessage>,
+}
+
 /// One running live session: channels, link state, and the live data
 /// mirrors the UI renders.
 pub(crate) struct LiveSession {
@@ -83,6 +126,13 @@ pub(crate) struct LiveSession {
     pub(crate) pair_code_at: Option<std::time::Instant>,
     /// Account label reported on connect.
     pub(crate) account: String,
+    /// Wall-clock unix second at which the current connection
+    /// came up, restamped on every (re)connect. A message stamped
+    /// before it was sent while this client was offline: it
+    /// arrives as history sync or catch-up, not live, and must
+    /// never raise an OS notification. `None` until the first
+    /// connect completes; nothing is live before that either.
+    pub(crate) connected_at: Option<i64>,
     /// The chat archive (write-through). `None` if it failed to open.
     pub(crate) store: Option<store::Store>,
     /// Numeric chat ID → JID.
@@ -347,6 +397,37 @@ pub(crate) fn to_message_with_flags(live: &LiveMessage, flags: i64) -> Message {
     }
 }
 
+/// What a live start may do about its database key.
+enum KeyDecision {
+    /// Start under this key.
+    Run([u8; 32]),
+    /// Do not start; show the user this reason instead.
+    Abort(String),
+}
+
+/// Decides a live start's database key from the key load.
+///
+/// A real start fails closed on a load error (audit finding 6):
+/// a substitute key would open or create the session store under
+/// the wrong key, stranding the linked account behind a publicly
+/// known key and hiding the real failure (a locked keyring, an
+/// unreadable key file). Demo mode is the one exception: the fake
+/// backend never opens a database, so the placeholder key it runs
+/// under never encrypts anything, and the archive still reports
+/// its own unavailability through the usual note.
+fn key_decision(key_result: &Result<[u8; 32], store::StoreError>, fake: bool) -> KeyDecision {
+    match key_result {
+        Ok(key) => KeyDecision::Run(*key),
+        Err(_) if fake => KeyDecision::Run([0; 32]),
+        Err(e) => KeyDecision::Abort(format!(
+            "Zaprust could not unlock your saved chats, so it did not connect. \
+             The unlock key stored on this device could not be read ({e}). \
+             Nothing was changed. Make the key available again (for example, \
+             unlock your keyring) and try connecting again."
+        )),
+    }
+}
+
 impl crate::state::App {
     /// Starts live mode: opens the archive, spawns the supervised
     /// backend, loads archived chats, and kicks off the link flow.
@@ -359,9 +440,17 @@ impl crate::state::App {
         let data_dir = backend::data_dir();
         // Both local databases are encrypted under one key from
         // the OS keyring (SEC-F01). Without the key neither can
-        // open; the archive reports through its usual note and the
-        // backend through its session-store error.
+        // open, and a real start does not try: it fails closed
+        // before anything is spawned or opened, leaving the app
+        // untouched so the user can retry (audit finding 6).
         let key_result = store::load_or_create_key(&data_dir);
+        let db_key = match key_decision(&key_result, fake) {
+            KeyDecision::Run(key) => key,
+            KeyDecision::Abort(message) => {
+                self.notice = Some(message);
+                return;
+            }
+        };
         let archive = match &key_result {
             Ok(key) => store::Store::open(&data_dir.join("archive.db"), key),
             Err(e) => Err(store::StoreError::Io(std::io::Error::other(e.to_string()))),
@@ -382,13 +471,8 @@ impl crate::state::App {
         };
         let repaint_ctx = ctx.clone();
         let wake: backend::WakeFn = std::sync::Arc::new(move || repaint_ctx.request_repaint());
-        let key_loaded = key_result.is_ok();
-        let config = BackendConfig {
-            data_dir,
-            account_id: "default".to_owned(),
-            db_key: key_result.unwrap_or([0; 32]),
-        };
-        if !fake && key_loaded {
+        let config = BackendConfig { data_dir, account_id: "default".to_owned(), db_key };
+        if !fake {
             // Convert a plaintext session store left by an older
             // build before the backend opens it with the key; a
             // failure here surfaces as the backend's own
@@ -415,6 +499,7 @@ impl crate::state::App {
             pair_code: None,
             pair_code_at: None,
             account: String::new(),
+            connected_at: None,
             store: store_opt,
             jids: HashMap::new(),
             messages: HashMap::new(),
@@ -460,7 +545,15 @@ impl crate::state::App {
             self.notice = Some(note);
         }
         self.live_mode = true;
-        self.selected_chat = self.chats.first().map_or(0, |c| c.id);
+        // Entering live mode is a chat switch too (the Add
+        // account path starts it from a running demo session):
+        // the composer state of the chat being left parks under
+        // its own id, and the first live chat starts from a
+        // clean composer, never with demo state inside it.
+        let first_live = self.chats.first().map_or(0, |c| c.id);
+        let previous = self.selected_chat;
+        self.switch_composer_chat(previous, first_live);
+        self.selected_chat = first_live;
         self.sync_conversation();
         self.send_backend(BackendCommand::ConnectQr);
         if fake {
@@ -489,6 +582,24 @@ impl crate::state::App {
             return;
         }
         self.send_backend(BackendCommand::ConnectPairCode { phone: digits });
+    }
+
+    /// Resolves the composer's reply target into the quote that
+    /// rides on the wire for the OPEN chat. The protocol id map
+    /// is global across chats, so the target must first prove it
+    /// belongs to the open conversation: a quote set in another
+    /// chat resolves to nothing here instead of landing in the
+    /// wrong conversation. (The per-chat parking keeps the
+    /// target from ever being foreign in the first place; this
+    /// is the boundary check behind it.)
+    pub(crate) fn live_quote_for_reply(&self) -> Option<QuotedRef> {
+        let (id, _, excerpt) = self.composer.reply_to.as_ref()?;
+        if !self.in_open_conversation(*id) {
+            return None;
+        }
+        let message_id = self.protocol_ids.get(id)?.clone();
+        let sender_jid = self.sender_jids.get(id).cloned();
+        Some(QuotedRef { message_id, sender_jid, excerpt: excerpt.chars().take(200).collect() })
     }
 
     /// Sends a text message to the currently selected live chat,
@@ -601,7 +712,22 @@ impl crate::state::App {
     }
 
     /// Rebuilds the rendered conversation from the live mirror.
+    /// Inside an event batch the rebuild is deferred to the end of
+    /// the batch (see [`EventBatch`]): a burst touching the open
+    /// chat would otherwise pay a full clone of the conversation
+    /// per event. Nothing renders mid-batch, so the deferred
+    /// rebuild is indistinguishable from the immediate one.
     pub(crate) fn sync_conversation(&mut self) {
+        if self.event_batch.active {
+            self.event_batch.conversation_dirty = true;
+            return;
+        }
+        self.sync_conversation_now();
+    }
+
+    /// The immediate conversation rebuild behind
+    /// [`App::sync_conversation`].
+    fn sync_conversation_now(&mut self) {
         if !self.live_mode {
             return;
         }
@@ -614,17 +740,39 @@ impl crate::state::App {
         self.conversation = msgs;
     }
 
-    /// Drains backend events and applies them. Called every frame.
-    pub(crate) fn poll_backend(&mut self) {
-        let mut pending: Vec<BackendEvent> = Vec::new();
+    /// Drains backend events and applies them, in budgeted
+    /// batches. Called every frame. Events are applied strictly
+    /// in arrival order and none are dropped: whatever does not
+    /// fit this frame's budget stays in `event_queue`, and a
+    /// repaint is requested so the queue keeps draining on the
+    /// following frames without waiting for user input.
+    pub(crate) fn poll_backend(&mut self, ctx: &egui::Context) {
+        // Top the queue up from the channel. Moving an event is
+        // cheap; applying it is what costs, and that is budgeted
+        // below.
         if let Some(session) = &self.live {
             while let Ok(event) = session.channels.events.try_recv() {
-                pending.push(event);
+                self.event_queue.push_back(event);
             }
         }
-        for event in pending {
-            self.trace_event(&event);
-            self.apply_event(event);
+        if !self.event_queue.is_empty() {
+            let started = std::time::Instant::now();
+            let mut applied = 0usize;
+            self.event_batch.active = true;
+            while let Some(event) = self.event_queue.pop_front() {
+                self.trace_event(&event);
+                self.apply_event(event);
+                applied += 1;
+                // At least one event always applies, so a single
+                // slow event can never starve the queue.
+                if applied >= MAX_EVENTS_PER_FRAME || started.elapsed() >= EVENT_FRAME_BUDGET {
+                    break;
+                }
+            }
+            self.finish_event_batch();
+            if !self.event_queue.is_empty() {
+                ctx.request_repaint();
+            }
         }
         // Pairing codes die after about three minutes. Clear an
         // expired code and return the panel to the request form so a
@@ -656,6 +804,55 @@ impl crate::state::App {
         }
     }
 
+    /// Runs the side effects one event batch deferred (see
+    /// [`EventBatch`]): sort each touched chat's messages once,
+    /// flush the batch's archive writes in a single transaction,
+    /// sort the chat list once, and rebuild the open conversation
+    /// once. Runs before anything renders, so the state the user
+    /// sees after a burst is exactly the state the old per-event
+    /// application produced.
+    fn finish_event_batch(&mut self) {
+        let batch = std::mem::take(&mut self.event_batch);
+        if !batch.active {
+            return;
+        }
+        if let Some(session) = &mut self.live {
+            for chat_id in &batch.unsorted_chats {
+                if let Some(entry) = session.messages.get_mut(chat_id) {
+                    entry.sort_by_key(|(ts, _)| *ts);
+                }
+            }
+            if !batch.store_writes.is_empty() {
+                if let Some(store) = &session.store {
+                    // Repeated upserts of one message inside the
+                    // batch collapse to the newest copy. Flags are
+                    // read from the flag map as it stands now, so
+                    // a star or revoke applied later in the batch
+                    // is part of the stored row.
+                    let mut latest: HashMap<u64, (LiveMessage, i64)> = HashMap::new();
+                    let mut order: Vec<u64> = Vec::new();
+                    for msg in batch.store_writes {
+                        let mid = message_id(&msg.chat_jid, &msg.id);
+                        if !latest.contains_key(&mid) {
+                            order.push(mid);
+                        }
+                        let flags = session.flags.get(&mid).copied().unwrap_or(0);
+                        latest.insert(mid, (msg, flags));
+                    }
+                    let rows: Vec<(LiveMessage, i64)> =
+                        order.into_iter().filter_map(|mid| latest.remove(&mid)).collect();
+                    let _ = store.upsert_messages(&rows);
+                }
+            }
+        }
+        if batch.chats_dirty {
+            self.sort_live_chats_now();
+        }
+        if batch.conversation_dirty {
+            self.sync_conversation_now();
+        }
+    }
+
     fn apply_event(&mut self, event: BackendEvent) {
         match event {
             BackendEvent::QrCode { payload } => {
@@ -681,6 +878,13 @@ impl crate::state::App {
                 if let Some(session) = &mut self.live {
                     session.status = LinkStatus::Linked;
                     session.account = account;
+                    // The notification history gate compares
+                    // message stamps against this moment (see
+                    // `notify::is_history`): everything stamped
+                    // earlier is catch-up, on the first connect
+                    // and on every reconnect alike.
+                    session.connected_at =
+                        Some(i64::try_from(crate::state::now_unix()).unwrap_or(0));
                     session.qr = None;
                     // A used code must never resurface on the
                     // connect screen (logic review F13).
@@ -1036,8 +1240,15 @@ impl crate::state::App {
             if flags != session.flags.get(&msg_id).copied().unwrap_or(0) {
                 session.flags.insert(msg_id, flags);
             }
-            if let Some(store) = &session.store {
-                let _ = store.upsert_message(live, flags);
+            if session.store.is_some() {
+                if self.event_batch.active {
+                    // Deferred to the batch flush, which writes
+                    // every queued upsert in one transaction; the
+                    // flags are resolved there, not captured here.
+                    self.event_batch.store_writes.push(live.clone());
+                } else if let Some(store) = &session.store {
+                    let _ = store.upsert_message(live, flags);
+                }
             }
             session.jids.entry(chat_id).or_insert_with(|| live.chat_jid.clone());
             session.times.insert(chat_id, live.timestamp);
@@ -1072,7 +1283,15 @@ impl crate::state::App {
             }
 
             new_incoming = is_new_push && !live.from_me;
-            entry.sort_by_key(|(ts, _)| *ts);
+            if self.event_batch.active {
+                // Sorted once when the batch finishes. In-batch
+                // readers of this vec look messages up by ID or
+                // by minimum timestamp, never by position, so the
+                // deferral cannot change what they find.
+                self.event_batch.unsorted_chats.insert(chat_id);
+            } else {
+                entry.sort_by_key(|(ts, _)| *ts);
+            }
         }
         // "Keep chats archived" OFF: a new incoming message brings
         // an archived chat back to the main list (WhatsApp's rule).
@@ -1133,8 +1352,18 @@ impl crate::state::App {
         }
         // Queue the OS notification for a genuinely new incoming
         // message; the per-frame drain applies the user's settings
-        // (toggles, mute, preview, focus) before firing.
-        if new_incoming {
+        // (toggles, mute, preview, focus) before firing. History
+        // never queues: a message stamped before this connection
+        // came up is first-sync or offline catch-up, and a popup
+        // for it would be noise about the past. The fake backend
+        // is exempt: its clock is scripted, so the stamp
+        // comparison is meaningless there and the demo keeps its
+        // previous behavior.
+        let history = self
+            .live
+            .as_ref()
+            .is_some_and(|s| !s.fake && crate::notify::is_history(live.timestamp, s.connected_at));
+        if new_incoming && !history {
             if let Some(chat) = self.chats.iter().find(|c| c.id == chat_id) {
                 self.pending_notifications.push(crate::notify::NotifyRequest {
                     chat_id,
@@ -1172,7 +1401,21 @@ impl crate::state::App {
         new_incoming
     }
 
+    /// Sorts the chat list by latest activity. Inside an event
+    /// batch the sort is deferred to the end of the batch (see
+    /// [`EventBatch`]): a burst would otherwise re-sort the whole
+    /// list per event. The list is only ever rendered between
+    /// batches, so the deferral is invisible.
     fn sort_live_chats(&mut self) {
+        if self.event_batch.active {
+            self.event_batch.chats_dirty = true;
+            return;
+        }
+        self.sort_live_chats_now();
+    }
+
+    /// The immediate chat-list sort behind [`App::sort_live_chats`].
+    fn sort_live_chats_now(&mut self) {
         if let Some(session) = &self.live {
             let times = &session.times;
             self.chats.sort_by(|a, b| {
@@ -1478,5 +1721,234 @@ mod day_label_tests {
         assert_eq!(civil_from_days(19_782), (2024, 2, 29), "leap day");
         assert_eq!(civil_from_days(20_771), (2026, 11, 14));
         assert_eq!(civil_from_days(-1), (1969, 12, 31));
+    }
+}
+
+#[cfg(test)]
+mod burst_drain_tests {
+    use super::*;
+    use crate::state::{App, Args};
+
+    const CHAT_JID: &str = "6281234567890@s.whatsapp.net";
+    const BASE_TS: i64 = 1_700_000_000;
+
+    /// An app in live mode whose backend channel the test feeds
+    /// by hand, with an in-memory archive attached so the batch
+    /// flush is exercised too. The command receiver is returned
+    /// with the app: dropping it would close the channel the
+    /// session sends commands on.
+    fn live_app() -> (
+        App,
+        std::sync::mpsc::Sender<BackendEvent>,
+        egui::Context,
+        std::sync::mpsc::Receiver<BackendCommand>,
+    ) {
+        let ctx = egui::Context::default();
+        crate::theme::install_fonts(&ctx);
+        let mut app = App::new(Args::parse(), &ctx);
+        let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<BackendCommand>();
+        let (evt_tx, evt_rx) = std::sync::mpsc::channel::<BackendEvent>();
+        app.live = Some(LiveSession {
+            channels: BackendChannels { commands: cmd_tx, events: evt_rx },
+            status: LinkStatus::Linked,
+            qr: None,
+            pair_code: None,
+            pair_code_at: None,
+            account: "Test account".to_owned(),
+            connected_at: None,
+            store: Some(store::Store::open_in_memory().unwrap()),
+            jids: HashMap::new(),
+            messages: HashMap::new(),
+            times: HashMap::new(),
+            fake: true,
+            flags: HashMap::new(),
+            engaged_chats: std::collections::HashSet::new(),
+        });
+        app.live_mode = true;
+        app.link_previews = false;
+        (app, evt_tx, ctx, cmd_rx)
+    }
+
+    fn incoming(id: &str, ts: i64) -> BackendEvent {
+        BackendEvent::MessageUpsert(LiveMessage::text(
+            id,
+            CHAT_JID,
+            Some("Sender".to_owned()),
+            format!("message {id}"),
+            ts,
+            false,
+        ))
+    }
+
+    fn drain_all(app: &mut App, ctx: &egui::Context) {
+        for _ in 0..64 {
+            app.poll_backend(ctx);
+            if app.event_queue.is_empty() {
+                return;
+            }
+        }
+        panic!("the event queue did not drain");
+    }
+
+    fn stored_messages(app: &App) -> &Vec<(i64, Message)> {
+        app.live.as_ref().unwrap().messages.get(&jid_id(CHAT_JID)).expect("the chat has messages")
+    }
+
+    /// The audit's freeze scenario, shrunk: a 600-message history
+    /// burst must spread over several frames (never all in the
+    /// first), lose nothing, keep arrival order, and leave the
+    /// archive and the rendered conversation complete.
+    #[test]
+    fn burst_drains_over_multiple_frames_in_order() {
+        const TOTAL: i64 = 600;
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        app.selected_chat = jid_id(CHAT_JID);
+        for i in 0..TOTAL {
+            tx.send(incoming(&format!("m{i}"), BASE_TS + i)).unwrap();
+        }
+
+        app.poll_backend(&ctx);
+        let after_first = stored_messages(&app).len();
+        assert!(
+            after_first <= MAX_EVENTS_PER_FRAME,
+            "one frame must stay within its budget, applied {after_first}"
+        );
+        assert!(after_first < TOTAL as usize, "the burst must not land in a single frame");
+        assert!(!app.event_queue.is_empty(), "the remainder waits in the queue");
+
+        drain_all(&mut app, &ctx);
+        let stored = stored_messages(&app);
+        assert_eq!(stored.len(), TOTAL as usize, "no event was dropped");
+        assert!(stored.windows(2).all(|w| w[0].0 < w[1].0), "messages end up sorted by timestamp");
+        assert_eq!(stored.first().unwrap().1.body, "message m0");
+        assert_eq!(stored.last().unwrap().1.body, format!("message m{}", TOTAL - 1));
+        let chat = app.chats.iter().find(|c| c.id == jid_id(CHAT_JID)).unwrap();
+        assert_eq!(chat.unread, u32::try_from(TOTAL).unwrap(), "every upsert counted once");
+        assert_eq!(app.conversation.len(), TOTAL as usize, "the open conversation is rebuilt");
+        let archived =
+            app.live.as_ref().unwrap().store.as_ref().unwrap().messages(CHAT_JID).unwrap();
+        assert_eq!(archived.len(), TOTAL as usize, "the batch flush archived every message");
+    }
+
+    /// A receipt and an edit that arrive in the same burst as
+    /// their message must still find it: batching defers sorts
+    /// and writes, never the application order.
+    #[test]
+    fn receipt_and_edit_in_the_same_burst_still_apply() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        app.selected_chat = jid_id(CHAT_JID);
+        tx.send(BackendEvent::MessageUpsert(LiveMessage::text(
+            "mine-1",
+            CHAT_JID,
+            None,
+            "sent from here",
+            BASE_TS,
+            true,
+        )))
+        .unwrap();
+        tx.send(BackendEvent::Receipt {
+            chat_jid: CHAT_JID.to_owned(),
+            message_ids: vec!["mine-1".to_owned()],
+            kind: ReceiptKind::Read,
+            at: BASE_TS + 60,
+        })
+        .unwrap();
+        tx.send(incoming("theirs-1", BASE_TS + 120)).unwrap();
+        tx.send(BackendEvent::MessageEdited {
+            chat_jid: CHAT_JID.to_owned(),
+            message_id: "theirs-1".to_owned(),
+            new_body: "edited in the same burst".to_owned(),
+        })
+        .unwrap();
+
+        drain_all(&mut app, &ctx);
+        let stored = stored_messages(&app);
+        assert_eq!(stored.len(), 2);
+        let mine = stored.iter().find(|(_, m)| m.body == "sent from here").unwrap();
+        assert_eq!(mine.1.delivery, Some(Delivery::Read), "the receipt advanced the message");
+        let theirs = stored.iter().find(|(_, m)| m.id == message_id(CHAT_JID, "theirs-1")).unwrap();
+        assert_eq!(theirs.1.body, "edited in the same burst");
+        assert!(theirs.1.edited);
+        let archived =
+            app.live.as_ref().unwrap().store.as_ref().unwrap().messages(CHAT_JID).unwrap();
+        assert_eq!(archived.len(), 2, "both burst messages reached the archive");
+    }
+
+    /// The notification flood scenario: on a real (non-fake)
+    /// session, a message stamped before the connection came up
+    /// is offline catch-up and must not queue an OS notification,
+    /// while a message stamped after it is live and must. Both
+    /// still land in the chat and raise the unread badge: only
+    /// the popup is gated.
+    #[test]
+    fn history_catch_up_queues_no_notification_but_live_does() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        // The harness session runs the fake backend, whose
+        // scripted clock exempts it from the history gate; this
+        // test exercises the real-backend path.
+        app.live.as_mut().unwrap().fake = false;
+        app.selected_chat = jid_id(CHAT_JID);
+        tx.send(BackendEvent::Connected { account: "Test account".to_owned() }).unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(
+            app.live.as_ref().unwrap().connected_at.is_some(),
+            "the connect stamps the session clock"
+        );
+
+        let now = i64::try_from(crate::state::now_unix()).unwrap();
+        tx.send(incoming("weekend-1", now - 7_200)).unwrap();
+        tx.send(incoming("fresh-1", now + 120)).unwrap();
+        drain_all(&mut app, &ctx);
+
+        assert_eq!(stored_messages(&app).len(), 2, "history still lands in the chat");
+        let chat = app.chats.iter().find(|c| c.id == jid_id(CHAT_JID)).unwrap();
+        assert_eq!(chat.unread, 2, "the badge counts history too");
+        assert_eq!(app.pending_notifications.len(), 1, "only the live message queues a popup");
+        assert_eq!(app.pending_notifications[0].body, "message fresh-1");
+    }
+}
+
+#[cfg(test)]
+mod key_decision_tests {
+    use super::*;
+
+    fn unreadable_key() -> store::StoreError {
+        store::StoreError::Io(std::io::Error::other(
+            "the database key could not be read from the system keyring: locked",
+        ))
+    }
+
+    /// Audit finding 6: a real start whose key cannot be loaded
+    /// must abort with the reason surfaced, never run under a
+    /// substitute key.
+    #[test]
+    fn key_load_error_aborts_a_real_start() {
+        match key_decision(&Err(unreadable_key()), false) {
+            KeyDecision::Abort(message) => {
+                assert!(message.contains("could not be read"), "{message}");
+                assert!(message.contains("did not connect"), "{message}");
+            }
+            KeyDecision::Run(_) => {
+                panic!("a failed key load must not produce a key for a real start")
+            }
+        }
+    }
+
+    #[test]
+    fn loaded_key_passes_through_in_both_modes() {
+        let key = [7u8; 32];
+        for fake in [false, true] {
+            match key_decision(&Ok(key), fake) {
+                KeyDecision::Run(k) => assert_eq!(k, key),
+                KeyDecision::Abort(m) => panic!("a loaded key must start, got abort: {m}"),
+            }
+        }
+    }
+
+    /// Demo mode is exempt: the fake backend never opens a
+    /// database, so a key load error must not block it.
+    #[test]
+    fn demo_start_proceeds_despite_a_key_load_error() {
+        assert!(matches!(key_decision(&Err(unreadable_key()), true), KeyDecision::Run(_)));
     }
 }

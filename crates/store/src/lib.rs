@@ -387,6 +387,31 @@ impl Store {
     /// # Errors
     /// [`StoreError`] on SQLite failures.
     pub fn upsert_message(&self, msg: &LiveMessage, flags: i64) -> Result<(), StoreError> {
+        Self::write_message(&self.conn, msg, flags)
+    }
+
+    /// Inserts or replaces many message rows in a single
+    /// transaction. A history-sync burst can carry thousands of
+    /// upserts; paying one commit per row made the burst the
+    /// slowest part of linking. Either every row lands or none
+    /// does, matching the all-or-nothing shape callers expect
+    /// from a batch.
+    ///
+    /// # Errors
+    /// [`StoreError`] on SQLite failures.
+    pub fn upsert_messages(&self, msgs: &[(LiveMessage, i64)]) -> Result<(), StoreError> {
+        let tx = self.conn.unchecked_transaction()?;
+        for (msg, flags) in msgs {
+            Self::write_message(&tx, msg, *flags)?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The single-row write behind [`Store::upsert_message`] and
+    /// [`Store::upsert_messages`], against any connection handle
+    /// (the store's own, or a transaction borrowing it).
+    fn write_message(conn: &Connection, msg: &LiveMessage, flags: i64) -> Result<(), StoreError> {
         let data = MessageData {
             kind: match &msg.kind {
                 backend::LiveMessageKind::Text => None,
@@ -404,7 +429,7 @@ impl Store {
         let data_json = serde_json::to_string(&data).map_err(|e| {
             StoreError::Sqlite(rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
         })?;
-        self.conn.execute(
+        conn.execute(
             "INSERT INTO messages (chat_jid, id, sender, body, timestamp, from_me, data, flags, expires_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
              ON CONFLICT(chat_jid, id) DO UPDATE SET
@@ -664,6 +689,28 @@ mod tests {
         let msgs: Vec<LiveMessage> =
             store.messages(&scripted_chats()[0].jid).unwrap().into_iter().map(|(m, _)| m).collect();
         assert_eq!(msgs, scripted_messages());
+    }
+
+    #[test]
+    fn upsert_messages_writes_the_whole_batch() {
+        let store = Store::open_in_memory().unwrap();
+        let msgs = scripted_messages();
+        let batch: Vec<(LiveMessage, i64)> =
+            msgs.iter().cloned().map(|m| (m, FLAG_STARRED)).collect();
+        store.upsert_messages(&batch).unwrap();
+        let loaded = store.messages(&msgs[0].chat_jid).unwrap();
+        assert_eq!(loaded.len(), msgs.len(), "every batched row lands");
+        assert!(
+            loaded.iter().all(|(_, flags)| *flags == FLAG_STARRED),
+            "batched rows carry their flags"
+        );
+        assert_eq!(
+            loaded.iter().map(|(m, _)| m).collect::<Vec<_>>(),
+            msgs.iter().collect::<Vec<_>>(),
+            "batched rows round-trip like single upserts"
+        );
+        // An empty batch is a no-op, not an error.
+        store.upsert_messages(&[]).unwrap();
     }
 
     #[test]

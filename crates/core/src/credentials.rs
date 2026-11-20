@@ -393,57 +393,179 @@ const LEGACY_KEYRING_SERVICE: &str = "zaplite-credentials";
 #[cfg(feature = "keyring-store")]
 pub struct KeyringBackend;
 
+/// Raw per-slot storage under one keyring service. Split out from
+/// [`KeyringBackend`] so the index logic in [`load_all_slots`] and
+/// [`save_all_slots`] can run against a fake in tests.
+///
+/// Reads distinguish three outcomes: a stored value, affirmatively
+/// absent, and a backend failure. Collapsing a failure (locked
+/// keychain, daemon down) into "absent" is what once made a
+/// transient keyring outage read as an empty credential store,
+/// after which the next save rewrote the index and orphaned every
+/// previously saved key.
+#[cfg(feature = "keyring-store")]
+trait SlotStore {
+    /// The slot's stored keys: `Ok(Some)` when present, `Ok(None)`
+    /// when the backend affirmatively holds no such entry, and
+    /// `Err` when the backend could not answer or the stored value
+    /// could not be parsed.
+    fn read_slot(&self, slot: &str) -> Result<Option<Vec<String>>, CredentialError>;
+    /// Stores the slot's keys, replacing any previous value.
+    fn write_slot(&self, slot: &str, keys: &[String]) -> Result<(), CredentialError>;
+    /// Deletes the slot; an already-absent entry is success.
+    fn delete_slot(&self, slot: &str) -> Result<(), CredentialError>;
+}
+
+/// [`SlotStore`] over the OS keyring, under one service name.
+#[cfg(feature = "keyring-store")]
+struct KeyringSlotStore {
+    service: &'static str,
+}
+
+#[cfg(feature = "keyring-store")]
+impl SlotStore for KeyringSlotStore {
+    fn read_slot(&self, slot: &str) -> Result<Option<Vec<String>>, CredentialError> {
+        let entry = keyring::Entry::new(self.service, slot)
+            .map_err(|e| CredentialError::Io(e.to_string()))?;
+        match entry.get_password() {
+            Ok(raw) => serde_json::from_str(&raw)
+                .map(Some)
+                .map_err(|e| CredentialError::Corrupt(e.to_string())),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(e) => Err(CredentialError::Io(e.to_string())),
+        }
+    }
+
+    fn write_slot(&self, slot: &str, keys: &[String]) -> Result<(), CredentialError> {
+        let entry = keyring::Entry::new(self.service, slot)
+            .map_err(|e| CredentialError::Io(e.to_string()))?;
+        let raw =
+            serde_json::to_string(keys).map_err(|e| CredentialError::Corrupt(e.to_string()))?;
+        entry.set_password(&raw).map_err(|e| CredentialError::Io(e.to_string()))
+    }
+
+    fn delete_slot(&self, slot: &str) -> Result<(), CredentialError> {
+        let entry = keyring::Entry::new(self.service, slot)
+            .map_err(|e| CredentialError::Io(e.to_string()))?;
+        // The vendored keyring 3.x exposes deletion as
+        // `Entry::delete_credential`.
+        match entry.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(e) => Err(CredentialError::Io(e.to_string())),
+        }
+    }
+}
+
+/// Reads one slot from `current`, falling back to the pre-rename
+/// `legacy` service. A slot found only in legacy is written through
+/// under the current service so the adoption happens once; a failed
+/// write-through loses nothing, the legacy copy stays authoritative
+/// until a later read retries. Backend failures from either service
+/// propagate: an unreadable slot is never reported as absent.
+#[cfg(feature = "keyring-store")]
+fn read_slot_adopting(
+    current: &dyn SlotStore,
+    legacy: &dyn SlotStore,
+    slot: &str,
+) -> Result<Option<Vec<String>>, CredentialError> {
+    if let Some(keys) = current.read_slot(slot)? {
+        return Ok(Some(keys));
+    }
+    match legacy.read_slot(slot)? {
+        Some(keys) => {
+            let _ = current.write_slot(slot, &keys);
+            Ok(Some(keys))
+        }
+        None => Ok(None),
+    }
+}
+
+/// Loads every indexed slot from the keyring stores.
+///
+/// The keyring API has no enumeration, so an index entry
+/// (`__slots__`, a JSON list of slot ids) tracks what exists. The
+/// index read falls back to the pre-rename service, and adopted
+/// slots are written through under the new service (see
+/// LEGACY_KEYRING_SERVICE). An index or slot that cannot be read is
+/// an error, never an empty store: [`CredentialStore::open`] must
+/// fail rather than let a later save rewrite the index from a
+/// partial view and orphan the slots the read missed.
+#[cfg(feature = "keyring-store")]
+fn load_all_slots(
+    current: &dyn SlotStore,
+    legacy: &dyn SlotStore,
+) -> Result<BTreeMap<String, Vec<String>>, CredentialError> {
+    let Some(ids) = read_slot_adopting(current, legacy, "__slots__")? else {
+        return Ok(BTreeMap::new());
+    };
+    let mut out = BTreeMap::new();
+    for id in ids {
+        if id != "__slots__" {
+            if let Some(keys) = read_slot_adopting(current, legacy, &id)? {
+                out.insert(id, keys);
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Persists the full slot map to the keyring stores, ending with
+/// the `__slots__` index.
+///
+/// The previous index is read before anything is written, and a
+/// failed read refuses the whole save: rewriting `__slots__` from
+/// an unreliable read would orphan every slot the read missed.
+#[cfg(feature = "keyring-store")]
+fn save_all_slots(
+    current: &dyn SlotStore,
+    legacy: &dyn SlotStore,
+    slots: &BTreeMap<String, Vec<String>>,
+) -> Result<(), CredentialError> {
+    let previous = read_slot_adopting(current, legacy, "__slots__")?.unwrap_or_default();
+    // SEC-08: mirror the file backend, whose whole-map rewrite
+    // makes removed keys disappear. The keyring has no such
+    // rewrite, so slots that were indexed before but are gone now
+    // (or have been emptied, e.g. by `remove_key` dropping the last
+    // key of a slot) must be DELETED explicitly, or their secret
+    // values would stay in the OS keyring forever after the user
+    // removed them. Deletion covers both services: an unadopted
+    // pre-rename entry is removed too.
+    for old in &previous {
+        if old != "__slots__" && slots.get(old).is_none_or(std::vec::Vec::is_empty) {
+            current.delete_slot(old)?;
+            legacy.delete_slot(old)?;
+        }
+    }
+    let mut ids: Vec<String> = Vec::new();
+    for (slot, keys) in slots {
+        if keys.is_empty() {
+            // An emptied slot stores nothing (also covers a slot
+            // that was never in the old index).
+            current.delete_slot(slot)?;
+            legacy.delete_slot(slot)?;
+        } else {
+            current.write_slot(slot, keys)?;
+            ids.push(slot.clone());
+        }
+    }
+    current.write_slot("__slots__", &ids)
+}
+
 #[cfg(feature = "keyring-store")]
 impl CredentialBackend for KeyringBackend {
     fn load_all(&self) -> Result<BTreeMap<String, Vec<String>>, CredentialError> {
-        // The keyring API has no enumeration, so an index entry
-        // (`__slots__`, a JSON list of slot ids) tracks what exists.
-        // The index read falls back to the pre-rename service, and
-        // adopted slots are written through under the new service
-        // (see LEGACY_KEYRING_SERVICE).
-        let Some(ids) =
-            Self::get_slot("__slots__").or_else(|| Self::adopt_legacy_slot("__slots__"))
-        else {
-            return Ok(BTreeMap::new());
-        };
-        let mut out = BTreeMap::new();
-        for id in ids {
-            if id != "__slots__" {
-                let keys = Self::get_slot(&id).or_else(|| Self::adopt_legacy_slot(&id));
-                if let Some(keys) = keys {
-                    out.insert(id, keys);
-                }
-            }
-        }
-        Ok(out)
+        load_all_slots(
+            &KeyringSlotStore { service: KEYRING_SERVICE },
+            &KeyringSlotStore { service: LEGACY_KEYRING_SERVICE },
+        )
     }
 
     fn save_all(&self, slots: &BTreeMap<String, Vec<String>>) -> Result<(), CredentialError> {
-        // SEC-08: mirror the file backend, whose whole-map rewrite
-        // makes removed keys disappear. The keyring has no such
-        // rewrite, so slots that were indexed before but are gone
-        // now (or have been emptied, e.g. by `remove_key` dropping
-        // the last key of a slot) must be DELETED explicitly, or
-        // their secret values would stay in the OS keyring forever
-        // after the user removed them.
-        let previous = Self::get_slot("__slots__").unwrap_or_default();
-        for old in &previous {
-            if old != "__slots__" && slots.get(old).is_none_or(std::vec::Vec::is_empty) {
-                Self::delete_slot(old)?;
-            }
-        }
-        let mut ids: Vec<String> = Vec::new();
-        for (slot, keys) in slots {
-            if keys.is_empty() {
-                // An emptied slot stores nothing (also covers a
-                // slot that was never in the old index).
-                Self::delete_slot(slot)?;
-            } else {
-                Self::set_slot(slot, keys)?;
-                ids.push(slot.clone());
-            }
-        }
-        Self::set_slot("__slots__", &ids)
+        save_all_slots(
+            &KeyringSlotStore { service: KEYRING_SERVICE },
+            &KeyringSlotStore { service: LEGACY_KEYRING_SERVICE },
+            slots,
+        )
     }
 
     fn name(&self) -> &'static str {
@@ -453,46 +575,6 @@ impl CredentialBackend for KeyringBackend {
 
 #[cfg(feature = "keyring-store")]
 impl KeyringBackend {
-    /// Reads one slot from the keyring (`None` = absent/unavailable).
-    #[must_use]
-    pub(crate) fn get_slot(slot: &str) -> Option<Vec<String>> {
-        let entry = keyring::Entry::new(KEYRING_SERVICE, slot).ok()?;
-        let raw = entry.get_password().ok()?;
-        serde_json::from_str(&raw).ok()
-    }
-
-    /// Reads one slot from the pre-rename keyring service and, when
-    /// found, writes it through under the current service so the
-    /// adoption happens once. `None` = absent/unavailable.
-    fn adopt_legacy_slot(slot: &str) -> Option<Vec<String>> {
-        let entry = keyring::Entry::new(LEGACY_KEYRING_SERVICE, slot).ok()?;
-        let raw = entry.get_password().ok()?;
-        let keys: Vec<String> = serde_json::from_str(&raw).ok()?;
-        let _ = Self::set_slot(slot, &keys);
-        Some(keys)
-    }
-
-    /// Writes one slot to the keyring.
-    pub(crate) fn set_slot(slot: &str, keys: &[String]) -> Result<(), CredentialError> {
-        let entry = keyring::Entry::new(KEYRING_SERVICE, slot)
-            .map_err(|e| CredentialError::Io(e.to_string()))?;
-        let raw =
-            serde_json::to_string(keys).map_err(|e| CredentialError::Corrupt(e.to_string()))?;
-        entry.set_password(&raw).map_err(|e| CredentialError::Io(e.to_string()))
-    }
-
-    /// Deletes one slot from the keyring (SEC-08). The vendored
-    /// keyring 3.x exposes deletion as `Entry::delete_credential`;
-    /// an already-absent entry is success, not an error.
-    pub(crate) fn delete_slot(slot: &str) -> Result<(), CredentialError> {
-        let entry = keyring::Entry::new(KEYRING_SERVICE, slot)
-            .map_err(|e| CredentialError::Io(e.to_string()))?;
-        match entry.delete_credential() {
-            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-            Err(e) => Err(CredentialError::Io(e.to_string())),
-        }
-    }
-
     /// Whether the keyring answers at all on this machine.
     #[must_use]
     pub fn available() -> bool {
@@ -830,5 +912,162 @@ mod tests {
         store.add_key("s", "b".into()).expect("add");
         store.remove_key("s", "a").expect("remove");
         assert_eq!(store.keys_for("s"), vec!["b".to_string()]);
+    }
+
+    #[test]
+    fn open_fails_when_the_backend_cannot_be_read() {
+        // An unreadable backend (e.g. a locked keyring) must fail
+        // the open, never read as an empty store: a store opened
+        // empty would persist its next save over the real contents.
+        struct UnreadableBackend;
+
+        impl CredentialBackend for UnreadableBackend {
+            fn load_all(&self) -> Result<BTreeMap<String, Vec<String>>, CredentialError> {
+                Err(CredentialError::Io("keyring is locked".into()))
+            }
+
+            fn save_all(
+                &self,
+                _slots: &BTreeMap<String, Vec<String>>,
+            ) -> Result<(), CredentialError> {
+                Ok(())
+            }
+
+            fn name(&self) -> &'static str {
+                "Unreadable (test)"
+            }
+        }
+
+        assert!(CredentialStore::open(Box::new(UnreadableBackend)).is_err());
+    }
+
+    /// In-memory [`SlotStore`] whose reads can be switched to fail,
+    /// standing in for a keyring that locks between runs.
+    #[cfg(feature = "keyring-store")]
+    #[derive(Default)]
+    struct FakeSlotStore {
+        entries: std::sync::Mutex<BTreeMap<String, Vec<String>>>,
+        fail_reads: std::sync::atomic::AtomicBool,
+    }
+
+    #[cfg(feature = "keyring-store")]
+    impl FakeSlotStore {
+        fn seed(&self, slot: &str, keys: &[&str]) {
+            self.entries
+                .lock()
+                .expect("fake slot store mutex")
+                .insert(slot.to_string(), keys.iter().map(ToString::to_string).collect());
+        }
+
+        fn stored(&self, slot: &str) -> Option<Vec<String>> {
+            self.entries.lock().expect("fake slot store mutex").get(slot).cloned()
+        }
+
+        fn set_fail_reads(&self, fail: bool) {
+            self.fail_reads.store(fail, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    #[cfg(feature = "keyring-store")]
+    impl SlotStore for FakeSlotStore {
+        fn read_slot(&self, slot: &str) -> Result<Option<Vec<String>>, CredentialError> {
+            if self.fail_reads.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err(CredentialError::Io("keyring is locked".into()));
+            }
+            Ok(self.stored(slot))
+        }
+
+        fn write_slot(&self, slot: &str, keys: &[String]) -> Result<(), CredentialError> {
+            self.entries
+                .lock()
+                .expect("fake slot store mutex")
+                .insert(slot.to_string(), keys.to_vec());
+            Ok(())
+        }
+
+        fn delete_slot(&self, slot: &str) -> Result<(), CredentialError> {
+            self.entries.lock().expect("fake slot store mutex").remove(slot);
+            Ok(())
+        }
+    }
+
+    #[cfg(feature = "keyring-store")]
+    #[test]
+    fn keyring_read_error_is_not_an_empty_store() {
+        let current = FakeSlotStore::default();
+        let legacy = FakeSlotStore::default();
+        current.seed("__slots__", &["example_api_key"]);
+        current.seed("example_api_key", &["secret-one"]);
+        current.set_fail_reads(true);
+        assert!(
+            load_all_slots(&current, &legacy).is_err(),
+            "a keyring that cannot be read must error, not load as empty"
+        );
+    }
+
+    #[cfg(feature = "keyring-store")]
+    #[test]
+    fn keyring_save_refuses_when_the_index_cannot_be_read() {
+        let current = FakeSlotStore::default();
+        let legacy = FakeSlotStore::default();
+        current.seed("__slots__", &["example_api_key"]);
+        current.seed("example_api_key", &["secret-one"]);
+        current.set_fail_reads(true);
+        let attempt = save_all_slots(
+            &current,
+            &legacy,
+            &BTreeMap::from([("other".to_string(), vec!["x".to_string()])]),
+        );
+        assert!(attempt.is_err(), "a save over an unreadable index must refuse");
+        // Nothing was written: the stored index and slot survive
+        // byte-identical, and the attempted slot never landed.
+        assert_eq!(current.stored("__slots__"), Some(vec!["example_api_key".to_string()]));
+        assert_eq!(current.stored("example_api_key"), Some(vec!["secret-one".to_string()]));
+        assert_eq!(current.stored("other"), None);
+    }
+
+    #[cfg(feature = "keyring-store")]
+    #[test]
+    fn keyring_slots_round_trip_add_and_remove() {
+        let current = FakeSlotStore::default();
+        let legacy = FakeSlotStore::default();
+        // First run: affirmatively empty, which is not an error.
+        assert!(load_all_slots(&current, &legacy).expect("load").is_empty());
+        save_all_slots(
+            &current,
+            &legacy,
+            &BTreeMap::from([("s".to_string(), vec!["a".to_string(), "b".to_string()])]),
+        )
+        .expect("save");
+        assert_eq!(
+            load_all_slots(&current, &legacy).expect("load")["s"],
+            vec!["a".to_string(), "b".to_string()]
+        );
+        save_all_slots(
+            &current,
+            &legacy,
+            &BTreeMap::from([("s".to_string(), vec!["b".to_string()])]),
+        )
+        .expect("save");
+        assert_eq!(load_all_slots(&current, &legacy).expect("load")["s"], vec!["b".to_string()]);
+        // Removing the last key deletes the entry (SEC-08) and
+        // empties the index.
+        save_all_slots(&current, &legacy, &BTreeMap::new()).expect("save");
+        assert!(load_all_slots(&current, &legacy).expect("load").is_empty());
+        assert_eq!(current.stored("s"), None);
+        assert_eq!(current.stored("__slots__"), Some(Vec::new()));
+    }
+
+    #[cfg(feature = "keyring-store")]
+    #[test]
+    fn keyring_load_adopts_legacy_slots() {
+        let current = FakeSlotStore::default();
+        let legacy = FakeSlotStore::default();
+        legacy.seed("__slots__", &["example_api_key"]);
+        legacy.seed("example_api_key", &["old-secret"]);
+        let loaded = load_all_slots(&current, &legacy).expect("load");
+        assert_eq!(loaded["example_api_key"], vec!["old-secret".to_string()]);
+        // Written through under the current service.
+        assert_eq!(current.stored("example_api_key"), Some(vec!["old-secret".to_string()]));
     }
 }

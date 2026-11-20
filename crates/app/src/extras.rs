@@ -407,8 +407,8 @@ impl App {
         }
     }
 
-    /// Polls all worker channels (GIPHY, previews).
-    /// Called every frame from the shell.
+    /// Polls all worker channels (GIPHY, previews, staged
+    /// sends). Called every frame from the shell.
     pub(crate) fn poll_workers(&mut self, ctx: &egui::Context) {
         if let Some(rx) = &self.og_rx {
             match rx.try_recv() {
@@ -502,6 +502,8 @@ impl App {
                 self.picker.media_fetch_rx = None;
             }
         }
+        // Staged album sends: files the send worker has read.
+        self.poll_staged_send();
     }
 
     /// Starts a GIPHY trending fetch (worker thread).

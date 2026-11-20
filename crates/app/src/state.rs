@@ -798,6 +798,10 @@ pub(crate) struct App {
     pub(crate) og_cache: crate::extras::OgCache,
     /// In-flight link-preview fetches: (message id, url, result).
     pub(crate) og_rx: Option<std::sync::mpsc::Receiver<(u64, String, Option<core::rich::OgData>)>>,
+    /// In-flight staged album send: a worker thread reads the
+    /// staged files off the UI thread and `poll_staged_send`
+    /// applies the results in staging order (see attach.rs).
+    pub(crate) staged_send: Option<StagedSendState>,
     /// Message whose context menu is open (secondary click), if any.
     pub(crate) bubble_menu: Option<u64>,
     /// Message id waiting for a forward target (picker popup).
@@ -850,6 +854,21 @@ pub(crate) struct StagedMedia {
     pub(crate) view_once: bool,
     /// Decoded preview texture (photos only, lazy on first paint).
     pub(crate) thumb: Option<egui::TextureHandle>,
+}
+
+/// One staged album in flight (see attach.rs): the worker
+/// thread streams one read result per staged file through
+/// `rx`, and `pending` holds the matching send descriptors in
+/// the same order, so each result pairs with the file it
+/// belongs to. `sent` and `failed` accumulate the outcome for
+/// the summary notice shown when the worker finishes; a file
+/// whose result never arrives is counted as failed, never
+/// silently dropped.
+pub(crate) struct StagedSendState {
+    pub(crate) rx: std::sync::mpsc::Receiver<Result<Vec<u8>, String>>,
+    pub(crate) pending: std::collections::VecDeque<crate::attach::PendingStagedSend>,
+    pub(crate) sent: usize,
+    pub(crate) failed: Vec<(String, String)>,
 }
 
 /// The attach-menu location form: a place name plus coordinates,
@@ -1193,6 +1212,7 @@ impl App {
             event_batch: crate::live::EventBatch::default(),
             og_cache: crate::extras::OgCache::default(),
             og_rx: None,
+            staged_send: None,
             bubble_menu: None,
             forward_from: None,
             typing_sent_for: None,

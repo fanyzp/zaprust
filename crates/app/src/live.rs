@@ -397,6 +397,37 @@ pub(crate) fn to_message_with_flags(live: &LiveMessage, flags: i64) -> Message {
     }
 }
 
+/// What a live start may do about its database key.
+enum KeyDecision {
+    /// Start under this key.
+    Run([u8; 32]),
+    /// Do not start; show the user this reason instead.
+    Abort(String),
+}
+
+/// Decides a live start's database key from the key load.
+///
+/// A real start fails closed on a load error (audit finding 6):
+/// a substitute key would open or create the session store under
+/// the wrong key, stranding the linked account behind a publicly
+/// known key and hiding the real failure (a locked keyring, an
+/// unreadable key file). Demo mode is the one exception: the fake
+/// backend never opens a database, so the placeholder key it runs
+/// under never encrypts anything, and the archive still reports
+/// its own unavailability through the usual note.
+fn key_decision(key_result: &Result<[u8; 32], store::StoreError>, fake: bool) -> KeyDecision {
+    match key_result {
+        Ok(key) => KeyDecision::Run(*key),
+        Err(_) if fake => KeyDecision::Run([0; 32]),
+        Err(e) => KeyDecision::Abort(format!(
+            "Zaprust could not unlock your saved chats, so it did not connect. \
+             The unlock key stored on this device could not be read ({e}). \
+             Nothing was changed. Make the key available again (for example, \
+             unlock your keyring) and try connecting again."
+        )),
+    }
+}
+
 impl crate::state::App {
     /// Starts live mode: opens the archive, spawns the supervised
     /// backend, loads archived chats, and kicks off the link flow.
@@ -409,9 +440,17 @@ impl crate::state::App {
         let data_dir = backend::data_dir();
         // Both local databases are encrypted under one key from
         // the OS keyring (SEC-F01). Without the key neither can
-        // open; the archive reports through its usual note and the
-        // backend through its session-store error.
+        // open, and a real start does not try: it fails closed
+        // before anything is spawned or opened, leaving the app
+        // untouched so the user can retry (audit finding 6).
         let key_result = store::load_or_create_key(&data_dir);
+        let db_key = match key_decision(&key_result, fake) {
+            KeyDecision::Run(key) => key,
+            KeyDecision::Abort(message) => {
+                self.notice = Some(message);
+                return;
+            }
+        };
         let archive = match &key_result {
             Ok(key) => store::Store::open(&data_dir.join("archive.db"), key),
             Err(e) => Err(store::StoreError::Io(std::io::Error::other(e.to_string()))),
@@ -432,13 +471,8 @@ impl crate::state::App {
         };
         let repaint_ctx = ctx.clone();
         let wake: backend::WakeFn = std::sync::Arc::new(move || repaint_ctx.request_repaint());
-        let key_loaded = key_result.is_ok();
-        let config = BackendConfig {
-            data_dir,
-            account_id: "default".to_owned(),
-            db_key: key_result.unwrap_or([0; 32]),
-        };
-        if !fake && key_loaded {
+        let config = BackendConfig { data_dir, account_id: "default".to_owned(), db_key };
+        if !fake {
             // Convert a plaintext session store left by an older
             // build before the backend opens it with the key; a
             // failure here surfaces as the backend's own
@@ -1871,5 +1905,50 @@ mod burst_drain_tests {
         assert_eq!(chat.unread, 2, "the badge counts history too");
         assert_eq!(app.pending_notifications.len(), 1, "only the live message queues a popup");
         assert_eq!(app.pending_notifications[0].body, "message fresh-1");
+    }
+}
+
+#[cfg(test)]
+mod key_decision_tests {
+    use super::*;
+
+    fn unreadable_key() -> store::StoreError {
+        store::StoreError::Io(std::io::Error::other(
+            "the database key could not be read from the system keyring: locked",
+        ))
+    }
+
+    /// Audit finding 6: a real start whose key cannot be loaded
+    /// must abort with the reason surfaced, never run under a
+    /// substitute key.
+    #[test]
+    fn key_load_error_aborts_a_real_start() {
+        match key_decision(&Err(unreadable_key()), false) {
+            KeyDecision::Abort(message) => {
+                assert!(message.contains("could not be read"), "{message}");
+                assert!(message.contains("did not connect"), "{message}");
+            }
+            KeyDecision::Run(_) => {
+                panic!("a failed key load must not produce a key for a real start")
+            }
+        }
+    }
+
+    #[test]
+    fn loaded_key_passes_through_in_both_modes() {
+        let key = [7u8; 32];
+        for fake in [false, true] {
+            match key_decision(&Ok(key), fake) {
+                KeyDecision::Run(k) => assert_eq!(k, key),
+                KeyDecision::Abort(m) => panic!("a loaded key must start, got abort: {m}"),
+            }
+        }
+    }
+
+    /// Demo mode is exempt: the fake backend never opens a
+    /// database, so a key load error must not block it.
+    #[test]
+    fn demo_start_proceeds_despite_a_key_load_error() {
+        assert!(matches!(key_decision(&Err(unreadable_key()), true), KeyDecision::Run(_)));
     }
 }

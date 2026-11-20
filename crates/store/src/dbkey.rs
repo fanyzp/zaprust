@@ -25,23 +25,42 @@ const KEY_FILE_NAME: &str = "db.key";
 
 /// Loads the database key, creating and storing one on first use.
 ///
+/// A fresh key is created only when both sources affirmatively
+/// have none. A source that exists but cannot be read (a locked
+/// or unavailable keyring, an unreadable or malformed key file)
+/// is an error, never a reason to invent a replacement: a new key
+/// would leave every database encrypted under the stored one
+/// unreadable.
+///
 /// # Errors
-/// [`StoreError::Io`] when a fresh key could be generated but
-/// neither the keyring nor the key file could store it.
+/// [`StoreError::Io`] when a stored key could not be read, or when
+/// a fresh key could be generated but neither the keyring nor the
+/// key file could store it.
 pub fn load_or_create_key(data_dir: &Path) -> Result<[u8; 32], StoreError> {
     let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT).ok();
     if let Some(entry) = &entry {
-        if let Ok(saved) = entry.get_password() {
-            if let Some(key) = decode_key(&saved) {
-                return Ok(key);
+        match entry.get_password() {
+            Ok(saved) => {
+                if let Some(key) = decode_key(&saved) {
+                    return Ok(key);
+                }
+                // An entry exists but does not hold a key this
+                // build wrote; the key file is the second source,
+                // so fall through to it before concluding anything.
+            }
+            // The keyring affirmatively holds no entry: the key,
+            // if there is one, is in the file.
+            Err(keyring::Error::NoEntry) => {}
+            Err(e) => {
+                return Err(StoreError::Io(std::io::Error::other(format!(
+                    "the database key could not be read from the system keyring: {e}"
+                ))));
             }
         }
     }
     let file = data_dir.join(KEY_FILE_NAME);
-    if let Ok(saved) = std::fs::read_to_string(&file) {
-        if let Some(key) = decode_key(&saved) {
-            return Ok(key);
-        }
+    if let Some(key) = read_key_file(&file)? {
+        return Ok(key);
     }
     let mut key = [0u8; 32];
     getrandom::fill(&mut key).map_err(|e| StoreError::Io(std::io::Error::other(e.to_string())))?;
@@ -57,6 +76,26 @@ pub fn load_or_create_key(data_dir: &Path) -> Result<[u8; 32], StoreError> {
         }
     }
     Ok(key)
+}
+
+/// Reads the key stored in the key file.
+///
+/// `Ok(None)` means no key file exists. A file that exists but
+/// cannot be read, or whose contents are not a key, is an error:
+/// a key was stored there once, and replacing it with a fresh one
+/// would strand the databases it encrypts.
+fn read_key_file(file: &Path) -> Result<Option<[u8; 32]>, StoreError> {
+    match std::fs::read_to_string(file) {
+        Ok(saved) => match decode_key(&saved) {
+            Some(key) => Ok(Some(key)),
+            None => Err(StoreError::Io(std::io::Error::other(format!(
+                "the database key file {} exists but does not contain a valid key",
+                file.display()
+            )))),
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(StoreError::Io(e)),
+    }
 }
 
 /// The SQLCipher raw-key pragma value for a key: `x'<hex>'`.
@@ -92,6 +131,50 @@ fn decode_key(text: &str) -> Option<[u8; 32]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn scratch_dir(tag: &str) -> std::path::PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("zaprust-dbkey-test-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn key_file_missing_is_no_key_not_an_error() {
+        let dir = scratch_dir("missing");
+        assert_eq!(read_key_file(&dir.join(KEY_FILE_NAME)).unwrap(), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn key_file_roundtrips_a_stored_key() {
+        let dir = scratch_dir("stored");
+        let key: [u8; 32] = std::array::from_fn(|i| (i * 3) as u8);
+        std::fs::write(dir.join(KEY_FILE_NAME), encode_key(&key)).unwrap();
+        assert_eq!(read_key_file(&dir.join(KEY_FILE_NAME)).unwrap(), Some(key));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn key_file_that_is_not_a_key_fails_closed() {
+        // A file exists, so a key was stored here; inventing a
+        // replacement would strand the databases it encrypts.
+        let dir = scratch_dir("corrupt");
+        std::fs::write(dir.join(KEY_FILE_NAME), "not a key").unwrap();
+        assert!(read_key_file(&dir.join(KEY_FILE_NAME)).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn key_file_that_cannot_be_read_fails_closed() {
+        // A directory at the key path errors on read with
+        // something other than NotFound.
+        let dir = scratch_dir("unreadable");
+        std::fs::create_dir(dir.join(KEY_FILE_NAME)).unwrap();
+        assert!(read_key_file(&dir.join(KEY_FILE_NAME)).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn key_codec_roundtrips() {

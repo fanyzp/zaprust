@@ -34,13 +34,54 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Clippy (warnings denied)
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
       - name: Tests
         run: cargo test --workspace
 
       - name: Release build
         run: cargo build --release -p app
+
+  # Feature combinations the workspace build cannot see: the app crate
+  # enables backend's `calls` feature, so feature unification hides a
+  # broken standalone backend resolve (default features without calls,
+  # or no default features at all), and store is never resolved on its
+  # own. Check-only, so a regression in those resolves fails loudly.
+  feature-matrix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: System dependencies (egui / winit / whatsapp-rust on Linux)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake perl clang \
+            libclang-dev libasound2-dev libpipewire-0.3-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
+            libgl1-mesa-dev libgtk-3-dev libopus-dev
+
+      - name: Rust toolchain (stable + clippy)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Backend, default features (standalone resolve)
+        run: cargo check -p backend
+
+      - name: Backend, calls feature
+        run: cargo check -p backend --features calls
+
+      - name: Backend, no default features (fake backend only)
+        run: cargo check -p backend --no-default-features
+
+      - name: Store (standalone resolve)
+        run: cargo check -p store
+
+      - name: Clippy on the standalone resolves (warnings denied)
+        run: cargo clippy -p backend -p store --all-targets -- -D warnings
 
   # Windows and macOS: build + test (warnings not denied here;
   # Linux above is the strict gate).

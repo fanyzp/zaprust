@@ -1,0 +1,441 @@
+//! Incoming translation: library events and messages become the
+//! crate's own `LiveChat` / `LiveMessage` values, so nothing from
+//! the library crosses the backend boundary.
+
+use whatsapp_rust::prelude::*;
+use whatsapp_rust::wacore::types::events::Event;
+
+use crate::{
+    BackendEvent, EventSink, LiveChat, LiveChatKind, LiveMessage, LiveMessageKind, ReceiptKind,
+};
+
+/// Maps the library's privacy-settings response into our
+/// category → value spelling map.
+pub(super) fn privacy_map(
+    resp: &whatsapp_rust::privacy_settings::PrivacySettingsResponse,
+) -> std::collections::BTreeMap<String, String> {
+    use whatsapp_rust::privacy_settings::{PrivacyCategory, PrivacyValue};
+    let mut out = std::collections::BTreeMap::new();
+    for setting in &resp.settings {
+        let category = match setting.category {
+            PrivacyCategory::Last => "last",
+            PrivacyCategory::Online => "online",
+            PrivacyCategory::Profile => "profile",
+            PrivacyCategory::Status => "status",
+            PrivacyCategory::GroupAdd => "groupadd",
+            PrivacyCategory::ReadReceipts => "readreceipts",
+            _ => continue,
+        };
+        let value = match setting.value {
+            PrivacyValue::All => "all",
+            PrivacyValue::Contacts => "contacts",
+            PrivacyValue::None => "none",
+            PrivacyValue::ContactBlacklist => "contact_blacklist",
+            PrivacyValue::MatchLastSeen => "match_last_seen",
+            PrivacyValue::Known => "known",
+            _ => continue,
+        };
+        out.insert(category.to_owned(), value.to_owned());
+    }
+    out
+}
+
+/// Handles message types that map to dedicated backend events
+/// (reactions, edits, revokes) instead of message upserts. Returns
+/// true when the message was fully handled.
+pub(super) fn translate_special(ctx: &MessageContext, sink: &EventSink) -> bool {
+    let source = &ctx.info.source;
+    let chat_jid = source.chat.to_string();
+    let actor = {
+        let push = ctx.info.push_name.trim();
+        if source.is_from_me {
+            "Me".to_owned()
+        } else if !push.is_empty() {
+            push.to_owned()
+        } else {
+            user_part(&source.sender.to_string())
+        }
+    };
+    let msg = &ctx.message;
+    if let Some(reaction) = msg.reaction_message.as_option() {
+        if let Some(key) = reaction.key.as_option() {
+            if let Some(target_id) = key.id.as_deref() {
+                sink.emit(BackendEvent::ReactionUpdate {
+                    chat_jid,
+                    message_id: target_id.to_owned(),
+                    actor,
+                    emoji: reaction.text.clone().unwrap_or_default(),
+                });
+                return true;
+            }
+        }
+    }
+    if let Some(protocol) = msg.protocol_message.as_option() {
+        use whatsapp_rust::prelude::wa::message::protocol_message::Type;
+        let target_id =
+            protocol.key.as_option().and_then(|k| k.id.as_deref()).map(ToOwned::to_owned);
+        match protocol.r#type {
+            Some(Type::EPHEMERAL_SETTING) => {
+                // A disappearing-messages change in a direct chat
+                // (ours from another device, or the contact's):
+                // surface it as state, never as a chat message.
+                sink.emit(BackendEvent::DisappearingChanged {
+                    chat_jid,
+                    duration_secs: protocol.ephemeral_expiration.unwrap_or(0),
+                });
+                return true;
+            }
+            Some(Type::REVOKE) => {
+                if let Some(target_id) = target_id {
+                    sink.emit(BackendEvent::MessageRevoked { chat_jid, message_id: target_id });
+                    return true;
+                }
+            }
+            Some(Type::MESSAGE_EDIT) => {
+                if let (Some(target_id), Some(edited)) =
+                    (target_id, protocol.edited_message.as_option())
+                {
+                    sink.emit(BackendEvent::MessageEdited {
+                        chat_jid,
+                        message_id: target_id,
+                        new_body: edited.text_content().unwrap_or_default().to_owned(),
+                    });
+                    return true;
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+/// Maps a library event the typed handlers do not cover.
+pub(super) fn translate_event(event: &Event, sink: &EventSink) {
+    match event {
+        Event::Receipt(receipt) => {
+            use whatsapp_rust::wacore::types::presence::ReceiptType;
+            let kind = match receipt.r#type {
+                ReceiptType::Delivered => Some(ReceiptKind::Delivered),
+                ReceiptType::Sent => Some(ReceiptKind::Sent),
+                ReceiptType::Read | ReceiptType::ReadSelf => Some(ReceiptKind::Read),
+                ReceiptType::Played | ReceiptType::PlayedSelf => Some(ReceiptKind::Played),
+                _ => None,
+            };
+            if let Some(kind) = kind {
+                sink.emit(BackendEvent::Receipt {
+                    chat_jid: receipt.source.chat.to_string(),
+                    message_ids: receipt.message_ids.iter().map(ToString::to_string).collect(),
+                    kind,
+                    at: receipt.timestamp.timestamp(),
+                });
+            }
+        }
+        Event::DisappearingModeChanged(change) => {
+            // Group timer changes arrive as notifications (direct
+            // chats come through the protocol-message path in
+            // translate_special instead).
+            sink.emit(BackendEvent::DisappearingChanged {
+                chat_jid: change.from.to_string(),
+                duration_secs: change.duration,
+            });
+        }
+        Event::ChatPresence(update) => {
+            use whatsapp_rust::wacore::types::presence::ChatActivity;
+            sink.emit(BackendEvent::TypingReceived {
+                chat_jid: update.source.chat.to_string(),
+                typing: !matches!(update.state, ChatActivity::Idle),
+            });
+        }
+        Event::TemporaryBan(ban) => {
+            sink.emit(BackendEvent::TemporaryBan {
+                code: u32::try_from(ban.code.code()).unwrap_or(0),
+            });
+        }
+        Event::Disconnected(_) => {
+            sink.emit(BackendEvent::ConnectionLost {
+                reason: "Connection lost, the client will reconnect.".to_owned(),
+            });
+        }
+        Event::PairingCodeError(err) => {
+            sink.emit(BackendEvent::Error {
+                message: format!("Pairing code error: {err:?}").chars().take(160).collect(),
+            });
+        }
+        _ => {}
+    }
+}
+
+/// Translates one incoming message context into a chat + message
+/// upsert, in Zaprust terms. Non-text messages are summarized with a
+/// bracketed placeholder in this phase (media download/display is a
+/// later milestone).
+pub(super) fn translate_message(ctx: &MessageContext) -> Option<(LiveChat, LiveMessage)> {
+    let source = &ctx.info.source;
+    let chat_jid = source.chat.to_string();
+    let kind = kind_of(&chat_jid);
+    let body = ctx
+        .message
+        .text_content()
+        .map_or_else(|| "[non-text message]".to_owned(), ToOwned::to_owned);
+    let push_name = ctx.info.push_name.trim();
+    let sender_name = if source.is_from_me {
+        None
+    } else if !push_name.is_empty() {
+        Some(push_name.to_owned())
+    } else {
+        Some(user_part(&source.sender.to_string()))
+    };
+    let title = match kind {
+        LiveChatKind::Dm => sender_name.clone().unwrap_or_else(|| user_part(&chat_jid)),
+        _ => user_part(&chat_jid),
+    };
+    let timestamp = ctx.info.timestamp.timestamp();
+    let chat = LiveChat {
+        jid: chat_jid.clone(),
+        title,
+        kind,
+        preview: body.clone(),
+        preview_sender: if kind == LiveChatKind::Group { sender_name.clone() } else { None },
+        timestamp,
+        unread: 0,
+        archived: false,
+        pinned: false,
+        // A message arrival does not carry the chat's timer;
+        // the app keeps the value it already has (see the field
+        // docs on LiveChat).
+        ephemeral_secs: 0,
+        muted: false,
+    };
+    let mut msg = LiveMessage::text(
+        ctx.info.id.to_string(),
+        chat_jid,
+        sender_name,
+        body,
+        timestamp,
+        source.is_from_me,
+    );
+    // The wire's per-message expiration becomes an absolute
+    // expiry second, the only form the archive and the app's
+    // expiry pass need.
+    if let Some(expiration) = ctx.ephemeral_expiration {
+        if expiration > 0 {
+            msg.expires_at = timestamp + i64::from(expiration);
+        }
+    }
+    let (kind, view_once) = classify_kind(ctx);
+    msg.kind = kind;
+    msg.view_once = view_once;
+    if let LiveMessageKind::Other(label) = &msg.kind {
+        if msg.body == "[non-text message]" {
+            msg.body = label.clone();
+        }
+    }
+    if let LiveMessageKind::Media { caption, .. } = &msg.kind {
+        if !caption.is_empty() && msg.body == "[non-text message]" {
+            msg.body = caption.clone();
+        }
+    }
+    // Quote context, when the message carries one.
+    if let Some(quoted) = quoted_context(ctx) {
+        msg.quoted_sender = quoted.0;
+        msg.quoted_body = quoted.1;
+    }
+    // The author JID travels with every message: replies quote it
+    // as the context participant, group reactions target it.
+    msg.sender_jid = Some(source.sender.to_string());
+    Some((chat, msg))
+}
+
+/// Classifies a message's rich kind from its protocol payload.
+/// Poll *votes* arrive encrypted as separate protocol messages and
+/// are not aggregated here (documented limitation); poll creations
+/// map fully.
+pub(super) fn classify_kind(ctx: &MessageContext) -> (LiveMessageKind, bool) {
+    classify_message(&ctx.message)
+}
+
+/// Classifies one protocol message; the second return value is the
+/// view-once flag (set when the message arrived view-once wrapped).
+pub(super) fn classify_message(
+    msg: &whatsapp_rust::prelude::wa::Message,
+) -> (LiveMessageKind, bool) {
+    // View-once wrappers: classify the wrapped message and flag it.
+    let wrapped = msg
+        .view_once_message
+        .as_option()
+        .and_then(|vo| vo.message.as_option())
+        .or_else(|| msg.view_once_message_v2.as_option().and_then(|vo| vo.message.as_option()));
+    if let Some(inner) = wrapped {
+        let (kind, _) = classify_message(inner);
+        return (kind, true);
+    }
+    if let Some(poll) =
+        msg.poll_creation_message.as_option().or_else(|| msg.poll_creation_message_v3.as_option())
+    {
+        let options =
+            poll.options.iter().map(|o| (o.option_name.clone().unwrap_or_default(), 0)).collect();
+        let selectable = poll.selectable_options_count.unwrap_or(1);
+        return (
+            LiveMessageKind::Poll {
+                question: poll.name.clone().unwrap_or_default(),
+                options,
+                multiple: selectable != 1,
+                my_votes: Vec::new(),
+                correct: None,
+            },
+            false,
+        );
+    }
+    if let Some(location) = msg.location_message.as_option() {
+        let name = location
+            .name
+            .clone()
+            .filter(|n| !n.is_empty())
+            .or_else(|| location.address.clone())
+            .unwrap_or_else(|| "Shared location".to_owned());
+        return (
+            LiveMessageKind::Location {
+                name,
+                latitude: location.degrees_latitude.unwrap_or(0.0),
+                longitude: location.degrees_longitude.unwrap_or(0.0),
+            },
+            false,
+        );
+    }
+    if let Some(contact) = msg.contact_message.as_option() {
+        // The phone lives inside the vCard text (a TEL line); parse
+        // it when present, keep the neutral label otherwise.
+        let phone = contact
+            .vcard
+            .as_deref()
+            .and_then(|card| {
+                card.lines().find_map(|line| {
+                    let line = line.trim();
+                    let rest = line.strip_prefix("TEL")?;
+                    rest.split(':').nth(1).map(str::to_owned)
+                })
+            })
+            .filter(|p| !p.is_empty())
+            .unwrap_or_else(|| "Contact card".to_owned());
+        return (
+            LiveMessageKind::Contact {
+                name: contact.display_name.clone().unwrap_or_default(),
+                phone,
+            },
+            false,
+        );
+    }
+    if let Some(interactive) = msg.interactive_message.as_option() {
+        use whatsapp_rust::prelude::wa::__buffa::oneof::message::interactive_message::InteractiveMessage as InteractiveOneof;
+        if let Some(InteractiveOneof::CarouselMessage(carousel)) = &interactive.interactive_message
+        {
+            let cards = carousel
+                .cards
+                .iter()
+                .map(|card| {
+                    let body =
+                        card.body.as_option().and_then(|b| b.text.clone()).unwrap_or_default();
+                    let title = card
+                        .header
+                        .as_option()
+                        .and_then(|h| h.title.clone())
+                        .filter(|t| !t.is_empty())
+                        .unwrap_or_else(|| body.lines().next().unwrap_or_default().to_owned());
+                    let buttons = match &card.interactive_message {
+                        Some(InteractiveOneof::NativeFlowMessage(flow)) => {
+                            flow.buttons.iter().filter_map(|b| b.name.clone()).collect()
+                        }
+                        _ => Vec::new(),
+                    };
+                    crate::LiveCard { title, body, image: None, buttons }
+                })
+                .collect();
+            let body =
+                interactive.body.as_option().and_then(|b| b.text.clone()).unwrap_or_default();
+            return (LiveMessageKind::Carousel { body, cards }, false);
+        }
+    }
+    if let Some(image) = msg.image_message.as_option() {
+        return (
+            LiveMessageKind::Media {
+                media: crate::MediaKind::Photo,
+                caption: image.caption.clone().unwrap_or_default(),
+                seconds: 0,
+                size_bytes: image.file_length.unwrap_or(0),
+            },
+            false,
+        );
+    }
+    if let Some(video) = msg.video_message.as_option() {
+        return (
+            LiveMessageKind::Media {
+                media: crate::MediaKind::Video,
+                caption: video.caption.clone().unwrap_or_default(),
+                seconds: video.seconds.unwrap_or(0),
+                size_bytes: video.file_length.unwrap_or(0),
+            },
+            false,
+        );
+    }
+    if let Some(audio) = msg.audio_message.as_option() {
+        return (
+            LiveMessageKind::Media {
+                media: crate::MediaKind::Voice,
+                caption: String::new(),
+                seconds: audio.seconds.unwrap_or(0),
+                size_bytes: audio.file_length.unwrap_or(0),
+            },
+            false,
+        );
+    }
+    if let Some(document) = msg.document_message.as_option() {
+        return (
+            LiveMessageKind::Media {
+                media: crate::MediaKind::Document,
+                caption: document.file_name.clone().unwrap_or_default(),
+                seconds: 0,
+                size_bytes: document.file_length.unwrap_or(0),
+            },
+            false,
+        );
+    }
+    if let Some(sticker) = msg.sticker_message.as_option() {
+        return (
+            LiveMessageKind::Media {
+                media: crate::MediaKind::Sticker,
+                caption: String::new(),
+                seconds: 0,
+                size_bytes: sticker.file_length.unwrap_or(0),
+            },
+            false,
+        );
+    }
+    (LiveMessageKind::Text, false)
+}
+
+/// Extracts (sender, excerpt) when a message quotes another one:
+/// the context info of an extended-text message carries the stanza
+/// id + participant + quoted payload.
+pub(super) fn quoted_context(ctx: &MessageContext) -> Option<(Option<String>, Option<String>)> {
+    let extended = ctx.message.extended_text_message.as_option()?;
+    let context = extended.context_info.as_option()?;
+    context.stanza_id.as_ref()?;
+    let excerpt =
+        context.quoted_message.as_option().and_then(|q| q.text_content().map(ToOwned::to_owned));
+    let sender = context.participant.as_ref().map(|p| user_part(&p.clone()));
+    Some((sender, excerpt))
+}
+
+pub(super) fn kind_of(jid: &str) -> LiveChatKind {
+    if jid.ends_with("@g.us") {
+        LiveChatKind::Group
+    } else if jid.ends_with("@newsletter") {
+        LiveChatKind::Channel
+    } else {
+        LiveChatKind::Dm
+    }
+}
+
+pub(super) fn user_part(jid: &str) -> String {
+    jid.split('@').next().unwrap_or(jid).to_owned()
+}

@@ -1,0 +1,379 @@
+//! Call overlay: the incoming-call prompt and the in-call
+//! controls, driven by backend call events. One call at a time,
+//! matching the backend's contract.
+
+use backend::BackendCommand;
+use eframe::egui::{self, Align2, Area, Frame, Id, Margin, RichText, Sense, Vec2};
+
+use crate::icons::{self, Icon};
+use crate::state::App;
+use crate::theme::rgb;
+
+/// Phases the overlay renders.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CallUiPhase {
+    /// Ringing here, waiting for accept/reject.
+    Incoming,
+    /// Outgoing, ringing at the peer.
+    Ringing,
+    /// Accepted, media path being set up.
+    Connecting,
+    /// Media flowing.
+    Active,
+    /// Over; shows the reason and dismisses itself.
+    Ended,
+}
+
+/// UI state for the one live call.
+#[derive(Debug, Clone)]
+pub(crate) struct CallUi {
+    pub call_id: String,
+    pub chat_id: u64,
+    pub title: String,
+    pub video: bool,
+    pub phase: CallUiPhase,
+    pub seconds: u32,
+    pub muted: bool,
+    pub speaker: bool,
+    pub reason: Option<String>,
+    pub ended_at: Option<std::time::Instant>,
+    /// An accept/reject/end command was sent and not yet confirmed
+    /// by a phase change (or an error). While set, the action
+    /// buttons ignore further clicks: a double-click used to send a
+    /// second command the backend correctly rejected, surfacing a
+    /// scary error during a healthy call (logic review F18).
+    pub action_pending: bool,
+}
+
+impl CallUi {
+    fn status_line(&self) -> String {
+        match self.phase {
+            CallUiPhase::Incoming => {
+                if self.video {
+                    "Incoming video call".to_owned()
+                } else {
+                    "Incoming voice call".to_owned()
+                }
+            }
+            CallUiPhase::Ringing => "Ringing...".to_owned(),
+            CallUiPhase::Connecting => "Connecting...".to_owned(),
+            CallUiPhase::Active => format_duration(self.seconds),
+            CallUiPhase::Ended => self.reason.clone().unwrap_or_else(|| "Call ended".to_owned()),
+        }
+    }
+}
+
+/// m:ss, or h:mm:ss past an hour.
+fn format_duration(seconds: u32) -> String {
+    let (h, m, s) = (seconds / 3600, (seconds / 60) % 60, seconds % 60);
+    if h > 0 {
+        format!("{h}:{m:02}:{s:02}")
+    } else {
+        format!("{m}:{s:02}")
+    }
+}
+
+impl App {
+    /// The header phone button: starts a voice call to the open
+    /// chat (live and test mode only).
+    pub(crate) fn start_call_from_header(&mut self) {
+        if !self.live_mode {
+            self.notice =
+                Some("Calls work in live mode and test mode, not in the offline demo.".to_owned());
+            return;
+        }
+        if self.calls.active.is_some() {
+            self.notice = Some("A call is already in progress.".to_owned());
+            return;
+        }
+        match self.live_jid(self.selected_chat) {
+            Some(jid) => {
+                self.send_backend(BackendCommand::StartCall { chat_jid: jid, video: false });
+            }
+            None => {
+                self.notice = Some("Open a real chat to start a call.".to_owned());
+            }
+        }
+    }
+
+    /// Backend reports a ringing incoming call.
+    pub(crate) fn on_incoming_call(&mut self, call_id: &str, chat_id: u64, video: bool) {
+        if self.calls.active.is_some() {
+            return;
+        }
+        let title = self
+            .chats
+            .iter()
+            .find(|c| c.id == chat_id)
+            .map_or_else(|| "Unknown caller".to_owned(), |c| c.title.clone());
+        self.calls.active = Some(CallUi {
+            call_id: call_id.to_owned(),
+            chat_id,
+            title,
+            video,
+            phase: CallUiPhase::Incoming,
+            seconds: 0,
+            muted: false,
+            speaker: false,
+            reason: None,
+            ended_at: None,
+            action_pending: false,
+        });
+    }
+
+    /// Backend reports a call phase change.
+    pub(crate) fn on_call_changed(
+        &mut self,
+        call_id: &str,
+        chat_id: u64,
+        phase: backend::CallPhase,
+        seconds: u32,
+        reason: Option<String>,
+    ) {
+        use backend::CallPhase;
+        // Adopt an outgoing call the backend just confirmed: the
+        // UI state is created from its first Ringing event.
+        if self.calls.active.is_none() && phase == CallPhase::Ringing {
+            let title = self
+                .chats
+                .iter()
+                .find(|c| c.id == chat_id)
+                .map_or_else(|| "Unknown".to_owned(), |c| c.title.clone());
+            self.calls.active = Some(CallUi {
+                call_id: call_id.to_owned(),
+                chat_id,
+                title,
+                video: false,
+                phase: CallUiPhase::Ringing,
+                seconds: 0,
+                muted: false,
+                speaker: false,
+                reason: None,
+                ended_at: None,
+                action_pending: false,
+            });
+            return;
+        }
+        let Some(call) = &mut self.calls.active else {
+            return;
+        };
+        // Any phase report confirms the pending action (F18).
+        call.action_pending = false;
+        if !call.call_id.is_empty() && call.call_id != call_id {
+            return;
+        }
+        if call.chat_id != chat_id && call.phase != CallUiPhase::Incoming {
+            // An event for a different chat than the live call's:
+            // not ours to render.
+            return;
+        }
+        call.call_id = call_id.to_owned();
+        call.seconds = seconds;
+        match phase {
+            CallPhase::Ringing => {
+                if call.phase == CallUiPhase::Incoming {
+                    // Our own accept is not a phase change.
+                } else {
+                    call.phase = CallUiPhase::Ringing;
+                }
+            }
+            CallPhase::Connecting => call.phase = CallUiPhase::Connecting,
+            CallPhase::Active => call.phase = CallUiPhase::Active,
+            CallPhase::Ended => {
+                call.phase = CallUiPhase::Ended;
+                call.reason = reason;
+                if call.ended_at.is_none() {
+                    call.ended_at = Some(std::time::Instant::now());
+                }
+            }
+        }
+    }
+
+    /// Draws the call card over the conversation, if a call is in
+    /// any phase. Ended cards dismiss themselves after a few
+    /// seconds (or on tap).
+    pub(crate) fn draw_call_overlay(&mut self, ctx: &egui::Context) {
+        let Some(call) = self.calls.active.clone() else {
+            return;
+        };
+        if call.phase == CallUiPhase::Ended
+            && call.ended_at.is_some_and(|at| at.elapsed().as_secs() >= 4)
+        {
+            self.calls.active = None;
+            return;
+        }
+        let t = self.tokens;
+        let mut action: Option<&'static str> = None;
+        Area::new(Id::unique("call_overlay")).anchor(Align2::CENTER_CENTER, Vec2::ZERO).show(
+            ctx,
+            |ui| {
+                Frame::new()
+                    .fill(rgb(t.bg_panel))
+                    .corner_radius(16.0)
+                    .inner_margin(Margin::symmetric(28, 22))
+                    .show(ui, |ui| {
+                        ui.set_min_width(280.0);
+                        ui.vertical_centered(|ui| {
+                            // Avatar disc with the title initial.
+                            let (rect, _) =
+                                ui.allocate_exact_size(Vec2::splat(64.0), Sense::hover());
+                            ui.painter().circle_filled(rect.center(), 32.0, rgb(t.accent));
+                            let initial =
+                                call.title.chars().next().unwrap_or('?').to_uppercase().to_string();
+                            ui.painter().text(
+                                rect.center(),
+                                Align2::CENTER_CENTER,
+                                initial,
+                                egui::FontId::proportional(26.0),
+                                egui::Color32::WHITE,
+                            );
+                            ui.add_space(10.0);
+                            ui.label(
+                                RichText::new(&call.title)
+                                    .font(crate::theme::semibold(17.0))
+                                    .color(rgb(t.text_primary)),
+                            );
+                            ui.label(
+                                RichText::new(call.status_line())
+                                    .size(13.0)
+                                    .color(rgb(t.text_secondary)),
+                            );
+                            ui.add_space(16.0);
+                            ui.horizontal(|ui| {
+                                match call.phase {
+                                    CallUiPhase::Incoming => {
+                                        if call_button(ui, Icon::Phone, rgb(t.danger), "Decline") {
+                                            action = Some("reject");
+                                        }
+                                        ui.add_space(18.0);
+                                        if call_button(ui, Icon::Phone, rgb(t.accent), "Accept") {
+                                            action = Some("accept");
+                                        }
+                                    }
+                                    CallUiPhase::Ended => {
+                                        if crate::widgets::button(
+                                            ui,
+                                            t,
+                                            "Close",
+                                            crate::widgets::Btn::Secondary,
+                                        )
+                                        .clicked()
+                                        {
+                                            action = Some("close");
+                                        }
+                                    }
+                                    _ => {
+                                        let mute_icon =
+                                            if call.muted { Icon::MicOff } else { Icon::Mic };
+                                        if call_button(
+                                            ui,
+                                            mute_icon,
+                                            rgb(t.bg_panel_alt),
+                                            if call.muted { "Unmute" } else { "Mute" },
+                                        ) {
+                                            action = Some("mute");
+                                        }
+                                        ui.add_space(10.0);
+                                        if call_button(
+                                            ui,
+                                            Icon::Megaphone,
+                                            rgb(t.bg_panel_alt),
+                                            if call.speaker { "Speaker on" } else { "Speaker off" },
+                                        ) {
+                                            action = Some("speaker");
+                                        }
+                                        ui.add_space(10.0);
+                                        // Video is a later sub-phase;
+                                        // the button is honest about
+                                        // it instead of pretending.
+                                        call_button_disabled(
+                                            ui,
+                                            t,
+                                            Icon::Video,
+                                            "Video calls are not available yet",
+                                        );
+                                        ui.add_space(10.0);
+                                        if call_button(ui, Icon::Phone, rgb(t.danger), "End call") {
+                                            action = Some("end");
+                                        }
+                                    }
+                                }
+                            });
+                        });
+                    });
+            },
+        );
+        match action {
+            Some("accept") => {
+                if let Some(call) = &mut self.calls.active {
+                    if !call.action_pending {
+                        call.action_pending = true;
+                        self.send_backend(BackendCommand::AcceptCall);
+                    }
+                }
+            }
+            Some("reject") => {
+                if let Some(call) = &mut self.calls.active {
+                    if !call.action_pending {
+                        call.action_pending = true;
+                        self.send_backend(BackendCommand::RejectCall);
+                    }
+                }
+            }
+            Some("end") => {
+                if let Some(call) = &mut self.calls.active {
+                    if !call.action_pending {
+                        call.action_pending = true;
+                        self.send_backend(BackendCommand::EndCall);
+                    }
+                }
+            }
+            Some("mute") => {
+                if let Some(call) = &mut self.calls.active {
+                    call.muted = !call.muted;
+                    let muted = call.muted;
+                    self.send_backend(BackendCommand::SetCallMuted { muted });
+                }
+            }
+            Some("speaker") => {
+                if let Some(call) = &mut self.calls.active {
+                    call.speaker = !call.speaker;
+                    let speaker = call.speaker;
+                    self.send_backend(BackendCommand::SetCallSpeaker { speaker });
+                }
+            }
+            Some("close") => self.calls.active = None,
+            _ => {}
+        }
+    }
+}
+
+/// One round call-control button; returns true on click.
+fn call_button(ui: &mut egui::Ui, icon: Icon, bg: egui::Color32, tooltip: &str) -> bool {
+    let (rect, response) = ui.allocate_exact_size(Vec2::splat(52.0), Sense::click());
+    ui.painter().circle_filled(rect.center(), 26.0, bg);
+    icons::draw(ui.painter(), icon, rect.center(), 26.0, egui::Color32::WHITE, bg);
+    response.on_hover_text(tooltip).clicked()
+}
+
+/// The disabled variant (greyed, hover-only, explains itself).
+fn call_button_disabled(ui: &mut egui::Ui, t: core::theme::Tokens, icon: Icon, tooltip: &str) {
+    let (rect, response) = ui.allocate_exact_size(Vec2::splat(52.0), Sense::hover());
+    let bg = rgb(t.bg_panel_alt);
+    ui.painter().circle_filled(rect.center(), 26.0, bg);
+    icons::draw(ui.painter(), icon, rect.center(), 26.0, rgb(t.text_secondary), bg);
+    response.on_hover_text(tooltip);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_duration;
+
+    #[test]
+    fn durations_format_like_a_call_timer() {
+        assert_eq!(format_duration(0), "0:00");
+        assert_eq!(format_duration(65), "1:05");
+        assert_eq!(format_duration(3599), "59:59");
+        assert_eq!(format_duration(3661), "1:01:01");
+    }
+}

@@ -1,0 +1,60 @@
+[package]
+name = "app"
+version.workspace = true
+publish = false
+description = "Zaprust application: a thin egui shell over core. Ships the zaprust binary."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+# The product binary keeps the brand name; the crate is just `app`.
+[[bin]]
+name = "zaprust"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+core = { path = "../core", features = ["keyring-store"] }
+backend = { path = "../backend", features = ["calls"] }
+store = { path = "../store" }
+quick-replies = { path = "../features/quick-replies" }
+export-chat = { path = "../features/export-chat" }
+stickers = { path = "../features/stickers" }
+giphy = { path = "../features/giphy" }
+directories = "6"
+open = "5"
+eframe = { version = "0.37", default-features = false, features = ["default_fonts", "glow", "x11", "wayland"] }
+egui = { version = "0.37", features = ["default_fonts"] }
+# Bundled monochrome Noto Emoji: without this the emoji picker,
+# reactions and message content render as blank boxes. It stays as
+# the last-resort fallback; `color_fonts` turns on epaint's color
+# glyph rasterizer (COLR, sbix, CBDT) so the device's own color
+# emoji font, registered in theme::install_fonts, renders emoji in
+# color wherever the device provides one (see emoji_font.rs).
+epaint = { version = "0.37", features = ["monochrome_emoji_fonts", "color_fonts"] }
+
+serde_json = "1"
+# No default features: the defaults add gzip content decoding, which
+# the update checker does not need (servers fall back to identity
+# encoding). Only the rustls TLS stack is kept, matching the feature
+# the protocol library's own ureq client enables.
+ureq = { version = "3", default-features = false, features = ["rustls"] }
+toml = { workspace = true }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+notify-rust = "4"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls-native-roots"] }
+
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender = "0.2"
+rfd = { version = "0.17.2", default-features = false, features = ["xdg-portal"] }
+# stays native; only the image read comes from here).
+cpal = "0.18"
+ogg = "0.9"
+opus = "0.4.0"
+# Bundled libopus: the voice-note encoder builds its own C sources so
+# no platform needs a system opus package.
+opusic-sys = { version = "0.7", features = ["bundled"] }

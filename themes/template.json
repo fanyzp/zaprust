@@ -1,0 +1,7 @@
+{
+  "name": "My Theme",
+  "extends": "dark",
+  "tokens": {
+    "accent": "#FF5C8A"
+  }
+}

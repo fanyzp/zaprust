@@ -1,0 +1,187 @@
+//! Outgoing message construction and sending: text, media,
+//! location and sticker builders over the library's message
+//! protobufs, plus the ephemeral and view-once wrappers.
+
+use whatsapp_rust::prelude::*;
+
+use crate::QuotedRef;
+
+/// One outgoing media payload, borrowed from the command.
+pub(super) struct OutgoingMedia<'a> {
+    pub(super) kind: crate::MediaKind,
+    pub(super) data: Vec<u8>,
+    pub(super) mime: &'a str,
+    pub(super) caption: &'a str,
+    pub(super) file_name: Option<&'a str>,
+    pub(super) gif_playback: bool,
+    pub(super) seconds: u32,
+    pub(super) view_once: bool,
+    pub(super) ephemeral_secs: u32,
+}
+
+/// Stamps a chat's disappearing-messages timer onto an outgoing
+/// message (the wire carries it as the context-info expiration,
+/// the same field the library's own send options set). A zero
+/// timer leaves the message untouched.
+pub(super) fn stamp_ephemeral(message: &mut wa::Message, ephemeral_secs: u32) {
+    if ephemeral_secs > 0 {
+        message.set_ephemeral_expiration(ephemeral_secs);
+    }
+}
+
+/// Uploads the payload through the library and sends the typed
+/// media message. Voice notes go out as push-to-talk audio; videos
+/// flagged `gif_playback` loop like GIFs. Stickers have no library
+/// builder, so their proto is assembled from the upload response
+/// exactly the way the library's own image builder assembles its
+/// fields. Photos and videos marked view-once go out wrapped in the
+/// same `viewOnceMessageV2` wrapper the incoming side unwraps.
+/// Returns the library's send result so the caller can report the
+/// assigned protocol ID.
+pub(super) async fn send_media(
+    client: &whatsapp_rust::Client,
+    jid: &Jid,
+    outgoing: OutgoingMedia<'_>,
+) -> Result<SendResult, String> {
+    use whatsapp_rust::media;
+    use whatsapp_rust::wacore::download::MediaType;
+
+    let media_type = match outgoing.kind {
+        crate::MediaKind::Photo => MediaType::Image,
+        crate::MediaKind::Video => MediaType::Video,
+        crate::MediaKind::Voice => MediaType::Audio,
+        crate::MediaKind::Document => MediaType::Document,
+        crate::MediaKind::Sticker => MediaType::Sticker,
+    };
+    let upload = client
+        .upload(outgoing.data, media_type, whatsapp_rust::upload::UploadOptions::new())
+        .await
+        .map_err(|e| format!("upload: {e}"))?;
+
+    let message = match outgoing.kind {
+        crate::MediaKind::Photo => {
+            let mut opts = media::ImageOptions::default().with_mimetype(outgoing.mime);
+            if !outgoing.caption.is_empty() {
+                opts = opts.with_caption(outgoing.caption);
+            }
+            media::image_message(upload, opts)
+        }
+        crate::MediaKind::Video => {
+            let mut opts = media::VideoOptions::default()
+                .with_mimetype(outgoing.mime)
+                .with_gif_playback(outgoing.gif_playback);
+            if !outgoing.caption.is_empty() {
+                opts = opts.with_caption(outgoing.caption);
+            }
+            if outgoing.seconds > 0 {
+                opts = opts.with_duration_seconds(outgoing.seconds);
+            }
+            media::video_message(upload, opts)
+        }
+        crate::MediaKind::Voice => {
+            let mut opts =
+                media::AudioOptions::default().with_mimetype(outgoing.mime).with_ptt(true);
+            if outgoing.seconds > 0 {
+                opts = opts.with_duration_seconds(outgoing.seconds);
+            }
+            media::audio_message(upload, opts)
+        }
+        crate::MediaKind::Document => {
+            let mut opts = media::DocumentOptions::default().with_mimetype(outgoing.mime);
+            if let Some(name) = outgoing.file_name {
+                opts = opts.with_file_name(name);
+            }
+            if !outgoing.caption.is_empty() {
+                opts = opts.with_caption(outgoing.caption);
+            }
+            media::document_message(upload, opts)
+        }
+        crate::MediaKind::Sticker => sticker_message(upload, outgoing.mime),
+    };
+    let mut message = message;
+    stamp_ephemeral(&mut message, outgoing.ephemeral_secs);
+    let message = apply_view_once(message, outgoing.kind, outgoing.view_once);
+    client.send_message(jid.clone(), message).await.map_err(|e| format!("send: {e}"))
+}
+
+/// Builds the outgoing text message: bare text, or extendedText
+/// carrying the reply context (the quoted message's protocol id, its
+/// author as the participant, and a text preview of its body). A
+/// missing author JID falls back to the chat address, which is the
+/// right participant for direct chats.
+pub(super) fn outgoing_text_message(
+    body: &str,
+    quoted: Option<&QuotedRef>,
+    chat_jid: &Jid,
+) -> wa::Message {
+    use whatsapp_rust::prelude::MessageBuilderExt;
+    match quoted {
+        Some(q) => {
+            let mut context = wa::ContextInfo::default();
+            context.stanza_id = Some(q.message_id.clone());
+            context.participant =
+                Some(q.sender_jid.clone().unwrap_or_else(|| chat_jid.to_string()));
+            context.quoted_message = MessageField::some(wa::Message::text(q.excerpt.clone()));
+            wa::Message::text_with_context(body, context)
+        }
+        None => wa::Message::text(body),
+    }
+}
+
+/// Wraps a photo or video in the `viewOnceMessageV2` wrapper when
+/// `view_once` is set; other kinds ignore the flag, matching the
+/// receive side which only unwraps media.
+pub(super) fn apply_view_once(
+    message: wa::Message,
+    kind: crate::MediaKind,
+    view_once: bool,
+) -> wa::Message {
+    if !view_once || !matches!(kind, crate::MediaKind::Photo | crate::MediaKind::Video) {
+        return message;
+    }
+    let mut inner = wa::message::FutureProofMessage::default();
+    inner.message = MessageField::some(message);
+    let mut wrapper = wa::Message::default();
+    wrapper.view_once_message_v2 = MessageField::some(inner);
+    wrapper
+}
+
+/// Builds a location message proto: degrees plus an optional place
+/// name.
+pub(super) fn outgoing_location_message(name: &str, latitude: f64, longitude: f64) -> wa::Message {
+    let mut message = wa::Message::default();
+    message.location_message = MessageField::some({
+        let mut location = wa::message::LocationMessage::default();
+        location.degrees_latitude = Some(latitude);
+        location.degrees_longitude = Some(longitude);
+        if !name.is_empty() {
+            location.name = Some(name.to_owned());
+        }
+        location
+    });
+    message
+}
+
+/// Builds a sticker message from an upload response. Mirrors the
+/// field population of the library's media builders (the library
+/// ships no sticker builder at the pinned revision).
+pub(super) fn sticker_message(
+    upload: whatsapp_rust::upload::UploadResponse,
+    mime: &str,
+) -> whatsapp_rust::prelude::wa::Message {
+    use whatsapp_rust::prelude::wa;
+    let mut message = wa::Message::default();
+    message.sticker_message = whatsapp_rust::prelude::MessageField::some({
+        let mut sticker = wa::message::StickerMessage::default();
+        sticker.url = Some(upload.url);
+        sticker.direct_path = Some(upload.direct_path);
+        sticker.media_key = Some(upload.media_key.to_vec());
+        sticker.file_sha256 = Some(upload.file_sha256.to_vec());
+        sticker.file_enc_sha256 = Some(upload.file_enc_sha256.to_vec());
+        sticker.file_length = Some(upload.file_length);
+        sticker.media_key_timestamp = Some(upload.media_key_timestamp);
+        sticker.mimetype = Some(mime.to_owned());
+        sticker
+    });
+    message
+}

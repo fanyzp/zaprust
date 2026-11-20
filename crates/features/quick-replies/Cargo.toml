@@ -1,0 +1,14 @@
+[package]
+name = "quick-replies"
+version.workspace = true
+description = "Zaprust native feature: canned quick replies for the composer."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true }

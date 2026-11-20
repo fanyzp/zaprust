@@ -1,0 +1,746 @@
+//! Rich-message UI: the per-message action implementations
+//! (react, translate, remind, edit, delete) and the shared
+//! popup helpers live here; the pickers are in
+//! `pickers`, the menus and dialogs in `menus`, and polls in
+//! `poll`. Everything here drives real state; demo and live
+//! share the same code paths wherever the backend supports them.
+
+pub(crate) mod emoji;
+mod menus;
+mod pickers;
+mod poll;
+
+use backend::BackendCommand;
+use core::model::{Message, MessageKind};
+use eframe::egui::{self, Align2, CornerRadius, Margin, RichText, Vec2};
+
+use crate::state::{App, UiConfirm};
+use crate::theme::rgb;
+
+/// The six quick reactions offered by the picker (WhatsApp's set).
+pub(crate) const QUICK_REACTIONS: [&str; 6] = ["👍", "❤️", "😂", "😮", "😢", "🙏"];
+
+/// Runs a picker tile add inside a scope with per-state fills: a
+/// resting panel-alt fill, one hover step and one pressed step,
+/// the same derivation the shared chip uses. The stock tile
+/// buttons otherwise gave no pointer feedback at all.
+fn tile_add<R>(
+    ui: &mut egui::Ui,
+    t: core::theme::Tokens,
+    add: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    ui.scope(|ui| {
+        let v = ui.visuals_mut();
+        v.widgets.inactive.bg_fill = rgb(t.bg_panel_alt);
+        v.widgets.inactive.corner_radius = CornerRadius::same(8);
+        v.widgets.hovered.bg_fill = rgb(core::theme::hover_step(t.bg_panel_alt));
+        v.widgets.hovered.corner_radius = CornerRadius::same(8);
+        v.widgets.active.bg_fill = rgb(core::theme::pressed_step(t.bg_panel_alt));
+        v.widgets.active.corner_radius = CornerRadius::same(8);
+        add(ui)
+    })
+    .inner
+}
+
+/// Shows a popup frame and paints its glass specular edge once the
+/// frame's rect is known. A free function, not a method, so the
+/// caller can pass `self.popup_frame()` (whose borrow of self ends
+/// as soon as the frame is built) alongside a closure that borrows
+/// self mutably.
+fn show_popup<R>(
+    frame: egui::Frame,
+    t: core::theme::Tokens,
+    ui: &mut egui::Ui,
+    add: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    let inner = frame.show(ui, add);
+    crate::theme::paint_glass_edge(ui.painter(), inner.response.rect, 14.0, t);
+    inner.inner
+}
+
+impl App {
+    /// Toggles my reaction on a message (demo + live).
+    pub(crate) fn apply_reaction(&mut self, msg_id: u64, emoji: &str) {
+        let current = self.my_reactions.get(&msg_id).cloned();
+        let mut new_reactions: Option<Vec<(String, u32)>> = None;
+        let mut new_mine: Option<String> = None;
+        if let Some(msg) = self.conversation.iter_mut().find(|m| m.id == msg_id) {
+            let (reactions, mine) =
+                core::rich::apply_my_reaction(&msg.reactions, current.as_deref(), emoji);
+            msg.reactions = reactions.clone();
+            new_reactions = Some(reactions);
+            new_mine = mine;
+        }
+        match &new_mine {
+            Some(e) => {
+                self.my_reactions.insert(msg_id, e.clone());
+            }
+            None => {
+                self.my_reactions.remove(&msg_id);
+            }
+        }
+        if !self.live_mode {
+            let chat_id = self.selected_chat;
+            if let Some(chat) = self.chats.iter_mut().find(|c| c.id == chat_id) {
+                if let Some(msg) = chat.messages.iter_mut().find(|m| m.id == msg_id) {
+                    if let Some(r) = &new_reactions {
+                        msg.reactions = r.clone();
+                    }
+                }
+            }
+        }
+        if self.live_mode {
+            let chat_id = self.selected_chat;
+            let from_me = self
+                .conversation
+                .iter()
+                .find(|m| m.id == msg_id)
+                .is_some_and(|m| m.sender.is_none());
+            if let (Some(jid), Some(proto)) = (
+                self.live.as_ref().and_then(|s| s.jids.get(&chat_id).cloned()),
+                self.protocol_ids.get(&msg_id).cloned(),
+            ) {
+                self.send_backend(BackendCommand::React {
+                    chat_jid: jid,
+                    message_id: proto,
+                    sender_jid: None,
+                    from_me,
+                    emoji: new_mine.clone().unwrap_or_default(),
+                });
+            }
+        }
+        self.reaction_picker_id = None;
+    }
+
+    /// Starts editing one of my own text messages.
+    pub(crate) fn start_edit(&mut self, msg_id: u64) {
+        if let Some(msg) = self.conversation.iter().find(|m| m.id == msg_id) {
+            self.composer.draft = msg.body.clone();
+            self.composer.editing_id = Some(msg_id);
+        }
+    }
+
+    /// Applies the composer edit to the message being edited.
+    pub(crate) fn apply_edit(&mut self, msg_id: u64, new_body: &str) {
+        for msg in &mut self.conversation {
+            if msg.id == msg_id {
+                msg.body = new_body.to_owned();
+                msg.edited = true;
+            }
+        }
+        if !self.live_mode {
+            let chat_id = self.selected_chat;
+            if let Some(chat) = self.chats.iter_mut().find(|c| c.id == chat_id) {
+                for msg in &mut chat.messages {
+                    if msg.id == msg_id {
+                        msg.body = new_body.to_owned();
+                        msg.edited = true;
+                    }
+                }
+            }
+        }
+        if self.live_mode {
+            let chat_id = self.selected_chat;
+            if let (Some(jid), Some(proto)) = (
+                self.live.as_ref().and_then(|s| s.jids.get(&chat_id).cloned()),
+                self.protocol_ids.get(&msg_id).cloned(),
+            ) {
+                // The backend edits the message for real; the
+                // local update above is the immediate view and the
+                // archive follows the backend's edit event.
+                self.send_backend(BackendCommand::EditMessage {
+                    chat_jid: jid,
+                    message_id: proto,
+                    new_body: new_body.to_owned(),
+                });
+            }
+        }
+    }
+
+    /// Deletes one of my messages for everyone (local state +
+    /// backend command; the backend's library limitation is
+    /// surfaced as an event, not hidden).
+    pub(crate) fn delete_for_everyone(&mut self, msg_id: u64) {
+        for msg in &mut self.conversation {
+            if msg.id == msg_id {
+                msg.deleted = true;
+            }
+        }
+        if !self.live_mode {
+            let chat_id = self.selected_chat;
+            if let Some(chat) = self.chats.iter_mut().find(|c| c.id == chat_id) {
+                for msg in &mut chat.messages {
+                    if msg.id == msg_id {
+                        msg.deleted = true;
+                    }
+                }
+            }
+        }
+        if self.live_mode {
+            let chat_id = self.selected_chat;
+            if let (Some(jid), Some(proto)) = (
+                self.live.as_ref().and_then(|s| s.jids.get(&chat_id).cloned()),
+                self.protocol_ids.get(&msg_id).cloned(),
+            ) {
+                self.send_backend(BackendCommand::RevokeMessage {
+                    chat_jid: jid,
+                    message_id: proto,
+                });
+            }
+        }
+    }
+
+    /// The under-bubble strip: the flag lines (forwarded, pinned,
+    /// starred) and the small flag chip (retained after delete).
+    /// Rendered by the conversation under each
+    /// bubble; returns nothing but draws into `ui`.
+    pub(crate) fn draw_message_strip(&self, ui: &mut egui::Ui, msg: &Message) {
+        let t = self.tokens;
+        let mine = msg.sender.is_none();
+        let mut texts: Vec<String> = Vec::new();
+        if msg.forwarded {
+            texts.push("➦ Forwarded".to_owned());
+        }
+        if msg.pinned {
+            texts.push("📌 Pinned".to_owned());
+        }
+        if msg.starred {
+            texts.push("★ Starred".to_owned());
+        }
+        if texts.is_empty() && !msg.deleted_by_sender {
+            return;
+        }
+        ui.with_layout(
+            if mine {
+                egui::Layout::right_to_left(egui::Align::Min)
+            } else {
+                egui::Layout::left_to_right(egui::Align::Min)
+            },
+            |ui| {
+                ui.vertical(|ui| {
+                    for text in texts {
+                        egui::Frame::new()
+                            .fill(rgb(t.bg_panel_alt))
+                            .corner_radius(CornerRadius::same(6))
+                            .inner_margin(Margin::symmetric(8, 4))
+                            .show(ui, |ui| {
+                                ui.label(
+                                    RichText::new(text).size(12.0).color(rgb(t.text_secondary)),
+                                );
+                            });
+                    }
+                    ui.horizontal(|ui| {
+                        if msg.deleted_by_sender {
+                            chip_label(ui, "🗑 deleted by sender, retained locally", t.danger, t);
+                        }
+                    });
+                });
+            },
+        );
+    }
+
+    /// All conversation popups: context menu, reaction picker,
+    /// message info, poll builder, rich menu, picker shell, and
+    /// the quote chip.
+    pub(crate) fn draw_conversation_popups(&mut self, ctx: &egui::Context) {
+        self.draw_create_group_dialog(ctx);
+        self.draw_join_group_dialog(ctx);
+        self.draw_ui_confirm(ctx);
+        self.draw_context_menu(ctx);
+        self.draw_forward_picker(ctx);
+        self.draw_reaction_picker(ctx);
+        self.draw_message_info(ctx);
+        self.draw_rich_menu(ctx);
+        self.draw_poll_builder(ctx);
+        self.draw_location_dialog(ctx);
+        self.draw_picker(ctx);
+    }
+
+    /// The attach-menu location form: place name plus editable
+    /// coordinates, centered like the poll builder it sits next to.
+    fn draw_location_dialog(&mut self, ctx: &egui::Context) {
+        let open = self.composer.location_draft.is_some();
+        let Some(p) = crate::anim::popup_phase(ctx, "location_dialog", open, self.motion) else {
+            return;
+        };
+        let t = self.tokens;
+        egui::Area::new(egui::Id::unique("location_dialog"))
+            .anchor(Align2::CENTER_CENTER, Vec2::new(0.0, -40.0))
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                if p < 0.999 {
+                    ui.set_opacity(p);
+                }
+                show_popup(self.popup_frame(), t, ui, |ui| {
+                    ui.set_width(280.0);
+                    let Some(draft) = self.composer.location_draft.as_mut() else { return };
+                    ui.label(
+                        RichText::new(crate::i18n::t("attach.location"))
+                            .font(crate::theme::semibold(15.0)),
+                    );
+                    ui.add_space(6.0);
+                    ui.label(
+                        RichText::new(crate::i18n::t("attach.location_caption"))
+                            .size(12.0)
+                            .color(rgb(t.text_secondary)),
+                    );
+                    ui.add_space(6.0);
+                    ui.label(
+                        RichText::new(crate::i18n::t("attach.location_name"))
+                            .font(crate::theme::medium(13.0)),
+                    );
+                    crate::widgets::text_field(
+                        ui,
+                        t,
+                        &mut draft.name,
+                        &crate::i18n::t("attach.location_name_hint"),
+                        ui.available_width(),
+                    );
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        let half = (ui.available_width() - 12.0) / 2.0;
+                        ui.vertical(|ui| {
+                            ui.label(RichText::new("Lat").font(crate::theme::medium(13.0)));
+                            crate::widgets::text_field(ui, t, &mut draft.latitude, "-6.2", half);
+                        });
+                        ui.vertical(|ui| {
+                            ui.label(RichText::new("Lon").font(crate::theme::medium(13.0)));
+                            crate::widgets::text_field(ui, t, &mut draft.longitude, "106.8", half);
+                        });
+                    });
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if crate::widgets::button(
+                            ui,
+                            t,
+                            &crate::i18n::t("common.cancel"),
+                            crate::widgets::Btn::Secondary,
+                        )
+                        .clicked()
+                        {
+                            self.composer.location_draft = None;
+                        }
+                        if crate::widgets::button(
+                            ui,
+                            t,
+                            &crate::i18n::t("attach.location_send"),
+                            crate::widgets::Btn::Primary,
+                        )
+                        .clicked()
+                        {
+                            self.send_location_draft();
+                        }
+                    });
+                });
+            });
+    }
+
+    /// The house confirmation modal for destructive actions
+    /// parked in `ui_confirm` (removing a group member, leaving
+    /// a group): a centered glass card over the unified dim,
+    /// naming its target, the safe action first and the
+    /// destructive action last. Escape or a click on the dim
+    /// cancels; only the confirm button performs the action, so
+    /// the click that asked (a dock row, a kebab menu item) can
+    /// never be the click that fires it.
+    fn draw_ui_confirm(&mut self, ctx: &egui::Context) {
+        let t = self.tokens;
+        // Snapshot the parked action while it exists, like the
+        // other popups: the phase machine keeps drawing through
+        // the exit after the decision clears the field.
+        if let Some(confirm) = &self.ui_confirm {
+            ctx.data_mut(|d| d.insert_temp(egui::Id::unique("ui_confirm_snap"), confirm.clone()));
+        }
+        let Some(p) =
+            crate::anim::popup_phase(ctx, "ui_confirm", self.ui_confirm.is_some(), self.motion)
+        else {
+            return;
+        };
+        let exiting = self.ui_confirm.is_none();
+        let Some(confirm) =
+            ctx.data(|d| d.get_temp::<UiConfirm>(egui::Id::unique("ui_confirm_snap")))
+        else {
+            return;
+        };
+        let (title, body, confirm_label) = match &confirm {
+            UiConfirm::RemoveMember { name, .. } => (
+                crate::i18n::t("profile.remove_member_title"),
+                crate::i18n::tf("profile.remove_member_body", "name", name),
+                crate::i18n::t("common.remove"),
+            ),
+            UiConfirm::LeaveGroup { name, .. } => (
+                crate::i18n::t("profile.leave_group"),
+                crate::i18n::tf("profile.leave_group_body", "name", name),
+                crate::i18n::t("profile.leave_group"),
+            ),
+        };
+        let mut decision: Option<bool> = None;
+        if !exiting && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            decision = Some(false);
+        }
+        egui::Area::new(egui::Id::unique("ui_confirm_dim"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(egui::Pos2::ZERO)
+            .show(ctx, |ui| {
+                let screen = ui.ctx().content_rect();
+                let resp = ui.allocate_rect(screen, egui::Sense::click());
+                ui.painter().rect_filled(screen, 0.0, crate::theme::modal_dim(p));
+                if resp.clicked() && !exiting {
+                    decision = Some(false);
+                }
+            });
+        egui::Area::new(egui::Id::unique("ui_confirm"))
+            .pivot(Align2::CENTER_CENTER)
+            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                if p < 0.999 {
+                    ui.set_opacity(p);
+                }
+                // A destructive decision gets an opaque card:
+                // the glass fill lets a bright surface behind
+                // ghost through, and nothing behind a Remove or
+                // Leave question may compete with its text.
+                let frame = self.popup_frame().fill(rgb(core::theme::elevated_step(t.bg_panel)));
+                show_popup(frame, t, ui, |ui| {
+                    ui.set_width(320.0);
+                    ui.add_enabled_ui(!exiting, |ui| {
+                        ui.label(RichText::new(&title).size(14.0).strong());
+                        ui.add_space(4.0);
+                        ui.label(RichText::new(&body).size(12.5).color(rgb(t.text_secondary)));
+                        ui.add_space(10.0);
+                        // Dialog convention: the safe action
+                        // first (left), the destructive action
+                        // last (right), never adjacent to the
+                        // surface that asked for it.
+                        ui.horizontal(|ui| {
+                            if crate::widgets::button(
+                                ui,
+                                t,
+                                &crate::i18n::t("common.cancel"),
+                                crate::widgets::Btn::Secondary,
+                            )
+                            .clicked()
+                            {
+                                decision = Some(false);
+                            }
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if crate::widgets::button(
+                                        ui,
+                                        t,
+                                        &confirm_label,
+                                        crate::widgets::Btn::Danger,
+                                    )
+                                    .clicked()
+                                    {
+                                        decision = Some(true);
+                                    }
+                                },
+                            );
+                        });
+                    });
+                });
+            });
+        crate::anim::popup_transform(
+            ctx,
+            egui::Id::unique("ui_confirm"),
+            ctx.content_rect().center(),
+            p,
+        );
+        match decision {
+            Some(true) => match self.ui_confirm.take() {
+                Some(UiConfirm::RemoveMember { chat_id, address, .. }) => {
+                    self.group_participant_op(
+                        chat_id,
+                        Some(address),
+                        backend::ParticipantOp::Remove,
+                    );
+                }
+                Some(UiConfirm::LeaveGroup { chat_id, .. }) => {
+                    self.leave_group(chat_id);
+                    self.profile_open = false;
+                    self.profile_form_for = None;
+                    self.groups.members_requested.remove(&chat_id);
+                }
+                None => {}
+            },
+            Some(false) => {
+                self.ui_confirm = None;
+            }
+            None => {}
+        }
+    }
+
+    fn popup_frame(&self) -> egui::Frame {
+        // Every conversation popup floats over the message
+        // stream, so every one gets the stacked-panel glass
+        // treatment: the near-opaque fill whose content behind
+        // cannot bleed through (see theme::glass_panel_frame).
+        crate::theme::glass_panel_frame(self.tokens, 14).inner_margin(Margin::symmetric(12, 10))
+    }
+}
+
+fn chip_label(ui: &mut egui::Ui, text: &str, color: core::theme::Rgb, t: core::theme::Tokens) {
+    egui::Frame::new()
+        .fill(rgb(t.bg_panel_alt))
+        .corner_radius(CornerRadius::same(7))
+        .inner_margin(Margin::symmetric(6, 2))
+        .show(ui, |ui| {
+            ui.label(RichText::new(text).size(10.5).color(rgb(color)));
+        });
+}
+
+impl App {
+    /// Forwards one message into another chat. Live mode relays
+    /// through the backend (session-scoped); demo mode copies the
+    /// message locally with the forwarded flag set.
+    pub(crate) fn do_forward(&mut self, msg_id: u64, target_chat: u64) {
+        let source_chat = self.selected_chat;
+        let Some(msg) = self.conversation.iter().find(|m| m.id == msg_id).cloned() else {
+            return;
+        };
+        if self.live.is_some() {
+            let (Some(from_jid), Some(to_jid), Some(pid)) = (
+                self.live_jid(source_chat),
+                self.live_jid(target_chat),
+                self.protocol_ids.get(&msg_id).cloned(),
+            ) else {
+                self.notice = Some("That message cannot be forwarded in this session.".to_owned());
+                return;
+            };
+            self.send_backend(backend::BackendCommand::ForwardMessage {
+                from_chat_jid: from_jid,
+                message_id: pid,
+                to_chat_jid: to_jid,
+            });
+            // No optimistic copy: the forwarded message appears when
+            // the backend confirms it with its own upsert. A local
+            // copy used a synthetic id the real message never
+            // matched, so forwards showed twice and a failed forward
+            // still claimed success (Round 3 finding).
+            return;
+        }
+        // Demo: append a copy to the target chat's stored messages.
+        let new_id = self
+            .chats
+            .iter()
+            .flat_map(|c| c.messages.iter().map(|m| m.id))
+            .chain(self.conversation.iter().map(|m| m.id))
+            .max()
+            .unwrap_or(0)
+            + 1;
+        let mut copy = msg.clone();
+        copy.id = new_id;
+        copy.sender = None;
+        copy.forwarded = true;
+        copy.delivery = Some(core::model::Delivery::Read);
+        copy.reactions = Vec::new();
+        if target_chat == source_chat {
+            self.conversation.push(copy);
+        } else if let Some(chat) = self.chats.iter_mut().find(|c| c.id == target_chat) {
+            chat.messages.push(copy);
+            chat.preview = msg.body.clone();
+        }
+        self.notice = Some("Message forwarded.".to_owned());
+    }
+
+    /// Stars/unstars one message: local state + archive flag +
+    /// backend command in live mode.
+    pub(crate) fn toggle_star_message(&mut self, msg_id: u64) {
+        let Some(pos) = self.conversation.iter().position(|m| m.id == msg_id) else {
+            return;
+        };
+        let msg = self.conversation[pos].clone();
+        let on = !msg.starred;
+        self.conversation[pos].starred = on;
+        // Demo mode: mirror into the store copy too, or switching
+        // chats through a path that calls select_chat_now directly
+        // (community home, info dock) reloads the conversation
+        // from the store copy and silently reverts the star. The
+        // listed chat wins when it has the message; otherwise the
+        // detached announcement chat is the store copy.
+        if !self.live_mode {
+            let chat_id = self.selected_chat;
+            let mut mirrored = false;
+            if let Some(chat) = self.chats.iter_mut().find(|c| c.id == chat_id) {
+                if let Some(m) = chat.messages.iter_mut().find(|m| m.id == msg_id) {
+                    m.starred = on;
+                    mirrored = true;
+                }
+            }
+            if !mirrored {
+                if let Some(detached) = self.detached_chat.as_mut().filter(|c| c.id == chat_id) {
+                    if let Some(m) = detached.messages.iter_mut().find(|m| m.id == msg_id) {
+                        m.starred = on;
+                    }
+                }
+            }
+        }
+        // Mirror into the live session copy too, or the next
+        // sync_conversation rebuild un-flips the star (logic
+        // review F15).
+        if let Some(msgs) = self.live.as_mut().and_then(|s| s.messages.get_mut(&self.selected_chat))
+        {
+            for (_, m) in msgs.iter_mut() {
+                if m.id == msg_id {
+                    m.starred = on;
+                }
+            }
+        }
+        if self.live.is_some() {
+            self.set_live_flag(self.selected_chat, msg_id, store::FLAG_STARRED, on);
+            if let (Some(jid), Some(pid)) =
+                (self.live_jid(self.selected_chat), self.protocol_ids.get(&msg_id).cloned())
+            {
+                self.send_backend(backend::BackendCommand::StarMessage {
+                    chat_jid: jid,
+                    message_id: pid,
+                    sender_jid: None,
+                    from_me: msg.sender.is_none(),
+                    star: on,
+                });
+            }
+        }
+    }
+
+    /// Pins/unpins one message: same wiring as star.
+    pub(crate) fn toggle_pin_message(&mut self, msg_id: u64) {
+        let Some(pos) = self.conversation.iter().position(|m| m.id == msg_id) else {
+            return;
+        };
+        let msg = self.conversation[pos].clone();
+        let on = !msg.pinned;
+        self.conversation[pos].pinned = on;
+        // Demo mode: mirror into the store copy too, the same
+        // rule as toggle_star_message, or a direct select_chat_now
+        // switch silently reverts the pin.
+        if !self.live_mode {
+            let chat_id = self.selected_chat;
+            let mut mirrored = false;
+            if let Some(chat) = self.chats.iter_mut().find(|c| c.id == chat_id) {
+                if let Some(m) = chat.messages.iter_mut().find(|m| m.id == msg_id) {
+                    m.pinned = on;
+                    mirrored = true;
+                }
+            }
+            if !mirrored {
+                if let Some(detached) = self.detached_chat.as_mut().filter(|c| c.id == chat_id) {
+                    if let Some(m) = detached.messages.iter_mut().find(|m| m.id == msg_id) {
+                        m.pinned = on;
+                    }
+                }
+            }
+        }
+        // Mirror into the live session copy too (logic review F15).
+        if let Some(msgs) = self.live.as_mut().and_then(|s| s.messages.get_mut(&self.selected_chat))
+        {
+            for (_, m) in msgs.iter_mut() {
+                if m.id == msg_id {
+                    m.pinned = on;
+                }
+            }
+        }
+        if self.live.is_some() {
+            self.set_live_flag(self.selected_chat, msg_id, store::FLAG_PINNED_MESSAGE, on);
+            if let (Some(jid), Some(pid)) =
+                (self.live_jid(self.selected_chat), self.protocol_ids.get(&msg_id).cloned())
+            {
+                self.send_backend(backend::BackendCommand::PinMessage {
+                    chat_jid: jid,
+                    message_id: pid,
+                    sender_jid: None,
+                    from_me: msg.sender.is_none(),
+                    pin: on,
+                });
+            }
+        }
+    }
+
+    /// Asks the backend to download a media message's bytes
+    /// (session-scoped; the reply arrives as a MediaSaved event).
+    pub(crate) fn download_media(&mut self, msg_id: u64) {
+        if let (Some(jid), Some(pid)) =
+            (self.live_jid(self.selected_chat), self.protocol_ids.get(&msg_id).cloned())
+        {
+            self.send_backend(backend::BackendCommand::DownloadMedia {
+                chat_jid: jid,
+                message_id: pid,
+            });
+            self.notice = Some("Downloading…".to_owned());
+        } else {
+            self.notice = Some("That media is not available in this session.".to_owned());
+        }
+    }
+}
+
+impl App {
+    /// Executes the create-group form. Returns false when
+    /// validation fails; the dialog then stays open with the error
+    /// shown inline instead of closing on a transient notice.
+    pub(crate) fn do_create_group(&mut self) -> bool {
+        let name = self.groups.create_name.trim().to_owned();
+        if name.is_empty() {
+            self.groups.create_error = Some(crate::i18n::t("groups.name_required").clone());
+            return false;
+        }
+        self.groups.create_error = None;
+        let participants: Vec<String> = self
+            .groups
+            .create_members
+            .split(',')
+            .map(|p| p.trim().to_owned())
+            .filter(|p| !p.is_empty())
+            .collect();
+        self.groups.create_name.clear();
+        self.groups.create_members.clear();
+        if self.live.is_some() {
+            self.send_backend(backend::BackendCommand::CreateGroup {
+                name: name.clone(),
+                participants,
+            });
+            self.notice = Some(format!("Creating group \"{name}\"…"));
+            return true;
+        }
+        // Demo: a local group entry at the top of the list.
+        let new_id = self.chats.iter().map(|c| c.id).max().unwrap_or(0) + 1;
+        let subtitle = if participants.is_empty() {
+            "Group created in demo mode".to_owned()
+        } else {
+            participants.join(", ")
+        };
+        self.chats.insert(
+            0,
+            core::model::Chat {
+                id: new_id,
+                kind: core::model::ChatKind::Group,
+                title: name.clone(),
+                subtitle,
+                preview: "Group created".to_owned(),
+                preview_sender: None,
+                preview_mine: false,
+                preview_delivery: None,
+                preview_media: None,
+                time: "now".to_owned(),
+                unread: 0,
+                mentions: 0,
+                pinned: false,
+                muted: false,
+                favorite: false,
+                avatar_seed: (new_id % 251) as u8,
+                verified: false,
+                meta_ai: false,
+                community: None,
+                archived: false,
+                // The account default timer from Settings >
+                // Privacy applies to groups created here, the
+                // same rule WhatsApp applies to new chats.
+                ephemeral_secs: self.default_ephemeral_secs,
+                messages: Vec::new(),
+            },
+        );
+        self.notice = Some(format!("Group \"{name}\" created (demo)."));
+        true
+    }
+}

@@ -1,0 +1,57 @@
+[package]
+name = "backend"
+version.workspace = true
+publish = false
+description = "Zaprust backend: the WhatsApp protocol boundary. A Backend trait with a whatsapp-rust implementation and a deterministic fake for tests and demos."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = ["whatsapp"]
+# The real protocol implementation, backed by the whatsapp-rust library.
+whatsapp = ["dep:whatsapp-rust", "dep:diesel"]
+# Voice/video calls. The feature set is assembled by hand instead of
+# using the library's umbrella `voip` feature: the umbrella pulls
+# voip-libopus (a C library binding), while WhatsApp calls natively
+# speak MLOW and the PCM path needs no C codec. See
+# docs/design/calls.md for the full reasoning and trade-off.
+calls = ["whatsapp", "whatsapp-rust/voip-mlow", "whatsapp-rust/voip-relay-native", "dep:cpal"]
+
+[dependencies]
+qrcode = "0.14"
+directories = "6"
+# Microphone/speaker I/O for calls (the `calls` feature). The same
+# major version the pinned library's voip example builds against.
+cpal = { version = "0.18", optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "time", "sync"] }
+tracing = "0.1"
+
+# Pinned to a git revision, deliberately not the crates.io release:
+# crates.io 0.7.0 enables a `simd` feature in wacore-binary that needs a
+# nightly compiler (portable_simd); this revision builds on stable.
+# See docs/research/whatsapp-rust.md §4. Bump the rev deliberately,
+# never float it, the library is pre-1.0 and breaks API on purpose.
+# The library's `sqlite-storage-bundled` feature is deliberately NOT
+# enabled: it pins libsqlite3-sys 0.40 while diesel 2.4 (the store's
+# own backend) resolves libsqlite3-sys 0.30, and two versions of a
+# `links = "sqlite3"` crate cannot coexist. The bundled SQLite for
+# the whole tree (a SQLCipher build, SEC-F01) comes from the store
+# crate's rusqlite dependency instead and unifies onto the same
+# libsqlite3-sys 0.30 the library's diesel uses.
+whatsapp-rust = { git = "https://github.com/oxidezap/whatsapp-rust", rev = "e634d245f71d66e2ae55f79ef714c4ca01615ed8", default-features = false, features = ["sqlite-storage", "tokio-transport", "tokio-runtime", "ureq-client", "tokio-native"], optional = true }
+# Direct dependency for one call: the session store's connection
+# init hook runs `PRAGMA key` through diesel (SEC-F01). The version
+# matches the one the protocol library itself uses.
+diesel = { version = "2.4", default-features = false, features = ["sqlite"], optional = true }
+serde = { workspace = true }
+
+[dev-dependencies]
+store = { path = "../store" }
+# Temporary, for the headless pairing harness example only.
+tracing-log = "0.2"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

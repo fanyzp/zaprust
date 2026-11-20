@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Zaprust
+Comment=A fast, native WhatsApp client
+Exec=zaprust
+Icon=zaprust
+Terminal=false
+Categories=Network;InstantMessaging;Chat;
+StartupWMClass=zaprust

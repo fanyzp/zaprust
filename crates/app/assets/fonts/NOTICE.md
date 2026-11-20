@@ -1,0 +1,15 @@
+# Bundled fonts
+
+`bold.ttf` and `oblique.ttf` are builds of
+**Liberation Sans Bold** and **Liberation Sans Italic**
+(© 2007–2012 Red Hat, Inc.), licensed under the SIL Open Font License
+1.1. Subsetted to Latin + common punctuation with fontTools for the
+markdown renderer; the full OFL text ships with the Liberation fonts
+package.
+
+`inter-Regular.ttf`, `inter-Medium.ttf`, `inter-SemiBold.ttf` and
+`inter-Bold.ttf` are subset builds of **Inter 4.1** (© 2016 The Inter
+Project Authors, https://github.com/rsms/inter), licensed under the
+SIL Open Font License 1.1 (full text: `INTER-LICENSE.txt` in this
+folder). Subsetted to Latin + common punctuation with fontTools.
+Inter is the app's UI typeface.

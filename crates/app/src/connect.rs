@@ -1,0 +1,746 @@
+//! Connect flow (layout "C, centered minimal", chosen 2026-11-15)
+//! and the account switcher (layout "B, command modal", chosen
+//! 2026-11-13). Demo build, the QR pattern and the pairing code
+//! are deterministic placeholders; the real codes arrive with
+//! whatsapp-rust in the connect phase.
+
+use crate::icons::{draw as draw_icon, Icon};
+use crate::state::{App, PairMode, Screen};
+use crate::theme::rgb;
+use crate::widgets::paint_avatar;
+use core::theme::Tokens;
+use eframe::egui::{
+    self, Align2, Color32, CornerRadius, FontId, Margin, Pos2, RichText, Sense, Stroke, Vec2,
+};
+
+impl App {
+    /// Full-window connect screen (layout "C, centered minimal",
+    /// chosen 2026-11-15): a slim topbar with Cancel, then ONE
+    /// centered column: the brand mark, the glass card holding
+    /// the QR (or the pairing entry), a horizontal 3-step stepper
+    /// that doubles as the reserved state slot, the status line,
+    /// and the pairing-mode switch as a real secondary button.
+    /// Every link state renders inside that same column, so the
+    /// layout never shifts while pairing progresses.
+    pub(crate) fn draw_connect(&mut self, root: &mut egui::Ui) {
+        let t = self.tokens();
+        egui::CentralPanel::default().frame(egui::Frame::new().fill(rgb(t.bg_app))).show(
+            root,
+            |ui| {
+                let area = ui.max_rect();
+                let painter = ui.painter().clone();
+                let bar = egui::Rect::from_min_size(area.min, Vec2::new(area.width(), 46.0));
+                painter.line_segment(
+                    [Pos2::new(bar.left(), bar.bottom()), Pos2::new(bar.right(), bar.bottom())],
+                    Stroke::new(1.0_f32, rgb(t.border)),
+                );
+                painter.circle_filled(
+                    Pos2::new(bar.left() + 30.0, bar.center().y),
+                    11.0,
+                    rgb(t.accent),
+                );
+                draw_icon(
+                    &painter,
+                    Icon::Chat,
+                    Pos2::new(bar.left() + 30.0, bar.center().y),
+                    13.0,
+                    rgb(t.bg_app),
+                    rgb(t.accent),
+                );
+                painter.text(
+                    Pos2::new(bar.left() + 50.0, bar.center().y),
+                    Align2::LEFT_CENTER,
+                    "Zaprust",
+                    FontId::proportional(14.5),
+                    rgb(t.text_primary),
+                );
+                let cancel_rect = egui::Rect::from_min_size(
+                    Pos2::new(bar.right() - 96.0, bar.top()),
+                    Vec2::new(96.0, 46.0),
+                );
+                let cresp =
+                    ui.interact(cancel_rect, egui::Id::unique("connect_cancel"), Sense::click());
+                let cresp = cresp.on_hover_cursor(egui::CursorIcon::PointingHand);
+                painter.text(
+                    Pos2::new(bar.right() - 18.0, bar.center().y),
+                    Align2::RIGHT_CENTER,
+                    "Cancel",
+                    FontId::proportional(13.0),
+                    if cresp.hovered() { rgb(t.accent) } else { rgb(t.text_secondary) },
+                );
+                if cresp.clicked() {
+                    self.screen = Screen::Chats;
+                }
+                let footer = egui::Rect::from_min_size(
+                    Pos2::new(area.left(), area.bottom() - 38.0),
+                    Vec2::new(area.width(), 38.0),
+                );
+                painter.line_segment(
+                    [footer.left_top(), footer.right_top()],
+                    Stroke::new(1.0_f32, rgb(t.border)),
+                );
+                painter.text(
+                    Pos2::new(footer.left() + 20.0, footer.center().y),
+                    Align2::LEFT_CENTER,
+                    "Unofficial client. Using it may be against WhatsApp's terms of service.",
+                    FontId::proportional(11.5),
+                    rgb(t.text_faint),
+                );
+                // The centered column. Its height is estimated
+                // per mode only to center it vertically in the
+                // body; the content itself flows.
+                let body = egui::Rect::from_min_max(
+                    Pos2::new(area.left(), bar.bottom()),
+                    Pos2::new(area.right(), footer.top()),
+                );
+                let content_h = match self.pair_mode {
+                    PairMode::Qr => 560.0,
+                    PairMode::Code => 540.0,
+                };
+                let top_pad = ((body.height() - content_h) * 0.5).clamp(0.0, 200.0);
+                let col_w = 360.0;
+                let col_rect = egui::Rect::from_min_size(
+                    Pos2::new(area.center().x - col_w / 2.0, body.top() + top_pad),
+                    Vec2::new(col_w, body.height() - top_pad),
+                );
+                let mut col = ui.new_child(
+                    egui::UiBuilder::new()
+                        .max_rect(col_rect)
+                        .layout(egui::Layout::top_down(egui::Align::Center)),
+                );
+                // Brand mark.
+                col.horizontal(|ui| {
+                    let (rect, _) = ui.allocate_exact_size(Vec2::splat(30.0), Sense::hover());
+                    ui.painter().circle_filled(rect.center(), 15.0, rgb(t.accent));
+                    draw_icon(
+                        ui.painter(),
+                        Icon::Chat,
+                        rect.center(),
+                        17.0,
+                        rgb(t.bg_app),
+                        rgb(t.accent),
+                    );
+                    ui.add_space(4.0);
+                    ui.label(RichText::new("Zaprust").font(crate::theme::semibold(20.0)));
+                });
+                col.add_space(20.0);
+                // The glass card: the one elevated surface on
+                // this screen, holding the QR or the pairing
+                // entry, so the code is what the eye lands on.
+                let card = crate::theme::glass_text_frame(t, 16)
+                    .inner_margin(Margin::symmetric(20, 18))
+                    .show(&mut col, |ui| {
+                        ui.set_width(col_w - 40.0);
+                        ui.with_layout(
+                            egui::Layout::top_down(egui::Align::Center),
+                            |ui| match self.pair_mode {
+                                PairMode::Qr => {
+                                    let (rect, _) =
+                                        ui.allocate_exact_size(Vec2::splat(248.0), Sense::hover());
+                                    let live_qr = self.live.as_ref().and_then(|s| s.qr.clone());
+                                    if let Some(matrix) = &live_qr {
+                                        draw_qr_matrix(ui.painter(), rect, matrix);
+                                    } else {
+                                        draw_demo_qr(ui.painter(), rect);
+                                    }
+                                    if self.live_mode {
+                                        ui.add_space(12.0);
+                                        if live_qr.is_some() {
+                                            ui.label(
+                                                RichText::new("Live QR. Scan it with your phone.")
+                                                    .size(11.0)
+                                                    .color(rgb(t.text_faint)),
+                                            );
+                                        } else {
+                                            crate::widgets::loading_row(
+                                                ui,
+                                                "Waiting for WhatsApp to send a QR code\u{2026}",
+                                                11.0,
+                                                t.text_faint,
+                                            );
+                                        }
+                                    }
+                                }
+                                PairMode::Code => self.connect_code_panel(ui, t),
+                            },
+                        );
+                    });
+                crate::theme::paint_glass_edge(col.painter(), card.response.rect, 16.0, t);
+                col.add_space(18.0);
+                // The stepper doubles as the state slot: steps
+                // complete as pairing progresses, and the status
+                // line under it names the current state, all in
+                // reserved space.
+                let steps: &[&str] = match self.pair_mode {
+                    PairMode::Qr => &["Open WhatsApp", "Linked devices", "Scan the code"],
+                    PairMode::Code => &["Open WhatsApp", "Linked devices", "Enter the code"],
+                };
+                steps_stepper(&mut col, t, steps, self.stepper_progress());
+                col.add_space(8.0);
+                self.connect_status_line(&mut col, t);
+                col.add_space(14.0);
+                // The other pairing path, as a real secondary
+                // button under the status line.
+                let (label, target) = match self.pair_mode {
+                    PairMode::Qr => ("Link with phone number", PairMode::Code),
+                    PairMode::Code => ("Link with QR code", PairMode::Qr),
+                };
+                if crate::widgets::button(&mut col, t, label, crate::widgets::Btn::Secondary)
+                    .clicked()
+                {
+                    self.pair_mode = target;
+                }
+            },
+        );
+    }
+
+    /// How far the connect stepper has progressed: the first
+    /// two steps are the phone-side preparation (done by the
+    /// time the user reads this screen), the third completes
+    /// when the session links.
+    fn stepper_progress(&self) -> usize {
+        if let Some(session) = &self.live {
+            if matches!(session.status, crate::live::LinkStatus::Linked) {
+                return 3;
+            }
+        }
+        2
+    }
+
+    /// The status line under the stepper: a fixed-height slot,
+    /// so waiting, confirming, linked and error states swap in
+    /// place without moving anything around them.
+    fn connect_status_line(&mut self, ui: &mut egui::Ui, t: Tokens) {
+        let (rect, _) = ui.allocate_exact_size(Vec2::new(360.0, 24.0), Sense::hover());
+        let mut slot = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(
+            egui::Layout::left_to_right(egui::Align::Center).with_main_align(egui::Align::Center),
+        ));
+        if self.live_mode {
+            if let Some(session) = &self.live {
+                let failed = matches!(
+                    session.status,
+                    crate::live::LinkStatus::Failed(_)
+                        | crate::live::LinkStatus::Banned(_)
+                        | crate::live::LinkStatus::Lost(_)
+                        | crate::live::LinkStatus::Crashed(_)
+                );
+                // In code mode there is no QR on screen to scan:
+                // while the backend still waits, it is waiting for
+                // WhatsApp to send the pairing code, so the status
+                // line names that instead of the scan.
+                let status_label = if matches!(self.pair_mode, PairMode::Code)
+                    && matches!(session.status, crate::live::LinkStatus::WaitingQr)
+                {
+                    "Waiting for WhatsApp to send a code.".to_owned()
+                } else {
+                    session.status.label()
+                };
+                let (status_text, color) = if session.fake {
+                    (format!("Test mode (not WhatsApp): {status_label}"), t.text_faint)
+                } else if failed {
+                    (status_label, t.danger)
+                } else {
+                    (status_label, t.accent)
+                };
+                let waiting = matches!(
+                    session.status,
+                    crate::live::LinkStatus::Starting | crate::live::LinkStatus::WaitingQr
+                );
+                if waiting {
+                    crate::widgets::spinner(&mut slot, 14.0);
+                    slot.add_space(6.0);
+                }
+                slot.label(RichText::new(status_text).size(12.5).color(rgb(color)));
+            }
+            return;
+        }
+        match self.pair_mode {
+            PairMode::Qr => {
+                crate::widgets::spinner(&mut slot, 14.0);
+                slot.add_space(6.0);
+                slot.label(
+                    RichText::new("Waiting for scan\u{2026}")
+                        .size(12.5)
+                        .color(rgb(t.text_secondary)),
+                );
+            }
+            PairMode::Code if self.pair_code_shown => {
+                crate::widgets::spinner(&mut slot, 14.0);
+                slot.add_space(6.0);
+                slot.label(
+                    RichText::new("Waiting for the code to be entered on your phone\u{2026}")
+                        .size(12.5)
+                        .color(rgb(t.text_secondary)),
+                );
+            }
+            PairMode::Code => {
+                slot.label(
+                    RichText::new("Enter your phone number to get a pairing code.")
+                        .size(12.5)
+                        .color(rgb(t.text_secondary)),
+                );
+            }
+        }
+    }
+
+    /// The pairing entry inside the connect card: first the
+    /// phone field, then the eight code boxes, centered in the
+    /// column like everything else on this screen.
+    fn connect_code_panel(&mut self, ui: &mut egui::Ui, t: Tokens) {
+        ui.add_space(6.0);
+        if self.pair_code_shown {
+            ui.label(RichText::new("Enter this code on your phone").size(14.0).strong());
+            ui.add_space(12.0);
+            let live_code = self.live.as_ref().and_then(|s| s.pair_code.clone());
+            let code = if self.live_mode {
+                live_code.unwrap_or_else(|| "········".to_owned())
+            } else {
+                pairing_code(&self.pair_phone)
+            };
+            ui.vertical_centered(|ui| {
+                for row in 0..2 {
+                    ui.horizontal(|ui| {
+                        for i in 0..4 {
+                            let ch = code.chars().nth(row * 4 + i).unwrap_or('·');
+                            let (rect, _) =
+                                ui.allocate_exact_size(Vec2::splat(52.0), Sense::hover());
+                            ui.painter().rect_filled(
+                                rect,
+                                CornerRadius::same(11),
+                                rgb(t.bg_panel_alt),
+                            );
+                            ui.painter().rect_stroke(
+                                rect,
+                                CornerRadius::same(11),
+                                Stroke::new(1.0_f32, rgb(t.border)),
+                                egui::StrokeKind::Inside,
+                            );
+                            ui.painter().text(
+                                rect.center(),
+                                Align2::CENTER_CENTER,
+                                ch.to_string(),
+                                FontId::proportional(21.0),
+                                rgb(t.text_primary),
+                            );
+                            // The gap lives between tiles only, so
+                            // the row's outer edges stay flush.
+                            if i < 3 {
+                                ui.add_space(2.0);
+                            }
+                        }
+                    });
+                    ui.add_space(7.0);
+                }
+            });
+            let caption = if self.live_mode {
+                match self.live.as_ref().and_then(|s| s.pair_code_at) {
+                    Some(at) => {
+                        let left = crate::live::PAIR_CODE_TTL.saturating_sub(at.elapsed());
+                        format!(
+                            "Live code. It expires in {}:{:02}.",
+                            left.as_secs() / 60,
+                            left.as_secs() % 60
+                        )
+                    }
+                    None => "Waiting for WhatsApp to send a code…".to_owned(),
+                }
+            } else {
+                "Demo code. The real one comes from WhatsApp when you link.".to_owned()
+            };
+            let waiting_code =
+                self.live_mode && self.live.as_ref().and_then(|s| s.pair_code_at).is_none();
+            if waiting_code {
+                crate::widgets::loading_row(ui, &caption, 11.0, t.text_faint);
+            } else {
+                ui.label(RichText::new(caption).size(11.0).color(rgb(t.text_faint)));
+            }
+        } else {
+            ui.label(RichText::new("Enter your phone number").size(14.0).strong());
+            ui.add_space(10.0);
+            // The shared text field: 238 inner width plus its frame
+            // margins gives the same 258 total the old hand-wrapped
+            // field occupied.
+            crate::widgets::text_field(ui, t, &mut self.pair_phone, "+1 …", 238.0);
+            ui.add_space(12.0);
+            // The shared primary button, stretched across the
+            // column width (258, the same width as the field above)
+            // by a cross-justified layout instead of the old
+            // hand-painted pill.
+            let bresp = ui
+                .allocate_ui_with_layout(
+                    Vec2::new(258.0, 32.0),
+                    egui::Layout::top_down(egui::Align::Min).with_cross_justify(true),
+                    |ui| {
+                        crate::widgets::button(
+                            ui,
+                            t,
+                            "Get pairing code",
+                            crate::widgets::Btn::Primary,
+                        )
+                    },
+                )
+                .inner;
+            if bresp.clicked() {
+                self.pair_code_shown = true;
+                if self.live_mode {
+                    self.request_pair_code();
+                }
+            }
+        }
+    }
+
+    /// Account switcher as a centred command-style modal.
+    pub(crate) fn draw_account_menu(&mut self, root: &mut egui::Ui) {
+        let ctx = root.ctx().clone();
+        let Some(menu_p) =
+            crate::anim::popup_phase(&ctx, "account_menu", self.account_menu_open, self.motion)
+        else {
+            return;
+        };
+        let exiting = !self.account_menu_open;
+        let t = self.tokens();
+        if !exiting && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.account_menu_open = false;
+            return;
+        }
+        // The dim and the modal fade together while the modal's
+        // layer scales from 0.95 around its center; the exit is
+        // the same motion, shorter and reversed. The dim is the
+        // shared modal dim, the same depth every modal uses.
+        let area = root.max_rect();
+        root.painter().rect_filled(area, CornerRadius::ZERO, crate::theme::modal_dim(menu_p));
+        let size = Vec2::new(430.0, 302.0);
+        let rect = egui::Rect::from_min_size(
+            Pos2::new(area.center().x - size.x / 2.0, area.top() + 96.0),
+            size,
+        );
+        if !exiting
+            && ctx.input(|i| i.pointer.any_click())
+            && !rect.contains(ctx.input(|i| i.pointer.interact_pos().unwrap_or(Pos2::ZERO)))
+        {
+            self.account_menu_open = false;
+            return;
+        }
+        egui::Area::new(egui::Id::unique("account_modal"))
+            .fixed_pos(rect.min)
+            .order(egui::Order::Foreground)
+            .show(&ctx, |ui| {
+                if menu_p < 0.999 {
+                    ui.set_opacity(menu_p);
+                }
+                // The shared glass frame at the modal radius:
+                // the same fill, hairline and shadow as every
+                // other glass surface (this frame used to carry
+                // a one-off deeper shadow of its own).
+                let modal = crate::theme::glass_frame(t, 16)
+                    .inner_margin(Margin::symmetric(14, 12))
+                    .show(ui, |ui| {
+                        ui.set_width(size.x - 28.0);
+                        egui::Frame::new()
+                            .fill(rgb(t.bg_panel_alt))
+                            .corner_radius(CornerRadius::same(10))
+                            .inner_margin(Margin::symmetric(12, 10))
+                            .show(ui, |ui| {
+                                ui.set_width(size.x - 52.0);
+                                ui.label(
+                                    RichText::new("Switch account…")
+                                        .size(13.5)
+                                        .color(rgb(t.text_faint)),
+                                );
+                            });
+                        ui.add_space(10.0);
+                        egui::Frame::new()
+                            .fill(rgb(t.bg_panel_alt))
+                            .corner_radius(CornerRadius::same(12))
+                            .inner_margin(Margin::symmetric(10, 8))
+                            .show(ui, |ui| {
+                                ui.set_width(size.x - 48.0);
+                                ui.horizontal(|ui| {
+                                    paint_avatar(
+                                        ui.painter(),
+                                        ui.cursor().min + Vec2::new(17.0, 17.0),
+                                        17.0,
+                                        false,
+                                        0,
+                                    );
+                                    ui.add_space(42.0);
+                                    ui.vertical(|ui| {
+                                        let (name, sub) = if self.live_mode {
+                                            let session = self.live.as_ref();
+                                            let name = session.map_or_else(
+                                                || "Live account".to_owned(),
+                                                |s| {
+                                                    if s.account.is_empty() {
+                                                        "Live account".to_owned()
+                                                    } else {
+                                                        s.account.clone()
+                                                    }
+                                                },
+                                            );
+                                            let sub = session
+                                                .map(|s| {
+                                                    if s.fake {
+                                                        format!("Test mode, {}", s.status.label())
+                                                    } else {
+                                                        s.status.label()
+                                                    }
+                                                })
+                                                .unwrap_or_default();
+                                            (name, sub)
+                                        } else {
+                                            (
+                                                "fanyzp".to_owned(),
+                                                "Demo account, not linked".to_owned(),
+                                            )
+                                        };
+                                        ui.label(RichText::new(name).size(13.5).strong());
+                                        ui.label(
+                                            RichText::new(sub)
+                                                .size(11.5)
+                                                .color(rgb(t.text_secondary)),
+                                        );
+                                    });
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            let (crect, _) = ui.allocate_exact_size(
+                                                Vec2::splat(20.0),
+                                                Sense::hover(),
+                                            );
+                                            draw_icon(
+                                                ui.painter(),
+                                                Icon::Check,
+                                                crect.center(),
+                                                18.0,
+                                                rgb(t.accent),
+                                                rgb(t.bg_panel_alt),
+                                            );
+                                        },
+                                    );
+                                });
+                            });
+                        ui.add_space(6.0);
+                        // My profile: the signed-in user's own
+                        // profile editor (name, about, photo).
+                        let (mrect, mresp) =
+                            ui.allocate_exact_size(Vec2::new(size.x - 28.0, 44.0), Sense::click());
+                        if mresp.hovered() {
+                            ui.painter().rect_filled(
+                                mrect,
+                                CornerRadius::same(12),
+                                rgb(t.bg_panel_alt),
+                            );
+                        }
+                        paint_avatar(
+                            ui.painter(),
+                            Pos2::new(mrect.left() + 26.0, mrect.center().y),
+                            13.0,
+                            false,
+                            0,
+                        );
+                        ui.painter().text(
+                            Pos2::new(mrect.left() + 52.0, mrect.center().y),
+                            Align2::LEFT_CENTER,
+                            crate::i18n::t("profile.my_title"),
+                            FontId::proportional(13.5),
+                            rgb(t.text_primary),
+                        );
+                        if mresp.clicked() && !exiting {
+                            self.account_menu_open = false;
+                            self.my_profile_open = true;
+                        }
+                        ui.add_space(6.0);
+                        let (rrect, rresp) =
+                            ui.allocate_exact_size(Vec2::new(size.x - 28.0, 44.0), Sense::click());
+                        if rresp.hovered() {
+                            ui.painter().rect_filled(
+                                rrect,
+                                CornerRadius::same(12),
+                                rgb(t.bg_panel_alt),
+                            );
+                        }
+                        draw_icon(
+                            ui.painter(),
+                            Icon::Plus,
+                            Pos2::new(rrect.left() + 26.0, rrect.center().y),
+                            18.0,
+                            rgb(t.accent),
+                            rgb(t.bg_panel),
+                        );
+                        ui.painter().text(
+                            Pos2::new(rrect.left() + 52.0, rrect.center().y),
+                            Align2::LEFT_CENTER,
+                            "Add account",
+                            FontId::proportional(13.5),
+                            rgb(t.text_primary),
+                        );
+                        if rresp.clicked() && !exiting {
+                            self.account_menu_open = false;
+                            if !self.live_mode {
+                                // The in-app path into live mode: start
+                                // the real backend, then show the link
+                                // flow it drives.
+                                if let Some(ctx) = self.egui_ctx.clone() {
+                                    self.start_live(&ctx, false, false);
+                                }
+                            }
+                            self.screen = Screen::Connect;
+                        }
+                        ui.add_space(8.0);
+                        let (drect, _) =
+                            ui.allocate_exact_size(Vec2::new(size.x - 28.0, 1.0), Sense::hover());
+                        ui.painter().rect_filled(drect, CornerRadius::ZERO, rgb(t.border));
+                        ui.add_space(8.0);
+                        ui.label(
+                            RichText::new("Enter select  ·  Esc close")
+                                .size(11.5)
+                                .color(rgb(t.text_faint)),
+                        );
+                    });
+                crate::theme::paint_glass_edge(ui.painter(), modal.response.rect, 16.0, t);
+            });
+        crate::anim::popup_transform(
+            &ctx,
+            egui::Id::unique("account_modal"),
+            rect.center(),
+            menu_p,
+        );
+    }
+}
+
+/// Horizontal stepper for the centered connect layout: one
+/// cell per step (disc over a short label), hairline connectors
+/// at disc height. Steps before `done` wear a check, step
+/// `done` is the current one, the rest wait in the border tone.
+fn steps_stepper(ui: &mut egui::Ui, t: Tokens, items: &[&str], done: usize) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(360.0, 46.0), Sense::hover());
+    let painter = ui.painter();
+    let cell_w = rect.width() / items.len() as f32;
+    let cy = rect.top() + 11.0;
+    for (i, _) in items.iter().enumerate() {
+        if i > 0 {
+            let from = Pos2::new(rect.left() + cell_w * (i as f32 - 0.5) + 14.0, cy);
+            let to = Pos2::new(rect.left() + cell_w * (i as f32 + 0.5) - 14.0, cy);
+            let col = if i < done { rgb(t.accent) } else { rgb(t.border) };
+            painter.line_segment([from, to], Stroke::new(1.5_f32, col));
+        }
+    }
+    for (i, text) in items.iter().enumerate() {
+        let center = Pos2::new(rect.left() + cell_w * (i as f32 + 0.5), cy);
+        if i < done {
+            painter.circle_filled(center, 10.5, rgb(t.accent));
+            draw_icon(painter, Icon::Check, center, 12.0, rgb(t.bg_app), rgb(t.accent));
+        } else if i == done {
+            painter.circle_filled(center, 10.5, rgb(t.accent));
+            painter.text(
+                center,
+                Align2::CENTER_CENTER,
+                format!("{}", i + 1),
+                FontId::proportional(11.5),
+                rgb(t.bg_app),
+            );
+        } else {
+            painter.circle_filled(center, 10.5, rgb(t.bg_panel_alt));
+            painter.circle_stroke(center, 10.5, Stroke::new(1.0_f32, rgb(t.border)));
+            painter.text(
+                center,
+                Align2::CENTER_CENTER,
+                format!("{}", i + 1),
+                FontId::proportional(11.5),
+                rgb(t.text_faint),
+            );
+        }
+        painter.text(
+            Pos2::new(center.x, rect.top() + 36.0),
+            Align2::CENTER_CENTER,
+            *text,
+            FontId::proportional(11.0),
+            if i <= done { rgb(t.text_secondary) } else { rgb(t.text_faint) },
+        );
+    }
+}
+
+/// A deterministic demo pairing code derived from the typed number,
+/// stable for screenshots, obviously not a real credential.
+fn pairing_code(phone: &str) -> String {
+    const CHARS: &[u8] = b"ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+    let mut h: u32 = 0x811C_9DC5;
+    for b in phone.bytes() {
+        h = (h ^ u32::from(b)).wrapping_mul(0x0100_0193);
+    }
+    (0..8)
+        .map(|i| {
+            h = h.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            CHARS[(((h >> (i % 16)) & 31) as usize) % CHARS.len()] as char
+        })
+        .collect()
+}
+
+/// Draws a real QR payload matrix (from the `backend` crate, which
+/// owns QR encoding) with a 4-module quiet zone.
+fn draw_qr_matrix(painter: &egui::Painter, rect: egui::Rect, matrix: &backend::QrMatrix) {
+    painter.rect_filled(rect, CornerRadius::same(10), Color32::WHITE);
+    let inner = rect.shrink(10.0);
+    let total = matrix.size + 8; // + quiet zone on both sides
+    let cell = inner.width() / total as f32;
+    let black = Color32::from_rgb(0x11, 0x1B, 0x21);
+    for y in 0..matrix.size {
+        for x in 0..matrix.size {
+            if matrix.dark(x, y) {
+                let min = Pos2::new(
+                    inner.left() + (x + 4) as f32 * cell,
+                    inner.top() + (y + 4) as f32 * cell,
+                );
+                painter.rect_filled(
+                    egui::Rect::from_min_size(min, Vec2::splat(cell + 0.5)),
+                    CornerRadius::ZERO,
+                    black,
+                );
+            }
+        }
+    }
+}
+
+/// Draws a QR-looking placeholder: real finder patterns, deterministic
+/// pseudo-random data modules (xorshift on the module index). It does
+/// not encode anything.
+fn draw_demo_qr(painter: &egui::Painter, rect: egui::Rect) {
+    const N: usize = 25;
+    painter.rect_filled(rect, CornerRadius::same(10), Color32::WHITE);
+    let inner = rect.shrink(10.0);
+    let cell = inner.width() / N as f32;
+    let black = Color32::from_rgb(0x11, 0x1B, 0x21);
+    let in_finder = |x: usize, y: usize| -> Option<(usize, usize)> {
+        for (fx, fy) in [(0usize, 0usize), (N - 7, 0), (0, N - 7)] {
+            if x >= fx && x < fx + 7 && y >= fy && y < fy + 7 {
+                return Some((x - fx, y - fy));
+            }
+        }
+        None
+    };
+    let mut state: u32 = 0x2545_F491;
+    for y in 0..N {
+        for x in 0..N {
+            let filled = if let Some((lx, ly)) = in_finder(x, y) {
+                lx == 0
+                    || lx == 6
+                    || ly == 0
+                    || ly == 6
+                    || ((2..=4).contains(&lx) && (2..=4).contains(&ly))
+            } else {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                state % 100 < 46
+            };
+            if filled {
+                let min = Pos2::new(inner.left() + x as f32 * cell, inner.top() + y as f32 * cell);
+                painter.rect_filled(
+                    egui::Rect::from_min_size(min, Vec2::splat(cell + 0.5)),
+                    CornerRadius::ZERO,
+                    black,
+                );
+            }
+        }
+    }
+}

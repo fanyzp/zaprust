@@ -1,0 +1,34 @@
+[package]
+name = "core"
+version.workspace = true
+publish = false
+description = "Zaprust core: data models, theme tokens, credentials, update checks, demo data. Pure logic, no window, fully tested."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = []
+# OS keyring credential backend (Secret Service / Credential
+# Manager / Keychain). Off by default so core stays dependency-light
+# and testable anywhere; the app enables it.
+keyring-store = ["dep:keyring"]
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = "0.10"
+idna = "1"
+ring = "0.17"
+base64 = "0.22"
+keyring = { version = "3", optional = true }
+
+zip = { version = "2", default-features = false, features = ["deflate"] }
+
+[dev-dependencies]
+proptest = "1"
+

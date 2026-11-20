@@ -651,7 +651,13 @@ pub struct LiveChat {
     pub preview_sender: Option<String>,
     /// Unix timestamp (seconds) of the latest message.
     pub timestamp: i64,
-    /// Unread count as reported by the protocol.
+    /// Unread count as reported by the protocol. Like the
+    /// timer, a message-arrival upsert does not learn it from
+    /// the wire and reports 0, so the app keeps a known count
+    /// across upserts that report 0; the app's message upserts
+    /// own the increments, and read state changes made on the
+    /// server arrive as [`BackendEvent::ChatReadChanged`]
+    /// instead.
     pub unread: u32,
     /// Archived (chat-actions state; the app mirrors it
     /// locally). Like mute, a message-arrival upsert does not

@@ -109,6 +109,12 @@ pub(crate) struct EventBatch {
     /// lands later in the same batch is part of the stored row,
     /// exactly as if each write had happened in event order.
     pub(crate) store_writes: Vec<LiveMessage>,
+    /// Chats whose unread badge a batch upsert raised. The
+    /// badge lives in the mirror, but the archive row must carry
+    /// the same count (a restart reloads from the archive), so
+    /// the flush writes these chats' rows from the mirror once
+    /// per batch instead of once per message.
+    pub(crate) chat_rows_dirty: std::collections::HashSet<u64>,
 }
 
 /// One running live session: channels, link state, and the live data
@@ -844,6 +850,25 @@ impl crate::state::App {
                     let _ = store.upsert_messages(&rows);
                 }
             }
+            if !batch.chat_rows_dirty.is_empty() {
+                if let Some(store) = &session.store {
+                    // Written from the mirror as it stands now,
+                    // so the stored count is the badge the list
+                    // shows after the whole batch, whatever order
+                    // the increments and read changes arrived in.
+                    // A chat the batch went on to delete is no
+                    // longer in the list and is skipped: its rows
+                    // are already gone.
+                    for chat_id in &batch.chat_rows_dirty {
+                        let Some(jid) = session.jids.get(chat_id) else { continue };
+                        let Some(chat) = self.chats.iter().find(|c| c.id == *chat_id) else {
+                            continue;
+                        };
+                        let ts = session.times.get(chat_id).copied().unwrap_or(0);
+                        let _ = store.upsert_chat(&chat_to_live(chat, jid, ts));
+                    }
+                }
+            }
         }
         if batch.chats_dirty {
             self.sort_live_chats_now();
@@ -1222,6 +1247,22 @@ impl crate::state::App {
                 merged.archived = known.archived;
             }
         }
+        // Same protection for the unread count: a message-arrival
+        // upsert reports 0 without knowing the count (the wire
+        // does not carry it there), so it must not reset a count
+        // this client already knows. Message upserts own the
+        // increments, and read state has its own authoritative
+        // path (ChatReadChanged events, which set the count
+        // outright, to 0 included); this merge only protects the
+        // known value. An upsert that does report a count (the
+        // fake's initial chat list carries the real counts)
+        // still lands, because the protection only ever
+        // preserves a known count against a reported 0.
+        if merged.unread == 0 {
+            if let Some(known) = self.chats.iter().find(|c| c.id == id) {
+                merged.unread = known.unread;
+            }
+        }
         if let Some(session) = &mut self.live {
             if let Some(store) = &session.store {
                 let _ = store.upsert_chat(&merged);
@@ -1401,6 +1442,22 @@ impl crate::state::App {
         self.set_live_flag(chat_id, msg_id, store::FLAG_STARRED, starred);
         if self.selected_chat == chat_id {
             self.sync_conversation();
+        }
+    }
+
+    /// Writes one chat's archive row from the mirror, so the
+    /// stored row carries the state the list shows. For mirror
+    /// changes that arrive without a chat upsert of their own
+    /// (the unread badge an incoming message raised), whose own
+    /// write-through would otherwise never happen.
+    fn persist_chat_row(&self, chat_id: u64) {
+        if let Some(session) = &self.live {
+            if let (Some(store), Some(jid)) = (&session.store, session.jids.get(&chat_id)) {
+                if let Some(chat) = self.chats.iter().find(|c| c.id == chat_id) {
+                    let ts = session.times.get(&chat_id).copied().unwrap_or(0);
+                    let _ = store.upsert_chat(&chat_to_live(chat, jid, ts));
+                }
+            }
         }
     }
 
@@ -1814,6 +1871,21 @@ impl crate::state::App {
             // conversation.rs).
             if new_incoming {
                 chat.unread += 1;
+            }
+        }
+        // The archive row must carry the badge the mirror now
+        // shows: the increment above is the only place the count
+        // grows, and the arrival upsert's own row write carries
+        // the pre-increment count (merged from the known value,
+        // see apply_chat_upsert), so without this write a restart
+        // would reload a smaller count than the list showed.
+        // Inside a batch the write defers to the flush, like the
+        // message rows.
+        if new_incoming {
+            if self.event_batch.active {
+                self.event_batch.chat_rows_dirty.insert(chat_id);
+            } else {
+                self.persist_chat_row(chat_id);
             }
         }
         self.sort_live_chats();
@@ -2493,6 +2565,24 @@ mod chat_state_routing_tests {
         })
     }
 
+    /// An informed chat upsert: it carries a real unread
+    /// count, the way the fake's initial chat list does.
+    fn counted_upsert(unread: u32) -> BackendEvent {
+        BackendEvent::ChatUpsert(LiveChat {
+            jid: CHAT_JID.to_owned(),
+            title: "Sender".to_owned(),
+            kind: LiveChatKind::Dm,
+            preview: "hello".to_owned(),
+            preview_sender: None,
+            timestamp: BASE_TS,
+            unread,
+            archived: false,
+            pinned: false,
+            ephemeral_secs: 0,
+            muted: false,
+        })
+    }
+
     fn seed_chat(app: &mut App, tx: &std::sync::mpsc::Sender<BackendEvent>, ctx: &egui::Context) {
         tx.send(arrival_upsert()).unwrap();
         drain_all(app, ctx);
@@ -2952,6 +3042,82 @@ mod chat_state_routing_tests {
         drain_all(&mut app, &ctx);
         assert_eq!(chat_unread(&app), 1, "a count of zero still shows the chat as unread");
         assert_eq!(store_row(&app).unread, 1);
+    }
+
+    /// An upsert that reports a real count (the fake's initial
+    /// chat list is the informed form) is adopted as reported,
+    /// in the mirror and the archive, even over a known count:
+    /// adoption is not a max rule. Only a reported 0 is treated
+    /// as "not carried" (see the next test).
+    #[test]
+    fn informed_upsert_adopts_the_reported_unread_count() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        tx.send(counted_upsert(4)).unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(chat_unread(&app), 4, "the reported count lands in the mirror");
+        assert_eq!(store_row(&app).unread, 4, "and in the archive");
+
+        tx.send(counted_upsert(2)).unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(chat_unread(&app), 2, "a later informed count replaces the known one");
+        assert_eq!(store_row(&app).unread, 2);
+    }
+
+    /// The real backend pairs every incoming message with an
+    /// arrival chat upsert that reports unread 0 (the wire
+    /// carries no count there). Those upserts must not reset
+    /// the badge: a burst accumulates the full count on top of
+    /// the count the chat already had, in the mirror and in the
+    /// archive row, and a ChatReadChanged afterwards still
+    /// overrides the accumulated count outright, in both
+    /// directions.
+    #[test]
+    fn arrival_upserts_do_not_reset_the_unread_count() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        // Initial load: an informed upsert reports 2 unread.
+        tx.send(counted_upsert(2)).unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(chat_unread(&app), 2);
+        assert_eq!(store_row(&app).unread, 2);
+
+        // Three arrivals, each preceded by its arrival upsert,
+        // exactly the real backend's pairing.
+        for (pid, ts) in [("b1", BASE_TS), ("b2", BASE_TS + 60), ("b3", BASE_TS + 120)] {
+            tx.send(arrival_upsert()).unwrap();
+            tx.send(BackendEvent::MessageUpsert(LiveMessage::text(
+                pid,
+                CHAT_JID,
+                Some("Sender".to_owned()),
+                "burst",
+                ts,
+                false,
+            )))
+            .unwrap();
+        }
+        drain_all(&mut app, &ctx);
+        assert_eq!(chat_unread(&app), 5, "the burst accumulates on top of the known count");
+        assert_eq!(store_row(&app).unread, 5, "the archive row carries the same count");
+
+        // The authoritative read path still wins outright.
+        tx.send(BackendEvent::ChatReadChanged {
+            chat_jid: CHAT_JID.to_owned(),
+            read: true,
+            unread_count: 0,
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(chat_unread(&app), 0, "a remote read clears the accumulated badge");
+        assert_eq!(store_row(&app).unread, 0);
+
+        tx.send(BackendEvent::ChatReadChanged {
+            chat_jid: CHAT_JID.to_owned(),
+            read: false,
+            unread_count: 3,
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(chat_unread(&app), 3, "a remote mark-unread sets its count");
+        assert_eq!(store_row(&app).unread, 3);
     }
 
     /// A chat deleted on the phone leaves everywhere it exists

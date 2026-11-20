@@ -126,6 +126,13 @@ pub(crate) struct LiveSession {
     pub(crate) pair_code_at: Option<std::time::Instant>,
     /// Account label reported on connect.
     pub(crate) account: String,
+    /// Wall-clock unix second at which the current connection
+    /// came up, restamped on every (re)connect. A message stamped
+    /// before it was sent while this client was offline: it
+    /// arrives as history sync or catch-up, not live, and must
+    /// never raise an OS notification. `None` until the first
+    /// connect completes; nothing is live before that either.
+    pub(crate) connected_at: Option<i64>,
     /// The chat archive (write-through). `None` if it failed to open.
     pub(crate) store: Option<store::Store>,
     /// Numeric chat ID → JID.
@@ -458,6 +465,7 @@ impl crate::state::App {
             pair_code: None,
             pair_code_at: None,
             account: String::new(),
+            connected_at: None,
             store: store_opt,
             jids: HashMap::new(),
             messages: HashMap::new(),
@@ -836,6 +844,13 @@ impl crate::state::App {
                 if let Some(session) = &mut self.live {
                     session.status = LinkStatus::Linked;
                     session.account = account;
+                    // The notification history gate compares
+                    // message stamps against this moment (see
+                    // `notify::is_history`): everything stamped
+                    // earlier is catch-up, on the first connect
+                    // and on every reconnect alike.
+                    session.connected_at =
+                        Some(i64::try_from(crate::state::now_unix()).unwrap_or(0));
                     session.qr = None;
                     // A used code must never resurface on the
                     // connect screen (logic review F13).
@@ -1303,8 +1318,18 @@ impl crate::state::App {
         }
         // Queue the OS notification for a genuinely new incoming
         // message; the per-frame drain applies the user's settings
-        // (toggles, mute, preview, focus) before firing.
-        if new_incoming {
+        // (toggles, mute, preview, focus) before firing. History
+        // never queues: a message stamped before this connection
+        // came up is first-sync or offline catch-up, and a popup
+        // for it would be noise about the past. The fake backend
+        // is exempt: its clock is scripted, so the stamp
+        // comparison is meaningless there and the demo keeps its
+        // previous behavior.
+        let history = self
+            .live
+            .as_ref()
+            .is_some_and(|s| !s.fake && crate::notify::is_history(live.timestamp, s.connected_at));
+        if new_incoming && !history {
             if let Some(chat) = self.chats.iter().find(|c| c.id == chat_id) {
                 self.pending_notifications.push(crate::notify::NotifyRequest {
                     chat_id,
@@ -1696,6 +1721,7 @@ mod burst_drain_tests {
             pair_code: None,
             pair_code_at: None,
             account: "Test account".to_owned(),
+            connected_at: None,
             store: Some(store::Store::open_in_memory().unwrap()),
             jids: HashMap::new(),
             messages: HashMap::new(),
@@ -1812,5 +1838,38 @@ mod burst_drain_tests {
         let archived =
             app.live.as_ref().unwrap().store.as_ref().unwrap().messages(CHAT_JID).unwrap();
         assert_eq!(archived.len(), 2, "both burst messages reached the archive");
+    }
+
+    /// The notification flood scenario: on a real (non-fake)
+    /// session, a message stamped before the connection came up
+    /// is offline catch-up and must not queue an OS notification,
+    /// while a message stamped after it is live and must. Both
+    /// still land in the chat and raise the unread badge: only
+    /// the popup is gated.
+    #[test]
+    fn history_catch_up_queues_no_notification_but_live_does() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        // The harness session runs the fake backend, whose
+        // scripted clock exempts it from the history gate; this
+        // test exercises the real-backend path.
+        app.live.as_mut().unwrap().fake = false;
+        app.selected_chat = jid_id(CHAT_JID);
+        tx.send(BackendEvent::Connected { account: "Test account".to_owned() }).unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(
+            app.live.as_ref().unwrap().connected_at.is_some(),
+            "the connect stamps the session clock"
+        );
+
+        let now = i64::try_from(crate::state::now_unix()).unwrap();
+        tx.send(incoming("weekend-1", now - 7_200)).unwrap();
+        tx.send(incoming("fresh-1", now + 120)).unwrap();
+        drain_all(&mut app, &ctx);
+
+        assert_eq!(stored_messages(&app).len(), 2, "history still lands in the chat");
+        let chat = app.chats.iter().find(|c| c.id == jid_id(CHAT_JID)).unwrap();
+        assert_eq!(chat.unread, 2, "the badge counts history too");
+        assert_eq!(app.pending_notifications.len(), 1, "only the live message queues a popup");
+        assert_eq!(app.pending_notifications[0].body, "message fresh-1");
     }
 }

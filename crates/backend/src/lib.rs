@@ -98,22 +98,96 @@ pub fn data_dir() -> PathBuf {
     dir
 }
 
-/// One-time adoption of the data directory from before the rename
-/// (the app shipped as Zaplite until 1.0.0). On the first run after
-/// the rename the Zaprust directory does not exist yet; if the
-/// legacy one does, its contents are copied over, never moved, so
-/// the old install keeps working and the session, archive, and
-/// settings carry across. Later runs see the Zaprust directory in
-/// place and do nothing.
+/// The platform data directory from before the rename (the app
+/// shipped as Zaplite until 1.0.0). The fallback mirrors
+/// [`data_dir`]'s: a `.zaplite` folder under the current directory
+/// when the platform reports no data dir.
+fn legacy_data_dir() -> PathBuf {
+    directories::ProjectDirs::from("", "", "Zaplite")
+        .map_or_else(|| PathBuf::from(".zaplite"), |d| d.data_dir().to_path_buf())
+}
+
+/// One-time adoption of the data directory from before the rename.
+/// On the first run after the rename the Zaprust directory does
+/// not exist yet; if the legacy one does, its contents are copied
+/// over, so the session, archive, and settings carry across. The
+/// copy is staged in a sibling directory and renamed into place,
+/// so an interrupted copy never leaves a half-populated directory
+/// that a later run would mistake for a completed adoption. The
+/// legacy directory itself stays in place for now: it is removed
+/// by [`remove_legacy_data_dir`] once the app has proven it runs
+/// from the new directory. Later runs see the Zaprust directory
+/// in place and do nothing.
 fn adopt_legacy_data_dir(new_dir: &std::path::Path) {
-    if new_dir.exists() {
+    adopt_legacy_dir(new_dir, &legacy_data_dir());
+}
+
+/// The adoption itself, split out from the platform path lookup
+/// so tests can drive it with temporary directories.
+fn adopt_legacy_dir(new_dir: &std::path::Path, legacy: &std::path::Path) {
+    if new_dir.exists() || !legacy.is_dir() {
         return;
     }
-    let legacy = directories::ProjectDirs::from("", "", "Zaplite")
-        .map_or_else(|| PathBuf::from(".zaplite"), |d| d.data_dir().to_path_buf());
-    if legacy.is_dir() {
-        let _ = copy_dir_contents(&legacy, new_dir);
+    // Stage the copy next to its destination and rename it into
+    // place: the rename is atomic on the destination filesystem,
+    // so the new directory either appears complete or not at all.
+    let Some(parent) = new_dir.parent() else {
+        return;
+    };
+    let Some(name) = new_dir.file_name().and_then(|n| n.to_str()) else {
+        return;
+    };
+    let staging = parent.join(format!(".{name}.adopting"));
+    let _ = std::fs::remove_dir_all(&staging);
+    if copy_dir_contents(legacy, &staging).is_err() {
+        let _ = std::fs::remove_dir_all(&staging);
+        return;
     }
+    if std::fs::rename(&staging, new_dir).is_err() && new_dir.exists() {
+        // Another starter won the race and adopted first; the
+        // staged copy is a duplicate and must not linger either.
+        let _ = std::fs::remove_dir_all(&staging);
+    }
+}
+
+/// Removes the legacy (pre-rename) data directory, once the app
+/// has proven it runs from the current one.
+///
+/// The adoption in [`data_dir`] copies the legacy directory and
+/// deliberately leaves the original in place, so a first run that
+/// goes wrong loses nothing. But the leftover is a complete second
+/// copy of the user's data, and any database in it predates the
+/// SQLCipher conversion (SEC-F01): never adopted copies stay in
+/// plaintext forever, outside the current directory's lifecycle,
+/// permission hardening, and pruning. Callers invoke this only
+/// after the current directory's archive has opened successfully,
+/// which is the proof that the app runs from the new location.
+/// The removal is best-effort and never fails startup; a later
+/// start retries whatever it could not do.
+///
+/// The rails, all checked against canonical paths: nothing happens
+/// when there is no legacy directory, when the current directory
+/// does not exist (adoption never completed), or when the two
+/// resolve to the same place or one inside the other, so the
+/// current directory is never deleted, in whole or in part.
+pub fn remove_legacy_data_dir() {
+    let _ = remove_legacy_dir(&data_dir(), &legacy_data_dir());
+}
+
+/// The cleanup itself, split out from the platform path lookup
+/// so tests can drive it with temporary directories. Returns
+/// whether the legacy directory was removed.
+fn remove_legacy_dir(current: &std::path::Path, legacy: &std::path::Path) -> bool {
+    if !legacy.is_dir() || !current.is_dir() {
+        return false;
+    }
+    let (Ok(current), Ok(legacy)) = (current.canonicalize(), legacy.canonicalize()) else {
+        return false;
+    };
+    if current.starts_with(&legacy) || legacy.starts_with(&current) {
+        return false;
+    }
+    std::fs::remove_dir_all(&legacy).is_ok()
 }
 
 /// Recursive file copy used by the legacy data-dir adoption above.
@@ -1905,5 +1979,138 @@ mod tests {
         assert!(event.is_err(), "a clean exit must emit nothing: {event:?}");
         assert_eq!(runs.load(Ordering::SeqCst), 1, "a clean exit must not be restarted");
         drop(channels.commands);
+    }
+
+    /// A unique empty directory under the system temp dir for the
+    /// data-dir adoption and cleanup tests; removed on drop.
+    struct TempTree(PathBuf);
+
+    impl TempTree {
+        fn new(tag: &str) -> Self {
+            static COUNTER: AtomicUsize = AtomicUsize::new(0);
+            let dir = std::env::temp_dir().join(format!(
+                "zaprust-backend-test-{tag}-{}-{}",
+                std::process::id(),
+                COUNTER.fetch_add(1, Ordering::SeqCst)
+            ));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).expect("create temp tree");
+            Self(dir)
+        }
+
+        fn path(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempTree {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// A legacy tree shaped like a pre-rename install: an archive,
+    /// a per-account session store, and settings.
+    fn seed_legacy_tree(legacy: &std::path::Path) {
+        std::fs::create_dir_all(legacy.join("accounts").join("default")).expect("seed dirs");
+        std::fs::write(legacy.join("archive.db"), b"plaintext archive").expect("seed archive");
+        std::fs::write(
+            legacy.join("accounts").join("default").join("session.db"),
+            b"plaintext session",
+        )
+        .expect("seed session");
+        std::fs::write(legacy.join("settings.json"), b"{}").expect("seed settings");
+    }
+
+    #[test]
+    fn adoption_then_cleanup_removes_the_legacy_tree() {
+        let root = TempTree::new("adopt-clean");
+        let legacy = root.path().join("zaplite");
+        let current = root.path().join("zaprust");
+        seed_legacy_tree(&legacy);
+
+        adopt_legacy_dir(&current, &legacy);
+        // The adoption copies and leaves the original in place.
+        assert_eq!(
+            std::fs::read(current.join("archive.db")).expect("copied archive"),
+            b"plaintext archive"
+        );
+        assert!(legacy.join("archive.db").exists(), "adoption alone must not remove the legacy");
+
+        // Once the app runs from the new directory, the cleanup
+        // removes the whole legacy tree and nothing else.
+        assert!(remove_legacy_dir(&current, &legacy));
+        assert!(!legacy.exists(), "the legacy copy must be gone");
+        assert_eq!(
+            std::fs::read(current.join("archive.db")).expect("current archive survives"),
+            b"plaintext archive"
+        );
+        assert!(current.join("accounts").join("default").join("session.db").exists());
+        // A later start finds nothing to do and does not error.
+        assert!(!remove_legacy_dir(&current, &legacy));
+    }
+
+    #[test]
+    fn cleanup_refuses_when_current_is_the_legacy_dir() {
+        let root = TempTree::new("clean-self");
+        let legacy = root.path().join("zaplite");
+        seed_legacy_tree(&legacy);
+        // The app still runs from the legacy directory itself:
+        // removing it would delete the live data.
+        assert!(!remove_legacy_dir(&legacy, &legacy));
+        assert_eq!(
+            std::fs::read(legacy.join("archive.db")).expect("legacy archive survives"),
+            b"plaintext archive"
+        );
+    }
+
+    #[test]
+    fn cleanup_refuses_when_current_is_inside_legacy() {
+        let root = TempTree::new("clean-nested");
+        let legacy = root.path().join("zaplite");
+        seed_legacy_tree(&legacy);
+        let nested = legacy.join("zaprust");
+        std::fs::create_dir_all(&nested).expect("nested current");
+        // Removing the legacy tree would remove the current
+        // directory with it; the nesting rail refuses.
+        assert!(!remove_legacy_dir(&nested, &legacy));
+        assert!(legacy.join("archive.db").exists());
+        assert!(nested.exists());
+    }
+
+    #[test]
+    fn cleanup_waits_until_adoption_has_completed() {
+        let root = TempTree::new("clean-early");
+        let legacy = root.path().join("zaplite");
+        seed_legacy_tree(&legacy);
+        let current = root.path().join("zaprust");
+        // The new directory does not exist: adoption never
+        // completed, so the legacy copy is the only one and stays.
+        assert!(!remove_legacy_dir(&current, &legacy));
+        assert!(legacy.join("archive.db").exists());
+    }
+
+    #[test]
+    fn cleanup_without_a_legacy_dir_is_a_no_op() {
+        let root = TempTree::new("clean-none");
+        let current = root.path().join("zaprust");
+        std::fs::create_dir_all(&current).expect("current dir");
+        assert!(!remove_legacy_dir(&current, &root.path().join("zaplite")));
+        assert!(current.exists());
+    }
+
+    #[test]
+    fn cleanup_failure_is_reported_not_raised() {
+        let root = TempTree::new("clean-fail");
+        let current = root.path().join("zaprust");
+        std::fs::create_dir_all(&current).expect("current dir");
+        // A legacy path that is a file, not a directory: the
+        // cleanup skips it and reports false instead of failing,
+        // which is what keeps a stuck legacy copy from ever
+        // blocking startup.
+        let legacy_file = root.path().join("zaplite");
+        std::fs::write(&legacy_file, b"not a directory").expect("legacy file");
+        assert!(!remove_legacy_dir(&current, &legacy_file));
+        assert_eq!(std::fs::read(&legacy_file).expect("file survives"), b"not a directory");
     }
 }

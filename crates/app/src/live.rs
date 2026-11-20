@@ -475,6 +475,14 @@ impl crate::state::App {
             Ok(s) => (Some(s), None),
             Err(e) => (None, Some(format!("Chat archive unavailable: {e}"))),
         };
+        if store_opt.is_some() {
+            // The archive in the current data directory opened and
+            // unlocked, which proves the app runs from the
+            // post-rename directory: the legacy copy the one-time
+            // adoption left behind can be removed (privacy audit
+            // A1). Best-effort; a later start retries.
+            backend::remove_legacy_data_dir();
+        }
         let repaint_ctx = ctx.clone();
         let wake: backend::WakeFn = std::sync::Arc::new(move || repaint_ctx.request_repaint());
         let config = BackendConfig { data_dir, account_id: "default".to_owned(), db_key };

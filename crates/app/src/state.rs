@@ -306,6 +306,12 @@ pub(crate) enum UiConfirm {
     /// Leave a group; confirming closes the info dock, as the
     /// chat is archived by the leave itself.
     LeaveGroup { chat_id: u64, name: String },
+    /// Cycle a privacy row away from `contact_blacklist`:
+    /// the value names an exception list configured on the
+    /// phone, and replacing it discards the association with
+    /// that list, which this client cannot restore. Confirming
+    /// performs the cycle the row click asked for.
+    ReplaceExceptionList { category: String, label: String },
 }
 
 /// Debug mode state (see debug_ui.rs): the trace ring, its clock and the inspector toggles.

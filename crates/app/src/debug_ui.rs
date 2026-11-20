@@ -79,6 +79,11 @@ impl App {
             BackendEvent::DisappearingChanged { chat_jid, duration_secs } => {
                 ("message", format!("DisappearingChanged in {chat_jid}: {duration_secs}s"), None)
             }
+            BackendEvent::DefaultDisappearingTimerChanged { duration_secs } => (
+                "message",
+                format!("DefaultDisappearingTimerChanged: {duration_secs}s"),
+                None,
+            ),
             BackendEvent::MuteChanged { chat_jid, muted } => {
                 ("message", format!("MuteChanged in {chat_jid}: muted={muted}"), None)
             }

@@ -11,30 +11,41 @@ use crate::{
 };
 
 /// Maps the library's privacy-settings response into our
-/// category → value spelling map.
+/// category → value spelling map. Every category the library
+/// returns is carried, including the ones the Privacy page has
+/// no row for (`calladd`, `messages`, `defense`): silently
+/// discarding fetched account state would lose settings the
+/// account actually has. A category or value this build does
+/// not know is carried under its wire spelling (the library's
+/// `Other` fallback), so nothing the server sent is dropped.
 pub(super) fn privacy_map(
     resp: &whatsapp_rust::privacy_settings::PrivacySettingsResponse,
 ) -> std::collections::BTreeMap<String, String> {
     use whatsapp_rust::privacy_settings::{PrivacyCategory, PrivacyValue};
     let mut out = std::collections::BTreeMap::new();
     for setting in &resp.settings {
-        let category = match setting.category {
+        let category = match &setting.category {
             PrivacyCategory::Last => "last",
             PrivacyCategory::Online => "online",
             PrivacyCategory::Profile => "profile",
             PrivacyCategory::Status => "status",
             PrivacyCategory::GroupAdd => "groupadd",
             PrivacyCategory::ReadReceipts => "readreceipts",
-            _ => continue,
+            PrivacyCategory::CallAdd => "calladd",
+            PrivacyCategory::Messages => "messages",
+            PrivacyCategory::DefenseMode => "defense",
+            PrivacyCategory::Other(name) => name.as_str(),
         };
-        let value = match setting.value {
+        let value = match &setting.value {
             PrivacyValue::All => "all",
             PrivacyValue::Contacts => "contacts",
             PrivacyValue::None => "none",
             PrivacyValue::ContactBlacklist => "contact_blacklist",
             PrivacyValue::MatchLastSeen => "match_last_seen",
             PrivacyValue::Known => "known",
-            _ => continue,
+            PrivacyValue::Off => "off",
+            PrivacyValue::OnStandard => "on_standard",
+            PrivacyValue::Other(v) => v.as_str(),
         };
         out.insert(category.to_owned(), value.to_owned());
     }
@@ -111,7 +122,12 @@ pub(super) fn translate_special(ctx: &MessageContext, sink: &EventSink) -> bool 
 }
 
 /// Maps a library event the typed handlers do not cover.
-pub(super) fn translate_event(event: &Event, sink: &EventSink) {
+/// `own_jids` are this account's own JIDs (phone number and
+/// LID, non-AD spellings): the disappearing-mode notification
+/// uses the same event for per-chat timers and for the
+/// account-wide default, told apart only by whose JID the
+/// change came from.
+pub(super) fn translate_event(event: &Event, sink: &EventSink, own_jids: &[String]) {
     match event {
         Event::Receipt(receipt) => {
             use whatsapp_rust::wacore::types::presence::ReceiptType;
@@ -134,11 +150,23 @@ pub(super) fn translate_event(event: &Event, sink: &EventSink) {
         Event::DisappearingModeChanged(change) => {
             // Group timer changes arrive as notifications (direct
             // chats come through the protocol-message path in
-            // translate_special instead).
-            sink.emit(BackendEvent::DisappearingChanged {
-                chat_jid: change.from.to_string(),
-                duration_secs: change.duration,
-            });
+            // translate_special instead). The same notification
+            // carries the account-wide default timer when it comes
+            // from our own JID (an account_sync change made on
+            // another device, the phone included); that is not a
+            // per-chat change and must not land on a chat keyed by
+            // our own JID.
+            let from = change.from.to_string();
+            if own_jids.iter().any(|own| own == &from) {
+                sink.emit(BackendEvent::DefaultDisappearingTimerChanged {
+                    duration_secs: change.duration,
+                });
+            } else {
+                sink.emit(BackendEvent::DisappearingChanged {
+                    chat_jid: from,
+                    duration_secs: change.duration,
+                });
+            }
         }
         Event::MuteUpdate(update) => {
             // App-state sync reporting the account's mute state
@@ -846,7 +874,7 @@ mod clear_chat_action_tests {
 
 #[cfg(test)]
 mod embedded_link_preview_tests {
-    use super::embedded_link_preview;
+    use super::{embedded_link_preview, privacy_map};
     use whatsapp_rust::prelude::wa;
     use whatsapp_rust::prelude::{MessageBuilderExt, MessageField};
 
@@ -906,5 +934,39 @@ mod embedded_link_preview_tests {
     fn plain_conversation_text_yields_none() {
         let msg = wa::Message::text("hello https://example.com");
         assert!(embedded_link_preview(&msg).is_none());
+    }
+
+    /// Every category the library returns survives translation,
+    /// including the ones the Privacy page has no row for and the
+    /// value spellings only they use (audit finding D6). An
+    /// unknown category or value is carried under its wire
+    /// spelling instead of being dropped.
+    #[test]
+    fn privacy_map_carries_every_category() {
+        use whatsapp_rust::privacy_settings::{
+            PrivacyCategory, PrivacySetting, PrivacySettingsResponse, PrivacyValue,
+        };
+        let resp = PrivacySettingsResponse {
+            settings: vec![
+                PrivacySetting { category: PrivacyCategory::Last, value: PrivacyValue::Contacts },
+                PrivacySetting { category: PrivacyCategory::CallAdd, value: PrivacyValue::Known },
+                PrivacySetting { category: PrivacyCategory::Messages, value: PrivacyValue::All },
+                PrivacySetting {
+                    category: PrivacyCategory::DefenseMode,
+                    value: PrivacyValue::OnStandard,
+                },
+                PrivacySetting {
+                    category: PrivacyCategory::Other("futurecat".to_owned()),
+                    value: PrivacyValue::Other("futureval".to_owned()),
+                },
+            ],
+        };
+        let map = privacy_map(&resp);
+        assert_eq!(map.get("last").map(String::as_str), Some("contacts"));
+        assert_eq!(map.get("calladd").map(String::as_str), Some("known"));
+        assert_eq!(map.get("messages").map(String::as_str), Some("all"));
+        assert_eq!(map.get("defense").map(String::as_str), Some("on_standard"));
+        assert_eq!(map.get("futurecat").map(String::as_str), Some("futureval"));
+        assert_eq!(map.len(), 5, "nothing the server sent is dropped");
     }
 }

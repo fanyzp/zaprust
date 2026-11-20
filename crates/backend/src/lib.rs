@@ -1048,6 +1048,17 @@ pub enum BackendEvent {
         /// New timer in seconds (`0` is off).
         duration_secs: u32,
     },
+    /// The account-wide default disappearing-messages timer
+    /// changed on another device (the phone included): the
+    /// server pushes it as an account sync notification, and the
+    /// app adopts it the way it adopts a fetched privacy setting.
+    /// There is no fetch for this value; this event is the only
+    /// reconciliation channel, so a default changed while this
+    /// client was offline is adopted when the sync delivers it.
+    DefaultDisappearingTimerChanged {
+        /// New default timer in seconds (`0` is off).
+        duration_secs: u32,
+    },
     /// A chat's mute state changed on the server: muted or
     /// unmuted from another device, or the account state as a
     /// full sync reports it. This is the authoritative path for

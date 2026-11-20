@@ -37,11 +37,13 @@
 "chats.no_match" = "Tidak ada obrolan yang cocok dengan filter ini."
 "chats.typing" = "mengetik..."
 "chats.typing_named" = "{name} sedang mengetik..."
+"chats.blocked" = "Diblokir"
 "chats.draft" = "Draf:"
 "chats.collapse" = "Tutup panel samping (Ctrl+B)"
 
 # ---- conversation ----
 "conversation.typing" = "mengetik..."
+"conversation.blocked_note" = "Anda memblokir kontak ini"
 "conversation.unread_one" = "1 pesan belum dibaca"
 "conversation.unread_messages" = "{count} pesan belum dibaca"
 "conversation.encryption_notice" = "Pesan terenkripsi secara end-to-end."
@@ -163,6 +165,9 @@
 "groups.join" = "Gabung grup"
 "privacy.default_timer" = "Timer pesan bawaan"
 "privacy.default_timer_caption" = "Chat baru mulai dengan timer pesan sementara ini. Chat yang sudah ada tetap memakai pengaturannya sendiri."
+"privacy.exceptions_title" = "Ganti daftar pengecualian?"
+"privacy.exceptions_body" = "{name} diatur ke \"Kontak saya kecuali…\", dengan daftar orang yang dipilih di ponsel Anda. Mengubahnya di sini mengganti daftar itu dengan audiens biasa, dan Zaprust tidak bisa memulihkan daftarnya."
+"privacy.exceptions_confirm" = "Ganti"
 "profile.audio_call" = "Suara"
 "profile.search" = "Cari"
 "profile.about" = "Info"

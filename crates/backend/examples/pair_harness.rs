@@ -30,6 +30,9 @@ fn summarize(event: &BackendEvent) -> String {
         BackendEvent::MessageEdited { .. } => "MessageEdited".to_owned(),
         BackendEvent::MessageRevoked { .. } => "MessageRevoked".to_owned(),
         BackendEvent::DisappearingChanged { .. } => "DisappearingChanged".to_owned(),
+        BackendEvent::DefaultDisappearingTimerChanged { .. } => {
+            "DefaultDisappearingTimerChanged".to_owned()
+        }
         BackendEvent::MuteChanged { muted, .. } => format!("MuteChanged muted={muted}"),
         BackendEvent::PinChanged { pinned, .. } => format!("PinChanged pinned={pinned}"),
         BackendEvent::ArchiveChanged { archived, .. } => {

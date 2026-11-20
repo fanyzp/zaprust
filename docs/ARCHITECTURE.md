@@ -133,11 +133,29 @@ principle, misfire on a contact literally named "Meta AI".
 Read receipts are **sent only after real engagement** (scrolling
 to the bottom, focusing or typing in the composer, or sending),
 and only when the Privacy toggle allows them; typing
-indicators likewise are only sent when enabled. Privacy values
+indicators likewise are only sent when enabled, and turning
+them off retracts a composing state already sent. Privacy values
 the library exposes (last seen, online, profile, status,
 group-add, read receipts) are fetched on connect and set via
-`set_privacy_setting`; anything else is phone-managed and the
-UI says so instead of showing a fake control.
+`set_privacy_setting`. The fetch also carries categories the
+Privacy page has no row for (who can add the account to calls,
+who can message it, defense mode); those are kept in the app's
+state map rather than discarded, but they are edited on the
+phone, and the UI shows no fake control for them. The
+account-wide default disappearing timer has no fetch at all:
+the server pushes changes made on other devices as a sync
+notification, and the app adopts those (server wins), the same
+rule as the read-receipts toggle.
+
+Presence announcements are the library's session behavior, not
+an app setting: the client announces `available` automatically
+on connect and reconnect (the library's `PresencePolicy`
+default), the same posture as WhatsApp Web. Who can *see* that
+presence is the account's Online privacy setting above. The
+library also offers a manual policy under which the host app
+owns every presence transition; Zaprust does not take that
+over, because going manual without owning the transitions
+would silently change when contacts see the account online.
 
 ## Network egress and proxies
 

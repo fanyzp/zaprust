@@ -1370,6 +1370,11 @@ impl Backend for FakeBackend {
                             .unwrap_or_else(std::sync::PoisonError::into_inner)
                             .push(format!("default_disappearing:{duration_secs}"));
                     }
+                    // The real backend hears its own change back
+                    // as the account sync notification; the fake
+                    // answers with the same event so the app's
+                    // adoption path runs in demo mode too.
+                    events.emit(BackendEvent::DefaultDisappearingTimerChanged { duration_secs });
                 }
                 BackendCommand::JoinGroupByLink { link } => {
                     if let Some(log) = &command_log {
@@ -1561,6 +1566,12 @@ fn baseline_privacy_state() -> std::collections::BTreeMap<String, String> {
     privacy.insert("status".to_owned(), "contacts".to_owned());
     privacy.insert("groupadd".to_owned(), "contacts".to_owned());
     privacy.insert("readreceipts".to_owned(), "all".to_owned());
+    // The categories the Privacy page has no row for are part
+    // of the account state too: the real backend's `privacy_map`
+    // carries them, so the fake's baseline does as well.
+    privacy.insert("calladd".to_owned(), "known".to_owned());
+    privacy.insert("messages".to_owned(), "contacts".to_owned());
+    privacy.insert("defense".to_owned(), "off".to_owned());
     privacy
 }
 

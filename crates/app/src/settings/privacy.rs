@@ -34,11 +34,7 @@ impl App {
                 |ui| switch(ui, &mut tp, t),
             );
             if tp != self.typing_indicators {
-                self.typing_indicators = tp;
-                if !tp {
-                    self.typing_sent_for = None;
-                }
-                self.persist_settings();
+                self.set_typing_indicators(tp);
             }
         });
         ui.add_space(16.0);
@@ -81,7 +77,7 @@ impl App {
             // These genuinely round-trip to WhatsApp through the
             // library's privacy API while linked.
             let state = self.privacy_state.clone();
-            let mut cycle: Vec<&str> = Vec::new();
+            let mut cycle: Vec<(&str, &str)> = Vec::new();
             settings_card(ui, t, |ui| {
                 for (label, key) in [
                     ("Last seen", "last"),
@@ -100,7 +96,7 @@ impl App {
                         )
                         .clicked()
                         {
-                            cycle.push(key);
+                            cycle.push((key, label));
                         }
                     });
                     divider(ui, t);
@@ -111,8 +107,8 @@ impl App {
                         .color(rgb(t.text_faint)),
                 );
             });
-            for category in cycle {
-                self.cycle_privacy(category);
+            for (category, label) in cycle {
+                self.request_cycle_privacy(category, label);
             }
         } else {
             settings_card(ui, t, |ui| {

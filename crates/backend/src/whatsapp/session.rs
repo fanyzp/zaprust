@@ -360,14 +360,23 @@ pub(super) async fn run_async(
                 }
             }
         })
-        .on_event(move |event: Arc<Event>, _client| {
+        .on_event(move |event: Arc<Event>, client| {
             let sink = sink_all.clone();
             #[cfg(feature = "calls")]
             let incoming_slot = call_incoming_events.clone();
             async move {
                 #[cfg(feature = "calls")]
                 handle_call_event(&event, &incoming_slot, &sink);
-                translate_event(&event, &sink);
+                // The account's own JIDs (non-AD spellings, the
+                // form notifications carry): translate_event uses
+                // them to tell the account-wide disappearing
+                // default apart from a per-chat timer change.
+                let own_jids: Vec<String> = [client.pn(), client.lid()]
+                    .into_iter()
+                    .flatten()
+                    .map(|jid| jid.to_non_ad().to_string())
+                    .collect();
+                translate_event(&event, &sink, &own_jids);
             }
         })
         .build()
@@ -1433,6 +1442,9 @@ pub(super) async fn run_async(
                         "status" => Some(PrivacyCategory::Status),
                         "groupadd" => Some(PrivacyCategory::GroupAdd),
                         "readreceipts" => Some(PrivacyCategory::ReadReceipts),
+                        "calladd" => Some(PrivacyCategory::CallAdd),
+                        "messages" => Some(PrivacyCategory::Messages),
+                        "defense" => Some(PrivacyCategory::DefenseMode),
                         _ => None,
                     };
                     let value = match value.as_str() {
@@ -1442,6 +1454,8 @@ pub(super) async fn run_async(
                         "contact_blacklist" => Some(PrivacyValue::ContactBlacklist),
                         "match_last_seen" => Some(PrivacyValue::MatchLastSeen),
                         "known" => Some(PrivacyValue::Known),
+                        "off" => Some(PrivacyValue::Off),
+                        "on_standard" => Some(PrivacyValue::OnStandard),
                         _ => None,
                     };
                     // The pair is validated here, at the boundary,

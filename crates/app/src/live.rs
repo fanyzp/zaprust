@@ -572,6 +572,13 @@ impl crate::state::App {
                             if *flags != 0 {
                                 session.flags.insert(message_id(&m.chat_jid, &m.id), *flags);
                             }
+                            // An opened view-once message stays
+                            // opened across restarts: seed the
+                            // session's opened set from the stored
+                            // flag (privacy audit D13).
+                            if *flags & store::FLAG_VIEW_ONCE_OPENED != 0 {
+                                self.media.opened_view_once.insert(message_id(&m.chat_jid, &m.id));
+                            }
                             // Archived messages must stay actionable
                             // after a restart: per-message live actions
                             // look the protocol id up here, and before
@@ -1135,6 +1142,9 @@ impl crate::state::App {
             BackendEvent::DisappearingChanged { chat_jid, duration_secs } => {
                 let chat_id = jid_id(&chat_jid);
                 self.apply_disappearing_changed(chat_id, duration_secs);
+            }
+            BackendEvent::DefaultDisappearingTimerChanged { duration_secs } => {
+                self.apply_default_disappearing_timer(duration_secs);
             }
             BackendEvent::MuteChanged { chat_jid, muted } => {
                 let chat_id = jid_id(&chat_jid);
@@ -1933,11 +1943,23 @@ impl crate::state::App {
             .is_some_and(|s| !s.fake && crate::notify::is_history(live.timestamp, s.connected_at));
         if new_incoming && !history {
             if let Some(chat) = self.chats.iter().find(|c| c.id == chat_id) {
+                // Blocked state gates the popup like mute does:
+                // the chat itself for a direct chat with a
+                // blocked contact, the message's sender inside a
+                // group. The server stops delivering a blocked
+                // contact's messages, but anything already in
+                // flight or synced can still land here.
+                let blocked = self.blocked_chats.contains(&chat_id)
+                    || live
+                        .sender_jid
+                        .as_deref()
+                        .is_some_and(|j| self.blocked_chats.contains(&jid_id(j)));
                 self.pending_notifications.push(crate::notify::NotifyRequest {
                     chat_id,
                     title: chat.title.clone(),
                     kind: chat.kind,
                     muted: chat.muted,
+                    blocked,
                     sender: live.sender.clone(),
                     // The queued body is the only text the popup
                     // planner can ever show, so a view-once
@@ -2082,6 +2104,29 @@ impl crate::state::App {
         }
     }
 
+    /// Marks a view-once message opened, in memory and in the
+    /// archive. The in-memory set drives the bubble's opened
+    /// presentation for this session; the stored flag
+    /// ([`store::FLAG_VIEW_ONCE_OPENED`]) is what start_live
+    /// seeds that set from after a restart, so an opened
+    /// view-once message never presents as unopened again:
+    /// once opened, it stays opened (privacy audit D13).
+    pub(crate) fn mark_view_once_opened(&mut self, msg_id: u64) {
+        if !self.media.opened_view_once.insert(msg_id) {
+            return;
+        }
+        let chat_id = self.live.as_ref().and_then(|session| {
+            session
+                .messages
+                .iter()
+                .find(|(_, msgs)| msgs.iter().any(|(_, m)| m.id == msg_id))
+                .map(|(chat_id, _)| *chat_id)
+        });
+        if let Some(chat_id) = chat_id {
+            self.set_live_flag(chat_id, msg_id, store::FLAG_VIEW_ONCE_OPENED, true);
+        }
+    }
+
     /// Handles a delete-for-everyone for one message: the native
     /// behaviour, the message is replaced by the placeholder.
     pub(crate) fn apply_revoke(&mut self, chat_id: u64, msg_id: u64) {
@@ -2130,6 +2175,24 @@ impl crate::state::App {
         }
     }
 
+    /// Applies a typing-indicators toggle change from the
+    /// Privacy page. Turning the toggle off must also retract a
+    /// composing state already sent: the peer would otherwise
+    /// keep seeing "typing..." until it times out server-side,
+    /// from a client whose user just said indicators are off.
+    /// The retraction goes through [`App::send_typing_to`], which
+    /// does not consult the toggle: the gate in
+    /// [`App::set_typing`] would swallow it.
+    pub(crate) fn set_typing_indicators(&mut self, on: bool) {
+        self.typing_indicators = on;
+        if !on {
+            if let Some(chat_id) = self.typing_sent_for.take() {
+                self.send_typing_to(chat_id, false);
+            }
+        }
+        self.persist_settings();
+    }
+
     /// Adopts a privacy state fetched from the account. The map
     /// itself drives the account rows on the Privacy page, and
     /// one value in it is also a local setting: read receipts.
@@ -2155,6 +2218,23 @@ impl crate::state::App {
             }
         }
         self.privacy_state = map;
+    }
+
+    /// Adopts the account-wide default disappearing timer the
+    /// server pushed (a change made on another device, the phone
+    /// included). The control is a local value loaded from the
+    /// settings file at startup; without this adoption a default
+    /// changed on the phone and the value this client applies to
+    /// new chats silently disagree, in the exposing direction
+    /// both ways. There is no fetch for the account default (the
+    /// library offers only the set), so this push is the only
+    /// reconciliation channel, the same server-wins rule as
+    /// [`App::apply_privacy_state`]. Demo mode never adopts.
+    fn apply_default_disappearing_timer(&mut self, duration_secs: u32) {
+        if self.live_mode && duration_secs != self.default_ephemeral_secs {
+            self.default_ephemeral_secs = duration_secs;
+            self.persist_settings();
+        }
     }
 
     /// Persists the blocked-chat set to its home, the encrypted
@@ -2288,6 +2368,28 @@ impl crate::state::App {
                 value: next.to_owned(),
             });
         }
+    }
+
+    /// The Privacy page's entry point for cycling a row. Leaving
+    /// `contact_blacklist` is the one cycle step that destroys
+    /// data this client cannot restore: the value names an
+    /// exception list configured on the phone, and replacing it
+    /// with a plain audience discards the association with that
+    /// list (the backend refuses to set the list back without
+    /// its contacts). That step asks first, through the same
+    /// confirmation the other destructive actions use; every
+    /// other step is a reversible value-to-value change and
+    /// cycles at once.
+    pub(crate) fn request_cycle_privacy(&mut self, category: &str, label: &str) {
+        let current = self.privacy_state.get(category).cloned().unwrap_or_default();
+        if current == "contact_blacklist" {
+            self.ui_confirm = Some(crate::state::UiConfirm::ReplaceExceptionList {
+                category: category.to_owned(),
+                label: label.to_owned(),
+            });
+            return;
+        }
+        self.cycle_privacy(category);
     }
 
     /// Records a real read action in the selected chat (the
@@ -2830,6 +2932,32 @@ mod burst_drain_tests {
             }
             other => panic!("expected the media kind to survive, got {other:?}"),
         }
+    }
+
+    /// Privacy finding D13: opening a view-once message
+    /// persists the opened state with the message's stored
+    /// flags, so the archive load after a restart seeds the
+    /// opened set from it and the message never presents as
+    /// unopened again.
+    #[test]
+    fn view_once_opened_state_persists_with_the_message() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        tx.send(BackendEvent::MessageUpsert(view_once_photo("vo-1", "a caption", BASE_TS)))
+            .unwrap();
+        drain_all(&mut app, &ctx);
+        let msg_id = message_id(CHAT_JID, "vo-1");
+
+        app.mark_view_once_opened(msg_id);
+        assert!(app.media.opened_view_once.contains(&msg_id), "the session set knows");
+
+        let session = app.live.as_ref().unwrap();
+        let stored = session.store.as_ref().unwrap().messages(CHAT_JID).unwrap();
+        let (_, flags) = stored.iter().find(|(m, _)| m.id == "vo-1").unwrap();
+        assert_ne!(
+            flags & store::FLAG_VIEW_ONCE_OPENED,
+            0,
+            "the opened state is persisted with the message's flags"
+        );
     }
 
     /// Privacy finding C6: backend error text is largely library
@@ -3588,6 +3716,102 @@ mod chat_state_routing_tests {
                 value: "all".to_owned(),
             }),
             "turning receipts on must reach the account setting"
+        );
+    }
+
+    /// The categories the Privacy page has no row for still
+    /// survive into app state (audit finding D6): the fetched
+    /// map is stored whole, so the account's call-add, messages
+    /// and defense-mode settings are there for anything that
+    /// needs the account's actual state.
+    #[test]
+    fn rowless_privacy_categories_survive_into_app_state() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        let mut state = std::collections::BTreeMap::new();
+        state.insert("calladd".to_owned(), "known".to_owned());
+        state.insert("messages".to_owned(), "contacts".to_owned());
+        state.insert("defense".to_owned(), "on_standard".to_owned());
+        tx.send(BackendEvent::PrivacyState(state)).unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(app.privacy_state.get("calladd").map(String::as_str), Some("known"));
+        assert_eq!(app.privacy_state.get("messages").map(String::as_str), Some("contacts"));
+        assert_eq!(app.privacy_state.get("defense").map(String::as_str), Some("on_standard"));
+    }
+
+    /// The server-pushed account default timer is adopted into
+    /// the local control and persisted (audit finding D8), the
+    /// same server-wins rule as read receipts, and adopting it
+    /// sends nothing back.
+    #[test]
+    fn server_default_timer_is_adopted() {
+        let (mut app, tx, ctx, cmd_rx) = live_app();
+        app.default_ephemeral_secs = 0;
+        tx.send(BackendEvent::DefaultDisappearingTimerChanged { duration_secs: 86_400 }).unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(app.default_ephemeral_secs, 86_400);
+        assert_eq!(
+            app.settings_json()["default_ephemeral_secs"],
+            serde_json::json!(86_400),
+            "the adopted value is what persist_settings writes"
+        );
+        assert!(cmd_rx.try_recv().is_err(), "adopting a pushed value sends nothing back");
+    }
+
+    /// Turning typing indicators off retracts a composing state
+    /// already sent (audit finding D10): the peer must not keep
+    /// seeing "typing..." until the server-side timeout from a
+    /// client whose user just turned indicators off.
+    #[test]
+    fn typing_off_retracts_the_composing_chat() {
+        let (mut app, _tx, _ctx, cmd_rx) = live_app();
+        let chat_id = 4242;
+        app.live.as_mut().unwrap().jids.insert(chat_id, "6281234567890@s.whatsapp.net".to_owned());
+        app.typing_indicators = true;
+        app.typing_sent_for = Some(chat_id);
+
+        app.set_typing_indicators(false);
+        assert!(!app.typing_indicators);
+        assert_eq!(app.typing_sent_for, None);
+        assert_eq!(
+            cmd_rx.try_recv(),
+            Ok(BackendCommand::SetTyping {
+                chat_jid: "6281234567890@s.whatsapp.net".to_owned(),
+                typing: false,
+            }),
+            "flipping the toggle off must retract the composing state"
+        );
+
+        // Turning it back on sends nothing by itself.
+        app.set_typing_indicators(true);
+        assert!(cmd_rx.try_recv().is_err());
+    }
+
+    /// Cycling away from `contact_blacklist` asks first (audit
+    /// finding D7): the value names an exception list configured
+    /// on the phone, and replacing it discards the association
+    /// with that list, which this client cannot restore. Any
+    /// other current value cycles at once, without asking.
+    #[test]
+    fn leaving_contact_blacklist_asks_first() {
+        let (mut app, _tx, _ctx, cmd_rx) = live_app();
+        app.privacy_state.insert("last".to_owned(), "contact_blacklist".to_owned());
+        app.request_cycle_privacy("last", "Last seen");
+        assert!(
+            matches!(app.ui_confirm, Some(crate::state::UiConfirm::ReplaceExceptionList { .. })),
+            "leaving the exception list parks a confirmation"
+        );
+        assert!(cmd_rx.try_recv().is_err(), "nothing is sent before the user confirms");
+
+        app.ui_confirm = None;
+        app.privacy_state.insert("last".to_owned(), "contacts".to_owned());
+        app.request_cycle_privacy("last", "Last seen");
+        assert!(app.ui_confirm.is_none(), "an ordinary value cycles without asking");
+        assert_eq!(
+            cmd_rx.try_recv(),
+            Ok(BackendCommand::SetPrivacy {
+                category: "last".to_owned(),
+                value: "none".to_owned(),
+            })
         );
     }
 

@@ -37,11 +37,13 @@
 "chats.no_match" = "No chats match this filter."
 "chats.typing" = "typing..."
 "chats.typing_named" = "{name} is typing..."
+"chats.blocked" = "Blocked"
 "chats.draft" = "Draft:"
 "chats.collapse" = "Collapse sidebar (Ctrl+B)"
 
 # ---- conversation ----
 "conversation.typing" = "typing..."
+"conversation.blocked_note" = "You blocked this contact"
 "conversation.unread_one" = "1 unread message"
 "conversation.unread_messages" = "{count} unread messages"
 "conversation.encryption_notice" = "Messages are end-to-end encrypted."
@@ -163,9 +165,12 @@
 # ---- settings: privacy ----
 "privacy.subtitle" = "Who sees what, and how your account is protected."
 "privacy.read_receipts" = "Read receipts"
-"privacy.read_receipts_caption" = "On: opening a chat marks messages read (senders see blue ticks). Off: Zaprust never marks anything read"
+"privacy.read_receipts_caption" = "On: messages are marked read when you read them here, not on opening alone (senders see blue ticks). Off: Zaprust never marks anything read"
 "privacy.typing" = "Typing indicators"
 "privacy.typing_caption" = "Send typing presence while you compose (live mode)"
+"privacy.exceptions_title" = "Replace the exception list?"
+"privacy.exceptions_body" = "{name} is set to \"My contacts except…\", with a list of people chosen on your phone. Changing it here replaces that list with a plain audience, and Zaprust cannot restore the list."
+"privacy.exceptions_confirm" = "Replace"
 "privacy.phone_managed" = "Managed on your phone in WhatsApp > Settings > Privacy"
 "privacy.phone_managed_caption" = "Last seen, profile photo, About and group invites are controlled by WhatsApp on your phone for linked devices."
 

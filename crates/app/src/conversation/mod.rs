@@ -405,6 +405,45 @@ impl App {
                     Stroke::new(1.0_f32, rgb(t.border)),
                 );
 
+                // A blocked direct chat says so under its header,
+                // with the way back right there. The conversation
+                // stays readable and the history stays put
+                // (WhatsApp keeps blocked chats in the list and
+                // openable); the strip just stops it presenting
+                // as a normal conversation.
+                if chat.kind == core::model::ChatKind::Dm && self.blocked_chats.contains(&chat.id) {
+                    let mut unblock = false;
+                    egui::Frame::new()
+                        .fill(rgb(t.bg_panel_alt))
+                        .inner_margin(Margin::symmetric(12, 6))
+                        .show(ui, |ui| {
+                            ui.with_layout(
+                                Layout::left_to_right(Align::Center).with_main_align(Align::Center),
+                                |ui| {
+                                    ui.label(
+                                        RichText::new(crate::i18n::t("conversation.blocked_note"))
+                                            .size(12.5)
+                                            .color(rgb(t.text_secondary)),
+                                    );
+                                    ui.add_space(10.0);
+                                    if crate::widgets::button(
+                                        ui,
+                                        t,
+                                        &crate::i18n::t("common.unblock"),
+                                        crate::widgets::Btn::Secondary,
+                                    )
+                                    .clicked()
+                                    {
+                                        unblock = true;
+                                    }
+                                },
+                            );
+                        });
+                    if unblock {
+                        self.toggle_block_contact(chat.id);
+                    }
+                }
+
                 let (scroll_out, full_rect) = self.draw_stream(
                     ui,
                     &chat,

@@ -209,6 +209,7 @@ impl App {
                                 ui,
                                 chat,
                                 chat.id == self.selected_chat,
+                                chat.kind == ChatKind::Dm && self.blocked_chats.contains(&chat.id),
                                 t,
                                 state,
                                 None,
@@ -360,10 +361,12 @@ impl App {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn chat_row(
     ui: &mut egui::Ui,
     chat: &Chat,
     selected: bool,
+    blocked: bool,
     t: Tokens,
     row_state: Option<RowState>,
     avatar_icon: Option<crate::icons::Icon>,
@@ -464,11 +467,26 @@ pub(crate) fn chat_row(
     let time_w = ui.ctx().fonts_mut(|f| {
         f.layout_no_wrap(chat.time.clone(), time_font.clone(), rgb(t.text_faint)).size().x
     });
+    // A blocked direct chat says so beside the time, in the
+    // same quiet register as the muted bell below. The row
+    // still renders and opens like any other (WhatsApp keeps
+    // blocked chats in the list); the label just stops it
+    // pretending to be a normal conversation. Its width is
+    // reserved up front so the title budget accounts for it.
+    let blocked_label = if blocked { crate::i18n::t("chats.blocked") } else { String::new() };
+    let blocked_w = if blocked {
+        ui.ctx().fonts_mut(|f| {
+            f.layout_no_wrap(blocked_label.clone(), time_font.clone(), rgb(t.text_faint)).size().x
+        }) + 8.0
+    } else {
+        0.0
+    };
     let badges_w =
         (if chat.verified { 20.0 } else { 0.0 }) + (if chat.meta_ai { 28.0 } else { 0.0 });
     let title_font =
         if chat.unread > 0 { crate::theme::semibold(15.5) } else { crate::theme::medium(15.5) };
-    let title_budget = (rect.right() - 6.0 - time_w - 8.0 - badges_w - text_left).max(0.0);
+    let title_budget =
+        (rect.right() - 6.0 - time_w - blocked_w - 8.0 - badges_w - text_left).max(0.0);
     let title = crate::widgets::ellipsize(ui, &chat.title, title_font.clone(), title_budget);
     let title_rect = painter.text(
         Pos2::new(text_left, rect.top() + TITLE_DY),
@@ -492,19 +510,30 @@ pub(crate) fn chat_row(
     }
     // Muted chats carry a small bell-off beside the time, the
     // reference wireframe's way of saying "notifications silenced"
-    // without relying on the badge's grey variant alone.
+    // without relying on the badge's grey variant alone. The
+    // blocked label takes the far edge when present, and the
+    // bell and time shift left past it.
+    if blocked {
+        painter.text(
+            Pos2::new(rect.right() - 6.0, rect.top() + TITLE_DY),
+            egui::Align2::RIGHT_CENTER,
+            &blocked_label,
+            time_font.clone(),
+            rgb(t.text_faint),
+        );
+    }
     let time_right = if chat.muted {
         crate::icons::draw(
             painter,
             crate::icons::Icon::BellOff,
-            Pos2::new(rect.right() - 11.0, rect.top() + TITLE_DY),
+            Pos2::new(rect.right() - 11.0 - blocked_w, rect.top() + TITLE_DY),
             14.0,
             rgb(t.text_faint),
             rgb(t.bg_panel),
         );
-        rect.right() - 22.0
+        rect.right() - 22.0 - blocked_w
     } else {
-        rect.right() - 6.0
+        rect.right() - 6.0 - blocked_w
     };
     painter.text(
         Pos2::new(time_right, rect.top() + TITLE_DY),

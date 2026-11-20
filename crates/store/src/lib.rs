@@ -193,6 +193,11 @@ pub const FLAG_STARRED: i64 = 8;
 /// Message flag: this message is pinned in its chat.
 pub const FLAG_PINNED_MESSAGE: i64 = 16;
 
+/// Message flag: this view-once message has been opened. Once
+/// opened it stays opened, so the state is persisted with the
+/// message instead of living only in the session.
+pub const FLAG_VIEW_ONCE_OPENED: i64 = 32;
+
 /// The rich payload of one message, stored as JSON in the
 /// `messages.data` column (schema v2). Absence (NULL) means a plain
 /// text message with no extras.
@@ -1304,6 +1309,30 @@ mod tests {
         assert_eq!(loaded.body, msg.body);
         // Missing rows report false instead of fabricating one.
         assert!(!store.set_message_flags(&msg.chat_jid, "nope", 0).unwrap());
+    }
+
+    /// The view-once opened state persists with the message's
+    /// flags (privacy audit D13): set through the same targeted
+    /// flags update the app uses, it comes back on reload, so a
+    /// restart never presents an opened view-once message as
+    /// unopened again. The bit is independent of the others.
+    #[test]
+    fn view_once_opened_flag_survives_a_round_trip() {
+        let store = Store::open_in_memory().unwrap();
+        let msg = scripted_messages()[0].clone();
+        store.upsert_message(&msg, 0).unwrap();
+        assert!(store
+            .set_message_flags(&msg.chat_jid, &msg.id, FLAG_STARRED | FLAG_VIEW_ONCE_OPENED)
+            .unwrap());
+        let rows = store.messages(&msg.chat_jid).unwrap();
+        let flags = rows[0].1;
+        assert_ne!(flags & FLAG_VIEW_ONCE_OPENED, 0, "the opened bit is stored");
+        assert_ne!(flags & FLAG_STARRED, 0, "the other bits are untouched");
+        // Clearing just the opened bit leaves the rest alone.
+        assert!(store.set_message_flags(&msg.chat_jid, &msg.id, FLAG_STARRED).unwrap());
+        let rows = store.messages(&msg.chat_jid).unwrap();
+        assert_eq!(rows[0].1 & FLAG_VIEW_ONCE_OPENED, 0);
+        assert_eq!(rows[0].1, FLAG_STARRED);
     }
 
     #[test]

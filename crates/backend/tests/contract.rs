@@ -470,6 +470,25 @@ fn fake_baseline_includes_online_and_round_trips_it() {
 }
 
 #[test]
+fn fake_baseline_carries_the_rowless_categories() {
+    let (ch, _log) = linked_backend();
+    // The categories the Privacy page has no row for are part
+    // of the account state the real backend reports (audit
+    // finding D6), so the fake's baseline carries them too,
+    // with values their categories accept.
+    let events = collect_until(&ch.events, 5, |e| matches!(e, BackendEvent::PrivacyState(_)));
+    let baseline = events.iter().find_map(|e| match e {
+        BackendEvent::PrivacyState(map) => Some(map),
+        _ => None,
+    });
+    let baseline = baseline.expect("the linked script reports a privacy state");
+    assert_eq!(baseline.get("calladd").map(String::as_str), Some("known"));
+    assert_eq!(baseline.get("messages").map(String::as_str), Some("contacts"));
+    assert_eq!(baseline.get("defense").map(String::as_str), Some("off"));
+    ch.commands.send(BackendCommand::Shutdown).unwrap();
+}
+
+#[test]
 fn scripted_group_delivers_location_carousel_and_contact_kinds() {
     let ch = spawn(FakeBackend::auto());
     ch.commands.send(BackendCommand::ConnectQr).unwrap();

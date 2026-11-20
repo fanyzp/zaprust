@@ -349,7 +349,7 @@ impl App {
 
     /// The house confirmation modal for destructive actions
     /// parked in `ui_confirm` (removing a group member, leaving
-    /// a group): a centered glass card over the unified dim,
+    /// a group, replacing a privacy exception list): a centered glass card over the unified dim,
     /// naming its target, the safe action first and the
     /// destructive action last. Escape or a click on the dim
     /// cancels; only the confirm button performs the action, so
@@ -384,6 +384,11 @@ impl App {
                 crate::i18n::t("profile.leave_group"),
                 crate::i18n::tf("profile.leave_group_body", "name", name),
                 crate::i18n::t("profile.leave_group"),
+            ),
+            UiConfirm::ReplaceExceptionList { label, .. } => (
+                crate::i18n::t("privacy.exceptions_title"),
+                crate::i18n::tf("privacy.exceptions_body", "name", label),
+                crate::i18n::t("privacy.exceptions_confirm"),
             ),
         };
         let mut decision: Option<bool> = None;
@@ -475,6 +480,9 @@ impl App {
                     self.profile_open = false;
                     self.profile_form_for = None;
                     self.groups.members_requested.remove(&chat_id);
+                }
+                Some(UiConfirm::ReplaceExceptionList { category, .. }) => {
+                    self.cycle_privacy(&category);
                 }
                 None => {}
             },

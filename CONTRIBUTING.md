@@ -42,10 +42,12 @@ lives in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 - Be kind and constructive, see [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md).
 - One pull request = one intention. Unrelated changes go in separate PRs.
-- Every PR description states: **what** changed, **why**, **how it was
-  tested**, and a **screenshot** for any UI change.
-- `main` and `nightly` must always build. No direct pushes to `main`;
-  `main` only receives changes promoted from `nightly` by pull request.
+- Every PR description states: **what** changed, **why**, and **how it
+  was tested**. Any UI or design change must include **before and after
+  screenshots**; a UI PR without them is sent back unreviewed.
+- `nightly`, `beta`, and `main` must always build. No direct pushes to
+  `beta` or `main`; work flows from `nightly` to `beta` to `main` by
+  pull request only (see section 8).
 
 ## 3. Development setup
 
@@ -93,22 +95,50 @@ cargo run -p app
 Crate names in this repo are short on purpose:
 `core`, `backend`, `store`, `app` (the binary is `zaprust`).
 
-## 4. The checks (CI runs exactly these)
+## 4. The checks
+
+Every PR must pass this gate locally before it is opened:
 
 ```bash
 cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
+cargo check --workspace --all-targets
+cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace
+cargo check -p backend
+cargo check -p backend --features calls
 ```
 
-A PR with a red check is not reviewed until it is green. Run them locally
-before pushing, it takes a minute and saves a round-trip.
+The two standalone `backend` checks matter: the workspace build unifies
+features through the `app` crate, so a broken standalone feature
+combination (default features without `calls`, or no default features)
+would otherwise slip through. CI runs the same gate plus a
+feature-combination job that also checks `backend` with no default
+features and `store` as its own resolve, and release builds per
+platform.
+
+A PR with a red check is not reviewed until it is green. Run the gate
+locally before pushing, it takes a minute and saves a round-trip.
 
 All workflows are manual-only: nothing builds on push. CI and releases
 are started from the Actions tab (the Release workflow takes the
 existing version tag as its input).
 
-## 5. Code standards
+## 5. Review standards
+
+A PR is ready for review when:
+
+- every check in section 4 is green, locally and in CI,
+- behavior changes are covered by tests, and a bug fix carries a
+  regression test when the bug is testable at all,
+- the diff does one thing; unrelated cleanup, refactors, and formatting
+  churn belong in their own PRs,
+- UI or design changes carry before and after screenshots (section 2).
+
+Reviewers check the same list, plus the code standards in section 6.
+A PR that fails a standard is sent back with the specific item named,
+not merged and fixed later.
+
+## 6. Code standards
 
 ### Rust
 
@@ -120,6 +150,9 @@ existing version tag as its input).
 - `rustfmt` output is the only acceptable formatting. No manual exceptions.
 - Clippy must be warning-free. Any `#[allow(...)]` needs a one-line reason
   comment next to it.
+- No em dash in any repository text: code, comments, docs, commit
+  messages, and user-facing strings. Use a comma, a colon, or a
+  separate sentence instead.
 - **`unsafe` is forbidden** in the whole workspace
   (`#![forbid(unsafe_code)]`). If you believe you truly need it, open an
   issue with the design first, instead of a PR.
@@ -155,7 +188,7 @@ existing version tag as its input).
 - A bug fix ships with a test that fails before the fix, when the bug is
   testable at all.
 
-## 6. Design notes for surface changes
+## 7. Design notes for surface changes
 
 Before changing any of the surfaces below, open an issue (or a draft PR)
 with a short design note: the problem, the proposal, alternatives
@@ -169,7 +202,7 @@ considered, the compatibility impact, and the migration path.
 
 Everything else is a normal PR.
 
-## 7. Commits, branches, releases
+## 8. Commits, branches, releases
 
 ### Commit messages
 
@@ -183,9 +216,9 @@ type(scope): subject
   `build`, `ci`, `chore`.
 - Scope: the crate or area (`core`, `app`, `backend`, `store`,
   `features`, `ci`, `docs`). Optional for small changes.
-- Subject: imperative, lowercase, no trailing period, about 72
-  characters at most. Add a body when the reason is not obvious from
-  the subject.
+- Subject: natural English, imperative mood, lowercase, no trailing
+  period, no em dash, about 72 characters at most. Add a body when the
+  reason is not obvious from the subject.
 - Examples: `feat(backend): wire the chat-actions, group and media surface`,
   `fix(backend): queue supervisor commands instead of dropping them`,
   `feat(app): motion settings, micro-animations and localization`,
@@ -197,14 +230,23 @@ type(scope): subject
 
 ### Branches and releases
 
-- `nightly` is the beta branch. All new features and fixes land here
-  first. Branch short-lived feature branches off `nightly`
+Three long-lived branches, in promotion order:
+
+- `nightly` is the development branch. All new features and fixes land
+  here first. Branch short-lived feature branches off `nightly`
   (`your-name/short-feature`) and open a pull request back to
   `nightly`.
-- `main` is the stable branch. It receives no direct feature work and
-  no direct pushes. When `nightly` is ready to promote, open a pull
-  request from `nightly` to `main`; it merges only after review and
-  approval by the maintainer.
+- `beta` holds promotion candidates: states of `nightly` that are
+  judged stable enough to soak before a release. Promote by pull
+  request from `nightly` to `beta`. Beta receives no direct feature
+  work and no direct pushes.
+- `main` is the release branch. It receives no direct feature work and
+  no direct pushes. Promote by pull request from `beta` to `main`; it
+  merges only after review and approval by the maintainer.
+
+History on all three branches is linear. Rebase your branch onto its
+target before merging, and merge pull requests by rebasing or
+fast-forwarding. Merge commits are not used.
 - Stable releases are cut from tags (`v1.0.0`) on `main`: create the
   tag, then run the Release workflow manually from the Actions tab
   with that tag as input. It builds all three platforms and publishes
@@ -215,7 +257,7 @@ type(scope): subject
   short, a version table, changes grouped as feat/fix/chore in user
   language.
 
-## 8. Running the app and test tools
+## 9. Running the app and test tools
 
 ```sh
 zaprust                 # the real client: link an account (QR or pairing code)
@@ -230,8 +272,8 @@ in Settings > Data & Storage).
 
 For device tests there is a headless pairing harness in the backend
 crate. It requests a pairing code for a phone number and prints the
-library's own log lines, which makes connection problems readable
-without the GUI:
+library's log lines through the same redaction the app applies to its
+own logs, which makes connection problems readable without the GUI:
 
 ```sh
 cargo run --release -p backend --example pair_harness -- <phone, international format, digits only>

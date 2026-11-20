@@ -4,6 +4,14 @@ about: Something in Zaprust does not work as expected
 labels: bug
 ---
 
+## Zaprust version
+
+<!-- The version or commit shown in Settings > About. -->
+
+## Platform
+
+<!-- OS and version. On Linux: Wayland or X11. -->
+
 ## What happened
 
 ## What you expected
@@ -14,12 +22,7 @@ labels: bug
 2.
 3.
 
-## Environment
+## Logs and screenshots
 
-- Zaprust version / commit:
-- OS (and Wayland or X11 on Linux):
-- Theme and screen (if UI-related):
-
-## Logs / screenshots
-
-<!-- Do NOT paste chat contents or phone numbers. -->
+<!-- Attach what you have: the debug log, a debug bundle, a screenshot.
+     Do NOT paste chat contents or phone numbers. -->

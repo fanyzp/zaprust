@@ -751,9 +751,10 @@ pub struct LiveCard {
     pub buttons: Vec<String>,
 }
 
-/// An OpenGraph preview attached to a live message (scripted by the
-/// fake backend; fetched by the app for real backends when the
-/// link-preview setting is on).
+/// An OpenGraph preview attached to a live message. For real backends
+/// it is read from the preview data embedded in the wire message
+/// itself; the app never fetches preview data from the network. The
+/// fake backend scripts it.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct LivePreview {
     /// Page title.

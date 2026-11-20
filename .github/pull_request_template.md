@@ -8,21 +8,34 @@
 
 ## How it was tested
 
-<!-- Commands you ran (fmt / clippy / test) and what you clicked through in the demo. -->
+<!-- The gate from CONTRIBUTING.md section 4. Check every command you ran. -->
 
-## Screenshot (UI changes only)
+- [ ] `cargo fmt --all -- --check`
+- [ ] `cargo check --workspace --all-targets`
+- [ ] `cargo clippy --workspace --all-targets --all-features -- -D warnings`
+- [ ] `cargo test --workspace`
+- [ ] `cargo check -p backend`
+- [ ] `cargo check -p backend --features calls`
 
-<!-- Before / after. Use: cargo run -p app -- --theme <t> --screen <s> -->
+<!-- Anything you exercised by hand, for example in demo mode: -->
 
-## Plugin API impact
+## Screenshots (required for UI or design changes)
 
-- [ ] No impact on the plugin API, theme tokens, data model, or capabilities
-- [ ] Impact, design note linked from the issue: <!-- link -->
+<!-- Before and after, side by side where you can. Screenshots are
+     reproducible with: cargo run -p app -- --demo --screen <name>
+     A UI or design PR without before and after screenshots is sent
+     back unreviewed. Delete this section only if the PR touches no
+     UI at all. -->
+
+| Before | After |
+|---|---|
+|  |  |
 
 ## Checklist
 
-- [ ] `cargo fmt --all -- --check` is clean
-- [ ] `cargo clippy --workspace --all-targets -- -D warnings` is clean
-- [ ] `cargo test --workspace` passes, and new logic has new tests
+- [ ] One concern only; no unrelated changes in this PR
+- [ ] New or changed behavior is covered by tests
+- [ ] Design-note surfaces (the Backend trait, theme tokens, the data model, the settings registry) are unchanged, or a design note is linked: <!-- link -->
 - [ ] No hardcoded colours outside theme tokens (UI changes)
 - [ ] CHANGELOG.md updated under Unreleased (user-visible changes)
+- [ ] No em dash in new or edited text

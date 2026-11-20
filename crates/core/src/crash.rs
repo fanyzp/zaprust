@@ -140,11 +140,23 @@ impl CrashReport {
         let path = unique_report_path(dir, self.timestamp_unix);
         let json = serde_json::to_string_pretty(&self)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        std::fs::write(&path, json)?;
-        // Owner-only from the start (0600 on Unix): a report is
+        // Owner-only from creation (0600 on Unix): a report is
         // exactly the kind of file a user is asked to share, and
         // the startup hardening pass should not be its only
-        // protection (privacy audit A4/A5).
+        // protection (privacy audit A4/A5, C4). The open mode
+        // applies when the file is created; the set_permissions
+        // after the write asserts it for a file that somehow
+        // already existed at the unique path.
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        let mut file = opts.open(&path)?;
+        use std::io::Write as _;
+        file.write_all(json.as_bytes())?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -638,6 +650,20 @@ mod tests {
         assert_eq!(back.timestamp_unix, ts);
         assert!(back.panic_message.contains("~/app"));
         assert!(back.location.unwrap().starts_with("~/src"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Privacy audit C4: a written report is owner-only (0600)
+    /// from creation, not merely tightened by a later pass.
+    #[cfg(unix)]
+    #[test]
+    fn written_report_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = temp_dir("permissions");
+        let report = CrashReport::capture("boom".to_owned(), None, "bt".to_owned());
+        let path = report.write_to(&dir, None).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "a crash report is created owner-only: {path:?}");
         std::fs::remove_dir_all(&dir).ok();
     }
 

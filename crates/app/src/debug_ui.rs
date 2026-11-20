@@ -26,6 +26,11 @@ impl App {
 
     /// Records a backend event into the trace (stage + summary;
     /// message bodies attached for the local inspector only).
+    /// Summaries identify chats and senders by JID only, never by
+    /// display name or chat title: the ring is mirrored to the
+    /// debug log file and exported in bundles, and
+    /// `debug::redact` masks the phone digits inside JIDs but
+    /// cannot mask a name (privacy audit C7).
     pub(crate) fn trace_event(&mut self, event: &BackendEvent) {
         if !self.debug.mode {
             return;
@@ -46,14 +51,17 @@ impl App {
                 ("backend", format!("ConnectionLost: {reason}"), None)
             }
             BackendEvent::ChatUpsert(chat) => {
-                ("archive", format!("ChatUpsert {} {}", chat.jid, chat.title), None)
+                ("archive", format!("ChatUpsert {}", chat.jid), None)
             }
             BackendEvent::MessageUpsert(message) => (
                 "message",
                 format!(
                     "MessageUpsert in {} from {}",
                     message.chat_jid,
-                    message.sender.as_deref().unwrap_or("me")
+                    message
+                        .sender_jid
+                        .as_deref()
+                        .unwrap_or(if message.from_me { "me" } else { "unknown" })
                 ),
                 Some(message.body.clone()),
             ),
@@ -405,5 +413,70 @@ impl App {
                 self.notice = Some(format!("Bundle export failed: {e}"));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::Args;
+    use backend::{LiveChat, LiveChatKind, LiveMessage};
+
+    fn debug_app() -> App {
+        let ctx = egui::Context::default();
+        crate::theme::install_fonts(&ctx);
+        let mut app = App::new(Args::parse(), &ctx);
+        app.debug.mode = true;
+        app
+    }
+
+    /// Privacy finding C7: trace summaries are mirrored to the
+    /// debug log file and exported in bundles, so they must not
+    /// carry contact names or group titles. Chats and senders
+    /// are identified by JID only, whose phone digits the ring's
+    /// redaction masks.
+    #[test]
+    fn trace_summaries_carry_no_names() {
+        let mut app = debug_app();
+        app.trace_event(&BackendEvent::ChatUpsert(LiveChat {
+            jid: "6281234567890@s.whatsapp.net".to_owned(),
+            title: "Alice Johnson".to_owned(),
+            kind: LiveChatKind::Dm,
+            preview: "hi".to_owned(),
+            preview_sender: None,
+            timestamp: 1_700_000_000,
+            unread: 0,
+            archived: false,
+            pinned: false,
+            ephemeral_secs: 0,
+            muted: false,
+        }));
+        let mut msg = LiveMessage::text(
+            "m1",
+            "6281234567890@s.whatsapp.net",
+            Some("Alice Johnson".to_owned()),
+            "hello".to_owned(),
+            1_700_000_000,
+            false,
+        );
+        msg.sender_jid = Some("6281234567890@s.whatsapp.net".to_owned());
+        app.trace_event(&BackendEvent::MessageUpsert(msg));
+
+        let entries = app.debug.trace.entries();
+        assert_eq!(entries.len(), 2);
+        for entry in &entries {
+            assert!(
+                !entry.summary.contains("Alice Johnson"),
+                "a display name reached the trace: {}",
+                entry.summary
+            );
+            assert!(
+                !entry.summary.contains("6281234567890"),
+                "an unmasked phone number reached the trace: {}",
+                entry.summary
+            );
+        }
+        assert!(entries[0].summary.starts_with("ChatUpsert "), "{}", entries[0].summary);
+        assert!(entries[1].summary.contains("from ***90@s.whatsapp.net"), "{}", entries[1].summary);
     }
 }

@@ -65,13 +65,22 @@ fn summarize(event: &BackendEvent) -> String {
 
 fn main() {
     // Route the protocol library's `log` records to stderr so a failed
-    // connection attempt is diagnosable instead of silent.
+    // connection attempt is diagnosable instead of silent. The writer
+    // is the app's scrubbing writer (core::debug::ScrubWriter, the
+    // same one the app's --debug log file uses): sharing terminal
+    // output is the natural way to debug a pairing failure, so
+    // library lines pass through the crash-report redaction before
+    // they reach the terminal instead of bypassing it (privacy
+    // audit C5). The harness's own PAIR_CODE print further down
+    // stays plaintext on purpose: the operator pairs with it on
+    // their own terminal.
     let _ = tracing_log::LogTracer::init();
     let filter = tracing_subscriber::EnvFilter::try_from_env("HARNESS_LOG")
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("debug"));
+    let log_writer = core::debug::ScrubWriter::new(std::io::stderr());
     let _ = tracing_subscriber::fmt()
         .with_env_filter(filter)
-        .with_writer(std::io::stderr)
+        .with_writer(move || log_writer.clone())
         .with_ansi(false)
         .try_init();
 
@@ -194,5 +203,42 @@ fn main() {
                 std::process::exit(7);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Write as _;
+    use std::sync::{Arc, Mutex};
+
+    /// In-memory sink standing in for stderr, whose contents a
+    /// test can inspect after writing through a writer clone.
+    #[derive(Clone, Default)]
+    struct SharedBuf(Arc<Mutex<Vec<u8>>>);
+
+    impl std::io::Write for SharedBuf {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Privacy audit C5: the writer the harness puts under its
+    /// stderr subscriber is the app's ScrubWriter, so a library
+    /// log line carrying a phone number or a secret shape is
+    /// scrubbed before it can be shared as terminal output.
+    #[test]
+    fn harness_log_writer_scrubs_lines() {
+        let sink = SharedBuf::default();
+        let mut writer = core::debug::ScrubWriter::new(sink.clone());
+        writer.write_all(b"connect failed for +62 812-3456-7890 token=zzz999888\n").unwrap();
+        writer.flush().unwrap();
+        let out = String::from_utf8_lossy(&sink.0.lock().unwrap()).into_owned();
+        assert!(!out.contains("812-3456"), "phone leaked through the harness writer: {out}");
+        assert!(!out.contains("zzz999888"), "secret leaked through the harness writer: {out}");
     }
 }

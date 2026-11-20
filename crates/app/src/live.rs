@@ -176,12 +176,12 @@ fn message_id(chat_jid: &str, proto_id: &str) -> u64 {
     jid_id(&format!("{chat_jid}/{proto_id}"))
 }
 
-/// Maps a raw backend error string to a human sentence for the
-/// notice banner. The raw text still goes to the log and to the
-/// (pre-link) status line; the banner never shows library internals
-/// (typed-errors review, display layer). Unknown errors pass
-/// through, trimmed, because a specific honest message beats a
-/// generic one.
+/// Maps a backend error string to a human sentence for the
+/// notice banner. The caller (the BackendEvent::Error arm) has
+/// already scrubbed the text for display; this function only
+/// rewrites the known patterns to fixed sentences and passes the
+/// rest through, trimmed, because a specific honest message beats
+/// a generic one.
 pub(crate) fn human_error(message: &str) -> String {
     let m = message.to_lowercase();
     if m.contains("invalid chat address") || m.contains("invalid jid") {
@@ -1234,6 +1234,16 @@ impl crate::state::App {
                 }
             }
             BackendEvent::Error { message } => {
+                // Backend error text is largely library error
+                // Display output and can embed server-supplied
+                // strings and identifiers. Everything below
+                // displays it (the notice banner via human_error,
+                // the pre-link status line), so it passes through
+                // the crash display scrubber first, the same
+                // treatment the Crashed summary gets (privacy
+                // audit C6). App-authored strings contain no
+                // secret or phone shapes and pass unchanged.
+                let message = core::crash::scrub_for_display(&message);
                 tracing::warn!("backend error: {message}");
                 // An error while a call action is unconfirmed almost
                 // always belongs to it; release the buttons (F18).
@@ -2820,6 +2830,43 @@ mod burst_drain_tests {
             }
             other => panic!("expected the media kind to survive, got {other:?}"),
         }
+    }
+
+    /// Privacy finding C6: backend error text is largely library
+    /// Display output and can embed server-supplied strings,
+    /// phone numbers, and secret shapes. The surfaces that
+    /// display it (the notice banner, the pre-link status line)
+    /// must receive the scrubbed form.
+    #[test]
+    fn backend_error_text_is_scrubbed_before_display() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        // Pre-link, so the status line takes the message too.
+        app.live.as_mut().unwrap().status = LinkStatus::Starting;
+        tx.send(BackendEvent::Error {
+            message: "server refused the call from +62 812-3456-7890, token=zzz999888".to_owned(),
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        let notice = app.notice.clone().expect("the error surfaces as a notice");
+        assert!(!notice.contains("812-3456"), "phone leaked into the notice: {notice}");
+        assert!(!notice.contains("zzz999888"), "secret leaked into the notice: {notice}");
+        let status = app.live.as_ref().unwrap().status.label();
+        assert!(!status.contains("812-3456"), "phone leaked into the status line: {status}");
+        assert!(!status.contains("zzz999888"), "secret leaked into the status line: {status}");
+    }
+
+    /// The other half of C6: a plain error string with no secret
+    /// or phone shapes (the shape of the app's own authored
+    /// errors) reaches the notice banner byte-identical.
+    #[test]
+    fn plain_backend_error_text_is_displayed_unchanged() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        tx.send(BackendEvent::Error {
+            message: "The group settings could not be changed.".to_owned(),
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(app.notice.as_deref(), Some("The group settings could not be changed."));
     }
 
     /// The removal-refresh path (delete-for-me, clear, expiry)

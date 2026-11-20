@@ -102,6 +102,14 @@ fn init_debug_tracing() {
         }
     }
     let appender = tracing_appender::rolling::daily(&dir, "zaprust-debug.log");
+    // The appender creates today's file eagerly, after the
+    // startup hardening pass has already run, so tighten the
+    // debug dir again now that the fresh file exists (privacy
+    // audit C4). A file created by a midnight rotation during a
+    // long session still lands with default permissions inside
+    // the 0700 data dir and is tightened at the next start.
+    #[cfg(unix)]
+    tighten_tree(&dir);
     let (writer, guard) = tracing_appender::non_blocking(appender);
     std::mem::forget(guard);
     let writer = scrub_log_writer(writer);
@@ -196,6 +204,15 @@ fn main() -> eframe::Result {
 /// re-panics; worker-thread panics are additionally contained by the
 /// backend supervisor and the feature guard, so in practice this hook
 /// is the last resort for the UI thread itself.
+///
+/// Maintained invariant (privacy audit C3): the crash scrubber
+/// masks secret shapes, phone-like numbers, and the home prefix,
+/// but it is NOT a content filter: it does not mask names or
+/// message text. Panic messages must therefore never interpolate
+/// chat content (message bodies, contact or group names, chat
+/// titles). No production panic site does so today (every
+/// interpolating `panic!`/`expect`/`assert!` in the workspace is
+/// in test code); keep it that way.
 fn install_panic_hook() {
     let crash_dir = backend::data_dir().join("crashes");
     std::panic::set_hook(Box::new(move |info| {
@@ -260,5 +277,26 @@ mod tests {
         assert_eq!(mode_of(&report), 0o600, "crash reports are tightened");
         assert_eq!(mode_of(&settings), 0o600, "plain artifacts are tightened");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Privacy audit C4: the rolling appender creates today's
+    /// log file when it is built, which is after the startup
+    /// hardening pass, so the tightening call in
+    /// `init_debug_tracing` is what closes the gap. This mirrors
+    /// that sequence against a real appender: the fresh file
+    /// exists immediately, and tightening makes it owner-only.
+    #[test]
+    fn fresh_debug_log_is_tightened_after_appender_creation() {
+        let dir =
+            std::env::temp_dir().join(format!("zaprust-debuglog-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("debug dir");
+        let _appender = tracing_appender::rolling::daily(&dir, "zaprust-debug.log");
+        let logs: Vec<std::path::PathBuf> =
+            std::fs::read_dir(&dir).expect("read dir").flatten().map(|e| e.path()).collect();
+        assert_eq!(logs.len(), 1, "the appender creates today's file eagerly: {logs:?}");
+        tighten_tree(&dir);
+        assert_eq!(mode_of(&logs[0]), 0o600, "the fresh debug log is owner-only after tightening");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

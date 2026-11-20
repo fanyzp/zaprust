@@ -21,6 +21,25 @@ use std::path::{Path, PathBuf};
 /// The picker tab id this feature registers.
 pub const TAB_ID: &str = "stickers";
 
+/// Maximum characters in a text sticker. A sticker shows a few
+/// words at most; anything longer is illegible at sticker size.
+/// Enforced in [`add_text_sticker`] and again inside
+/// [`render_text_sticker`], so no caller can drive an unbounded
+/// render.
+const MAX_TEXT_CHARS: usize = 120;
+
+/// Maximum wrapped lines on one text sticker.
+const MAX_LINES: usize = 16;
+
+/// Maximum characters on one wrapped line of a text sticker.
+///
+/// Together with [`MAX_LINES`] this bounds the render canvas
+/// before allocation: at 56 px per character column and 84 px
+/// per line (see [`render_text_sticker`]) the canvas is at most
+/// 1358 px per side, under 1.9 million pixels in total, no
+/// matter what input arrives.
+const MAX_LINE_CHARS: usize = 24;
+
 /// One sticker pack on disk.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pack {
@@ -115,15 +134,43 @@ pub fn remove_sticker(path: &Path) -> Result<(), String> {
     std::fs::remove_file(path).map_err(|e| e.to_string())
 }
 
+/// Wraps `upper` (already uppercased) into display lines of at
+/// most two words each. Falls back to the whole text as one line
+/// when it contains no words at all (an empty or all-whitespace
+/// string).
+fn wrap_lines(upper: &str) -> Vec<String> {
+    let lines: Vec<String> =
+        upper.split_whitespace().collect::<Vec<_>>().chunks(2).map(|pair| pair.join(" ")).collect();
+    if lines.is_empty() {
+        vec![upper.to_string()]
+    } else {
+        lines
+    }
+}
+
 /// Renders `text` as a sticker PNG and stores it in `pack_dir`.
 /// Returns the written file.
 ///
 /// # Errors
-/// On I/O failure or empty text.
+/// On I/O failure, empty text, or text that cannot fit on a
+/// sticker: more than [`MAX_TEXT_CHARS`] characters, or a wrapped
+/// layout over [`MAX_LINES`] lines or [`MAX_LINE_CHARS`]
+/// characters per line. Oversized text is rejected, never
+/// truncated silently and never rendered into an unbounded
+/// canvas.
 pub fn add_text_sticker(pack_dir: &Path, text: &str) -> Result<PathBuf, String> {
     let text = text.trim();
     if text.is_empty() {
         return Err("sticker text is empty".to_string());
+    }
+    if text.chars().count() > MAX_TEXT_CHARS {
+        return Err(format!("sticker text is too long: at most {MAX_TEXT_CHARS} characters"));
+    }
+    let lines = wrap_lines(&text.to_uppercase());
+    if lines.len() > MAX_LINES || lines.iter().any(|l| l.chars().count() > MAX_LINE_CHARS) {
+        return Err(format!(
+            "sticker text does not fit: at most {MAX_LINES} lines of {MAX_LINE_CHARS} characters"
+        ));
     }
     let png = render_text_sticker(text);
     let base = slugify(&text.chars().take(24).collect::<String>());
@@ -205,14 +252,27 @@ fn glyph(c: char) -> Option<[u8; 5]> {
     Some(g)
 }
 
-/// Renders `text` (uppercased, wrapped at 10 chars) into PNG bytes:
-/// transparent background, bold colored glyphs with a soft shadow.
+/// Renders `text` (uppercased, wrapped two words per line) into
+/// PNG bytes: transparent background, bold colored glyphs with a
+/// soft shadow.
+///
+/// Defense in depth behind [`add_text_sticker`]'s validation:
+/// the input is capped at [`MAX_TEXT_CHARS`] characters before
+/// any layout work, and the wrapped lines are truncated to
+/// [`MAX_LINES`] lines of [`MAX_LINE_CHARS`] characters before
+/// the canvas size is computed, so the allocation below is
+/// bounded (at most 1358 px per side) for any input whatsoever.
 #[must_use]
 pub(crate) fn render_text_sticker(text: &str) -> Vec<u8> {
-    let upper = text.to_uppercase();
-    let lines: Vec<String> =
-        upper.split_whitespace().collect::<Vec<_>>().chunks(2).map(|pair| pair.join(" ")).collect();
-    let lines = if lines.is_empty() { vec![upper.clone()] } else { lines };
+    let bounded: String = text.chars().take(MAX_TEXT_CHARS).collect();
+    let upper = bounded.to_uppercase();
+    let mut lines = wrap_lines(&upper);
+    for line in &mut lines {
+        if line.chars().count() > MAX_LINE_CHARS {
+            *line = line.chars().take(MAX_LINE_CHARS).collect();
+        }
+    }
+    lines.truncate(MAX_LINES);
     let scale = 14u32;
     let char_w = 4 * scale; // 3 glyph cols + 1 spacing
     let line_h = 6 * scale; // 5 glyph rows + 1 spacing
@@ -382,6 +442,58 @@ mod tests {
         let packs = list_packs(&root).expect("list");
         assert_eq!(packs.len(), 1);
         assert_eq!(packs[0].stickers.len(), 6);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn normal_text_renders_at_its_previous_size() {
+        // One word on one line: width is 4 columns of 56 px plus
+        // one scale of padding, height one 84 px line plus padding.
+        let img = image::load_from_memory(&render_text_sticker("HALO")).expect("decodable");
+        assert_eq!((img.width(), img.height()), (238, 98));
+        // Two words share a line: 13 characters wide, still one line.
+        let img =
+            image::load_from_memory(&render_text_sticker("Mantap Sekali")).expect("decodable");
+        assert_eq!((img.width(), img.height()), (742, 98));
+    }
+
+    #[test]
+    fn oversized_render_stays_within_the_canvas_bound() {
+        // 100k characters, as one word and as many words: the
+        // render must not attempt a proportional allocation.
+        for text in ["a".repeat(100_000), "word ".repeat(20_000)] {
+            let img = image::load_from_memory(&render_text_sticker(&text)).expect("decodable");
+            assert!(img.width() <= 1358, "width {} over the bound", img.width());
+            assert!(img.height() <= 1358, "height {} over the bound", img.height());
+            assert!(u64::from(img.width()) * u64::from(img.height()) <= 1358 * 1358);
+        }
+    }
+
+    #[test]
+    fn oversized_text_is_rejected_not_rendered() {
+        let root = temp_root("toolong");
+        let dir = create_pack(&root, "Long").expect("create");
+        let huge = "a".repeat(100_000);
+        assert!(add_text_sticker(&dir, &huge).is_err(), "100k chars rejected");
+        // Under the character cap but over the line cap: 40
+        // one-letter words wrap to 20 lines.
+        let many_words = vec!["a"; 40].join(" ");
+        assert!(add_text_sticker(&dir, &many_words).is_err(), "20 lines rejected");
+        // One word longer than a line can hold.
+        assert!(add_text_sticker(&dir, &"a".repeat(30)).is_err(), "30 char word rejected");
+        assert!(list_packs(&root).expect("list")[0].stickers.is_empty(), "nothing was written");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn full_size_valid_text_is_accepted() {
+        let root = temp_root("fullsize");
+        let dir = create_pack(&root, "Full").expect("create");
+        // 24 four-letter words: 119 characters, 12 wrapped lines.
+        let text = vec!["jaya"; 24].join(" ");
+        let sticker = add_text_sticker(&dir, &text).expect("sticker at the caps");
+        let img = image::load_from_memory(&std::fs::read(&sticker).expect("read")).expect("decode");
+        assert_eq!(img.height(), 12 * 84 + 14);
         std::fs::remove_dir_all(&root).ok();
     }
 

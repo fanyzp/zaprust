@@ -797,21 +797,19 @@ impl App {
                 self.forget_live_message(*chat_id, *mid, pid.as_deref());
             }
             // A chat whose newest message expired shows the new
-            // newest message as its preview.
+            // newest message as its preview, in the list and in
+            // the archive: the shared removal rule recomputes
+            // the preview and writes the chat row through, so a
+            // restart cannot resurrect an expired message's
+            // body as the stored preview. This pass runs from
+            // the per-frame tick, after poll_backend has flushed
+            // and closed its event batch, so the helper's direct
+            // row write has no pending batch flush to fight.
+            let mut refreshed: Vec<u64> = Vec::new();
             for (chat_id, _, _) in &work {
-                let last = self.live.as_ref().and_then(|s| {
-                    s.messages.get(chat_id).and_then(|v| v.last().map(|(ts, m)| (*ts, m.clone())))
-                });
-                if let Some(chat) = self.chats.iter_mut().find(|c| c.id == *chat_id) {
-                    match last {
-                        Some((ts, m)) => {
-                            chat.preview = m.body.clone();
-                            chat.time = crate::live::fmt_time(ts);
-                        }
-                        None => {
-                            chat.preview = String::new();
-                        }
-                    }
+                if !refreshed.contains(chat_id) {
+                    refreshed.push(*chat_id);
+                    self.refresh_preview_after_removal(*chat_id);
                 }
             }
             if touched_selected {

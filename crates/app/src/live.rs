@@ -1665,7 +1665,7 @@ impl crate::state::App {
     /// body on the next start. The row's timestamp is the
     /// session's recorded one, so the chat keeps its list
     /// position.
-    fn refresh_preview_after_removal(&mut self, chat_id: u64) {
+    pub(crate) fn refresh_preview_after_removal(&mut self, chat_id: u64) {
         let last = self.live.as_ref().and_then(|s| {
             s.messages.get(&chat_id).and_then(|v| v.last().map(|(ts, m)| (*ts, m.clone())))
         });
@@ -3507,6 +3507,82 @@ mod mirror_pruning_tests {
             app.live_quote_for_reply().is_none(),
             "a reply to the expired message resolves to nothing, as before"
         );
+    }
+
+    /// The expiry pass writes the refreshed preview through to
+    /// the archive chat row, not just the in-memory list: after
+    /// the newest message expires, the stored preview is the
+    /// newest survivor's body (a restart must not resurrect the
+    /// expired body), and when the last message expires the
+    /// stored preview empties with the mirror's.
+    #[test]
+    fn expiry_writes_the_refreshed_preview_through_to_the_archive() {
+        let (mut app, _tx, _ctx, _cmd_rx) = live_app();
+        let chat_id = jid_id(CHAT_JID);
+        let older_mid = message_id(CHAT_JID, "older-pid");
+        let newer_mid = message_id(CHAT_JID, "newer-pid");
+        let older = Message {
+            expires_at: 300,
+            ..Message::mine(older_mid, "older, expires later", "09:00")
+        };
+        let newer = Message {
+            expires_at: 100,
+            ..Message::mine(newer_mid, "newest, expires first", "09:01")
+        };
+        // The list row and the archive row both still preview
+        // the newest message, as they did before the pass runs.
+        let live_row = LiveChat {
+            jid: CHAT_JID.to_owned(),
+            title: "Sender".to_owned(),
+            kind: LiveChatKind::Dm,
+            preview: "newest, expires first".to_owned(),
+            preview_sender: None,
+            timestamp: 1_060,
+            unread: 0,
+            archived: false,
+            pinned: false,
+            ephemeral_secs: 0,
+            muted: false,
+        };
+        app.chats.push(to_chat(&live_row));
+        {
+            let session = app.live.as_mut().unwrap();
+            session.jids.insert(chat_id, CHAT_JID.to_owned());
+            session.times.insert(chat_id, 1_060);
+            session.messages.insert(chat_id, vec![(1_000, older), (1_060, newer)]);
+            session.store.as_ref().unwrap().upsert_chat(&live_row).unwrap();
+        }
+        app.protocol_ids.insert(older_mid, "older-pid".to_owned());
+        app.protocol_ids.insert(newer_mid, "newer-pid".to_owned());
+
+        let mirror_preview =
+            |app: &App| app.chats.iter().find(|c| c.id == chat_id).unwrap().preview.clone();
+        let stored_preview = |app: &App| {
+            app.live
+                .as_ref()
+                .unwrap()
+                .store
+                .as_ref()
+                .unwrap()
+                .chats()
+                .unwrap()
+                .into_iter()
+                .find(|c| c.jid == CHAT_JID)
+                .expect("the archive chat row stays")
+                .preview
+        };
+
+        app.expire_disappearing_messages(200);
+        assert_eq!(mirror_preview(&app), "older, expires later");
+        assert_eq!(
+            stored_preview(&app),
+            "older, expires later",
+            "the stored preview follows the newest survivor, not the expired message"
+        );
+
+        app.expire_disappearing_messages(400);
+        assert_eq!(mirror_preview(&app), "");
+        assert_eq!(stored_preview(&app), "", "with no survivors the stored preview empties too");
     }
 
     /// When the last actor removes their reaction, the

@@ -1239,3 +1239,37 @@ fn block_contact_is_logged_by_the_fake() {
         "block is log-observable: {log:?}"
     );
 }
+
+#[test]
+fn blocklist_is_emitted_at_connect_and_after_block_toggles() {
+    let (ch, _log) = linked_backend();
+    // The connect script reports the baseline list (empty),
+    // like the real backend's connect-time fetch.
+    let events = collect_until(&ch.events, 10, |e| matches!(e, BackendEvent::Blocklist(_)));
+    assert!(
+        events.iter().any(|e| matches!(e, BackendEvent::Blocklist(jids) if jids.is_empty())),
+        "baseline blocklist is emitted: {events:?}"
+    );
+    ch.commands
+        .send(BackendCommand::BlockContact {
+            chat_jid: "10000000001@s.whatsapp.net".to_owned(),
+            block: true,
+        })
+        .unwrap();
+    let events = collect_until(&ch.events, 10, |e| matches!(e, BackendEvent::Blocklist(_)));
+    assert!(
+        events.iter().any(|e| matches!(e, BackendEvent::Blocklist(jids) if *jids == vec!["10000000001@s.whatsapp.net".to_owned()])),
+        "block re-emits the list: {events:?}"
+    );
+    ch.commands
+        .send(BackendCommand::BlockContact {
+            chat_jid: "10000000001@s.whatsapp.net".to_owned(),
+            block: false,
+        })
+        .unwrap();
+    let events = collect_until(&ch.events, 10, |e| matches!(e, BackendEvent::Blocklist(_)));
+    assert!(
+        events.iter().any(|e| matches!(e, BackendEvent::Blocklist(jids) if jids.is_empty())),
+        "unblock re-emits the list: {events:?}"
+    );
+}

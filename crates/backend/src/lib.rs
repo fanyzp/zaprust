@@ -1013,6 +1013,13 @@ pub enum BackendEvent {
     /// Current privacy settings as fetched from the account
     /// (category → value spellings; see [`BackendCommand::SetPrivacy`]).
     PrivacyState(std::collections::BTreeMap<String, String>),
+    /// The account's blocklist as fetched at connect: the JIDs
+    /// blocked on the server, in the server's own spelling. The
+    /// app adopts the list as its blocked set, replacing any
+    /// locally persisted copy: the server is the source of truth
+    /// for blocks, and a client that only remembers its own
+    /// toggles shows the wrong state after a restart.
+    Blocklist(Vec<String>),
     /// An incoming 1:1 call is ringing. Accept or reject it with
     /// the matching commands; only one call exists at a time.
     IncomingCall {

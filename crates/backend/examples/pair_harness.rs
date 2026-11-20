@@ -45,6 +45,7 @@ fn summarize(event: &BackendEvent) -> String {
         }
         BackendEvent::MessageDeletedForMe { .. } => "MessageDeletedForMe".to_owned(),
         BackendEvent::PrivacyState(_) => "PrivacyState".to_owned(),
+        BackendEvent::Blocklist(jids) => format!("Blocklist {} contacts", jids.len()),
         BackendEvent::IncomingCall { .. } => "IncomingCall".to_owned(),
         BackendEvent::CallChanged { phase, .. } => format!("CallChanged {phase:?}"),
         BackendEvent::MediaSaved { .. } => "MediaSaved".to_owned(),

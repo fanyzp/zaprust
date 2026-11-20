@@ -214,6 +214,11 @@ pub(super) async fn run_async(
     // land after a newer one and overwrite it with stale state.
     let privacy_fetch: LatestTask = std::sync::Arc::new(std::sync::Mutex::new(None));
     let privacy_fetch_conn = privacy_fetch.clone();
+    // The blocklist fetch spawned by `on_connected`, same slot
+    // discipline as the privacy fetch: only the newest fetch may
+    // land, so a reconnect never adopts a stale blocklist.
+    let blocklist_fetch: LatestTask = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let blocklist_fetch_conn = blocklist_fetch.clone();
 
     let sink = events.clone();
     let sink_pair = events.clone();
@@ -246,6 +251,7 @@ pub(super) async fn run_async(
         .on_connected(move |client| {
             let sink = sink_conn.clone();
             let fetch_slot = privacy_fetch_conn.clone();
+            let blocklist_slot = blocklist_fetch_conn.clone();
             async move {
                 sink.emit(BackendEvent::Connected { account: "WhatsApp account".to_owned() });
                 // The privacy fetch is a network round trip and this
@@ -256,9 +262,22 @@ pub(super) async fn run_async(
                 // It runs as its own task instead and emits
                 // PrivacyState when it lands; a failed fetch stays
                 // silent, exactly as before.
+                let sink_privacy = sink.clone();
+                let client_privacy = client.clone();
                 spawn_latest(&fetch_slot, async move {
-                    if let Ok(resp) = client.fetch_privacy_settings().await {
-                        sink.emit(BackendEvent::PrivacyState(privacy_map(&resp)));
+                    if let Ok(resp) = client_privacy.fetch_privacy_settings().await {
+                        sink_privacy.emit(BackendEvent::PrivacyState(privacy_map(&resp)));
+                    }
+                });
+                // The blocklist fetch rides the same pattern: the
+                // app seeds its blocked set from the server's list,
+                // so blocks made on the phone (or before a restart)
+                // show correctly. A failed fetch stays silent and
+                // the app keeps its persisted copy.
+                spawn_latest(&blocklist_slot, async move {
+                    if let Ok(entries) = client.blocking().get_blocklist().await {
+                        let jids = entries.iter().map(|e| e.jid.to_string()).collect::<Vec<_>>();
+                        sink.emit(BackendEvent::Blocklist(jids));
                     }
                 });
             }
@@ -1459,6 +1478,9 @@ pub(super) async fn run_async(
     // (The runtime drop at the end of `Backend::run` would abort it
     // anyway; doing it here keeps the guarantee local.)
     abort_latest(&privacy_fetch);
+    // Same for a blocklist fetch: it must not land after the
+    // session it was fetched for has ended.
+    abort_latest(&blocklist_fetch);
 
     match run_outcome {
         Some(outcome) => {

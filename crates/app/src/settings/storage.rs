@@ -5,11 +5,26 @@ use super::*;
 impl App {
     pub(crate) fn page_storage(&mut self, ui: &mut egui::Ui, t: core::theme::Tokens) {
         page_header(ui, &crate::i18n::t("settings.storage"), &crate::i18n::t("storage.subtitle"));
-        // Real sizes, measured from the app data dir right now.
-        let data_dir = backend::data_dir();
-        let archive = std::fs::metadata(data_dir.join("archive.db")).map_or(0, |m| m.len());
-        let session = dir_size(&data_dir.join("accounts"));
-        let total = dir_size(&data_dir);
+        // Real sizes, measured from the app data dir when the
+        // page opened and then cached: this draw runs on every
+        // repaint, and a recursive walk of the whole data dir is
+        // thousands of syscalls per frame on a large install
+        // (audit finding 13). draw_settings drops the cache
+        // whenever another page is shown, so reopening the page
+        // measures again.
+        let (archive, session, total) = match self.storage_sizes {
+            Some(sizes) => sizes,
+            None => {
+                let data_dir = backend::data_dir();
+                let sizes = (
+                    std::fs::metadata(data_dir.join("archive.db")).map_or(0, |m| m.len()),
+                    dir_size(&data_dir.join("accounts")),
+                    dir_size(&data_dir),
+                );
+                self.storage_sizes = Some(sizes);
+                sizes
+            }
+        };
         let other = total.saturating_sub(archive + session);
         group_label(ui, t, &format!("Storage used, {}", fmt_bytes(total)));
         let mut clear = false;
@@ -86,7 +101,7 @@ impl App {
             if self.cache_cleared {
                 ui.label(
                     RichText::new(
-                        "In-memory caches cleared, link previews and GIF \
+                        "In-memory caches cleared, images, link previews and \
                          thumbnails will be refetched on demand.",
                     )
                     .size(12.0)
@@ -105,12 +120,20 @@ impl App {
             ui.add_space(4.0);
         });
         if clear {
-            self.og_cache.clear();
-            self.picker.giphy_textures.clear();
-            // The sticker texture cache was missed by this button
-            // until v0.25 (perf review).
-            self.picker.sticker_textures.clear();
-            self.cache_cleared = true;
+            self.clear_in_memory_caches();
         }
+    }
+
+    /// Clears every in-memory cache the app keeps, no
+    /// exceptions: an earlier version of this action missed the
+    /// sticker textures, and the per-message media and avatar
+    /// textures were never cleared at all (audit finding 10).
+    pub(crate) fn clear_in_memory_caches(&mut self) {
+        self.og_cache.clear();
+        self.media.textures.clear();
+        self.media.avatar_textures.clear();
+        self.picker.giphy_textures.clear();
+        self.picker.sticker_textures.clear();
+        self.cache_cleared = true;
     }
 }

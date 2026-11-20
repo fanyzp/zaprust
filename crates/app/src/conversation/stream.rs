@@ -42,18 +42,13 @@ impl App {
             .stick_to_bottom(!self.qa_scroll_top && self.scroll_to_message.is_none())
             .show(&mut child, |ui| {
                 ui.add_space(10.0);
-                if self.live_mode {
-                    // History sync is a live-mode concept; in
-                    // demo mode there is no phone to load from.
-                    ui.vertical_centered(|ui| {
-                        ui.label(
-                            RichText::new("Loading older messages from your phone…")
-                                .size(11.0)
-                                .color(rgb(t.text_faint)),
-                        );
-                    });
-                    ui.add_space(4.0);
-                }
+                // There is deliberately no "loading older
+                // messages" label here: an earlier version drew
+                // one unconditionally in every live conversation,
+                // but the backend exposes no per-chat history-sync
+                // state to drive it, so it was a permanent fake
+                // indicator (audit finding 14). It returns only
+                // when a real sync signal exists to gate it.
                 // An empty conversation still opens with
                 // the encryption notice (below, the loop
                 // paints it under the first day chip when

@@ -623,6 +623,10 @@ impl Backend for FakeBackend {
             )]);
         let mut chat_state: std::collections::HashMap<String, LiveChat> =
             scripted_chats().into_iter().map(|c| (c.jid.clone(), c)).collect();
+        // Blocked contact JIDs, mirroring the server-side list the
+        // real backend fetches at connect: BlockContact mutates it
+        // and the full list is re-emitted as a Blocklist event.
+        let mut blocked_state: std::collections::HashSet<String> = std::collections::HashSet::new();
         let mut message_state: std::collections::HashMap<(String, String), LiveMessage> =
             scripted_messages()
                 .into_iter()
@@ -1159,6 +1163,14 @@ impl Backend for FakeBackend {
                             .unwrap_or_else(std::sync::PoisonError::into_inner)
                             .push(format!("block:{chat_jid}:{block}"));
                     }
+                    if block {
+                        blocked_state.insert(chat_jid);
+                    } else {
+                        blocked_state.remove(&chat_jid);
+                    }
+                    let mut list: Vec<String> = blocked_state.iter().cloned().collect();
+                    list.sort();
+                    events.emit(BackendEvent::Blocklist(list));
                 }
                 BackendCommand::CreateGroup { name, participants } => {
                     if let Some(log) = &command_log {
@@ -1562,6 +1574,9 @@ fn emit_linked_script(
     privacy.insert("last".to_owned(), "contacts".to_owned());
     privacy.insert("readreceipts".to_owned(), "all".to_owned());
     events.emit(BackendEvent::PrivacyState(privacy));
+    // Baseline blocklist, as the real backend reports it after
+    // fetching the account's list at connect: nobody blocked.
+    events.emit(BackendEvent::Blocklist(Vec::new()));
     // One scripted incoming voice call from the DM contact, so
     // the whole call surface (ring, accept, talk, end, log entry)
     // is exercised in test mode without a phone. Registered in

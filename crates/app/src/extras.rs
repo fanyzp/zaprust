@@ -245,7 +245,21 @@ impl App {
                 self.notify_messages = v["notify_messages"].as_bool().unwrap_or(true);
                 self.notify_groups = v["notify_groups"].as_bool().unwrap_or(true);
                 self.notify_sound = v["notify_sound"].as_bool().unwrap_or(true);
-                self.notify_preview = v["notify_preview"].as_bool().unwrap_or(true);
+                // The constructor default is false (message text
+                // in OS notifications is the privacy-sensitive
+                // behavior), so the loader fallback must agree: a
+                // settings file written without this key must not
+                // silently turn previews on (audit finding 11).
+                self.notify_preview = v["notify_preview"].as_bool().unwrap_or(false);
+                // Blocked contacts persist with the settings so
+                // the profile panel shows the right state before
+                // the backend's connect-time blocklist lands (and
+                // in demo mode, where no fetch exists). Chat ids
+                // are stored, not JIDs: the panel reasons in ids.
+                if let Some(blocked) = v["blocked_chats"].as_array() {
+                    self.blocked_chats =
+                        blocked.iter().filter_map(serde_json::Value::as_u64).collect();
+                }
                 self.composer.hint_dismissed =
                     v["composer_hint_dismissed"].as_bool().unwrap_or(false);
                 if let Some(m) = v["motion"].as_str() {
@@ -353,6 +367,7 @@ impl App {
             "notify_groups": self.notify_groups,
             "notify_sound": self.notify_sound,
             "notify_preview": self.notify_preview,
+            "blocked_chats": self.blocked_chats.iter().copied().collect::<Vec<u64>>(),
             "composer_hint_dismissed": self.composer.hint_dismissed,
             "motion": self.motion.as_str(),
             "language": self.language,
@@ -427,6 +442,25 @@ impl App {
     /// Polls all worker channels (GIPHY, previews, staged
     /// sends). Called every frame from the shell.
     pub(crate) fn poll_workers(&mut self, ctx: &egui::Context) {
+        // Chat export: the worker wrote the file (or failed);
+        // the outcome is reported via the notice banner, the
+        // same place the synchronous export used to report it.
+        if let Some(rx) = &self.export_rx {
+            match rx.try_recv() {
+                Ok(Ok(path)) => {
+                    self.notice = Some(format!("Chat exported to {}", path.display()));
+                    self.export_rx = None;
+                }
+                Ok(Err(e)) => {
+                    self.notice = Some(format!("Export failed: {e}"));
+                    self.export_rx = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.export_rx = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+        }
         if let Some(rx) = &self.og_rx {
             match rx.try_recv() {
                 Ok((msg_id, url, data)) => {
@@ -989,6 +1023,64 @@ impl OgCache {
     }
 }
 
+/// Caps for the GPU texture caches, in entries. Photo textures
+/// are full-size images, so the media cache stays small; avatars
+/// and stickers are tiny tiles and previews are downscaled, so
+/// they get more room. At these sizes a linear lookup is cheap
+/// (the same reasoning as [`OgCache`]).
+pub(crate) const MAX_MEDIA_TEXTURES: usize = 128;
+pub(crate) const MAX_AVATAR_TEXTURES: usize = 256;
+pub(crate) const MAX_GIPHY_TEXTURES: usize = 128;
+pub(crate) const MAX_STICKER_TEXTURES: usize = 256;
+
+/// A bounded GPU texture cache: insertion order is kept in a
+/// plain Vec and the oldest entry is evicted first once the
+/// cache grows past its cap, exactly like [`OgCache`]. Without
+/// a bound these caches kept every texture decoded in the
+/// session alive until exit (audit finding 10).
+pub(crate) struct TextureCache<K> {
+    entries: Vec<(K, egui::TextureHandle)>,
+    cap: usize,
+}
+
+impl<K: PartialEq> TextureCache<K> {
+    pub(crate) fn new(cap: usize) -> Self {
+        Self { entries: Vec::new(), cap }
+    }
+
+    pub(crate) fn get<Q>(&self, key: &Q) -> Option<&egui::TextureHandle>
+    where
+        K: std::borrow::Borrow<Q>,
+        Q: PartialEq + ?Sized,
+    {
+        self.entries.iter().find(|(k, _)| k.borrow() == key).map(|(_, handle)| handle)
+    }
+
+    pub(crate) fn contains_key<Q>(&self, key: &Q) -> bool
+    where
+        K: std::borrow::Borrow<Q>,
+        Q: PartialEq + ?Sized,
+    {
+        self.entries.iter().any(|(k, _)| k.borrow() == key)
+    }
+
+    pub(crate) fn insert(&mut self, key: K, handle: egui::TextureHandle) {
+        if let Some(slot) = self.entries.iter_mut().find(|(k, _)| *k == key) {
+            slot.1 = handle;
+            return;
+        }
+        self.entries.push((key, handle));
+        while self.entries.len() > self.cap {
+            // Dropping the evicted handle frees its texture.
+            let _ = self.entries.remove(0);
+        }
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.entries.clear();
+    }
+}
+
 /// Builds the link-preview client for one fetch hop: the hop's
 /// URL is validated and resolved once through `core::net`, and
 /// the client is pinned to exactly those addresses, so the name
@@ -1073,6 +1165,43 @@ mod tests {
         assert_eq!(cached.as_ref().map(|d| d.title.as_str()), Some("Title"));
         cache.clear();
         assert!(cache.get("https://example.com/a").is_none());
+    }
+
+    fn test_texture(ctx: &egui::Context, name: &str) -> egui::TextureHandle {
+        ctx.load_texture(
+            name,
+            egui::ColorImage::new([1, 1], vec![egui::Color32::RED]),
+            egui::TextureOptions::NEAREST,
+        )
+    }
+
+    #[test]
+    fn texture_cache_evicts_the_oldest_entries_past_the_cap() {
+        // Audit finding 10: the texture caches must stay
+        // bounded, with the earliest inserts evicted first.
+        let ctx = egui::Context::default();
+        let mut cache = TextureCache::new(2);
+        cache.insert(1u64, test_texture(&ctx, "a"));
+        cache.insert(2u64, test_texture(&ctx, "b"));
+        cache.insert(3u64, test_texture(&ctx, "c"));
+        assert!(cache.get(&1).is_none(), "the oldest entry is evicted");
+        assert!(cache.get(&2).is_some());
+        assert!(cache.get(&3).is_some());
+    }
+
+    #[test]
+    fn texture_cache_reinsert_replaces_and_clear_empties() {
+        let ctx = egui::Context::default();
+        let mut cache = TextureCache::new(2);
+        cache.insert("key".to_owned(), test_texture(&ctx, "a"));
+        let second = test_texture(&ctx, "b");
+        let second_id = second.id();
+        cache.insert("key".to_owned(), second);
+        assert_eq!(cache.get("key").map(|h| h.id()), Some(second_id));
+        assert!(cache.contains_key("key"));
+        cache.clear();
+        assert!(cache.get("key").is_none());
+        assert!(!cache.contains_key("key"));
     }
 
     #[test]

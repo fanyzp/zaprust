@@ -106,6 +106,9 @@ impl App {
                 None,
             ),
             BackendEvent::PrivacyState(_) => ("backend", "PrivacyState".to_owned(), None),
+            BackendEvent::Blocklist(jids) => {
+                ("backend", format!("Blocklist: {} contacts", jids.len()), None)
+            }
             BackendEvent::Crashed { summary, restarted } => {
                 ("backend", format!("Crashed (restarted={restarted}): {summary}"), None)
             }

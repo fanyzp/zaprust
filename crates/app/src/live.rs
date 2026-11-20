@@ -802,16 +802,16 @@ impl crate::state::App {
             }
         }
         if let Some(id) = self.pending_select_chat {
+            // The deferred selection resolves only to the exact
+            // chat id it was given. There is deliberately no
+            // fallback: an earlier version treated a small id as
+            // a 1-based index into the chat list, which silently
+            // opened an unrelated chat when the requested one
+            // never arrived (audit finding 15). An id that never
+            // resolves simply stays pending.
             if self.chats.iter().any(|c| c.id == id) {
                 self.pending_select_chat = None;
                 self.select_chat_now(id);
-            } else if id >= 1 && (id as usize) < self.chats.len() {
-                // Live chat ids are JID hashes, so a small number is
-                // a 1-based index into the chat list (index 0 is the
-                // pinned AI Assistant).
-                let target = self.chats[id as usize].id;
-                self.pending_select_chat = None;
-                self.select_chat_now(target);
             }
         }
     }
@@ -1133,6 +1133,17 @@ impl crate::state::App {
             }
             BackendEvent::PrivacyState(map) => {
                 self.privacy_state = map;
+            }
+            BackendEvent::Blocklist(jids) => {
+                // The server's list is the source of truth for
+                // blocks: adopt it wholesale, replacing the
+                // persisted copy that covered the time before
+                // this fetch landed. Chat ids are JID hashes, so
+                // the adoption needs no chat list. The adopted
+                // set is not persisted here: local toggles
+                // persist the set they produce, and this list is
+                // re-fetched at every connect.
+                self.blocked_chats = jids.iter().map(|j| jid_id(j)).collect();
             }
             BackendEvent::MediaSaved { path, .. } => {
                 self.notice = Some(format!("Saved to {path}"));
@@ -2734,6 +2745,59 @@ mod chat_state_routing_tests {
         drain_all(&mut app, &ctx);
         assert!(chat_muted(&app), "an arrival upsert must not unmute");
         assert!(archived_muted(&app), "nor rewrite the archive row as unmuted");
+    }
+
+    /// The connect-time blocklist adopts wholesale: the
+    /// server's set replaces the locally persisted copy, so a
+    /// block made on another device (or before a restart)
+    /// shows correctly, and an unblock elsewhere clears it
+    /// (audit finding 12).
+    #[test]
+    fn server_blocklist_replaces_the_local_set() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        seed_chat(&mut app, &tx, &ctx);
+        let chat_id = jid_id(CHAT_JID);
+
+        // A stale local entry the server does not report.
+        app.blocked_chats.insert(424_242);
+        tx.send(BackendEvent::Blocklist(vec![CHAT_JID.to_owned()])).unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(app.blocked_chats, std::collections::HashSet::from([chat_id]));
+
+        tx.send(BackendEvent::Blocklist(Vec::new())).unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(app.blocked_chats.is_empty(), "an empty server list clears the set");
+    }
+
+    /// The Settings cache-clear must empty every in-memory
+    /// cache, including the media and avatar texture caches it
+    /// used to miss (audit finding 10).
+    #[test]
+    fn cache_clear_covers_all_caches() {
+        let (mut app, _tx, ctx, _cmd_rx) = live_app();
+        let handle = ctx.load_texture(
+            "test",
+            egui::ColorImage::new([1, 1], vec![egui::Color32::RED]),
+            egui::TextureOptions::NEAREST,
+        );
+        app.media.textures.insert(1, handle.clone());
+        app.media.avatar_textures.insert("Sender".to_owned(), handle.clone());
+        app.picker.giphy_textures.insert("https://example.com/g".to_owned(), handle.clone());
+        app.picker.sticker_textures.insert(std::path::PathBuf::from("sticker.png"), handle);
+        app.og_cache.insert("https://example.com".to_owned(), None);
+
+        app.clear_in_memory_caches();
+
+        assert!(app.media.textures.get(&1).is_none());
+        assert!(app.media.avatar_textures.get("Sender").is_none());
+        assert!(app.picker.giphy_textures.get("https://example.com/g").is_none());
+        assert!(app
+            .picker
+            .sticker_textures
+            .get(&std::path::PathBuf::from("sticker.png"))
+            .is_none());
+        assert!(app.og_cache.get("https://example.com").is_none());
+        assert!(app.cache_cleared);
     }
 
     /// A pin change the server reports (another device, or a

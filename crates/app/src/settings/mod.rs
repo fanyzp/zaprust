@@ -549,6 +549,13 @@ impl App {
                         // a vertical stack, so force it here.
                         ui.vertical(|ui| {
                             ui.set_max_width(680.0);
+                            // The storage page's measured sizes are
+                            // cached per visit (see storage.rs):
+                            // showing any other page ends the visit,
+                            // so the next open measures again.
+                            if self.settings_tab != "Data & Storage" {
+                                self.storage_sizes = None;
+                            }
                             match self.settings_tab {
                                 "Appearance" => self.page_appearance(ui, t),
                                 "Chats" => self.page_chats(ui, t),

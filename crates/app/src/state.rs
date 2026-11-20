@@ -370,11 +370,13 @@ pub(crate) struct MediaState {
     pub(crate) photo_texture: Option<egui::TextureHandle>,
     /// Decoded photo textures per app message ID: picked files and
     /// received media render their own pixels, everything else falls
-    /// back to the demo photo texture.
-    pub(crate) textures: std::collections::HashMap<u64, egui::TextureHandle>,
+    /// back to the demo photo texture. Bounded (see
+    /// `extras::TextureCache`): the oldest texture is evicted once
+    /// the cap is passed.
+    pub(crate) textures: crate::extras::TextureCache<u64>,
     /// Decoded demo persona portraits, keyed by display name (see
-    /// demo_avatars.rs).
-    pub(crate) avatar_textures: std::collections::HashMap<String, egui::TextureHandle>,
+    /// demo_avatars.rs). Bounded like `textures`.
+    pub(crate) avatar_textures: crate::extras::TextureCache<String>,
     /// View-once photos the user has already opened.
     pub(crate) opened_view_once: std::collections::HashSet<u64>,
     /// The view-once photo currently open in the viewer, if any.
@@ -464,10 +466,12 @@ pub(crate) struct PickerState {
     pub(crate) giphy_items: Vec<giphy::GifItem>,
     /// Whether the GIPHY key was rejected (bad-key state).
     pub(crate) giphy_rejected: bool,
-    /// Decoded GIF preview textures by preview URL.
-    pub(crate) giphy_textures: std::collections::HashMap<String, egui::TextureHandle>,
-    /// Decoded sticker PNG textures, keyed by file path.
-    pub(crate) sticker_textures: std::collections::HashMap<std::path::PathBuf, egui::TextureHandle>,
+    /// Decoded GIF preview textures by preview URL. Bounded (see
+    /// `extras::TextureCache`).
+    pub(crate) giphy_textures: crate::extras::TextureCache<String>,
+    /// Decoded sticker PNG textures, keyed by file path. Bounded
+    /// (see `extras::TextureCache`).
+    pub(crate) sticker_textures: crate::extras::TextureCache<std::path::PathBuf>,
     /// Sticker files whose preview decode failed, remembered
     /// against the file's stamp so a bad file is attempted once,
     /// not once per repaint, and a replaced file is retried.
@@ -712,6 +716,10 @@ pub(crate) struct App {
     pub(crate) groups: GroupsState,
     /// Contacts blocked from this client (live: also sent to the
     /// backend; demo: local state with an honest caption).
+    /// Persisted with the settings, and replaced by the backend's
+    /// connect-time Blocklist event when a live session reports
+    /// the server's list: the persisted copy only covers the time
+    /// before that fetch lands.
     pub(crate) blocked_chats: std::collections::HashSet<u64>,
     /// Profile panel group-edit form state.
     pub(crate) profile_form_for: Option<u64>,
@@ -813,6 +821,16 @@ pub(crate) struct App {
     pub(crate) og_cache: crate::extras::OgCache,
     /// In-flight link-preview fetches: (message id, url, result).
     pub(crate) og_rx: Option<std::sync::mpsc::Receiver<(u64, String, Option<core::rich::OgData>)>>,
+    /// In-flight chat export: a worker renders and writes the
+    /// file off the UI thread; the result is the written path or
+    /// the error text (see conversation/mod.rs).
+    pub(crate) export_rx: Option<std::sync::mpsc::Receiver<Result<std::path::PathBuf, String>>>,
+    /// Data & Storage page sizes (archive bytes, account bytes,
+    /// total bytes), measured once when the page opens and
+    /// dropped when another settings page is shown: walking the
+    /// whole data dir is far too expensive to repeat per repaint
+    /// (audit finding 13).
+    pub(crate) storage_sizes: Option<(u64, u64, u64)>,
     /// In-flight staged album send: a worker thread reads the
     /// staged files off the UI thread and `poll_staged_send`
     /// applies the results in staging order (see attach.rs).
@@ -1120,8 +1138,10 @@ impl App {
             cache_cleared: false,
             media: MediaState {
                 photo_texture: None,
-                textures: std::collections::HashMap::new(),
-                avatar_textures: std::collections::HashMap::new(),
+                textures: crate::extras::TextureCache::new(crate::extras::MAX_MEDIA_TEXTURES),
+                avatar_textures: crate::extras::TextureCache::new(
+                    crate::extras::MAX_AVATAR_TEXTURES,
+                ),
                 opened_view_once: std::collections::HashSet::new(),
                 viewing_photo: if args.open_viewonce { Some(112) } else { None },
                 voice_playing: None,
@@ -1200,8 +1220,10 @@ impl App {
                 giphy_query: String::new(),
                 giphy_items: Vec::new(),
                 giphy_rejected: false,
-                giphy_textures: std::collections::HashMap::new(),
-                sticker_textures: std::collections::HashMap::new(),
+                giphy_textures: crate::extras::TextureCache::new(crate::extras::MAX_GIPHY_TEXTURES),
+                sticker_textures: crate::extras::TextureCache::new(
+                    crate::extras::MAX_STICKER_TEXTURES,
+                ),
                 sticker_failures: crate::extras::StickerFailureCache::default(),
                 sticker_pending: std::collections::HashSet::new(),
                 sticker_tx: None,
@@ -1231,6 +1253,8 @@ impl App {
             event_batch: crate::live::EventBatch::default(),
             og_cache: crate::extras::OgCache::default(),
             og_rx: None,
+            export_rx: None,
+            storage_sizes: None,
             staged_send: None,
             bubble_menu: None,
             forward_from: None,

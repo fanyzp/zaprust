@@ -87,12 +87,14 @@ pub(super) fn handle_call_event(
                 }
             }
             CallAction::Terminate { call_id, .. } => {
-                let stored = lock_cache(slot).take();
-                let matches = stored.as_ref().is_some_and(|e| {
-                    matches!(&**e, Event::IncomingCall(prev)
-                        if matches!(&prev.action, CallAction::Offer { call_id: id, .. } if id == call_id))
-                });
-                if matches {
+                // Clear the ringing offer only if it is this
+                // call's, decided and done under one lock hold
+                // (release_slot_if). The old take, check, restore
+                // read the slot as empty in between: a new offer
+                // landing in that window was stored and announced,
+                // then overwritten by the restore, and an Accept
+                // peeking in the window saw no call at all.
+                if release_slot_if(slot, |e| is_offer_for(e, call_id)).is_some() {
                     sink.emit(BackendEvent::CallChanged {
                         call_id: call_id.clone(),
                         chat_jid: ic.from.to_string(),
@@ -100,19 +102,15 @@ pub(super) fn handle_call_event(
                         seconds: 0,
                         reason: Some("Call ended".to_owned()),
                     });
-                } else if let Some(prev) = stored {
-                    *lock_cache(slot) = Some(prev);
                 }
             }
             _ => {}
         },
         Event::MissedCall(missed) => {
-            let stored = lock_cache(slot).take();
-            let matches = stored.as_ref().is_some_and(|e| {
-                matches!(&**e, Event::IncomingCall(prev)
-                    if matches!(&prev.action, CallAction::Offer { call_id, .. } if *call_id == missed.call_id))
-            });
-            if matches {
+            // Same conditional clear as Terminate above: one
+            // lock hold, and another caller's offer is never
+            // taken out of the slot, not even briefly.
+            if release_slot_if(slot, |e| is_offer_for(e, &missed.call_id)).is_some() {
                 sink.emit(BackendEvent::CallChanged {
                     call_id: missed.call_id.clone(),
                     chat_jid: missed.from.to_string(),
@@ -120,8 +118,6 @@ pub(super) fn handle_call_event(
                     seconds: 0,
                     reason: Some("Missed call".to_owned()),
                 });
-            } else if let Some(prev) = stored {
-                *lock_cache(slot) = Some(prev);
             }
         }
         _ => {}
@@ -264,13 +260,22 @@ pub(super) async fn accept_incoming_call(
     }
 }
 
+/// Whether the stored ringing event is the offer for `call_id`.
+#[cfg(feature = "calls")]
+fn is_offer_for(event: &Event, call_id: &str) -> bool {
+    use whatsapp_rust::wacore::types::call::CallAction;
+    matches!(event, Event::IncomingCall(prev)
+        if matches!(&prev.action, CallAction::Offer { call_id: id, .. } if id == call_id))
+}
+
 /// Takes a one-at-a-time slot's entry out only if it is still
 /// the entry `is_owner` accepts. This is the call pump's exit
-/// path, and the check is what makes the release safe: the
-/// entry is matched by call id under the lock, so a pump
-/// finishing late can never evict a newer call that has taken
-/// the slot since, and a pump whose call was already released
-/// finds nothing to do.
+/// path and the ringing slot's conditional clear, and the check
+/// is what makes the release safe: the entry is matched by call
+/// id under the lock, so a pump finishing late can never evict a
+/// newer call that has taken the slot since, a pump whose call
+/// was already released finds nothing to do, and a ringing offer
+/// for a different call is never taken out, not even briefly.
 #[cfg(feature = "calls")]
 fn release_slot_if<T>(
     slot: &std::sync::Mutex<Option<T>>,
@@ -448,5 +453,127 @@ mod tests {
         let slot: std::sync::Mutex<Option<FakeCall>> = std::sync::Mutex::new(None);
         assert!(release_slot_if(&slot, |c| c.call_id == "call-a").is_none());
         assert!(lock_cache(&slot).is_none());
+    }
+
+    use whatsapp_rust::wacore::types::call::{CallAction, IncomingCall, MissedCall, MissedReason};
+
+    fn caller() -> Jid {
+        "12025550111@s.whatsapp.net".parse().expect("caller jid parses")
+    }
+
+    /// Builds a protocol call event carrying `action` from the
+    /// test caller, the shape `handle_call_event` consumes.
+    fn call_event(action: CallAction) -> std::sync::Arc<Event> {
+        let ic = IncomingCall::builder()
+            .from(caller())
+            .stanza_id("stanza-1".to_owned())
+            .offline(false)
+            .action(action)
+            .build();
+        std::sync::Arc::new(Event::IncomingCall(Box::new(ic)))
+    }
+
+    fn offer_action(call_id: &str) -> CallAction {
+        CallAction::Offer {
+            call_id: call_id.to_owned(),
+            call_creator: caller(),
+            caller_pn: None,
+            caller_country_code: None,
+            device_class: None,
+            joinable: false,
+            is_video: false,
+            audio: Vec::new(),
+            group_jid: None,
+        }
+    }
+
+    fn terminate_action(call_id: &str) -> CallAction {
+        CallAction::Terminate {
+            call_id: call_id.to_owned(),
+            call_creator: caller(),
+            reason: None,
+            duration: None,
+            audio_duration: None,
+        }
+    }
+
+    /// An event sink over a small bounded channel, plus the
+    /// receiving end for assertions.
+    fn test_sink() -> (EventSink, std::sync::mpsc::Receiver<crate::BackendEvent>) {
+        let (tx, rx) = std::sync::mpsc::sync_channel::<crate::BackendEvent>(16);
+        (EventSink { tx, wake: std::sync::Arc::new(|| {}) }, rx)
+    }
+
+    fn ringing_slot(call_id: &str) -> CallIncoming {
+        std::sync::Arc::new(std::sync::Mutex::new(Some(call_event(offer_action(call_id)))))
+    }
+
+    /// A Terminate for a different call must leave the ringing
+    /// offer in the slot, untouched and peekable, and announce
+    /// nothing. The old take, check, restore emptied the slot
+    /// for the duration of the check, so an Accept peeking in
+    /// that window reported "no incoming call" for a call that
+    /// was still ringing, and a new offer stored in the window
+    /// was overwritten by the restore.
+    #[test]
+    fn terminate_for_another_call_keeps_the_ringing_offer() {
+        let slot = ringing_slot("call-a");
+        let (sink, rx) = test_sink();
+        handle_call_event(&call_event(terminate_action("call-b")), &slot, &sink);
+        let peeked = lock_cache(&slot).clone();
+        assert!(
+            peeked.is_some_and(|e| is_offer_for(&e, "call-a")),
+            "the ringing offer survives a Terminate for another call"
+        );
+        assert!(rx.try_recv().is_err(), "nothing is announced for another call's Terminate");
+    }
+
+    /// A Terminate for the ringing call itself clears the slot
+    /// and announces the end.
+    #[test]
+    fn terminate_for_the_ringing_call_clears_and_announces() {
+        let slot = ringing_slot("call-a");
+        let (sink, rx) = test_sink();
+        handle_call_event(&call_event(terminate_action("call-a")), &slot, &sink);
+        assert!(lock_cache(&slot).is_none(), "the slot is cleared");
+        let announced = rx.try_recv().expect("the end is announced");
+        assert!(matches!(
+            announced,
+            crate::BackendEvent::CallChanged { ref call_id, phase: crate::CallPhase::Ended, .. }
+            if call_id == "call-a"
+        ));
+    }
+
+    /// A MissedCall follows the same rule: only the ringing
+    /// call's own missed event clears its offer.
+    #[test]
+    fn missed_call_clears_only_its_own_offer() {
+        use whatsapp_rust::wacore::chrono::Utc;
+        let slot = ringing_slot("call-a");
+        let (sink, rx) = test_sink();
+        let other = std::sync::Arc::new(Event::MissedCall(MissedCall::new(
+            caller(),
+            "call-b".to_owned(),
+            Utc::now(),
+            MissedReason::Remote,
+        )));
+        handle_call_event(&other, &slot, &sink);
+        assert!(lock_cache(&slot).is_some(), "another call's missed event keeps the offer");
+        assert!(rx.try_recv().is_err(), "nothing is announced");
+
+        let own = std::sync::Arc::new(Event::MissedCall(MissedCall::new(
+            caller(),
+            "call-a".to_owned(),
+            Utc::now(),
+            MissedReason::Remote,
+        )));
+        handle_call_event(&own, &slot, &sink);
+        assert!(lock_cache(&slot).is_none(), "the missed call's own offer is cleared");
+        let announced = rx.try_recv().expect("the missed call is announced");
+        assert!(matches!(
+            announced,
+            crate::BackendEvent::CallChanged { ref call_id, phase: crate::CallPhase::Ended, .. }
+            if call_id == "call-a"
+        ));
     }
 }

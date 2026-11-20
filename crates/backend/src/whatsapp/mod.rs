@@ -24,6 +24,15 @@ mod session;
 mod translate;
 mod util;
 
+/// Budget for the runtime's own teardown once the session has
+/// ended. Dropping a Tokio runtime waits indefinitely for its
+/// spawned tasks, so a leftover task (a call pump, a library
+/// background task) could hold the backend worker thread forever
+/// after an otherwise clean session end. Past this budget the
+/// runtime aborts what remains, which is the same state a
+/// process exit would leave.
+const RUNTIME_TEARDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// The real WhatsApp backend. See the module docs.
 #[derive(Debug, Default)]
 pub struct WhatsappBackend;
@@ -46,7 +55,12 @@ impl Backend for WhatsappBackend {
                 return Err(format!("Could not start the async runtime: {e}"));
             }
         };
-        runtime.block_on(run_async(config, commands, events))
+        let result = runtime.block_on(run_async(config, commands, events));
+        // The session is over; bound the runtime teardown itself
+        // (see RUNTIME_TEARDOWN_TIMEOUT) instead of letting the
+        // runtime's drop wait on leftover tasks without a limit.
+        runtime.shutdown_timeout(RUNTIME_TEARDOWN_TIMEOUT);
+        result
     }
 }
 

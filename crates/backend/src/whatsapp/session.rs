@@ -61,6 +61,32 @@ const SEND_MEDIA_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(6
 /// runtime drop aborts the bot.
 const SHUTDOWN_FLUSH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
+/// What the user should be told about a logout's deregistration
+/// outcome, if anything. The library always performs its local
+/// teardown, so the local session ends either way; the question
+/// is only whether the server confirmed the deregistration. An
+/// attempt the server did not confirm, and one that could not be
+/// made because the socket was down, both leave this device
+/// listed as linked on the phone, and reporting neither would
+/// let the user believe the logout fully landed. A logout that
+/// was never attempted because there is no phone-number identity
+/// has nothing registered to remove, so it stays silent.
+fn logout_problem(outcome: &whatsapp_rust::DeregistrationOutcome) -> Option<String> {
+    use whatsapp_rust::{DeregistrationOutcome, DeregistrationSkipReason};
+    match outcome {
+        DeregistrationOutcome::Failed { source } => Some(format!(
+            "Logging out did not reach the server: {source}. \
+             This device may still appear linked on your phone."
+        )),
+        DeregistrationOutcome::NotAttempted(DeregistrationSkipReason::Offline) => Some(
+            "Logging out could not reach the server while offline. \
+             This device may still appear linked on your phone."
+                .to_owned(),
+        ),
+        _ => None,
+    }
+}
+
 /// How awaiting one command handler ended.
 enum HandlerEnd<O> {
     /// The handler ran to completion.
@@ -1393,7 +1419,18 @@ pub(super) async fn run_async(
                     }
                 }
                 BackendCommand::Disconnect => {
-                    let _ = client.logout().await;
+                    // The local teardown always happens inside
+                    // logout; what can silently fail is the
+                    // deregistration reaching the server. Surface
+                    // that, or the user believes they logged out
+                    // while the phone still lists this device as
+                    // linked. The loop's own ending is unchanged:
+                    // termination still arrives via the run loop's
+                    // outcome, as it does for a clean logout.
+                    let report = client.logout().await;
+                    if let Some(problem) = logout_problem(&report.deregistration) {
+                        events.emit(BackendEvent::Error { message: problem });
+                    }
                 }
                 // Shutdown never reaches the handler: the
                 // dispatch loop intercepts it while obtaining the
@@ -1478,6 +1515,25 @@ mod tests {
             .build()
             .expect("test runtime builds")
             .block_on(future);
+    }
+
+    /// A server-confirmed logout is the clean case: nothing to
+    /// tell the user.
+    #[test]
+    fn confirmed_logout_reports_no_problem() {
+        use whatsapp_rust::DeregistrationOutcome;
+        assert!(logout_problem(&DeregistrationOutcome::Confirmed).is_none());
+    }
+
+    /// A logout that never reached the server (the socket was
+    /// down) must be reported: the phone still lists this device
+    /// as linked, and silence would read as a completed logout.
+    #[test]
+    fn offline_logout_reports_a_problem() {
+        use whatsapp_rust::{DeregistrationOutcome, DeregistrationSkipReason};
+        let outcome = DeregistrationOutcome::NotAttempted(DeregistrationSkipReason::Offline);
+        let problem = logout_problem(&outcome).expect("offline logout is reported");
+        assert!(problem.contains("still appear linked"), "honest wording: {problem}");
     }
 
     /// A handler that announces it started, then sleeps far past

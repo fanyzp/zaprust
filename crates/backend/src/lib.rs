@@ -37,7 +37,7 @@
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::PathBuf;
-use std::sync::mpsc::{Receiver, Sender};
+use std::sync::mpsc::{Receiver, Sender, SyncSender};
 use std::sync::Arc;
 
 #[cfg(feature = "calls")]
@@ -1117,20 +1117,41 @@ pub enum BackendEvent {
     },
 }
 
+/// Capacity of the event channel between a backend and the UI.
+///
+/// The channel is bounded so a UI that stops draining (a hung
+/// frame, a stalled modal) cannot accumulate events, each carrying
+/// full message bodies, in memory for the life of the process.
+/// The capacity is sized against the two rates it sits between:
+/// the library's ordered delivery queue holds 4096 events and one
+/// incoming message becomes two or more backend events, so 8192
+/// absorbs a full reconnect backlog flush without the producer
+/// ever waiting in practice; the UI drains up to 256 events per
+/// frame into its own queue, emptying a full channel in well
+/// under a second of frames. Past the capacity, `emit` blocks:
+/// backpressure paces the backend (and, behind it, the library's
+/// delivery worker) instead of dropping anything. No event kind
+/// is droppable (message upserts carry chat content, the *Changed
+/// events carry state assertions, receipts carry read state), so
+/// blocking is the only honest overflow behavior.
+const EVENT_CHANNEL_CAPACITY: usize = 8192;
+
 /// The sending half of the event channel, with the wake hook attached.
 ///
 /// Backends emit through this so every event wakes the UI exactly
 /// once. Cloning is cheap (channel sender + `Arc`).
 #[derive(Clone)]
 pub struct EventSink {
-    tx: Sender<BackendEvent>,
+    tx: SyncSender<BackendEvent>,
     wake: WakeFn,
 }
 
 impl EventSink {
-    /// Queues an event and fires the wake callback. Never blocks
-    /// meaningfully (unbounded channel); a closed receiver (UI gone)
-    /// silently drops the event.
+    /// Queues an event and fires the wake callback. Blocks while
+    /// the bounded channel is full (see [`EVENT_CHANNEL_CAPACITY`]),
+    /// which in practice means the UI has stalled; a closed
+    /// receiver (UI gone) silently drops the event and returns at
+    /// once.
     pub fn emit(&self, event: BackendEvent) {
         if self.tx.send(event).is_ok() {
             (self.wake)();
@@ -1193,7 +1214,7 @@ where
     F: Fn() -> Box<dyn Backend> + Send + 'static,
 {
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<BackendCommand>();
-    let (evt_tx, evt_rx) = std::sync::mpsc::channel::<BackendEvent>();
+    let (evt_tx, evt_rx) = std::sync::mpsc::sync_channel::<BackendEvent>(EVENT_CHANNEL_CAPACITY);
     let sink = EventSink { tx: evt_tx, wake };
     std::thread::Builder::new()
         .name("zaprust-backend".to_owned())
@@ -1416,6 +1437,55 @@ mod tests {
 
     fn no_wake() -> WakeFn {
         Arc::new(|| {})
+    }
+
+    /// The event channel is bounded, and a full channel makes
+    /// `emit` wait rather than drop: events carry chat content
+    /// and state assertions that no later event re-sends, so
+    /// losing one to make room would corrupt the UI's picture
+    /// silently. Once the UI drains, the blocked emit lands and
+    /// ordering is preserved.
+    #[test]
+    fn event_sink_blocks_at_capacity_instead_of_dropping() {
+        let (tx, rx) = std::sync::mpsc::sync_channel::<BackendEvent>(2);
+        let sink = EventSink { tx, wake: no_wake() };
+        sink.emit(BackendEvent::Connected { account: "a".to_owned() });
+        sink.emit(BackendEvent::Connected { account: "b".to_owned() });
+
+        let blocked_sink = sink.clone();
+        let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+        let emitter = std::thread::spawn(move || {
+            blocked_sink.emit(BackendEvent::Connected { account: "c".to_owned() });
+            let _ = done_tx.send(());
+        });
+        assert!(
+            done_rx.recv_timeout(Duration::from_millis(150)).is_err(),
+            "emit must block while the channel is full, not drop the event"
+        );
+
+        let first = rx.recv().expect("first event queued");
+        assert!(matches!(first, BackendEvent::Connected { ref account } if account == "a"));
+        done_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the blocked emit completes once the UI drains");
+        emitter.join().expect("emitter thread finishes");
+
+        let second = rx.recv().expect("second event queued");
+        let third = rx.recv().expect("the blocked emit was queued, not dropped");
+        assert!(matches!(second, BackendEvent::Connected { ref account } if account == "b"));
+        assert!(matches!(third, BackendEvent::Connected { ref account } if account == "c"));
+    }
+
+    /// With the UI gone (receiver dropped), `emit` returns at
+    /// once instead of blocking on a channel nobody will drain:
+    /// a closed bounded channel fails its sends immediately.
+    #[test]
+    fn event_sink_emit_returns_at_once_when_the_ui_is_gone() {
+        let (tx, rx) = std::sync::mpsc::sync_channel::<BackendEvent>(1);
+        let sink = EventSink { tx, wake: no_wake() };
+        drop(rx);
+        // Would hang the test if a closed channel blocked.
+        sink.emit(BackendEvent::Connected { account: "a".to_owned() });
     }
 
     #[test]

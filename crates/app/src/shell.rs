@@ -117,11 +117,7 @@ impl App {
                     ui.add_space(14.0);
                     let rail_labels = [
                         (Screen::Chats, crate::icons::Icon::Chat, crate::i18n::t("nav.chats")),
-                        (
-                            Screen::Calls,
-                            crate::icons::Icon::Phone,
-                            crate::i18n::t("nav.calls.entries"),
-                        ),
+                        (Screen::Calls, crate::icons::Icon::Phone, crate::i18n::t("nav.calls")),
                         (
                             Screen::Channels,
                             crate::icons::Icon::Megaphone,

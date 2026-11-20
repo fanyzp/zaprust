@@ -211,7 +211,7 @@ impl App {
                         back = true;
                     }
                     ui.label(
-                        RichText::new(crate::i18n::t("nav.calls.entries"))
+                        RichText::new(crate::i18n::t("nav.calls"))
                             .font(crate::theme::semibold(17.0))
                             .color(rgb(t.text_primary)),
                     );

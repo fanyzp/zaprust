@@ -347,7 +347,13 @@ pub(super) fn translate_message(ctx: &MessageContext) -> Option<(LiveChat, LiveM
         }
     }
     if let LiveMessageKind::Media { caption, .. } = &msg.kind {
-        if !caption.is_empty() && msg.body == "[non-text message]" {
+        // A view-once caption is part of the sealed payload: it
+        // stays on the kind (the viewer shows it with the media)
+        // but is never promoted to the body, where previews,
+        // notifications and the archive would pick it up as
+        // ordinary text. The body keeps the generic non-text
+        // marker those consumers already handle.
+        if !view_once && !caption.is_empty() && msg.body == "[non-text message]" {
             msg.body = caption.clone();
         }
     }

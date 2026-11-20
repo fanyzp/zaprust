@@ -403,6 +403,21 @@ pub(crate) fn to_message_with_flags(live: &LiveMessage, flags: i64) -> Message {
     }
 }
 
+/// The text a live message may contribute to glanceable
+/// surfaces: the chat-list preview and the notification body.
+/// A view-once message's caption is part of its sealed payload
+/// (shown only with the media itself, in the viewer), so it
+/// contributes only the placeholder its bubble shows, never
+/// the caption the backend carried on the body. Mirrors
+/// [`Message::preview_text`] for the converted mirror messages.
+fn glanceable_text(live: &LiveMessage) -> String {
+    if live.view_once {
+        core::model::VIEW_ONCE_PREVIEW.to_owned()
+    } else {
+        live.body.clone()
+    }
+}
+
 /// What a live start may do about its database key.
 enum KeyDecision {
     /// Start under this key.
@@ -1691,7 +1706,7 @@ impl crate::state::App {
         if let Some(chat) = self.chats.iter_mut().find(|c| c.id == chat_id) {
             match &last {
                 Some((ts, m)) => {
-                    chat.preview = m.body.clone();
+                    chat.preview = m.preview_text();
                     chat.time = fmt_time(*ts);
                 }
                 None => {
@@ -1825,7 +1840,7 @@ impl crate::state::App {
                 } else {
                     LiveChatKind::Dm
                 },
-                preview: live.body.clone(),
+                preview: glanceable_text(live),
                 preview_sender: None,
                 timestamp: live.timestamp,
                 unread: 0,
@@ -1869,12 +1884,17 @@ impl crate::state::App {
                     kind: chat.kind,
                     muted: chat.muted,
                     sender: live.sender.clone(),
-                    body: live.body.clone(),
+                    // The queued body is the only text the popup
+                    // planner can ever show, so a view-once
+                    // message queues its placeholder here: its
+                    // caption cannot reach a popup (or the lock
+                    // screen) whatever the preview toggle says.
+                    body: glanceable_text(live),
                 });
             }
         }
         if let Some(chat) = self.chats.iter_mut().find(|c| c.id == chat_id) {
-            chat.preview = live.body.clone();
+            chat.preview = glanceable_text(live);
             chat.time = fmt_time(live.timestamp);
             // Snippet anatomy for the row: ticks when the latest
             // message is ours, a media label when it is not text.
@@ -2386,6 +2406,111 @@ mod burst_drain_tests {
         assert_eq!(preview.title, "Example Page");
         assert_eq!(preview.description, "A page about examples");
         assert_eq!(preview.url, "https://example.com/page");
+    }
+
+    /// Builds a view-once photo upsert whose body is its
+    /// caption, the way the backend delivered it before the D2
+    /// fix taught it not to promote the caption. The app must
+    /// stay safe whatever body a view-once message carries.
+    fn view_once_photo(id: &str, caption: &str, ts: i64) -> LiveMessage {
+        let mut live =
+            LiveMessage::text(id, CHAT_JID, Some("Sender".to_owned()), caption, ts, false);
+        live.kind = backend::LiveMessageKind::Media {
+            media: backend::MediaKind::Photo,
+            caption: caption.to_owned(),
+            seconds: 0,
+            size_bytes: 42_000,
+        };
+        live.view_once = true;
+        live
+    }
+
+    /// Privacy finding D2: a view-once message's caption is part
+    /// of its sealed payload and must not reach the chat-list
+    /// preview, a notification popup (the lock screen), or the
+    /// archive. The preview and the popup body carry only the
+    /// generic placeholder; the archive row keeps the kind and
+    /// the view-once flag but no caption.
+    #[test]
+    fn view_once_caption_stays_out_of_preview_popups_and_archive() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        tx.send(BackendEvent::MessageUpsert(view_once_photo("vo-1", "a secret caption", BASE_TS)))
+            .unwrap();
+        drain_all(&mut app, &ctx);
+        let chat_id = jid_id(CHAT_JID);
+        let chat = app.chats.iter().find(|c| c.id == chat_id).unwrap();
+        assert_eq!(chat.preview, core::model::VIEW_ONCE_PREVIEW, "the preview is the placeholder");
+        assert!(!chat.preview.contains("secret"), "the caption must not be the preview");
+
+        // The popup plan with the preview toggle on and off: the
+        // caption appears in neither. On shows the placeholder,
+        // off the generic notice.
+        let on = crate::notify::NotifySettings {
+            messages: true,
+            groups: true,
+            sound: false,
+            preview: true,
+        };
+        let popups = crate::notify::plan_popups(on, &app.pending_notifications, None);
+        assert_eq!(popups.len(), 1, "one popup for the one new message");
+        assert_eq!(popups[0].1, core::model::VIEW_ONCE_PREVIEW);
+        assert!(
+            !popups[0].0.contains("secret") && !popups[0].1.contains("secret"),
+            "the caption must not reach the popup: {popups:?}"
+        );
+        let off = crate::notify::NotifySettings { preview: false, ..on };
+        let popups = crate::notify::plan_popups(off, &app.pending_notifications, None);
+        assert_eq!(popups.len(), 1);
+        assert_eq!(popups[0].1, "New message");
+
+        // The archive row: kind + flag survive, the caption does not.
+        let session = app.live.as_ref().unwrap();
+        let stored = session.store.as_ref().unwrap().messages(CHAT_JID).unwrap();
+        let row = &stored.iter().find(|(m, _)| m.id == "vo-1").unwrap().0;
+        assert_eq!(row.body, "", "the archived body must not be the caption");
+        assert!(row.view_once, "the view-once flag survives archiving");
+        match &row.kind {
+            backend::LiveMessageKind::Media { caption, .. } => {
+                assert_eq!(caption, "", "the archived kind must not carry the caption");
+            }
+            other => panic!("expected the media kind to survive, got {other:?}"),
+        }
+    }
+
+    /// The removal-refresh path (delete-for-me, clear, expiry)
+    /// recomputes the preview from the mirror: falling back to
+    /// a view-once message must yield its placeholder, not the
+    /// caption its mirror body still carries for the viewer,
+    /// and the refreshed preview is written through to the
+    /// archive row.
+    #[test]
+    fn preview_falls_back_to_the_view_once_placeholder() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        let chat_id = jid_id(CHAT_JID);
+        tx.send(BackendEvent::MessageUpsert(view_once_photo("vo-1", "a secret caption", BASE_TS)))
+            .unwrap();
+        tx.send(incoming("m2", BASE_TS + 10)).unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(
+            app.chats.iter().find(|c| c.id == chat_id).unwrap().preview,
+            "message m2",
+            "the newer text message previews as itself"
+        );
+        tx.send(BackendEvent::MessageDeletedForMe {
+            chat_jid: CHAT_JID.to_owned(),
+            message_id: "m2".to_owned(),
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        let chat = app.chats.iter().find(|c| c.id == chat_id).unwrap();
+        assert_eq!(chat.preview, core::model::VIEW_ONCE_PREVIEW, "the fallback is the placeholder");
+        let session = app.live.as_ref().unwrap();
+        let stored = session.store.as_ref().unwrap().chats().unwrap();
+        assert_eq!(
+            stored.iter().find(|c| c.jid == CHAT_JID).unwrap().preview,
+            core::model::VIEW_ONCE_PREVIEW,
+            "and the archive row follows"
+        );
     }
 
     /// The audit's freeze scenario, shrunk: a 600-message history

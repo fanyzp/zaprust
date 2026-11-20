@@ -292,6 +292,22 @@ impl Message {
         )
     }
 
+    /// The text this message contributes to glanceable surfaces
+    /// (the chat-list preview, a starred row's snippet): its
+    /// body, except for view-once media, which contributes only
+    /// [`VIEW_ONCE_PREVIEW`]. The caption of a view-once message
+    /// is part of its sealed payload: the bubble hides it and
+    /// the viewer shows it only with the media itself, so no
+    /// glanceable surface may carry it either.
+    #[must_use]
+    pub fn preview_text(&self) -> String {
+        if self.is_view_once() {
+            VIEW_ONCE_PREVIEW.to_owned()
+        } else {
+            self.body.clone()
+        }
+    }
+
     /// The day-separator label for this message: its stored day,
     /// or "Today" when no day was recorded.
     #[must_use]
@@ -315,6 +331,14 @@ impl Message {
 /// seconds: off, 24 hours, 7 days, 90 days. These are the exact
 /// values the protocol carries.
 pub const EPHEMERAL_OPTIONS: [u32; 4] = [0, 86_400, 604_800, 7_776_000];
+
+/// The only text a view-once message may contribute to
+/// glanceable surfaces (chat-list previews, notification
+/// bodies, starred rows): the placeholder its bubble shows.
+/// A view-once caption is part of the sealed payload and is
+/// displayed solely with the media itself, in the viewer, so
+/// no other surface may ever carry it.
+pub const VIEW_ONCE_PREVIEW: &str = "View once";
 
 /// Ids of the messages in `messages` whose disappearing timer has
 /// run out at `now` (unix seconds). Pure: the caller supplies the
@@ -1219,6 +1243,32 @@ mod tests {
         timed.expires_at = 1_000;
         assert!(!timed.is_view_once());
         assert!(!Message::theirs(5, "Sarah", "hello", "10:04").is_view_once());
+    }
+
+    #[test]
+    fn preview_text_never_carries_a_view_once_caption() {
+        // The mirror body of a media message is its caption; a
+        // view-once message must still contribute only the
+        // placeholder to glanceable surfaces (privacy finding D2).
+        let mut vo_photo = Message::theirs(1, "Sarah", "launch night setup", "10:00");
+        vo_photo.kind =
+            MessageKind::Image { caption: "launch night setup".to_owned(), view_once: true };
+        assert_eq!(vo_photo.preview_text(), VIEW_ONCE_PREVIEW);
+        let mut vo_video = Message::theirs(2, "Sarah", "watch this once", "10:01");
+        vo_video.kind =
+            MessageKind::Video { caption: "watch this once".to_owned(), view_once: true, secs: 4 };
+        assert_eq!(vo_video.preview_text(), VIEW_ONCE_PREVIEW);
+        // Ordinary media keeps its caption as the preview text.
+        let mut photo = Message::theirs(3, "Sarah", "yesterday's hike", "10:02");
+        photo.kind =
+            MessageKind::Image { caption: "yesterday's hike".to_owned(), view_once: false };
+        assert_eq!(photo.preview_text(), "yesterday's hike");
+        // A disappearing text message is not view-once: its body
+        // previews as usual until it expires.
+        let mut timed = Message::theirs(4, "Sarah", "gone soon", "10:03");
+        timed.expires_at = 1_000;
+        assert_eq!(timed.preview_text(), "gone soon");
+        assert_eq!(Message::theirs(5, "Sarah", "hello", "10:04").preview_text(), "hello");
     }
 
     #[test]

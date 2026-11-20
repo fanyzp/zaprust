@@ -561,7 +561,7 @@ impl App {
             self.conversation.push(copy);
         } else if let Some(chat) = self.chats.iter_mut().find(|c| c.id == target_chat) {
             chat.messages.push(copy);
-            chat.preview = msg.body.clone();
+            chat.preview = msg.preview_text();
         }
         self.notice = Some("Message forwarded.".to_owned());
     }

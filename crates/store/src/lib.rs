@@ -158,6 +158,12 @@ pub const SCHEMA_VERSION: i64 = 8;
 /// retries on the next open.
 const FREELIST_PURGED_KEY: &str = "freelist_purged";
 
+/// `store_meta` key recording that the one-time view-once
+/// caption scrub has run for this archive. Same discipline as
+/// [`FREELIST_PURGED_KEY`]: exactly once per archive, flag
+/// written only after the scrub completes.
+const VIEW_ONCE_CAPTIONS_SCRUBBED_KEY: &str = "view_once_captions_scrubbed";
+
 /// Message flag bit 1 was the retired AI-generated marker; the
 /// bit stays unassigned so existing archives keep their meaning.
 /// Message flag bit: the sender deleted this message for everyone
@@ -278,6 +284,7 @@ impl Store {
         let store = Self { conn };
         store.migrate()?;
         store.purge_freelist_once()?;
+        store.scrub_view_once_captions_once()?;
         Ok(store)
     }
 
@@ -305,6 +312,116 @@ impl Store {
         self.conn.execute(
             "INSERT INTO store_meta (key, value) VALUES (?1, '1')",
             params![FREELIST_PURGED_KEY],
+        )?;
+        Ok(())
+    }
+
+    /// The one-time scrub of view-once captions archived by
+    /// builds that still stored them: those builds wrote the
+    /// caption into the message row's body and kind payload, so
+    /// it survived restarts indefinitely, defeating the
+    /// sender's view-once intent. The rows are identifiable
+    /// (the view-once flag is part of the stored data), so the
+    /// scrub empties body and kind caption on exactly those
+    /// rows, and recomputes the preview of every chat whose
+    /// newest message is view-once: under the old builds that
+    /// preview was the caption itself. `secure_delete` zeroes
+    /// the freed pages as the rows are rewritten, and the WAL
+    /// is truncated afterwards. Gated on the
+    /// [`VIEW_ONCE_CAPTIONS_SCRUBBED_KEY`] flag, written after
+    /// the scrub completes; the scrub is idempotent, so a crash
+    /// mid-scrub simply retries on the next open.
+    fn scrub_view_once_captions_once(&self) -> Result<(), StoreError> {
+        let done: bool = self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM store_meta WHERE key = ?1)",
+            params![VIEW_ONCE_CAPTIONS_SCRUBBED_KEY],
+            |row| row.get(0),
+        )?;
+        if done {
+            return Ok(());
+        }
+        // Archives converge from states the ladder itself did
+        // not produce (see the migration steps): a hand-built or
+        // partial file can lack the messages table entirely, in
+        // which case there is nothing to scrub.
+        let has_messages: bool = self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'messages')",
+            [],
+            |row| row.get(0),
+        )?;
+        if !has_messages {
+            self.conn.execute(
+                "INSERT INTO store_meta (key, value) VALUES (?1, '1')",
+                params![VIEW_ONCE_CAPTIONS_SCRUBBED_KEY],
+            )?;
+            return Ok(());
+        }
+        let rows: Vec<(String, String, i64, String, Option<String>)> = {
+            let mut stmt =
+                self.conn.prepare("SELECT chat_jid, id, timestamp, body, data FROM messages")?;
+            let mapped = stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                ))
+            })?;
+            mapped.collect::<Result<_, _>>()?
+        };
+        // The newest message of each chat, in the same order
+        // `messages` reads them (timestamp, then id): the chat
+        // preview derives from it, so it decides whether the
+        // stored preview can be a leaked caption.
+        let mut newest: std::collections::HashMap<&str, (i64, &str, bool)> =
+            std::collections::HashMap::new();
+        let mut scrubbed_any = false;
+        let tx = self.conn.unchecked_transaction()?;
+        for (chat_jid, id, timestamp, body, data_text) in &rows {
+            let data: MessageData =
+                data_text.as_deref().and_then(|t| serde_json::from_str(t).ok()).unwrap_or_default();
+            let entry = newest.entry(chat_jid.as_str()).or_insert((*timestamp, id.as_str(), false));
+            if (*timestamp, id.as_str()) >= (entry.0, entry.1) {
+                *entry = (*timestamp, id.as_str(), data.view_once);
+            }
+            if !data.view_once {
+                continue;
+            }
+            let mut data = data;
+            let mut changed = !body.is_empty();
+            if let Some(backend::LiveMessageKind::Media { caption, .. }) = &mut data.kind {
+                if !caption.is_empty() {
+                    caption.clear();
+                    changed = true;
+                }
+            }
+            if changed {
+                let data_json = serde_json::to_string(&data).map_err(|e| {
+                    StoreError::Sqlite(rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
+                })?;
+                tx.execute(
+                    "UPDATE messages SET body = '', data = ?3 WHERE chat_jid = ?1 AND id = ?2",
+                    params![chat_jid, id, data_json],
+                )?;
+                scrubbed_any = true;
+            }
+        }
+        for (chat_jid, (_, _, view_once)) in &newest {
+            if *view_once {
+                tx.execute(
+                    "UPDATE chats SET preview = ?2 WHERE jid = ?1",
+                    params![chat_jid, core::model::VIEW_ONCE_PREVIEW],
+                )?;
+            }
+        }
+        tx.commit()?;
+        if scrubbed_any {
+            self.checkpoint_truncate()?;
+        }
+        self.conn.execute(
+            "INSERT INTO store_meta (key, value) VALUES (?1, '1')",
+            params![VIEW_ONCE_CAPTIONS_SCRUBBED_KEY],
         )?;
         Ok(())
     }
@@ -571,11 +688,31 @@ impl Store {
     /// [`Store::upsert_messages`], against any connection handle
     /// (the store's own, or a transaction borrowing it).
     fn write_message(conn: &Connection, msg: &LiveMessage, flags: i64) -> Result<(), StoreError> {
+        // A view-once message's caption is part of its sealed
+        // payload: the live mirror keeps it (the viewer shows it
+        // with the media itself), but the archive must not. A
+        // view-once row is stored with an empty body and an
+        // empty kind caption; the kind and the view-once flag
+        // survive, so after a restart the message still renders
+        // as the view-once placeholder, with no caption left to
+        // leak. Rows written before this rule are scrubbed by
+        // the one-time pass in `init` (they are identifiable:
+        // the flag is part of the stored data).
+        let stored_kind = match &msg.kind {
+            backend::LiveMessageKind::Text => None,
+            backend::LiveMessageKind::Media { media, seconds, size_bytes, .. } if msg.view_once => {
+                Some(backend::LiveMessageKind::Media {
+                    media: *media,
+                    caption: String::new(),
+                    seconds: *seconds,
+                    size_bytes: *size_bytes,
+                })
+            }
+            other => Some(other.clone()),
+        };
+        let stored_body = if msg.view_once { "" } else { msg.body.as_str() };
         let data = MessageData {
-            kind: match &msg.kind {
-                backend::LiveMessageKind::Text => None,
-                other => Some(other.clone()),
-            },
+            kind: stored_kind,
             reactions: msg.reactions.clone(),
             my_reaction: msg.my_reaction.clone(),
             quoted_sender: msg.quoted_sender.clone(),
@@ -603,7 +740,7 @@ impl Store {
                 msg.chat_jid,
                 msg.id,
                 msg.sender,
-                msg.body,
+                stored_body,
                 msg.timestamp,
                 i64::from(msg.from_me),
                 data_json,
@@ -1291,6 +1428,154 @@ mod tests {
             db_files_contain(&path, new_marker),
             "the one-time purge must not repeat on the second open"
         );
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn view_once_captions_are_not_archived() {
+        // Privacy finding D2: a view-once message's caption is
+        // part of its sealed payload. The archive keeps the row
+        // (kind + view-once flag, so the placeholder renders
+        // after a restart) but never the caption, in neither the
+        // body column nor the kind payload.
+        let store = Store::open_in_memory().unwrap();
+        let chat = scripted_chats()[0].clone();
+        store.upsert_chat(&chat).unwrap();
+        let mut vo = LiveMessage::text("vo-1", &chat.jid, None, "secret caption", 100, false);
+        vo.kind = backend::LiveMessageKind::Media {
+            media: backend::MediaKind::Photo,
+            caption: "secret caption".to_owned(),
+            seconds: 0,
+            size_bytes: 10,
+        };
+        vo.view_once = true;
+        store.upsert_message(&vo, 0).unwrap();
+        let mut photo = LiveMessage::text("ph-1", &chat.jid, None, "kept caption", 101, false);
+        photo.kind = backend::LiveMessageKind::Media {
+            media: backend::MediaKind::Photo,
+            caption: "kept caption".to_owned(),
+            seconds: 0,
+            size_bytes: 10,
+        };
+        store.upsert_message(&photo, 0).unwrap();
+
+        let msgs = store.messages(&chat.jid).unwrap();
+        let vo_back = &msgs.iter().find(|(m, _)| m.id == "vo-1").unwrap().0;
+        assert_eq!(vo_back.body, "", "the archived body must not be the caption");
+        assert!(vo_back.view_once, "the view-once flag survives the round trip");
+        match &vo_back.kind {
+            backend::LiveMessageKind::Media { caption, .. } => {
+                assert_eq!(caption, "", "the archived kind must not carry the caption");
+            }
+            other => panic!("expected the media kind to survive, got {other:?}"),
+        }
+        let photo_back = &msgs.iter().find(|(m, _)| m.id == "ph-1").unwrap().0;
+        assert_eq!(photo_back.body, "kept caption", "a normal photo's caption round-trips");
+        match &photo_back.kind {
+            backend::LiveMessageKind::Media { caption, .. } => {
+                assert_eq!(caption, "kept caption");
+            }
+            other => panic!("expected the media kind to survive, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn one_time_scrub_removes_archived_view_once_captions() {
+        // Archives written before the D2 fix hold view-once
+        // captions in the body column, the kind payload, and
+        // the chat preview. The rows are identifiable (the
+        // view-once flag is in the stored data), so the first
+        // open under the fixed build scrubs exactly those rows
+        // and recomputes the affected previews, exactly once.
+        let path = temp_db_path("vo-scrub");
+        let chat = scripted_chats()[0].clone();
+        let caption = "VO-LEGACY-caption-9f31c";
+        let late_caption = "VO-LATE-caption-51b8e";
+        let media_data = |caption: &str, view_once: bool| {
+            serde_json::to_string(&MessageData {
+                kind: Some(backend::LiveMessageKind::Media {
+                    media: backend::MediaKind::Photo,
+                    caption: caption.to_owned(),
+                    seconds: 0,
+                    size_bytes: 10,
+                }),
+                view_once,
+                ..Default::default()
+            })
+            .unwrap()
+        };
+        let insert_legacy = |conn: &Connection, id: &str, body: &str, data: &str, ts: i64| {
+            conn.execute(
+                "INSERT INTO messages (chat_jid, id, sender, body, timestamp, from_me, data, flags, expires_at)
+                 VALUES (?1, ?2, NULL, ?3, ?4, 0, ?5, 0, 0)",
+                params![chat.jid, id, body, ts, data],
+            )
+            .unwrap();
+        };
+        // Build the pre-fix archive by hand: schema migrated,
+        // rows written the way the old builds wrote them.
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch("PRAGMA journal_mode = WAL;").unwrap();
+            let store = Store { conn };
+            store.migrate().unwrap();
+            let mut legacy_chat = chat.clone();
+            legacy_chat.preview = caption.to_owned();
+            store.upsert_chat(&legacy_chat).unwrap();
+            insert_legacy(
+                &store.conn,
+                "photo-old",
+                "a normal caption",
+                &media_data("a normal caption", false),
+                200,
+            );
+            insert_legacy(&store.conn, "vo-old", caption, &media_data(caption, true), 300);
+            drop(store);
+        }
+
+        // First open under the fixed build: the scrub runs.
+        {
+            let store = Store::init(Connection::open(&path).unwrap()).unwrap();
+            let msgs = store.messages(&chat.jid).unwrap();
+            let vo_back = &msgs.iter().find(|(m, _)| m.id == "vo-old").unwrap().0;
+            assert_eq!(vo_back.body, "", "the legacy caption leaves the body column");
+            assert!(vo_back.view_once);
+            match &vo_back.kind {
+                backend::LiveMessageKind::Media { caption: stored, .. } => {
+                    assert_eq!(stored, "", "the legacy caption leaves the kind payload");
+                }
+                other => panic!("expected the media kind to survive, got {other:?}"),
+            }
+            let photo_back = &msgs.iter().find(|(m, _)| m.id == "photo-old").unwrap().0;
+            assert_eq!(photo_back.body, "a normal caption", "normal rows are untouched");
+            let chats = store.chats().unwrap();
+            let row = chats.iter().find(|c| c.jid == chat.jid).unwrap();
+            assert_eq!(
+                row.preview,
+                core::model::VIEW_ONCE_PREVIEW,
+                "the preview that was the caption becomes the placeholder"
+            );
+        }
+        let conn = Connection::open(&path).unwrap();
+        let flag: Option<String> = conn
+            .query_row(
+                "SELECT value FROM store_meta WHERE key = ?1",
+                params![VIEW_ONCE_CAPTIONS_SCRUBBED_KEY],
+                |row| row.get(0),
+            )
+            .ok();
+        assert_eq!(flag.as_deref(), Some("1"), "the scrub records itself in store_meta");
+        // A legacy-style row written after the scrub (by hand,
+        // standing in for any later writer) must survive the
+        // next open: the scrub is one-time, not per-startup.
+        insert_legacy(&conn, "vo-late", late_caption, &media_data(late_caption, true), 400);
+        drop(conn);
+        {
+            let store = Store::init(Connection::open(&path).unwrap()).unwrap();
+            let msgs = store.messages(&chat.jid).unwrap();
+            let late = &msgs.iter().find(|(m, _)| m.id == "vo-late").unwrap().0;
+            assert_eq!(late.body, late_caption, "the one-time scrub must not repeat");
+        }
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 

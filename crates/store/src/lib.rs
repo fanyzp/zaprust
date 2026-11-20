@@ -470,6 +470,23 @@ impl Store {
         Ok(changed > 0)
     }
 
+    /// Deletes one stored chat and all its messages. Returns
+    /// whether a chat row existed. A chat deleted on another
+    /// device leaves the archive whole: the chat row and its
+    /// message rows go in one transaction, so the archive never
+    /// holds a chat without its messages or messages without
+    /// their chat.
+    ///
+    /// # Errors
+    /// [`StoreError`] on SQLite failures.
+    pub fn delete_chat(&self, chat_jid: &str) -> Result<bool, StoreError> {
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute("DELETE FROM messages WHERE chat_jid = ?1", params![chat_jid])?;
+        let changed = tx.execute("DELETE FROM chats WHERE jid = ?1", params![chat_jid])?;
+        tx.commit()?;
+        Ok(changed > 0)
+    }
+
     /// Updates ONLY the flags bitfield of one stored message.
     /// Returns whether a row existed. This is the only correct way
     /// to star/pin/flag a message after the fact: a full re-upsert
@@ -748,6 +765,34 @@ mod tests {
         assert_eq!(loaded.body, msg.body);
         // Missing rows report false instead of fabricating one.
         assert!(!store.set_message_flags(&msg.chat_jid, "nope", 0).unwrap());
+    }
+
+    #[test]
+    fn delete_chat_removes_the_chat_and_its_messages_only() {
+        let store = Store::open_in_memory().unwrap();
+        for chat in scripted_chats() {
+            store.upsert_chat(&chat).unwrap();
+        }
+        for msg in scripted_messages() {
+            store.upsert_message(&msg, 0).unwrap();
+        }
+        // A message in a second chat, to prove the deletion is
+        // scoped to the one chat (the scripted messages all live
+        // in the first chat).
+        let kept = scripted_chats()[1].clone();
+        let mut kept_msg = scripted_messages()[0].clone();
+        kept_msg.chat_jid = kept.jid.clone();
+        store.upsert_message(&kept_msg, 0).unwrap();
+        let gone = scripted_chats()[0].clone();
+        assert!(store.delete_chat(&gone.jid).unwrap(), "an existing chat reports true");
+        assert!(store.chats().unwrap().iter().all(|c| c.jid != gone.jid), "the chat row is gone");
+        assert!(store.messages(&gone.jid).unwrap().is_empty(), "its messages go with it");
+        // The other chats and their messages are untouched.
+        assert_eq!(store.chats().unwrap().len(), 2);
+        assert_eq!(store.messages(&kept.jid).unwrap().len(), 1);
+        // Deleting a chat that is not there reports false.
+        assert!(!store.delete_chat(&gone.jid).unwrap());
+        assert!(!store.delete_chat("nobody@s.whatsapp.net").unwrap());
     }
 
     #[test]

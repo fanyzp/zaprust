@@ -176,6 +176,46 @@ pub(super) fn translate_event(event: &Event, sink: &EventSink) {
                 archived: archive_action_state(&update.action),
             });
         }
+        Event::StarUpdate(update) => {
+            // App-state sync reporting the account's star state
+            // for one message: a star or unstar from another
+            // device, or the state as a full sync delivers it.
+            // This is the only wire path that knows star; message
+            // arrivals do not carry it.
+            sink.emit(BackendEvent::StarChanged {
+                chat_jid: update.chat_jid.to_string(),
+                message_id: update.message_id.clone(),
+                starred: star_action_state(&update.action),
+            });
+        }
+        Event::MarkChatAsReadUpdate(update) => {
+            // App-state sync reporting the account's read state
+            // for one chat: marked read or unread from another
+            // device, or the state as a full sync delivers it.
+            // The device that made the change already sent its
+            // read receipts (this sync action is distinct from
+            // the receipt IQ), so the app adopts the state and
+            // sends nothing.
+            let (read, unread_count) = mark_read_action_state(&update.action);
+            sink.emit(BackendEvent::ChatReadChanged {
+                chat_jid: update.jid.to_string(),
+                read,
+                unread_count,
+            });
+        }
+        Event::DeleteChatUpdate(update) => {
+            // App-state sync reporting a chat deleted on
+            // another device. The action carries only a message
+            // range (the messages the deletion spans, on the
+            // phone the whole conversation) and the event adds a
+            // delete-media flag; neither crosses the boundary.
+            // The app has no partial-delete concept (clearing a
+            // chat is a separate sync action), so a deletion here
+            // removes the chat and its archive whole, and the app
+            // does not track downloaded media per chat, so there
+            // is nothing for the media flag to delete.
+            sink.emit(BackendEvent::ChatDeleted { chat_jid: update.jid.to_string() });
+        }
         Event::ChatPresence(update) => {
             use whatsapp_rust::wacore::types::presence::ChatActivity;
             sink.emit(BackendEvent::TypingReceived {
@@ -502,6 +542,35 @@ pub(super) fn archive_action_state(
     action.archived == Some(true)
 }
 
+/// The star state of a sync `StarAction`. As with pin, only
+/// an explicit `true` stars; `false` and an absent flag both
+/// report unstarred.
+pub(super) fn star_action_state(
+    action: &whatsapp_rust::prelude::wa::sync_action_value::StarAction,
+) -> bool {
+    action.starred == Some(true)
+}
+
+/// The read state of a sync `MarkChatAsReadAction`, as
+/// `(read, unread_count)`. Only an explicit `read: true` marks
+/// the chat read, and then the count is 0. Anything else is the
+/// mark-as-unread form, whose count is the number of messages
+/// the action's message range lists as unread (0 when the
+/// range is absent or lists none); how a zero count renders as
+/// a badge is the app's decision, not the wire's.
+pub(super) fn mark_read_action_state(
+    action: &whatsapp_rust::prelude::wa::sync_action_value::MarkChatAsReadAction,
+) -> (bool, u32) {
+    if action.read == Some(true) {
+        return (true, 0);
+    }
+    let listed = action
+        .message_range
+        .as_option()
+        .map_or(0, |range| u32::try_from(range.messages.len()).unwrap_or(u32::MAX));
+    (false, listed)
+}
+
 /// Wall-clock milliseconds since the Unix epoch (0 if the
 /// system clock is set before it).
 fn now_millis() -> i64 {
@@ -588,5 +657,55 @@ mod pin_archive_action_tests {
         assert!(archive_action_state(&archive(Some(true))));
         assert!(!archive_action_state(&archive(Some(false))));
         assert!(!archive_action_state(&archive(None)));
+    }
+}
+
+#[cfg(test)]
+mod star_mark_read_action_tests {
+    use super::{mark_read_action_state, star_action_state};
+    use whatsapp_rust::prelude::wa::sync_action_value::{
+        MarkChatAsReadAction, StarAction, SyncActionMessage, SyncActionMessageRange,
+    };
+
+    fn star(starred: Option<bool>) -> StarAction {
+        let mut action = StarAction::default();
+        action.starred = starred;
+        action
+    }
+
+    fn mark_read(read: Option<bool>, range_messages: Option<usize>) -> MarkChatAsReadAction {
+        let mut action = MarkChatAsReadAction::default();
+        action.read = read;
+        if let Some(count) = range_messages {
+            let mut range = SyncActionMessageRange::default();
+            range.messages = (0..count).map(|_| SyncActionMessage::default()).collect();
+            action.message_range = Some(range).into();
+        }
+        action
+    }
+
+    #[test]
+    fn only_an_explicit_true_stars() {
+        assert!(star_action_state(&star(Some(true))));
+        assert!(!star_action_state(&star(Some(false))));
+        assert!(!star_action_state(&star(None)));
+    }
+
+    #[test]
+    fn explicit_true_marks_read_with_no_unread() {
+        assert_eq!(mark_read_action_state(&mark_read(Some(true), None)), (true, 0));
+        // A range riding on a read mark changes nothing: the
+        // chat is read, the count is 0.
+        assert_eq!(mark_read_action_state(&mark_read(Some(true), Some(4))), (true, 0));
+    }
+
+    #[test]
+    fn mark_unread_counts_the_range_messages() {
+        assert_eq!(mark_read_action_state(&mark_read(Some(false), Some(3))), (false, 3));
+        // No range, or an empty one, lists no unread messages;
+        // the badge floor is the app's decision, not the wire's.
+        assert_eq!(mark_read_action_state(&mark_read(Some(false), None)), (false, 0));
+        assert_eq!(mark_read_action_state(&mark_read(Some(false), Some(0))), (false, 0));
+        assert_eq!(mark_read_action_state(&mark_read(None, Some(2))), (false, 2));
     }
 }

@@ -80,6 +80,19 @@ impl App {
             BackendEvent::ArchiveChanged { chat_jid, archived } => {
                 ("message", format!("ArchiveChanged in {chat_jid}: archived={archived}"), None)
             }
+            BackendEvent::StarChanged { chat_jid, message_id, starred } => (
+                "message",
+                format!("StarChanged in {chat_jid}: {message_id} starred={starred}"),
+                None,
+            ),
+            BackendEvent::ChatReadChanged { chat_jid, read, unread_count } => (
+                "message",
+                format!("ChatReadChanged in {chat_jid}: read={read} unread={unread_count}"),
+                None,
+            ),
+            BackendEvent::ChatDeleted { chat_jid } => {
+                ("message", format!("ChatDeleted {chat_jid}"), None)
+            }
             BackendEvent::PrivacyState(_) => ("backend", "PrivacyState".to_owned(), None),
             BackendEvent::Crashed { summary, restarted } => {
                 ("backend", format!("Crashed (restarted={restarted}): {summary}"), None)

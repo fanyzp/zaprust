@@ -927,6 +927,48 @@ pub enum BackendEvent {
         /// Whether the chat is archived now.
         archived: bool,
     },
+    /// A message's star state changed on the server: starred or
+    /// unstarred from another device, or the account state as a
+    /// full sync reports it. This is the authoritative path for
+    /// star changes made elsewhere; a star set from this client
+    /// goes out as [`BackendCommand::StarMessage`] and applies
+    /// locally at once, without waiting for this event.
+    StarChanged {
+        /// Chat JID the message belongs to.
+        chat_jid: String,
+        /// Protocol ID of the message.
+        message_id: String,
+        /// Whether the message is starred now.
+        starred: bool,
+    },
+    /// A chat's read state changed on the server: marked read or
+    /// marked unread from another device, or the account state
+    /// as a full sync reports it. This is state adoption only:
+    /// the device that made the change already sent any read
+    /// receipts, so the app must never answer this event with
+    /// [`BackendCommand::MarkAsRead`]. A read set from this
+    /// client goes out as that command (the receipt path) and
+    /// clears the badge locally at once.
+    ChatReadChanged {
+        /// Chat JID.
+        chat_jid: String,
+        /// Whether the chat is read now.
+        read: bool,
+        /// Unread count to adopt when `read` is false: the
+        /// number of messages the sync action's message range
+        /// lists as unread (0 when it lists none). Ignored when
+        /// `read` is true; the count is 0 then.
+        unread_count: u32,
+    },
+    /// A chat was deleted on the server (deleted on the phone).
+    /// The app removes the chat from its list, its session
+    /// mirror and its archive. There is no local counterpart:
+    /// this client has no delete-chat action of its own, so
+    /// nothing here echoes back to the backend.
+    ChatDeleted {
+        /// Chat JID.
+        chat_jid: String,
+    },
     /// Current privacy settings as fetched from the account
     /// (category → value spellings; see [`BackendCommand::SetPrivacy`]).
     PrivacyState(std::collections::BTreeMap<String, String>),

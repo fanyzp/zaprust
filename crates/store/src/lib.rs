@@ -190,6 +190,34 @@ pub struct Store {
     conn: Connection,
 }
 
+/// Runs one `ALTER TABLE ... ADD COLUMN` unless the table
+/// already has the column.
+///
+/// Migration steps must converge from states the ladder itself
+/// did not produce: a file whose `user_version` disagrees with
+/// its actual tables (a pre-versioning archive, a downgraded or
+/// hand-repaired file) would otherwise fail every launch with
+/// "duplicate column name" and never open again. The version
+/// bookkeeping stays honest: the step still records its version
+/// bump in the same transaction, it just tolerates its own
+/// effects already being present.
+fn add_column_if_missing(
+    tx: &rusqlite::Transaction<'_>,
+    table: &str,
+    column: &str,
+    ddl: &str,
+) -> Result<(), StoreError> {
+    let exists = {
+        let mut stmt = tx.prepare(&format!("PRAGMA table_info({table})"))?;
+        let names = stmt.query_map([], |row| row.get::<_, String>(1))?;
+        names.collect::<Result<Vec<String>, _>>()?
+    };
+    if !exists.iter().any(|name| name == column) {
+        tx.execute_batch(ddl)?;
+    }
+    Ok(())
+}
+
 impl Store {
     /// Opens (or creates) the encrypted archive at `path` and runs
     /// migrations. A plaintext archive left by an older build is
@@ -235,7 +263,10 @@ impl Store {
     }
 
     /// Applies migrations until the schema reaches
-    /// [`SCHEMA_VERSION`]. Idempotent.
+    /// [`SCHEMA_VERSION`]. Idempotent, and tolerant of a file
+    /// whose recorded version disagrees with its actual tables:
+    /// each step converges from any partial state instead of
+    /// failing on its own already-applied effects.
     ///
     /// # Errors
     /// [`StoreError::SchemaTooNew`] if the file is ahead of this
@@ -252,8 +283,14 @@ impl Store {
             let tx = self.conn.unchecked_transaction()?;
             match version {
                 0 => {
+                    // IF NOT EXISTS (and the per-column checks in
+                    // the ALTER steps below): a file whose
+                    // user_version disagrees with its tables, like
+                    // a pre-versioning archive that already has
+                    // them, must converge instead of failing every
+                    // launch with "table already exists".
                     tx.execute_batch(
-                        "CREATE TABLE chats (
+                        "CREATE TABLE IF NOT EXISTS chats (
                             jid TEXT PRIMARY KEY,
                             title TEXT NOT NULL,
                             kind TEXT NOT NULL,
@@ -262,7 +299,7 @@ impl Store {
                             timestamp INTEGER NOT NULL DEFAULT 0,
                             unread INTEGER NOT NULL DEFAULT 0
                         );
-                        CREATE TABLE messages (
+                        CREATE TABLE IF NOT EXISTS messages (
                             chat_jid TEXT NOT NULL,
                             id TEXT NOT NULL,
                             sender TEXT,
@@ -271,7 +308,7 @@ impl Store {
                             from_me INTEGER NOT NULL DEFAULT 0,
                             PRIMARY KEY (chat_jid, id)
                         );
-                        CREATE INDEX idx_messages_chat_time
+                        CREATE INDEX IF NOT EXISTS idx_messages_chat_time
                             ON messages (chat_jid, timestamp);",
                     )?;
                     tx.execute_batch("PRAGMA user_version = 1;")?;
@@ -280,9 +317,17 @@ impl Store {
                     // v2: rich payloads (kind/reactions/quote/preview
                     // as JSON) + a flags bitfield (AI-generated,
                     // deleted-by-sender, deleted).
-                    tx.execute_batch(
-                        "ALTER TABLE messages ADD COLUMN data TEXT;
-                         ALTER TABLE messages ADD COLUMN flags INTEGER NOT NULL DEFAULT 0;",
+                    add_column_if_missing(
+                        &tx,
+                        "messages",
+                        "data",
+                        "ALTER TABLE messages ADD COLUMN data TEXT",
+                    )?;
+                    add_column_if_missing(
+                        &tx,
+                        "messages",
+                        "flags",
+                        "ALTER TABLE messages ADD COLUMN flags INTEGER NOT NULL DEFAULT 0",
                     )?;
                     tx.execute_batch("PRAGMA user_version = 2;")?;
                 }
@@ -298,9 +343,17 @@ impl Store {
                 3 => {
                     // v4: chat list state (archived / pinned) that
                     // the chat-actions surface writes through.
-                    tx.execute_batch(
-                        "ALTER TABLE chats ADD COLUMN archived INTEGER NOT NULL DEFAULT 0;
-                         ALTER TABLE chats ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0;",
+                    add_column_if_missing(
+                        &tx,
+                        "chats",
+                        "archived",
+                        "ALTER TABLE chats ADD COLUMN archived INTEGER NOT NULL DEFAULT 0",
+                    )?;
+                    add_column_if_missing(
+                        &tx,
+                        "chats",
+                        "pinned",
+                        "ALTER TABLE chats ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0",
                     )?;
                     tx.execute_batch("PRAGMA user_version = 4;")?;
                 }
@@ -310,9 +363,17 @@ impl Store {
                     // carries the unix second at which it expires
                     // (0 = never), computed by the backend from
                     // the wire expiration.
-                    tx.execute_batch(
-                        "ALTER TABLE chats ADD COLUMN ephemeral_secs INTEGER NOT NULL DEFAULT 0;
-                         ALTER TABLE messages ADD COLUMN expires_at INTEGER NOT NULL DEFAULT 0;",
+                    add_column_if_missing(
+                        &tx,
+                        "chats",
+                        "ephemeral_secs",
+                        "ALTER TABLE chats ADD COLUMN ephemeral_secs INTEGER NOT NULL DEFAULT 0",
+                    )?;
+                    add_column_if_missing(
+                        &tx,
+                        "messages",
+                        "expires_at",
+                        "ALTER TABLE messages ADD COLUMN expires_at INTEGER NOT NULL DEFAULT 0",
                     )?;
                     tx.execute_batch("PRAGMA user_version = 5;")?;
                 }
@@ -321,8 +382,11 @@ impl Store {
                     // archive, so a muted chat stays muted across
                     // restarts (it previously lived only in the
                     // running app's memory).
-                    tx.execute_batch(
-                        "ALTER TABLE chats ADD COLUMN muted INTEGER NOT NULL DEFAULT 0;",
+                    add_column_if_missing(
+                        &tx,
+                        "chats",
+                        "muted",
+                        "ALTER TABLE chats ADD COLUMN muted INTEGER NOT NULL DEFAULT 0",
                     )?;
                     tx.execute_batch("PRAGMA user_version = 6;")?;
                 }
@@ -716,6 +780,84 @@ mod tests {
         assert_eq!(store.schema_version().unwrap(), SCHEMA_VERSION);
         store.migrate().unwrap();
         assert_eq!(store.schema_version().unwrap(), SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn migration_converges_when_version_zero_already_has_tables() {
+        // A pre-versioning archive: the v1 tables exist but
+        // user_version was never stamped, so it reads 0. The
+        // ladder must not die on "table already exists"; it adds
+        // the missing columns and reaches the current version.
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE chats (
+                jid TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                preview TEXT NOT NULL DEFAULT '',
+                preview_sender TEXT,
+                timestamp INTEGER NOT NULL DEFAULT 0,
+                unread INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE messages (
+                chat_jid TEXT NOT NULL,
+                id TEXT NOT NULL,
+                sender TEXT,
+                body TEXT NOT NULL,
+                timestamp INTEGER NOT NULL,
+                from_me INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (chat_jid, id)
+            );
+            CREATE INDEX idx_messages_chat_time ON messages (chat_jid, timestamp);
+            INSERT INTO chats (jid, title, kind) VALUES ('123@s.whatsapp.net', 'Ana', 'dm');",
+        )
+        .unwrap();
+        let store = Store { conn };
+        store.migrate().unwrap();
+        assert_eq!(store.schema_version().unwrap(), SCHEMA_VERSION);
+        // The converged schema is fully usable and the row kept.
+        store.upsert_chat(&scripted_chats()[0]).unwrap();
+        let chats = store.chats().unwrap();
+        assert!(chats.iter().any(|c| c.title == "Ana"), "pre-existing row survived: {chats:?}");
+        store.migrate().unwrap();
+    }
+
+    #[test]
+    fn migration_converges_when_a_step_was_already_applied() {
+        // Version says 3, but the v4 columns are already present
+        // (an interrupted or hand-repaired file): the v4 step
+        // must not die on "duplicate column name".
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE chats (
+                jid TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                preview TEXT NOT NULL DEFAULT '',
+                preview_sender TEXT,
+                timestamp INTEGER NOT NULL DEFAULT 0,
+                unread INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE messages (
+                chat_jid TEXT NOT NULL,
+                id TEXT NOT NULL,
+                sender TEXT,
+                body TEXT NOT NULL,
+                timestamp INTEGER NOT NULL,
+                from_me INTEGER NOT NULL DEFAULT 0,
+                data TEXT,
+                flags INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (chat_jid, id)
+            );
+            ALTER TABLE chats ADD COLUMN archived INTEGER NOT NULL DEFAULT 0;
+            ALTER TABLE chats ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0;
+            PRAGMA user_version = 3;",
+        )
+        .unwrap();
+        let store = Store { conn };
+        store.migrate().unwrap();
+        assert_eq!(store.schema_version().unwrap(), SCHEMA_VERSION);
+        store.upsert_chat(&scripted_chats()[0]).unwrap();
     }
 
     #[test]

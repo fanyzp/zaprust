@@ -31,6 +31,10 @@ fn summarize(event: &BackendEvent) -> String {
         BackendEvent::MessageRevoked { .. } => "MessageRevoked".to_owned(),
         BackendEvent::DisappearingChanged { .. } => "DisappearingChanged".to_owned(),
         BackendEvent::MuteChanged { muted, .. } => format!("MuteChanged muted={muted}"),
+        BackendEvent::PinChanged { pinned, .. } => format!("PinChanged pinned={pinned}"),
+        BackendEvent::ArchiveChanged { archived, .. } => {
+            format!("ArchiveChanged archived={archived}")
+        }
         BackendEvent::PrivacyState(_) => "PrivacyState".to_owned(),
         BackendEvent::IncomingCall { .. } => "IncomingCall".to_owned(),
         BackendEvent::CallChanged { phase, .. } => format!("CallChanged {phase:?}"),

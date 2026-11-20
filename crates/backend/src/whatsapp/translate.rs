@@ -150,6 +150,32 @@ pub(super) fn translate_event(event: &Event, sink: &EventSink) {
                 muted: mute_action_state(&update.action, now_millis()),
             });
         }
+        Event::PinUpdate(update) => {
+            // App-state sync reporting the account's pin state
+            // for one chat: a pin or unpin from another device,
+            // or the state as a full sync delivers it. This is
+            // the only wire path that knows pin; message arrivals
+            // do not carry it.
+            sink.emit(BackendEvent::PinChanged {
+                chat_jid: update.jid.to_string(),
+                pinned: pin_action_state(&update.action),
+            });
+        }
+        Event::ArchiveUpdate(update) => {
+            // App-state sync reporting the account's archive
+            // state for one chat: an archive or unarchive from
+            // another device, or the state as a full sync
+            // delivers it. This is the only wire path that knows
+            // archive; message arrivals do not carry it. The
+            // action's message range (which messages the archive
+            // spans) is not chat-list state and has no
+            // counterpart in the app's model, so only the flag
+            // crosses the boundary.
+            sink.emit(BackendEvent::ArchiveChanged {
+                chat_jid: update.jid.to_string(),
+                archived: archive_action_state(&update.action),
+            });
+        }
         Event::ChatPresence(update) => {
             use whatsapp_rust::wacore::types::presence::ChatActivity;
             sink.emit(BackendEvent::TypingReceived {
@@ -456,6 +482,26 @@ pub(super) fn mute_action_state(
     }
 }
 
+/// The pin state of a sync `PinAction`. The flag is the whole
+/// story: only an explicit `true` pins; `false` and an absent
+/// flag both report unpinned.
+pub(super) fn pin_action_state(
+    action: &whatsapp_rust::prelude::wa::sync_action_value::PinAction,
+) -> bool {
+    action.pinned == Some(true)
+}
+
+/// The archive state of a sync `ArchiveChatAction`. As with
+/// pin, only an explicit `true` archives; `false` and an absent
+/// flag both report unarchived. The action's message range is
+/// deliberately not read: it spans which messages the archive
+/// covers, not whether the chat is archived.
+pub(super) fn archive_action_state(
+    action: &whatsapp_rust::prelude::wa::sync_action_value::ArchiveChatAction,
+) -> bool {
+    action.archived == Some(true)
+}
+
 /// Wall-clock milliseconds since the Unix epoch (0 if the
 /// system clock is set before it).
 fn now_millis() -> i64 {
@@ -510,5 +556,37 @@ mod mute_action_tests {
     fn unmute_and_absent_flag_are_not_muted() {
         assert!(!mute_action_state(&action(Some(false), Some(0)), NOW_MS));
         assert!(!mute_action_state(&action(None, None), NOW_MS));
+    }
+}
+
+#[cfg(test)]
+mod pin_archive_action_tests {
+    use super::{archive_action_state, pin_action_state};
+    use whatsapp_rust::prelude::wa::sync_action_value::{ArchiveChatAction, PinAction};
+
+    fn pin(pinned: Option<bool>) -> PinAction {
+        let mut action = PinAction::default();
+        action.pinned = pinned;
+        action
+    }
+
+    fn archive(archived: Option<bool>) -> ArchiveChatAction {
+        let mut action = ArchiveChatAction::default();
+        action.archived = archived;
+        action
+    }
+
+    #[test]
+    fn only_an_explicit_true_pins() {
+        assert!(pin_action_state(&pin(Some(true))));
+        assert!(!pin_action_state(&pin(Some(false))));
+        assert!(!pin_action_state(&pin(None)));
+    }
+
+    #[test]
+    fn only_an_explicit_true_archives() {
+        assert!(archive_action_state(&archive(Some(true))));
+        assert!(!archive_action_state(&archive(Some(false))));
+        assert!(!archive_action_state(&archive(None)));
     }
 }

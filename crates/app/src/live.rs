@@ -1062,6 +1062,14 @@ impl crate::state::App {
                 let chat_id = jid_id(&chat_jid);
                 self.apply_mute_changed(chat_id, muted);
             }
+            BackendEvent::PinChanged { chat_jid, pinned } => {
+                let chat_id = jid_id(&chat_jid);
+                self.apply_pin_changed(chat_id, pinned);
+            }
+            BackendEvent::ArchiveChanged { chat_jid, archived } => {
+                let chat_id = jid_id(&chat_jid);
+                self.apply_archive_changed(chat_id, archived);
+            }
             BackendEvent::PrivacyState(map) => {
                 self.privacy_state = map;
             }
@@ -1164,6 +1172,26 @@ impl crate::state::App {
                 merged.muted = known.muted;
             }
         }
+        // Same protection for pin and archive: an arrival upsert
+        // reports `false` for both without knowing better, so it
+        // must not unpin or unarchive a chat this client knows
+        // is pinned or archived. Server-side changes have their
+        // own authoritative path (PinChanged / ArchiveChanged
+        // events); this merge only protects the stored value. An
+        // upsert that does know the state (the fake's chat-action
+        // and LeaveGroup echoes carry its full state) still
+        // lands, because the protection only ever preserves a
+        // known `true` against a reported `false`.
+        if !merged.pinned {
+            if let Some(known) = self.chats.iter().find(|c| c.id == id) {
+                merged.pinned = known.pinned;
+            }
+        }
+        if !merged.archived {
+            if let Some(known) = self.chats.iter().find(|c| c.id == id) {
+                merged.archived = known.archived;
+            }
+        }
         if let Some(session) = &mut self.live {
             if let Some(store) = &session.store {
                 let _ = store.upsert_chat(&merged);
@@ -1178,9 +1206,12 @@ impl crate::state::App {
             chat.preview_sender = fresh.preview_sender;
             chat.time = fresh.time;
             chat.unread = fresh.unread;
-            // The backend row is authoritative for these two; dropping
-            // them here made phone-side archive/pin (and the fake's
-            // LeaveGroup) invisible until restart (logic review F14).
+            // These take the merged values, so the protection
+            // above (known state survives an uninformed upsert)
+            // reaches the mirror too, while an informed upsert
+            // still lands. Dropping them here once made
+            // phone-side archive/pin (and the fake's LeaveGroup)
+            // invisible until restart (logic review F14).
             chat.archived = fresh.archived;
             chat.pinned = fresh.pinned;
             chat.ephemeral_secs = fresh.ephemeral_secs;
@@ -1239,6 +1270,64 @@ impl crate::state::App {
         }
         if let Some(c) = self.detached_chat.as_mut().filter(|c| c.id == chat_id) {
             c.muted = muted;
+        }
+        if let Some(session) = &self.live {
+            if let (Some(store), Some(jid)) = (&session.store, session.jids.get(&chat_id)) {
+                if let Some(chat) = self.chats.iter().find(|c| c.id == chat_id) {
+                    let ts = session.times.get(&chat_id).copied().unwrap_or(0);
+                    let _ = store.upsert_chat(&chat_to_live(chat, jid, ts));
+                }
+            }
+        }
+    }
+
+    /// Applies a pin change the server reported (a pin or unpin
+    /// done on another device, or the account state from a full
+    /// sync). The reported value wins over the local mirror
+    /// unconditionally, including over an optimistic local
+    /// toggle whose backend command failed: this event is the
+    /// reconciliation path for pin, the counterpart of
+    /// MuteChanged for mute. State and archive update either
+    /// way; the pinned-first list order reads the field at
+    /// render time, so no re-sort is needed here. A pin set
+    /// from this client does not wait for this event; it
+    /// applies through apply_chat_action at once.
+    pub(crate) fn apply_pin_changed(&mut self, chat_id: u64, pinned: bool) {
+        if let Some(c) = self.chats.iter_mut().find(|c| c.id == chat_id) {
+            c.pinned = pinned;
+        }
+        if let Some(c) = self.detached_chat.as_mut().filter(|c| c.id == chat_id) {
+            c.pinned = pinned;
+        }
+        if let Some(session) = &self.live {
+            if let (Some(store), Some(jid)) = (&session.store, session.jids.get(&chat_id)) {
+                if let Some(chat) = self.chats.iter().find(|c| c.id == chat_id) {
+                    let ts = session.times.get(&chat_id).copied().unwrap_or(0);
+                    let _ = store.upsert_chat(&chat_to_live(chat, jid, ts));
+                }
+            }
+        }
+    }
+
+    /// Applies an archive change the server reported (an
+    /// archive or unarchive done on another device, or the
+    /// account state from a full sync). The reported value wins
+    /// over the local mirror unconditionally, including over an
+    /// optimistic local toggle whose backend command failed:
+    /// this event is the reconciliation path for archive, the
+    /// counterpart of MuteChanged for mute. State and archive
+    /// update either way; the list filters read the field at
+    /// render time, so an archived chat leaves the main list
+    /// views (and an unarchived one returns) exactly as with a
+    /// local archive action. An archive set from this client
+    /// does not wait for this event; it applies through
+    /// apply_chat_action at once.
+    pub(crate) fn apply_archive_changed(&mut self, chat_id: u64, archived: bool) {
+        if let Some(c) = self.chats.iter_mut().find(|c| c.id == chat_id) {
+            c.archived = archived;
+        }
+        if let Some(c) = self.detached_chat.as_mut().filter(|c| c.id == chat_id) {
+            c.archived = archived;
         }
         if let Some(session) = &self.live {
             if let (Some(store), Some(jid)) = (&session.store, session.jids.get(&chat_id)) {
@@ -1987,7 +2076,7 @@ mod key_decision_tests {
 }
 
 #[cfg(test)]
-mod mute_routing_tests {
+mod chat_state_routing_tests {
     use super::*;
     use crate::state::{App, Args};
     use backend::ChatAction;
@@ -2080,6 +2169,51 @@ mod mute_routing_tests {
             .muted
     }
 
+    fn chat_pinned(app: &App) -> bool {
+        app.chats.iter().find(|c| c.id == jid_id(CHAT_JID)).expect("chat exists").pinned
+    }
+
+    fn chat_archived(app: &App) -> bool {
+        app.chats.iter().find(|c| c.id == jid_id(CHAT_JID)).expect("chat exists").archived
+    }
+
+    fn store_row(app: &App) -> LiveChat {
+        let store = app.live.as_ref().unwrap().store.as_ref().unwrap();
+        store
+            .chats()
+            .unwrap()
+            .into_iter()
+            .find(|c| c.jid == CHAT_JID)
+            .expect("the chat reached the archive")
+    }
+
+    fn archived_pinned(app: &App) -> bool {
+        store_row(app).pinned
+    }
+
+    fn archived_archived(app: &App) -> bool {
+        store_row(app).archived
+    }
+
+    /// An informed chat upsert: it carries real chat-action
+    /// state, the way the fake's chat-action and LeaveGroup
+    /// echoes do (they clone the fake's full chat state).
+    fn state_upsert(archived: bool, pinned: bool) -> BackendEvent {
+        BackendEvent::ChatUpsert(LiveChat {
+            jid: CHAT_JID.to_owned(),
+            title: "Sender".to_owned(),
+            kind: LiveChatKind::Dm,
+            preview: "hello".to_owned(),
+            preview_sender: None,
+            timestamp: BASE_TS,
+            unread: 0,
+            archived,
+            pinned,
+            ephemeral_secs: 0,
+            muted: false,
+        })
+    }
+
     /// The header-menu / profile-panel toggle path: both call
     /// apply_chat_action with the flipped value. In live mode
     /// that must put the matching ChatAction command on the
@@ -2159,5 +2293,112 @@ mod mute_routing_tests {
         drain_all(&mut app, &ctx);
         assert!(chat_muted(&app), "an arrival upsert must not unmute");
         assert!(archived_muted(&app), "nor rewrite the archive row as unmuted");
+    }
+
+    /// A pin change the server reports (another device, or a
+    /// full sync) adopts unconditionally, even over a local
+    /// optimistic toggle: the server value is the truth the
+    /// local mirror reconciles to.
+    #[test]
+    fn server_pin_changed_overrides_local_state() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        seed_chat(&mut app, &tx, &ctx);
+        let chat_id = jid_id(CHAT_JID);
+
+        tx.send(BackendEvent::PinChanged { chat_jid: CHAT_JID.to_owned(), pinned: true }).unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(chat_pinned(&app), "a server pin lands in the mirror");
+        assert!(archived_pinned(&app), "and in the archive");
+
+        // The user unpins here (optimistic local flip plus the
+        // backend command), then the server re-asserts the pin,
+        // as it would if that command failed or another device
+        // pinned again: the server value wins.
+        app.apply_chat_action(chat_id, false, false, false);
+        assert!(!chat_pinned(&app));
+        tx.send(BackendEvent::PinChanged { chat_jid: CHAT_JID.to_owned(), pinned: true }).unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(chat_pinned(&app), "the server value overrides the local toggle");
+        assert!(archived_pinned(&app));
+
+        // And an unpin from another device unpins here too.
+        tx.send(BackendEvent::PinChanged { chat_jid: CHAT_JID.to_owned(), pinned: false }).unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(!chat_pinned(&app), "a server unpin lands in the mirror");
+        assert!(!archived_pinned(&app), "and in the archive");
+    }
+
+    /// An archive change the server reports adopts
+    /// unconditionally, in both directions, exactly like pin.
+    #[test]
+    fn server_archive_changed_overrides_local_state() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        seed_chat(&mut app, &tx, &ctx);
+        let chat_id = jid_id(CHAT_JID);
+
+        tx.send(BackendEvent::ArchiveChanged { chat_jid: CHAT_JID.to_owned(), archived: true })
+            .unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(chat_archived(&app), "a server archive lands in the mirror");
+        assert!(archived_archived(&app), "and in the archive");
+
+        // The user unarchives here, then the server re-asserts
+        // the archive: the server value wins.
+        app.apply_chat_action(chat_id, false, false, false);
+        assert!(!chat_archived(&app));
+        tx.send(BackendEvent::ArchiveChanged { chat_jid: CHAT_JID.to_owned(), archived: true })
+            .unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(chat_archived(&app), "the server value overrides the local toggle");
+        assert!(archived_archived(&app));
+
+        // And an unarchive from another device restores the
+        // chat to the main list here too.
+        tx.send(BackendEvent::ArchiveChanged { chat_jid: CHAT_JID.to_owned(), archived: false })
+            .unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(!chat_archived(&app), "a server unarchive lands in the mirror");
+        assert!(!archived_archived(&app), "and in the archive");
+    }
+
+    /// The counterpart rule for pin and archive: an arrival
+    /// upsert knows nothing about either, so it must not unpin
+    /// or unarchive a chat the mirror knows is pinned and
+    /// archived (the merge protection).
+    #[test]
+    fn arrival_upsert_keeps_the_known_pin_and_archive() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        seed_chat(&mut app, &tx, &ctx);
+
+        tx.send(BackendEvent::PinChanged { chat_jid: CHAT_JID.to_owned(), pinned: true }).unwrap();
+        tx.send(BackendEvent::ArchiveChanged { chat_jid: CHAT_JID.to_owned(), archived: true })
+            .unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(chat_pinned(&app) && chat_archived(&app));
+
+        tx.send(arrival_upsert()).unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(chat_pinned(&app), "an arrival upsert must not unpin");
+        assert!(chat_archived(&app), "an arrival upsert must not unarchive");
+        assert!(archived_pinned(&app), "nor rewrite the archive row as unpinned");
+        assert!(archived_archived(&app), "nor rewrite the archive row as unarchived");
+    }
+
+    /// The other half of the merge rule: an upsert that does
+    /// carry the state (the fake's chat-action and LeaveGroup
+    /// echoes) still lands, so demo-mode flows that report
+    /// archive/pin through upserts keep working (logic review
+    /// F14).
+    #[test]
+    fn informed_upsert_still_lands() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        seed_chat(&mut app, &tx, &ctx);
+
+        tx.send(state_upsert(true, true)).unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(chat_archived(&app), "an informed upsert archives the mirror");
+        assert!(chat_pinned(&app), "an informed upsert pins the mirror");
+        assert!(archived_archived(&app), "and the archive row follows");
+        assert!(archived_pinned(&app));
     }
 }

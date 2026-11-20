@@ -74,6 +74,12 @@ impl App {
             BackendEvent::MuteChanged { chat_jid, muted } => {
                 ("message", format!("MuteChanged in {chat_jid}: muted={muted}"), None)
             }
+            BackendEvent::PinChanged { chat_jid, pinned } => {
+                ("message", format!("PinChanged in {chat_jid}: pinned={pinned}"), None)
+            }
+            BackendEvent::ArchiveChanged { chat_jid, archived } => {
+                ("message", format!("ArchiveChanged in {chat_jid}: archived={archived}"), None)
+            }
             BackendEvent::PrivacyState(_) => ("backend", "PrivacyState".to_owned(), None),
             BackendEvent::Crashed { summary, restarted } => {
                 ("backend", format!("Crashed (restarted={restarted}): {summary}"), None)

@@ -653,9 +653,18 @@ pub struct LiveChat {
     pub timestamp: i64,
     /// Unread count as reported by the protocol.
     pub unread: u32,
-    /// Archived (chat-actions state; the app mirrors it locally).
+    /// Archived (chat-actions state; the app mirrors it
+    /// locally). Like mute, a message-arrival upsert does not
+    /// learn it from the wire, so the app keeps a known archive
+    /// state across upserts that report `false`; archive changes
+    /// made on the server arrive as
+    /// [`BackendEvent::ArchiveChanged`] instead.
     pub archived: bool,
-    /// Pinned to the top of the chat list.
+    /// Pinned to the top of the chat list. Like archive, a
+    /// message-arrival upsert does not learn it from the wire,
+    /// so the app keeps a known pin across upserts that report
+    /// `false`; pin changes made on the server arrive as
+    /// [`BackendEvent::PinChanged`] instead.
     pub pinned: bool,
     /// Disappearing-messages timer in seconds (`0` is off), as
     /// persisted in the archive. Message-arrival upserts do not
@@ -892,6 +901,31 @@ pub enum BackendEvent {
         /// Whether the chat is muted now. A timed mute whose
         /// end has passed reports `false`.
         muted: bool,
+    },
+    /// A chat's pin state changed on the server: pinned or
+    /// unpinned from another device, or the account state as a
+    /// full sync reports it. This is the authoritative path for
+    /// pin changes made elsewhere; a pin set from this client
+    /// goes out as [`BackendCommand::ChatAction`] and applies
+    /// locally at once, without waiting for this event.
+    PinChanged {
+        /// Chat JID.
+        chat_jid: String,
+        /// Whether the chat is pinned now.
+        pinned: bool,
+    },
+    /// A chat's archive state changed on the server: archived
+    /// or unarchived from another device, or the account state
+    /// as a full sync reports it. This is the authoritative
+    /// path for archive changes made elsewhere; an archive set
+    /// from this client goes out as
+    /// [`BackendCommand::ChatAction`] and applies locally at
+    /// once, without waiting for this event.
+    ArchiveChanged {
+        /// Chat JID.
+        chat_jid: String,
+        /// Whether the chat is archived now.
+        archived: bool,
     },
     /// Current privacy settings as fetched from the account
     /// (category → value spellings; see [`BackendCommand::SetPrivacy`]).

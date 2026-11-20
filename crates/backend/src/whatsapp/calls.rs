@@ -175,8 +175,17 @@ pub(super) async fn start_outgoing_call(
                 seconds: 0,
                 reason: None,
             });
-            spawn_call_pump(handle.clone(), call_id.clone(), chat_jid.to_owned(), active, events);
-            *lock_cache(active) = Some(ActiveCall { call_id, handle, audio });
+            // Store the call BEFORE spawning its pump. The pump
+            // releases the slot by call id when the call ends, and
+            // a call that ends instantly (a buffered relay failure
+            // already waiting in its event stream) must find its
+            // own entry there: spawning first let the pump clean
+            // up an empty slot and left this dead entry stored
+            // behind it, rejecting every later call as "already
+            // in progress" until the app restarted.
+            let pump_handle = handle.clone();
+            *lock_cache(active) = Some(ActiveCall { call_id: call_id.clone(), handle, audio });
+            spawn_call_pump(pump_handle, call_id, chat_jid.to_owned(), active, events);
         }
         Err(e) => {
             audio.shutdown();
@@ -239,13 +248,39 @@ pub(super) async fn accept_incoming_call(
                 seconds: 0,
                 reason: None,
             });
-            spawn_call_pump(handle.clone(), call_id.clone(), chat_jid.clone(), active, events);
-            *lock_cache(active) = Some(ActiveCall { call_id, handle, audio });
+            // Store the call BEFORE spawning its pump, for the
+            // same reason as in start_outgoing_call: the pump
+            // releases the slot by call id when the call ends,
+            // and an instantly ending call must find its own
+            // entry there, not be stored behind the cleanup.
+            let pump_handle = handle.clone();
+            *lock_cache(active) = Some(ActiveCall { call_id: call_id.clone(), handle, audio });
+            spawn_call_pump(pump_handle, call_id, chat_jid, active, events);
         }
         Err(e) => {
             audio.shutdown();
             events.emit(BackendEvent::Error { message: format!("Accepting the call failed: {e}") });
         }
+    }
+}
+
+/// Takes a one-at-a-time slot's entry out only if it is still
+/// the entry `is_owner` accepts. This is the call pump's exit
+/// path, and the check is what makes the release safe: the
+/// entry is matched by call id under the lock, so a pump
+/// finishing late can never evict a newer call that has taken
+/// the slot since, and a pump whose call was already released
+/// finds nothing to do.
+#[cfg(feature = "calls")]
+fn release_slot_if<T>(
+    slot: &std::sync::Mutex<Option<T>>,
+    is_owner: impl FnOnce(&T) -> bool,
+) -> Option<T> {
+    let mut guard = lock_cache(slot);
+    if guard.as_ref().is_some_and(is_owner) {
+        guard.take()
+    } else {
+        None
     }
 }
 
@@ -353,13 +388,8 @@ pub(super) async fn pump_call(
     let seconds = active_since.map_or(0, |s| u32::try_from(s.elapsed().as_secs()).unwrap_or(0));
     // Release the slot and the devices if this pump still owns
     // them (a replacement call may already be live).
-    {
-        let mut slot = lock_cache(&active);
-        if slot.as_ref().is_some_and(|a| a.call_id == call_id) {
-            if let Some(finished) = slot.take() {
-                finished.audio.shutdown();
-            }
-        }
+    if let Some(finished) = release_slot_if(&active, |a| a.call_id == call_id) {
+        finished.audio.shutdown();
     }
     events.emit(BackendEvent::CallChanged {
         call_id,
@@ -368,4 +398,55 @@ pub(super) async fn pump_call(
         seconds,
         reason: Some(end_reason.unwrap_or_else(|| "Call ended".to_owned())),
     });
+}
+
+#[cfg(all(test, feature = "calls"))]
+mod tests {
+    use super::*;
+
+    /// Stand-in for `ActiveCall`: a real one needs a live
+    /// library call handle, and the slot logic only ever looks
+    /// at the call id.
+    struct FakeCall {
+        call_id: String,
+    }
+
+    fn slot_with(call_id: &str) -> std::sync::Mutex<Option<FakeCall>> {
+        std::sync::Mutex::new(Some(FakeCall { call_id: call_id.to_owned() }))
+    }
+
+    /// The start paths store the call before spawning its pump,
+    /// so a call that ends instantly still finds its own entry
+    /// when the pump runs its exit path: the release takes it,
+    /// and the slot is free for the next call to claim. (With
+    /// the old spawn-first order the pump cleaned up an empty
+    /// slot and the dead entry was stored behind it, wedging
+    /// the slot for the rest of the session.)
+    #[test]
+    fn instantly_finished_call_leaves_the_slot_usable() {
+        let slot = slot_with("call-a");
+        let released = release_slot_if(&slot, |c| c.call_id == "call-a");
+        assert!(released.is_some_and(|c| c.call_id == "call-a"));
+        assert!(lock_cache(&slot).is_none(), "the slot is free for the next call");
+    }
+
+    /// A pump finishing late must not evict the newer call that
+    /// took the slot after its own call ended.
+    #[test]
+    fn stale_cleanup_cannot_evict_a_newer_call() {
+        let slot = slot_with("call-b");
+        let released = release_slot_if(&slot, |c| c.call_id == "call-a");
+        assert!(released.is_none());
+        let guard = lock_cache(&slot);
+        assert!(guard.as_ref().is_some_and(|c| c.call_id == "call-b"));
+    }
+
+    /// Cleanup against an empty slot is a no-op: this is the
+    /// pump of a call the command loop already released.
+    #[test]
+    fn cleanup_on_an_empty_slot_is_a_no_op() {
+        let slot: std::sync::Mutex<Option<FakeCall>> = std::sync::Mutex::new(None);
+        assert!(release_slot_if(&slot, |c| c.call_id == "call-a").is_none());
+        assert!(lock_cache(&slot).is_none());
+    }
 }

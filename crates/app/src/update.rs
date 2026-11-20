@@ -481,6 +481,14 @@ fn download_asset(
             "The download could not be saved, so nothing was changed.",
         )
     })?;
+    // The staged binary is owner-only on Unix while it waits
+    // for its checksum verdict (the swap sets the executable
+    // bit on the installed copy itself).
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = file.set_permissions(std::fs::Permissions::from_mode(0o600));
+    }
     let mut reader = resp.body_mut().as_reader();
     let mut buf = [0u8; 64 * 1024];
     let mut received: u64 = 0;

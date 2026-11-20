@@ -25,12 +25,12 @@ use super::send::{
     outgoing_location_message, outgoing_text_message, send_media, stamp_ephemeral, OutgoingMedia,
 };
 use super::translate::{
-    participant_name, privacy_map, translate_event, translate_message, translate_special, user_part,
+    participant_name, privacy_map, translate_event, translate_message, translate_special,
 };
 use super::util::{
     abort_latest, build_message_target, cap_poll_secrets, download_proto, lock_cache,
-    parse_address, proto_is_view_once, received_poll_secret, sanitize_id, spawn_latest, unix_now,
-    LatestTask, PollSecrets, ProtoCache,
+    parse_address, proto_is_view_once, received_poll_secret, spawn_latest, unix_now, LatestTask,
+    PollSecrets, ProtoCache,
 };
 
 /// How many session events may wait for the event callbacks.
@@ -145,6 +145,7 @@ pub(super) async fn run_async(
     config: &BackendConfig,
     commands: Receiver<BackendCommand>,
     events: EventSink,
+    logged_out: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<(), String> {
     // Startup failures return Err instead of emitting an Error event
     // and returning quietly: a quiet return looks like a clean exit
@@ -246,6 +247,11 @@ pub(super) async fn run_async(
     let sink_out = events.clone();
     let sink_msg = events.clone();
     let sink_all = events.clone();
+    // The logout flag the caller wipes the account directory on:
+    // set by the library's logged-out callback (this device was
+    // unlinked, here or from the phone) and by the Disconnect
+    // handler below, whose own logout is what ends the run.
+    let logged_out_flag = logged_out.clone();
 
     let bot = match Bot::builder()
         .with_backend(store)
@@ -304,7 +310,9 @@ pub(super) async fn run_async(
         })
         .on_logged_out(move |_info| {
             let sink = sink_out.clone();
+            let logged_out = logged_out_flag.clone();
             async move {
+                logged_out.store(true, std::sync::atomic::Ordering::SeqCst);
                 sink.emit(BackendEvent::LoggedOut);
             }
         })
@@ -1391,8 +1399,10 @@ pub(super) async fn run_async(
                             let client = client.clone();
                             let events = events.clone();
                             let dir = config.data_dir.join("downloads");
-                            let stem =
-                                format!("{}-{}", user_part(&chat_jid), sanitize_id(&message_id));
+                            // The stem is the naming contract the
+                            // app's deletion paths match downloads
+                            // by (see `downloaded_media_stem`).
+                            let stem = crate::downloaded_media_stem(&chat_jid, &message_id);
                             tokio::spawn(async move {
                                 match download_proto(&client, &proto, &dir, &stem).await {
                                     Ok(path) => events.emit(BackendEvent::MediaSaved {
@@ -1495,6 +1505,13 @@ pub(super) async fn run_async(
                     // termination still arrives via the run loop's
                     // outcome, as it does for a clean logout.
                     let report = client.logout().await;
+                    // This device is unlinked from this side,
+                    // whatever the server answered (an offline
+                    // logout is reported below, but the user's
+                    // intent and the local teardown stand): the
+                    // caller wipes the account directory once the
+                    // session has fully ended (privacy audit A8).
+                    logged_out.store(true, std::sync::atomic::Ordering::SeqCst);
                     if let Some(problem) = logout_problem(&report.deregistration) {
                         events.emit(BackendEvent::Error { message: problem });
                     }
@@ -1573,6 +1590,36 @@ pub(super) async fn run_async(
     Ok(())
 }
 
+/// Removes a logged-out account's session directory.
+///
+/// A logout unlinks the device, but unlinking is protocol-level:
+/// without this, the encrypted session store (the device
+/// identity keys and protocol state) would sit in
+/// `accounts/<id>/` forever, an identity a later local attacker
+/// or a copied directory could still pick up (privacy audit
+/// A8). The chat archive is a separate, deliberate local store
+/// at the data-dir root and is NOT removed: logging out ends
+/// the link, it does not erase the user's saved chats, which
+/// stay readable (and deletable) as a local archive.
+///
+/// The caller runs this only after the session has fully ended
+/// (the runtime is down, the store's connections are closed),
+/// so nothing can recreate the directory behind the removal.
+/// Best-effort: a missing directory is success, and any other
+/// failure is logged and left for a future logout to retry.
+pub(super) fn remove_account_dir_after_logout(account_dir: &std::path::Path) {
+    match std::fs::remove_dir_all(account_dir) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => {
+            tracing::warn!(
+                "removing the logged-out account folder {} failed: {e}",
+                account_dir.display()
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1585,6 +1632,31 @@ mod tests {
             .build()
             .expect("test runtime builds")
             .block_on(future);
+    }
+
+    /// The post-logout wipe (privacy audit A8): the account's
+    /// session directory, device identity included, is removed,
+    /// and the chat archive at the data-dir root, a separate
+    /// local store the logout does not own, is untouched.
+    #[test]
+    fn logout_wipe_removes_the_session_dir_and_keeps_the_archive() {
+        let root =
+            std::env::temp_dir().join(format!("zaprust-logout-wipe-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let account = root.join("accounts").join("default");
+        std::fs::create_dir_all(&account).expect("account dir");
+        std::fs::write(account.join("session.db"), b"device identity").expect("session store");
+        std::fs::write(root.join("archive.db"), b"chat archive").expect("archive");
+        remove_account_dir_after_logout(&account);
+        assert!(!account.exists(), "the session directory is gone after logout");
+        assert_eq!(
+            std::fs::read(root.join("archive.db")).expect("archive survives"),
+            b"chat archive",
+            "the archive is a separate store and stays"
+        );
+        // A second wipe over a missing directory is not an error.
+        remove_account_dir_after_logout(&account);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// A server-confirmed logout is the clean case: nothing to

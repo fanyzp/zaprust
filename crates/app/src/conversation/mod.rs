@@ -532,6 +532,15 @@ fn write_export_file(
     let file_name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let tmp = dir.join(format!(".{file_name}.tmp"));
     std::fs::write(&tmp, markdown).map_err(|e| e.to_string())?;
+    // An export is the full chat in plaintext: owner-only on
+    // Unix, asserted on the temp so the renamed file inherits
+    // it (privacy audit A5).
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))
+            .map_err(|e| e.to_string())?;
+    }
     std::fs::rename(&tmp, &path).map_err(|e| {
         let _ = std::fs::remove_file(&tmp);
         e.to_string()

@@ -89,6 +89,15 @@ pub(crate) fn write_file_atomic(path: &std::path::Path, bytes: &[u8]) {
     let tmp = path.with_extension("tmp");
     let written = (|| -> std::io::Result<()> {
         let mut f = std::fs::File::create(&tmp)?;
+        // These files carry user content (settings, quick
+        // replies, plugin state): owner-only on Unix, asserted
+        // on the temp before any bytes land and inherited by the
+        // target through the rename (privacy audit A5).
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        }
         f.write_all(bytes)?;
         f.sync_all()?;
         drop(f);
@@ -251,11 +260,17 @@ impl App {
                 // settings file written without this key must not
                 // silently turn previews on (audit finding 11).
                 self.notify_preview = v["notify_preview"].as_bool().unwrap_or(false);
-                // Blocked contacts persist with the settings so
-                // the profile panel shows the right state before
-                // the backend's connect-time blocklist lands (and
-                // in demo mode, where no fetch exists). Chat ids
-                // are stored, not JIDs: the panel reasons in ids.
+                // Legacy blocked-contact copy. Builds before
+                // the A6 fix persisted the blocked set here, as
+                // chat ids; the set's home is now the encrypted
+                // archive (see `App::start_live`, which migrates
+                // this copy into the store on the first live
+                // start and never writes it back: settings_json
+                // no longer emits the field, so the next settings
+                // save scrubs it from this file). Reading it here
+                // keeps the panel's pre-connect display working
+                // until that migration runs. Chat ids are stored,
+                // not JIDs: the panel reasons in ids.
                 if let Some(blocked) = v["blocked_chats"].as_array() {
                     self.blocked_chats =
                         blocked.iter().filter_map(serde_json::Value::as_u64).collect();
@@ -377,7 +392,11 @@ impl App {
             "notify_groups": self.notify_groups,
             "notify_sound": self.notify_sound,
             "notify_preview": self.notify_preview,
-            "blocked_chats": self.blocked_chats.iter().copied().collect::<Vec<u64>>(),
+            // No "blocked_chats" here: the set persists in the
+            // encrypted archive store, not in this plaintext file
+            // (privacy audit A6). Omitting the field also scrubs
+            // the legacy copy older builds wrote, on the next
+            // save.
             "composer_hint_dismissed": self.composer.hint_dismissed,
             "motion": self.motion.as_str(),
             "language": self.language,
@@ -771,9 +790,17 @@ impl App {
             // per-message helper entries go with them, so the
             // helper maps stay scoped to the messages the mirror
             // holds instead of growing by one entry per message
-            // ever seen.
+            // ever seen. A saved download of an expired message
+            // goes too (privacy audit A3): expiry that left the
+            // plaintext file behind would not be expiry.
+            let data_dir = backend::data_dir();
             for (chat_id, mid, pid) in &work {
                 self.forget_live_message(*chat_id, *mid, pid.as_deref());
+                if let (Some(pid), Some(session)) = (pid, &self.live) {
+                    if let Some(jid) = session.jids.get(chat_id) {
+                        backend::remove_download_for_message(&data_dir, jid, pid);
+                    }
+                }
             }
             // A chat whose newest message expired shows the new
             // newest message as its preview, in the list and in

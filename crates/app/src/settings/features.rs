@@ -99,13 +99,22 @@ impl App {
         ui.add_space(16.0);
         group_label(ui, t, "API keys");
         let backend_name = self.credentials.backend_name();
+        // A backend whose at-rest protection is weaker than its
+        // name might suggest discloses it in the same breath
+        // (privacy audit A10: the local secrets file holds the
+        // keys unencrypted under its owner-only permissions, and
+        // the user should not have to guess that).
+        let storage_note = match self.credentials.storage_note() {
+            Some(note) => format!(" {note}"),
+            None => String::new(),
+        };
         let key_hint = format!("Stored in: {backend_name}");
         let slots: Vec<(String, core::credentials::CredentialSlot)> =
             self.credentials.declared_slots().to_vec();
         settings_card(ui, t, |ui| {
             ui.label(
                 RichText::new(format!(
-                    "Stored in: {backend_name}. You can save several keys per \
+                    "Stored in: {backend_name}.{storage_note} You can save several keys per \
                      service and Zaprust takes turns using them. A key that is \
                      rate limited rests for a while, and a rejected key is \
                      skipped. Key values are never written to logs."

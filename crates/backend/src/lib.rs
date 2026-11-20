@@ -190,6 +190,76 @@ fn remove_legacy_dir(current: &std::path::Path, legacy: &std::path::Path) -> boo
     std::fs::remove_dir_all(&legacy).is_ok()
 }
 
+/// The file stem every download of a message's media is saved
+/// under in the downloads folder: `<chat user part>-<message
+/// id>`, with the id kept filename-safe. This is the one place
+/// the naming rule lives: the download path in the WhatsApp
+/// backend builds the saved file's name from it, and the
+/// removal helpers below match files by it, so a rename here
+/// renames both sides of the contract.
+#[must_use]
+pub fn downloaded_media_stem(chat_jid: &str, message_id: &str) -> String {
+    let user = chat_jid.split('@').next().unwrap_or(chat_jid);
+    let safe: String = message_id
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .collect();
+    format!("{user}-{safe}")
+}
+
+/// Removes the downloaded media file of one message, if the
+/// user ever saved it.
+///
+/// A saved download is the decrypted media in plaintext, in a
+/// file of its own: deleting, clearing or expiring the message
+/// in the archive must take the file with it, or the deletion
+/// is only cosmetic (privacy audit A3). The file is identified
+/// by the naming rule in [`downloaded_media_stem`]; the
+/// extension is whatever the media carried, so any file whose
+/// name is the stem plus an extension goes. Best-effort:
+/// returns whether a file was removed, never errors.
+pub fn remove_download_for_message(
+    data_dir: &std::path::Path,
+    chat_jid: &str,
+    message_id: &str,
+) -> bool {
+    let stem = downloaded_media_stem(chat_jid, message_id);
+    remove_downloads_matching(&data_dir.join("downloads"), &format!("{stem}."), true) > 0
+}
+
+/// Removes every downloaded media file belonging to a chat,
+/// for when the whole chat is deleted (privacy audit A3). The
+/// chat prefix is the JID's user part plus the separator dash,
+/// so a different chat whose user part merely starts with the
+/// same digits is not matched. Best-effort: returns how many
+/// files were removed.
+pub fn remove_downloads_for_chat(data_dir: &std::path::Path, chat_jid: &str) -> usize {
+    let user = chat_jid.split('@').next().unwrap_or(chat_jid);
+    remove_downloads_matching(&data_dir.join("downloads"), &format!("{user}-"), false)
+}
+
+/// Removes files in `dir` whose names start with `prefix`.
+/// With `one`, stops after the first removal (a message has at
+/// most one saved file; its extension is the only unknown).
+fn remove_downloads_matching(dir: &std::path::Path, prefix: &str, one: bool) -> usize {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        if entry.file_name().to_string_lossy().starts_with(prefix)
+            && entry.file_type().is_ok_and(|t| t.is_file())
+            && std::fs::remove_file(entry.path()).is_ok()
+        {
+            removed += 1;
+            if one {
+                break;
+            }
+        }
+    }
+    removed
+}
+
 /// Recursive file copy used by the legacy data-dir adoption above.
 fn copy_dir_contents(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
     std::fs::create_dir_all(dst)?;
@@ -2140,6 +2210,68 @@ mod tests {
         )
         .expect("seed session");
         std::fs::write(legacy.join("settings.json"), b"{}").expect("seed settings");
+    }
+
+    /// Seeds a downloads folder the way the download path names
+    /// files: two media files for one chat (one of them for a
+    /// message id that is a prefix of the other's), one for a
+    /// chat whose user part starts with the same digits, and an
+    /// unrelated file.
+    fn seed_downloads(data: &std::path::Path) {
+        let dir = data.join("downloads");
+        std::fs::create_dir_all(&dir).expect("seed downloads dir");
+        for name in [
+            "6281234567890-ABC123.jpg",
+            "6281234567890-ABC1234.mp4",
+            "62812345678901-XYZ.png",
+            "notes.txt",
+        ] {
+            std::fs::write(dir.join(name), b"media").expect("seed download");
+        }
+    }
+
+    #[test]
+    fn download_removal_for_a_message_takes_only_its_file() {
+        let root = TempTree::new("dl-message");
+        seed_downloads(root.path());
+        let dir = root.path().join("downloads");
+        // The stem rule is the naming contract with the download
+        // path: protocol punctuation is sanitized the same way.
+        assert_eq!(
+            downloaded_media_stem("6281234567890@s.whatsapp.net", "ABC:123"),
+            "6281234567890-ABC_123"
+        );
+        assert!(remove_download_for_message(root.path(), "6281234567890@s.whatsapp.net", "ABC123"));
+        assert!(!dir.join("6281234567890-ABC123.jpg").exists(), "the message's file is gone");
+        assert!(
+            dir.join("6281234567890-ABC1234.mp4").exists(),
+            "a message whose id extends this one keeps its file"
+        );
+        assert!(
+            !remove_download_for_message(root.path(), "6281234567890@s.whatsapp.net", "ABC123"),
+            "a second removal reports nothing removed"
+        );
+    }
+
+    #[test]
+    fn download_removal_for_a_chat_takes_only_its_files() {
+        let root = TempTree::new("dl-chat");
+        seed_downloads(root.path());
+        let dir = root.path().join("downloads");
+        let removed = remove_downloads_for_chat(root.path(), "6281234567890@s.whatsapp.net");
+        assert_eq!(removed, 2, "both of the chat's downloads go");
+        assert!(!dir.join("6281234567890-ABC123.jpg").exists());
+        assert!(!dir.join("6281234567890-ABC1234.mp4").exists());
+        assert!(
+            dir.join("62812345678901-XYZ.png").exists(),
+            "a chat whose number starts with the same digits is a different chat"
+        );
+        assert!(dir.join("notes.txt").exists(), "unrelated files are untouched");
+        assert_eq!(
+            remove_downloads_for_chat(root.path(), "12025550123@s.whatsapp.net"),
+            0,
+            "an unknown chat removes nothing"
+        );
     }
 
     #[test]

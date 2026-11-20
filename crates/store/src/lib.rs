@@ -164,6 +164,18 @@ const FREELIST_PURGED_KEY: &str = "freelist_purged";
 /// written only after the scrub completes.
 const VIEW_ONCE_CAPTIONS_SCRUBBED_KEY: &str = "view_once_captions_scrubbed";
 
+/// `store_meta` key holding the persisted blocked-chat set (a
+/// JSON array of chat ids). The set lives in this encrypted
+/// archive rather than in the plaintext settings file: a chat id
+/// is a fast non-cryptographic hash of a phone-number JID, and
+/// the phone-number space is small enough to reverse by
+/// dictionary, so the settings file would hand anyone who copies
+/// it the user's blocked phone numbers (privacy audit A6). The
+/// server's blocklist, fetched at every connect, stays the
+/// source of truth; this copy only covers the time before that
+/// fetch lands.
+const BLOCKED_CHATS_KEY: &str = "blocked_chats";
+
 /// Message flag bit 1 was the retired AI-generated marker; the
 /// bit stays unassigned so existing archives keep their meaning.
 /// Message flag bit: the sender deleted this message for everyone
@@ -986,6 +998,59 @@ impl Store {
         serde_json::to_string(&serde_json::json!({ "chats": chats_json }))
             .map_err(|e| StoreError::Sqlite(rusqlite::Error::ToSqlConversionFailure(Box::new(e))))
     }
+
+    /// The persisted blocked-chat set (chat ids), or `None` when
+    /// no set has ever been stored in this archive. The
+    /// distinction matters to the caller: a stored empty set is
+    /// the server's word that nothing is blocked, while `None`
+    /// means the archive has nothing to say and a legacy copy
+    /// elsewhere (the pre-A6 settings file) may still need
+    /// migrating in. See [`BLOCKED_CHATS_KEY`] for why the set
+    /// lives here and not in the settings file.
+    ///
+    /// # Errors
+    /// [`StoreError`] on SQLite failures or a stored value that
+    /// is not the JSON array [`Store::set_blocked_chats`] wrote.
+    pub fn blocked_chats(&self) -> Result<Option<Vec<u64>>, StoreError> {
+        let raw: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT value FROM store_meta WHERE key = ?1",
+                params![BLOCKED_CHATS_KEY],
+                |row| row.get(0),
+            )
+            .map(Some)
+            .or_else(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                other => Err(other),
+            })?;
+        let Some(raw) = raw else {
+            return Ok(None);
+        };
+        let ids: Vec<u64> = serde_json::from_str(&raw).map_err(|e| {
+            StoreError::Sqlite(rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
+        })?;
+        Ok(Some(ids))
+    }
+
+    /// Replaces the persisted blocked-chat set. Called whenever
+    /// the set changes locally and whenever the server's
+    /// connect-time blocklist is adopted, so the stored copy
+    /// always mirrors the last known truth.
+    ///
+    /// # Errors
+    /// [`StoreError`] on SQLite failures.
+    pub fn set_blocked_chats(&self, ids: &[u64]) -> Result<(), StoreError> {
+        let raw = serde_json::to_string(&ids).map_err(|e| {
+            StoreError::Sqlite(rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
+        })?;
+        self.conn.execute(
+            "INSERT INTO store_meta (key, value) VALUES (?1, ?2) \
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![BLOCKED_CHATS_KEY, raw],
+        )?;
+        Ok(())
+    }
 }
 
 fn kind_str(kind: LiveChatKind) -> &'static str {
@@ -1159,6 +1224,27 @@ mod tests {
         let msgs: Vec<LiveMessage> =
             store.messages(&scripted_chats()[0].jid).unwrap().into_iter().map(|(m, _)| m).collect();
         assert_eq!(msgs, scripted_messages());
+    }
+
+    #[test]
+    fn blocked_chats_round_trip_through_the_archive() {
+        // The blocked set's persisted home is this encrypted
+        // archive (privacy audit A6): a fresh archive has never
+        // stored a set, a stored set reads back exactly, a
+        // replacement replaces wholesale, and a stored empty set
+        // stays distinguishable from "never stored".
+        let store = Store::open_in_memory().unwrap();
+        assert_eq!(store.blocked_chats().unwrap(), None, "nothing stored yet");
+        store.set_blocked_chats(&[11, 22, 33]).unwrap();
+        assert_eq!(store.blocked_chats().unwrap(), Some(vec![11, 22, 33]));
+        store.set_blocked_chats(&[7]).unwrap();
+        assert_eq!(store.blocked_chats().unwrap(), Some(vec![7]), "replacement is wholesale");
+        store.set_blocked_chats(&[]).unwrap();
+        assert_eq!(
+            store.blocked_chats().unwrap(),
+            Some(Vec::new()),
+            "a stored empty set is a statement, not an absence"
+        );
     }
 
     #[test]

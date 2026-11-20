@@ -236,6 +236,16 @@ pub trait CredentialBackend {
     fn save_all(&self, slots: &BTreeMap<String, Vec<String>>) -> Result<(), CredentialError>;
     /// Short backend name for the UI ("OS keyring", "Local file").
     fn name(&self) -> &'static str;
+    /// An honest one-line disclosure of how this backend protects
+    /// the values at rest, for the UI to show next to the backend
+    /// name, or `None` when the name already says it (the OS
+    /// keyring protects them itself; memory holds nothing at
+    /// rest). A backend whose protection is weaker than a user
+    /// might assume must speak up here rather than let the name
+    /// imply more than it delivers.
+    fn storage_note(&self) -> Option<&'static str> {
+        None
+    }
 }
 
 /// In-memory backend (tests, ephemeral sessions).
@@ -280,6 +290,20 @@ impl CredentialBackend for MemoryBackend {
 
 /// File backend: one JSON document under the app data dir. On Unix
 /// the file is created with `0600` permissions, it holds secrets.
+///
+/// The values are stored as plaintext JSON: mode-protected, not
+/// encrypted (privacy audit A10). That is a deliberate trade for
+/// the fallback path. Encrypting the file would need a key, and
+/// the only key the app holds for local data is itself served by
+/// this store's backends or by a key file in the same directory,
+/// so encryption here would add machinery without moving the
+/// trust boundary: anything that can read this file under its
+/// 0600 mode inside the owner-only data directory runs as the
+/// user and could take the key from the same places. What the
+/// design owes the user instead is honesty, and it pays it in
+/// two places: this comment, and the UI, which shows
+/// [`CredentialBackend::storage_note`] next to this backend's
+/// name wherever the name appears.
 #[derive(Debug, Clone)]
 pub struct FileBackend {
     path: PathBuf,
@@ -320,6 +344,13 @@ impl CredentialBackend for FileBackend {
 
     fn name(&self) -> &'static str {
         "Local secrets file"
+    }
+
+    fn storage_note(&self) -> Option<&'static str> {
+        Some(
+            "Keys in this file are stored unencrypted; the file's owner-only \
+             permissions are their only protection.",
+        )
     }
 }
 
@@ -613,6 +644,13 @@ impl CredentialStore {
     #[must_use]
     pub fn backend_name(&self) -> &'static str {
         self.backend.name()
+    }
+
+    /// The active backend's at-rest disclosure, when it has one
+    /// (see [`CredentialBackend::storage_note`]).
+    #[must_use]
+    pub fn storage_note(&self) -> Option<&'static str> {
+        self.backend.storage_note()
     }
 
     /// Registers a feature's declared slots (idempotent per feature).

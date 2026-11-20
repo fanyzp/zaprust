@@ -388,6 +388,16 @@ impl App {
         let path = dir.join("zaprust-debug-bundle.zip");
         match std::fs::write(&path, bytes) {
             Ok(()) => {
+                // The bundle can hold redacted message bodies
+                // (only with the user's opt-in above) and sits at
+                // this fixed path until the next export: make it
+                // owner-only on Unix instead of leaving it at
+                // default permissions (privacy audit A7).
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+                }
                 self.notice = Some(format!("Debug bundle written to {}", path.display()));
                 self.trace_push("ui", "debug bundle exported", None);
             }

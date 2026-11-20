@@ -1119,10 +1119,11 @@ impl App {
                 block: now_blocked,
             });
         }
-        // The set is persisted so the panel still shows the
-        // right state after a restart, before (or without) the
+        // The set is persisted (to the encrypted archive store,
+        // privacy audit A6) so the panel still shows the right
+        // state after a restart, before (or without) the
         // backend's connect-time blocklist fetch.
-        self.persist_settings();
+        self.persist_blocked_chats();
         self.notice = Some(if now_blocked {
             "Contact blocked.".to_owned()
         } else {

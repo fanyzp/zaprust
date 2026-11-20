@@ -145,13 +145,6 @@ pub(super) fn unix_now() -> i64 {
         .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0))
 }
 
-/// Keeps a protocol ID safe for use in a file name.
-pub(super) fn sanitize_id(id: &str) -> String {
-    id.chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
-        .collect()
-}
-
 /// Peels every wrapper layer (ephemeral, view-once and its v2
 /// forms, device-sent, edited, captioned documents) off a protocol
 /// message, down to the message that carries the payload fields.
@@ -336,8 +329,24 @@ pub(super) async fn download_proto(
     let path = dir.join(format!("{stem}.{ext}"));
     std::fs::create_dir_all(dir)
         .map_err(|e| format!("Could not create the downloads folder: {e}"))?;
-    let file = std::fs::File::create(&path)
-        .map_err(|e| format!("Could not create the download file: {e}"))?;
+    // The file will hold decrypted media in plaintext: it is
+    // owner-only from creation (0600 on Unix), not merely
+    // tightened by the next startup's hardening pass.
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let file = opts.open(&path).map_err(|e| format!("Could not create the download file: {e}"))?;
+    #[cfg(unix)]
+    {
+        // create+truncate keeps an existing file's mode, so
+        // assert 0600 explicitly before any media bytes land.
+        use std::os::unix::fs::PermissionsExt;
+        let _ = file.set_permissions(std::fs::Permissions::from_mode(0o600));
+    }
     let mut guard = PartialFileGuard { path: path.clone(), armed: true };
     match client.download_to_writer(media, file, download_limits()).await {
         Ok(_file) => {

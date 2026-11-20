@@ -55,11 +55,22 @@ impl Backend for WhatsappBackend {
                 return Err(format!("Could not start the async runtime: {e}"));
             }
         };
-        let result = runtime.block_on(run_async(config, commands, events));
+        // Set by the session when it ends in a logout (the
+        // Disconnect command, or the library reporting the
+        // device was unlinked): the account's session directory
+        // must not outlive the link (privacy audit A8).
+        let logged_out = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let result = runtime.block_on(run_async(config, commands, events, logged_out.clone()));
         // The session is over; bound the runtime teardown itself
         // (see RUNTIME_TEARDOWN_TIMEOUT) instead of letting the
         // runtime's drop wait on leftover tasks without a limit.
         runtime.shutdown_timeout(RUNTIME_TEARDOWN_TIMEOUT);
+        if logged_out.load(std::sync::atomic::Ordering::SeqCst) {
+            // Only now, with the runtime down and every session
+            // connection closed, is the removal safe from being
+            // recreated behind our back.
+            session::remove_account_dir_after_logout(&config.account_dir());
+        }
         result
     }
 }

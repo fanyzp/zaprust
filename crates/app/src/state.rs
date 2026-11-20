@@ -738,10 +738,12 @@ pub(crate) struct App {
     pub(crate) groups: GroupsState,
     /// Contacts blocked from this client (live: also sent to the
     /// backend; demo: local state with an honest caption).
-    /// Persisted with the settings, and replaced by the backend's
-    /// connect-time Blocklist event when a live session reports
-    /// the server's list: the persisted copy only covers the time
-    /// before that fetch lands.
+    /// Persisted in the encrypted archive store (privacy audit
+    /// A6; older builds kept it in the settings file, whose copy
+    /// is migrated on the first live start), and replaced by the
+    /// backend's connect-time Blocklist event when a live session
+    /// reports the server's list: the persisted copy only covers
+    /// the time before that fetch lands.
     pub(crate) blocked_chats: std::collections::HashSet<u64>,
     /// Profile panel group-edit form state.
     pub(crate) profile_form_for: Option<u64>,

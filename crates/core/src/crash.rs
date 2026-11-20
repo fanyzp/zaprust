@@ -141,6 +141,15 @@ impl CrashReport {
         let json = serde_json::to_string_pretty(&self)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         std::fs::write(&path, json)?;
+        // Owner-only from the start (0600 on Unix): a report is
+        // exactly the kind of file a user is asked to share, and
+        // the startup hardening pass should not be its only
+        // protection (privacy audit A4/A5).
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+        }
         prune_reports(dir);
         Ok(path)
     }

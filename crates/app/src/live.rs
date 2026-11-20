@@ -498,6 +498,28 @@ impl crate::state::App {
             // A1). Best-effort; a later start retries.
             backend::remove_legacy_data_dir();
         }
+        if let Some(store) = &store_opt {
+            // The blocked set's persisted home is this encrypted
+            // archive (privacy audit A6). A set already stored
+            // here is the last known truth and replaces whatever
+            // the settings file's legacy copy said. With nothing
+            // stored yet, a non-empty legacy copy (loaded from
+            // settings.json at startup) migrates in, so blocks
+            // made under an older build survive the move; from
+            // here on the settings file never carries the set
+            // again (settings_json omits it).
+            match store.blocked_chats() {
+                Ok(Some(ids)) => {
+                    self.blocked_chats = ids.into_iter().collect();
+                }
+                Ok(None) if !self.blocked_chats.is_empty() => {
+                    let mut ids: Vec<u64> = self.blocked_chats.iter().copied().collect();
+                    ids.sort_unstable();
+                    let _ = store.set_blocked_chats(&ids);
+                }
+                _ => {}
+            }
+        }
         let repaint_ctx = ctx.clone();
         let wake: backend::WakeFn = std::sync::Arc::new(move || repaint_ctx.request_repaint());
         let config = BackendConfig { data_dir, account_id: "default".to_owned(), db_key };
@@ -1157,10 +1179,12 @@ impl crate::state::App {
                 // persisted copy that covered the time before
                 // this fetch landed. Chat ids are JID hashes, so
                 // the adoption needs no chat list. The adopted
-                // set is not persisted here: local toggles
-                // persist the set they produce, and this list is
-                // re-fetched at every connect.
+                // set is written through to the persisted copy
+                // (the encrypted archive store, privacy audit
+                // A6), so the stored truth is the server's, not
+                // merely the last local toggle's.
                 self.blocked_chats = jids.iter().map(|j| jid_id(j)).collect();
+                self.persist_blocked_chats();
             }
             BackendEvent::MediaSaved { path, .. } => {
                 self.notice = Some(format!("Saved to {path}"));
@@ -1568,6 +1592,15 @@ impl crate::state::App {
                 let _ = store.delete_chat(chat_jid);
             }
         }
+        // Media the user saved from this chat sits in the
+        // downloads folder as plaintext files of their own: the
+        // chat's deletion takes them too, or the messages would
+        // survive their own deletion indefinitely (privacy
+        // audit A3). Chat exports are not touched: an export is
+        // a document the user deliberately created, and the
+        // Storage page already discloses that exports are not
+        // encrypted.
+        backend::remove_downloads_for_chat(&backend::data_dir(), chat_jid);
         self.unread_live.remove(&chat_id);
         self.live_typing.remove(&chat_id);
         self.pending_notifications.retain(|n| n.chat_id != chat_id);
@@ -1644,6 +1677,13 @@ impl crate::state::App {
         }
         for (msg_id, protocol_id) in &doomed {
             self.forget_live_message(chat_id, *msg_id, protocol_id.as_deref());
+            // A cleared message's saved download goes with it
+            // (privacy audit A3); kept (starred) messages are
+            // not in `doomed`, so their downloads stay, exactly
+            // like their archive rows.
+            if let Some(protocol_id) = protocol_id {
+                backend::remove_download_for_message(&backend::data_dir(), chat_jid, protocol_id);
+            }
         }
         if !doomed.is_empty() {
             self.refresh_preview_after_removal(chat_id);
@@ -1683,6 +1723,9 @@ impl crate::state::App {
                 let _ = store.delete_message(chat_jid, protocol_id);
             }
         }
+        // The message's saved download, if any, goes with it
+        // (privacy audit A3).
+        backend::remove_download_for_message(&backend::data_dir(), chat_jid, protocol_id);
         self.forget_live_message(chat_id, msg_id, Some(protocol_id));
         if removed_newest {
             self.refresh_preview_after_removal(chat_id);
@@ -2102,6 +2145,22 @@ impl crate::state::App {
             }
         }
         self.privacy_state = map;
+    }
+
+    /// Persists the blocked-chat set to its home, the encrypted
+    /// archive store (privacy audit A6: the set used to ride in
+    /// the plaintext settings file as FNV-1a hashes of
+    /// phone-number JIDs, reversible by dictionary over the
+    /// phone-number space). No live session (demo mode, or the
+    /// archive failed to open) means no persisted copy: the set
+    /// then lives in memory for the session, and in live mode
+    /// the server's connect-time blocklist re-seeds it anyway.
+    pub(crate) fn persist_blocked_chats(&self) {
+        if let Some(store) = self.live.as_ref().and_then(|s| s.store.as_ref()) {
+            let mut ids: Vec<u64> = self.blocked_chats.iter().copied().collect();
+            ids.sort_unstable();
+            let _ = store.set_blocked_chats(&ids);
+        }
     }
 
     /// Names this session already knows for people, keyed by
@@ -3369,6 +3428,29 @@ mod chat_state_routing_tests {
         tx.send(BackendEvent::Blocklist(Vec::new())).unwrap();
         drain_all(&mut app, &ctx);
         assert!(app.blocked_chats.is_empty(), "an empty server list clears the set");
+    }
+
+    /// The blocked set no longer persists in the plaintext
+    /// settings document (privacy audit A6): its ids are FNV-1a
+    /// hashes of phone-number JIDs, and the phone-number space
+    /// is small enough to dictionary-reverse, so the set's home
+    /// is the encrypted archive store (covered by the store
+    /// round-trip test). The settings JSON must not carry the
+    /// field at all, which also scrubs the legacy copy older
+    /// builds wrote on the next settings save.
+    #[test]
+    fn settings_json_never_carries_the_blocked_set() {
+        let (mut app, _tx, _ctx, _cmd_rx) = live_app();
+        app.blocked_chats.insert(424_242);
+        let json = app.settings_json();
+        assert!(
+            json.get("blocked_chats").is_none(),
+            "the settings document must not hold the blocked set: {json}"
+        );
+        assert!(
+            !json.to_string().contains("424242"),
+            "no blocked id leaks into any other settings field"
+        );
     }
 
     /// The connect-time privacy fetch reconciles the local

@@ -27,8 +27,9 @@ use super::translate::{
     privacy_map, translate_event, translate_message, translate_special, user_part,
 };
 use super::util::{
-    build_message_target, cap_poll_secrets, download_proto, lock_cache, parse_address,
-    received_poll_secret, sanitize_id, unix_now, PollSecrets, ProtoCache,
+    abort_latest, build_message_target, cap_poll_secrets, download_proto, lock_cache,
+    parse_address, received_poll_secret, sanitize_id, spawn_latest, unix_now, LatestTask,
+    PollSecrets, ProtoCache,
 };
 
 /// How many session events may wait for the event callbacks.
@@ -116,6 +117,12 @@ pub(super) async fn run_async(
     let call_incoming_events = call_incoming.clone();
     #[cfg(feature = "calls")]
     let call_active: CallActive = std::sync::Arc::new(std::sync::Mutex::new(None));
+    // The privacy-settings fetch spawned by `on_connected`. The slot
+    // keeps only the newest fetch: a reconnect aborts the fetch it
+    // replaces, so a slow fetch from an earlier connect can never
+    // land after a newer one and overwrite it with stale state.
+    let privacy_fetch: LatestTask = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let privacy_fetch_conn = privacy_fetch.clone();
 
     let sink = events.clone();
     let sink_pair = events.clone();
@@ -147,11 +154,22 @@ pub(super) async fn run_async(
         })
         .on_connected(move |client| {
             let sink = sink_conn.clone();
+            let fetch_slot = privacy_fetch_conn.clone();
             async move {
                 sink.emit(BackendEvent::Connected { account: "WhatsApp account".to_owned() });
-                if let Ok(resp) = client.fetch_privacy_settings().await {
-                    sink.emit(BackendEvent::PrivacyState(privacy_map(&resp)));
-                }
+                // The privacy fetch is a network round trip and this
+                // callback runs on the library's single ordered
+                // delivery worker: awaiting it here would stall every
+                // queued message and receipt behind it on each
+                // connect, worst case for the library's IQ timeout.
+                // It runs as its own task instead and emits
+                // PrivacyState when it lands; a failed fetch stays
+                // silent, exactly as before.
+                spawn_latest(&fetch_slot, async move {
+                    if let Ok(resp) = client.fetch_privacy_settings().await {
+                        sink.emit(BackendEvent::PrivacyState(privacy_map(&resp)));
+                    }
+                });
             }
         })
         .on_logged_out(move |_info| {
@@ -1355,6 +1373,12 @@ pub(super) async fn run_async(
             }
         }
     }
+
+    // A privacy fetch still in flight belongs to this session: stop
+    // it so it cannot emit PrivacyState after the session has ended.
+    // (The runtime drop at the end of `Backend::run` would abort it
+    // anyway; doing it here keeps the guarantee local.)
+    abort_latest(&privacy_fetch);
 
     match run_outcome {
         Some(outcome) => {

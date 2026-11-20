@@ -77,6 +77,36 @@ pub(super) fn lock_cache<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_
     m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+/// Slot for the session's current background job of one kind: a new
+/// job replaces the running one instead of racing it, so results
+/// from an older job can never land after (and overwrite) a newer
+/// job's. Holds only the abort handle; dropping the join handle
+/// detaches the job, and the abort handle is what stops it.
+pub(super) type LatestTask = std::sync::Arc<std::sync::Mutex<Option<tokio::task::AbortHandle>>>;
+
+/// Spawns `task` as the slot's current job, aborting the job it
+/// replaces. The replaced job is cancelled wherever it is suspended,
+/// so whatever it would have emitted or stored never happens.
+pub(super) fn spawn_latest(
+    slot: &LatestTask,
+    task: impl std::future::Future<Output = ()> + Send + 'static,
+) {
+    let handle = tokio::spawn(task);
+    let replaced = lock_cache(slot).replace(handle.abort_handle());
+    if let Some(replaced) = replaced {
+        replaced.abort();
+    }
+}
+
+/// Aborts the slot's current job, if one is running (session
+/// teardown: the job belongs to the dying session and must not
+/// deliver its result after the session has ended).
+pub(super) fn abort_latest(slot: &LatestTask) {
+    if let Some(handle) = lock_cache(slot).take() {
+        handle.abort();
+    }
+}
+
 /// Parses the owned parts of a message reference; the caller builds
 /// the borrowing `MessageRef` in its own scope (the reference
 /// borrows these parts, so it cannot outlive them).
@@ -342,5 +372,56 @@ mod tests {
         let (media, ext) = media_part(&msg).expect("a document is downloadable media");
         assert_eq!(ext, "bin");
         assert!(check_declared_length(media.file_length()).is_err());
+    }
+
+    /// A job replaced via `spawn_latest` must never deliver its
+    /// result: this is what stops a slow privacy fetch from an
+    /// earlier connect overwriting a newer connect's state.
+    #[test]
+    fn spawn_latest_discards_the_replaced_jobs_result() {
+        let slot: LatestTask = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let landed = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let landed_in = landed.clone();
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime builds")
+            .block_on(async move {
+                let stale = landed_in.clone();
+                spawn_latest(&slot, async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    lock_cache(&stale).push("stale");
+                });
+                let fresh = landed_in.clone();
+                spawn_latest(&slot, async move {
+                    lock_cache(&fresh).push("fresh");
+                });
+                // Long enough for the stale job to have landed, had
+                // it not been replaced.
+                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            });
+        assert_eq!(*lock_cache(&landed), vec!["fresh"]);
+    }
+
+    /// `abort_latest` stops the current job outright (the session
+    /// teardown path): its result never lands.
+    #[test]
+    fn abort_latest_stops_the_current_job() {
+        let slot: LatestTask = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let landed = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let landed_in = landed.clone();
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime builds")
+            .block_on(async move {
+                spawn_latest(&slot, async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    lock_cache(&landed_in).push("late");
+                });
+                abort_latest(&slot);
+                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            });
+        assert!(lock_cache(&landed).is_empty());
     }
 }

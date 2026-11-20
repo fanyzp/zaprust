@@ -336,7 +336,9 @@ pub enum BackendCommand {
     /// Forward a message to another chat. The real backend can
     /// only forward messages it saw during this session (it needs
     /// the original protocol payload); the fake backend forwards
-    /// from its scripted set.
+    /// from its scripted set. View-once media is refused by both
+    /// backends with an `Error` event: media the sender marked
+    /// view-once is never relayed.
     ForwardMessage {
         /// Source chat JID.
         from_chat_jid: String,
@@ -487,7 +489,9 @@ pub enum BackendCommand {
     },
     /// Download a media message's bytes to the downloads folder
     /// under the app data dir. Answered with `MediaSaved` or an
-    /// `Error` event.
+    /// `Error` event. View-once media is refused with an `Error`
+    /// event and nothing is written: it is viewed inside the app
+    /// only, never saved to disk.
     DownloadMedia {
         /// Chat JID.
         chat_jid: String,

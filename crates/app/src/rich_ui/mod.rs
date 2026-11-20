@@ -513,6 +513,14 @@ impl App {
         let Some(msg) = self.conversation.iter().find(|m| m.id == msg_id).cloned() else {
             return;
         };
+        // View-once media is never relayed, in either mode: the
+        // sender marked it to be viewed once, in place. (The menu
+        // also hides Forward for these; this is the backstop for
+        // every other entry point, and the backend refuses too.)
+        if msg.is_view_once() {
+            self.notice = Some("View-once media cannot be forwarded.".to_owned());
+            return;
+        }
         if self.live.is_some() {
             let (Some(from_jid), Some(to_jid), Some(pid)) = (
                 self.live_jid(source_chat),
@@ -672,7 +680,13 @@ impl App {
 
     /// Asks the backend to download a media message's bytes
     /// (session-scoped; the reply arrives as a MediaSaved event).
+    /// View-once media is refused here, before any command is
+    /// sent: it is viewed inside the app only, never saved.
     pub(crate) fn download_media(&mut self, msg_id: u64) {
+        if self.conversation.iter().find(|m| m.id == msg_id).is_some_and(|m| m.is_view_once()) {
+            self.notice = Some("View-once media cannot be saved.".to_owned());
+            return;
+        }
         if let (Some(jid), Some(pid)) =
             (self.live_jid(self.selected_chat), self.protocol_ids.get(&msg_id).cloned())
         {

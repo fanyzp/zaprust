@@ -133,14 +133,20 @@ impl App {
                                 | MessageKind::Voice { .. }
                                 | MessageKind::Document { .. }
                         );
-                        if crate::widgets::menu_item_icon(
-                            ui,
-                            t,
-                            Some(crate::icons::Icon::Forward),
-                            "Forward\u{2026}",
-                            None,
-                        )
-                        .clicked()
+                        // View-once media gets neither Forward nor
+                        // Save: it is viewed once, in place, and the
+                        // client never offers a way to keep or relay
+                        // it (the actions refuse as a backstop).
+                        let view_once = msg.is_view_once();
+                        if !view_once
+                            && crate::widgets::menu_item_icon(
+                                ui,
+                                t,
+                                Some(crate::icons::Icon::Forward),
+                                "Forward\u{2026}",
+                                None,
+                            )
+                            .clicked()
                         {
                             self.forward_from = Some(msg.id);
                             close = true;
@@ -183,6 +189,7 @@ impl App {
                             close = true;
                         }
                         if is_media
+                            && !view_once
                             && self.live.is_some()
                             && crate::widgets::menu_item_icon(
                                 ui,

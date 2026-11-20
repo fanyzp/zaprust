@@ -277,6 +277,21 @@ impl Message {
         self.sender.is_none() && self.kind != MessageKind::System
     }
 
+    /// Whether this message is view-once media: a photo or video
+    /// the sender marked view-once. The flag lives on the kind, the
+    /// same place the backend's unwrap of the view-once protocol
+    /// wrapper puts it; a disappearing (ephemeral) message is a
+    /// different thing and does not set it. View-once media must
+    /// never be saved to disk, forwarded, or exported by the
+    /// client, so every such path checks this first.
+    #[must_use]
+    pub fn is_view_once(&self) -> bool {
+        matches!(
+            self.kind,
+            MessageKind::Image { view_once: true, .. } | MessageKind::Video { view_once: true, .. }
+        )
+    }
+
     /// The day-separator label for this message: its stored day,
     /// or "Today" when no day was recorded.
     #[must_use]
@@ -1185,6 +1200,26 @@ fn channel(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn view_once_flag_lives_on_the_media_kind_only() {
+        let mut photo = Message::theirs(1, "Sarah", "", "10:00");
+        photo.kind = MessageKind::Image { caption: String::new(), view_once: true };
+        assert!(photo.is_view_once());
+        let mut video = Message::theirs(2, "Sarah", "", "10:01");
+        video.kind = MessageKind::Video { caption: String::new(), view_once: true, secs: 3 };
+        assert!(video.is_view_once());
+        // Ordinary media is not view-once.
+        let mut plain_photo = Message::theirs(3, "Sarah", "", "10:02");
+        plain_photo.kind = MessageKind::Image { caption: String::new(), view_once: false };
+        assert!(!plain_photo.is_view_once());
+        // A disappearing text message is ephemeral, not view-once:
+        // the two flags must not be conflated.
+        let mut timed = Message::theirs(4, "Sarah", "gone soon", "10:03");
+        timed.expires_at = 1_000;
+        assert!(!timed.is_view_once());
+        assert!(!Message::theirs(5, "Sarah", "hello", "10:04").is_view_once());
+    }
 
     #[test]
     fn expiry_uses_the_supplied_clock() {

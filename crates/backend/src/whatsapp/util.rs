@@ -173,6 +173,37 @@ fn unwrap_media_proto(
     current
 }
 
+/// Whether a protocol message carries view-once media, in any of
+/// its wrapper forms (v1, v2, v2 extension). The walk cannot ride
+/// on `get_base_message`: one library pass peels device-sent,
+/// ephemeral, and view-once in a single fixed order, so it can
+/// step clean over a view-once layer without ever exposing it as
+/// the current message. Instead the wrappers that can enclose a
+/// view-once message (device-sent, ephemeral) are descended one
+/// layer at a time and every layer is checked. An ephemeral
+/// wrapper alone does not make a message view-once: disappearing
+/// media that is not view-once stays downloadable and
+/// forwardable while it exists.
+pub(super) fn proto_is_view_once(proto: &whatsapp_rust::prelude::wa::Message) -> bool {
+    let mut current = proto;
+    for _ in 0..8 {
+        if current.view_once_message.as_option().is_some()
+            || current.view_once_message_v2.as_option().is_some()
+            || current.view_once_message_v2_extension.as_option().is_some()
+        {
+            return true;
+        }
+        let inner = current
+            .device_sent_message
+            .as_option()
+            .and_then(|dsm| dsm.message.as_option())
+            .or_else(|| current.ephemeral_message.as_option().and_then(|w| w.message.as_option()));
+        let Some(inner) = inner else { return false };
+        current = inner;
+    }
+    false
+}
+
 /// Hard cap on one media download, in plaintext bytes. WhatsApp
 /// allows documents up to about 2 GB and the declared length is
 /// sender-controlled, so without a cap one hostile or accidental
@@ -287,6 +318,12 @@ pub(super) async fn download_proto(
     dir: &std::path::Path,
     stem: &str,
 ) -> Result<std::path::PathBuf, String> {
+    // View-once media is never written to disk: the sender marked
+    // it to be viewed once inside the app, so the save path
+    // refuses before any byte moves.
+    if proto_is_view_once(proto) {
+        return Err("View-once media cannot be saved.".to_owned());
+    }
     // Media inside view-once and ephemeral messages travels wrapped:
     // the payload fields sit on the inner message, so unwrap first or
     // those messages report no downloadable media even though the
@@ -366,6 +403,35 @@ mod tests {
         // match, which is the failure this guards against.
         assert!(wrap_view_once(image_proto()).image_message.as_option().is_none());
         assert!(wrap_ephemeral(image_proto()).image_message.as_option().is_none());
+    }
+
+    fn wrap_view_once_v2(inner: wa::Message) -> wa::Message {
+        let mut wrapper = wa::message::FutureProofMessage::default();
+        wrapper.message = MessageField::some(inner);
+        let mut msg = wa::Message::default();
+        msg.view_once_message_v2 = MessageField::some(wrapper);
+        msg
+    }
+
+    /// View-once detection must see the wrapper in every nesting
+    /// order the sender can produce, and must not mistake a plain
+    /// ephemeral message for view-once (disappearing media stays
+    /// saveable and forwardable while it exists).
+    #[test]
+    fn view_once_detection_sees_through_wrappers() {
+        assert!(!proto_is_view_once(&image_proto()));
+        assert!(!proto_is_view_once(&wrap_ephemeral(image_proto())));
+        assert!(!proto_is_view_once(&wrap_ephemeral(wrap_ephemeral(image_proto()))));
+        for wrapped in [
+            wrap_view_once(image_proto()),
+            wrap_view_once_v2(image_proto()),
+            wrap_ephemeral(wrap_view_once(image_proto())),
+            wrap_view_once(wrap_ephemeral(image_proto())),
+            wrap_ephemeral(wrap_view_once_v2(image_proto())),
+            wrap_ephemeral(wrap_ephemeral(wrap_view_once(image_proto()))),
+        ] {
+            assert!(proto_is_view_once(&wrapped), "a view-once layer was missed");
+        }
     }
 
     /// The size cap's fast path: a declared length over the cap is

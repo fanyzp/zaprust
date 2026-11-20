@@ -29,8 +29,8 @@ use super::translate::{
 };
 use super::util::{
     abort_latest, build_message_target, cap_poll_secrets, download_proto, lock_cache,
-    parse_address, received_poll_secret, sanitize_id, spawn_latest, unix_now, LatestTask,
-    PollSecrets, ProtoCache,
+    parse_address, proto_is_view_once, received_poll_secret, sanitize_id, spawn_latest, unix_now,
+    LatestTask, PollSecrets, ProtoCache,
 };
 
 /// How many session events may wait for the event callbacks.
@@ -865,6 +865,14 @@ pub(super) async fn run_async(
                         .get(&(from_chat_jid.clone(), message_id.clone()))
                         .cloned();
                     match (proto, to_chat_jid.parse::<Jid>()) {
+                        (Some(proto), Ok(_)) if proto_is_view_once(&proto) => {
+                            // The app gates this too; the backend
+                            // refuses as well so no caller can relay
+                            // media the sender marked view-once.
+                            events.emit(BackendEvent::Error {
+                                message: "View-once media cannot be forwarded.".to_owned(),
+                            });
+                        }
                         (Some(proto), Ok(to)) => {
                             if let Err(e) = client.forward_message(to, &proto).await {
                                 events.emit(BackendEvent::Error {

@@ -2050,6 +2050,46 @@ mod tests {
         App::new(args, &ctx)
     }
 
+    fn media_msg(id: u64, view_once: bool) -> Message {
+        let mut msg = Message::theirs(id, "Sarah", "", "10:00");
+        msg.kind = core::model::MessageKind::Image { caption: String::new(), view_once };
+        msg
+    }
+
+    #[test]
+    fn forward_refuses_view_once_and_still_forwards_plain_media() {
+        let mut app = demo_app();
+        let source = app.chats[0].id;
+        let target = app.chats[1].id;
+        app.selected_chat = source;
+        app.conversation = vec![media_msg(9001, true), media_msg(9002, false)];
+        let count = |app: &App| app.chats.iter().find(|c| c.id == target).unwrap().messages.len();
+        let before = count(&app);
+
+        app.do_forward(9001, target);
+        assert_eq!(app.notice.as_deref(), Some("View-once media cannot be forwarded."));
+        assert_eq!(count(&app), before, "view-once media must not land in the target chat");
+
+        app.do_forward(9002, target);
+        assert_eq!(app.notice.as_deref(), Some("Message forwarded."));
+        assert_eq!(count(&app), before + 1, "ordinary media still forwards");
+    }
+
+    #[test]
+    fn save_refuses_view_once_and_passes_plain_media_through() {
+        let mut app = demo_app();
+        app.conversation = vec![media_msg(9001, true), media_msg(9002, false)];
+
+        app.download_media(9001);
+        assert_eq!(app.notice.as_deref(), Some("View-once media cannot be saved."));
+
+        // Demo mode has no live session, so ordinary media reaches
+        // the usual path and earns the session notice there: the
+        // view-once guard must not be what stops it.
+        app.download_media(9002);
+        assert_eq!(app.notice.as_deref(), Some("That media is not available in this session."));
+    }
+
     #[test]
     fn default_args_are_the_plain_live_user_run() {
         // The test process passes no mode flags, which is the

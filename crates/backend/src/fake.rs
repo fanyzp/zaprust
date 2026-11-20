@@ -1087,6 +1087,9 @@ impl Backend for FakeBackend {
                         .cloned()
                         .or_else(|| polls.values().find(|m| m.id == message_id).cloned());
                     match source {
+                        Some(msg) if msg.view_once => events.emit(BackendEvent::Error {
+                            message: "View-once media cannot be forwarded.".to_owned(),
+                        }),
                         Some(mut msg) => {
                             sent_counter += 1;
                             msg.id = format!("fake-fwd-{sent_counter}");

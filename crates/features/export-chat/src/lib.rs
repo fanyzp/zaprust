@@ -23,8 +23,14 @@ use core::model::{Chat, Message, MessageKind};
 /// export as the standard placeholder, and messages whose archived
 /// body survived a sender delete (older archives) are marked
 /// `(deleted by sender, retained locally)`.
+///
+/// View-once media messages are excluded entirely, from both
+/// export formats: the sender marked them to be viewed once,
+/// in place, so an export does not carry them, not even as a
+/// placeholder. The header count counts only exported messages.
 #[must_use]
 pub fn export_markdown(chat: &Chat, messages: &[Message], exported_at: &str) -> String {
+    let messages: Vec<&Message> = messages.iter().filter(|m| !m.is_view_once()).collect();
     let mut out = String::new();
     out.push_str(&format!("# {}\n\n", chat.title));
     if !chat.subtitle.is_empty() {
@@ -59,6 +65,7 @@ pub fn export_markdown(chat: &Chat, messages: &[Message], exported_at: &str) -> 
 /// [`export_markdown`], no Markdown formatting).
 #[must_use]
 pub fn export_text(chat: &Chat, messages: &[Message], exported_at: &str) -> String {
+    let messages: Vec<&Message> = messages.iter().filter(|m| !m.is_view_once()).collect();
     let mut out = String::new();
     out.push_str(&format!(
         "{}, exported by Zaprust · {exported_at} · {} messages\n\n",
@@ -84,7 +91,11 @@ fn body_text(msg: &Message) -> String {
         MessageKind::Text | MessageKind::System => msg.body.clone(),
         MessageKind::Image { caption, view_once } => {
             if *view_once {
-                format!("[view-once photo: {caption}]")
+                // Unreachable through the export entry points
+                // (view-once messages are filtered out first);
+                // if that ever changes, the placeholder still
+                // must not carry the caption out.
+                "[view-once photo]".to_string()
             } else {
                 format!("[photo: {caption}]")
             }
@@ -176,6 +187,36 @@ mod tests {
         let txt = export_text(&chats[0], &msgs, "2026-11-14");
         assert!(txt.contains("[10:00] Me: schedule moved to Thursday (edited)"), "{txt}");
         assert!(txt.contains("[this message was deleted]"), "{txt}");
+    }
+
+    #[test]
+    fn view_once_media_is_excluded_from_exports() {
+        use core::model::MessageKind;
+        let chats = demo_chats();
+        let mut vo_photo = Message::theirs(10, "Sarah", "vo caption", "10:10");
+        vo_photo.kind = MessageKind::Image { caption: "vo caption".to_owned(), view_once: true };
+        let mut vo_video = Message::theirs(11, "Sarah", "vo caption", "10:11");
+        vo_video.kind =
+            MessageKind::Video { caption: "vo caption".to_owned(), view_once: true, secs: 4 };
+        let mut photo = Message::theirs(12, "Sarah", "hello", "10:12");
+        photo.kind = MessageKind::Image { caption: "hello".to_owned(), view_once: false };
+        let text = Message::theirs(13, "Sarah", "see you at eight", "10:13");
+        let msgs = vec![vo_photo, vo_video, photo, text];
+        let md = export_markdown(&chats[0], &msgs, "2026-11-14");
+        // Only the ordinary photo and the text message are exported.
+        assert!(md.contains("Exported by Zaprust · 2026-11-14 · 2 messages"), "{md}");
+        assert!(md.contains("[photo: hello]"), "{md}");
+        assert!(md.contains("see you at eight"), "{md}");
+        // No trace of the view-once messages: no caption, no
+        // placeholder, not even their timestamps.
+        assert!(!md.contains("vo caption"), "view-once caption leaked: {md}");
+        assert!(!md.contains("view-once"), "view-once placeholder leaked: {md}");
+        assert!(!md.contains("10:10") && !md.contains("10:11"), "{md}");
+        let txt = export_text(&chats[0], &msgs, "2026-11-14");
+        assert!(txt.contains("2 messages"), "{txt}");
+        assert!(txt.contains("[photo: hello]"), "{txt}");
+        assert!(!txt.contains("vo caption"), "view-once caption leaked: {txt}");
+        assert!(!txt.contains("view-once"), "view-once placeholder leaked: {txt}");
     }
 
     #[test]

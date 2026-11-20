@@ -663,6 +663,35 @@ fn forward_command_copies_the_message_into_the_target_chat() {
 }
 
 #[test]
+fn forward_command_refuses_view_once_media() {
+    let (ch, _log) = linked_backend();
+    let _ = collect_until(
+        &ch.events,
+        3,
+        |e| matches!(e, BackendEvent::MessageUpsert(m) if m.id == "fake-3"),
+    );
+    // fake-vo-1 is the scripted view-once video in the DM.
+    ch.commands
+        .send(BackendCommand::ForwardMessage {
+            from_chat_jid: "10000000001@s.whatsapp.net".to_owned(),
+            message_id: "fake-vo-1".to_owned(),
+            to_chat_jid: "10000000002@g.us".to_owned(),
+        })
+        .unwrap();
+    let events = collect_until(&ch.events, 5, |e| matches!(e, BackendEvent::Error { .. }));
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, BackendEvent::Error { message } if message.contains("View-once"))),
+        "forwarding view-once media must be refused with an error"
+    );
+    assert!(
+        !events.iter().any(|e| matches!(e, BackendEvent::MessageUpsert(m) if m.forwarded)),
+        "no forwarded copy of the view-once message may appear"
+    );
+}
+
+#[test]
 fn chat_action_commands_update_the_chat_row() {
     let (ch, _log) = linked_backend();
     let _ = collect_until(

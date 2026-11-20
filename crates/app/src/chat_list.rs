@@ -254,17 +254,13 @@ impl App {
                     self.community_origin = None;
                     let previous = self.selected_chat;
                     if id != previous {
-                        // Per-chat composer drafts: park the
-                        // draft of the chat being left, restore
-                        // the target chat's parked draft.
-                        let leaving = std::mem::take(&mut self.composer.draft);
-                        if leaving.trim().is_empty() {
-                            self.composer.chat_drafts.remove(&previous);
-                        } else {
-                            self.composer.chat_drafts.insert(previous, leaving);
-                        }
-                        self.composer.draft =
-                            self.composer.chat_drafts.remove(&id).unwrap_or_default();
+                        // Per-chat composer state: park
+                        // everything the composer holds for the
+                        // chat being left (draft, staged files,
+                        // quote and edit targets), restore the
+                        // target chat's. The same helper runs on
+                        // every switch path (see state.rs).
+                        self.switch_composer_chat(previous, id);
                     }
                     // The unread count at open time, captured
                     // before the demo branch below clears the

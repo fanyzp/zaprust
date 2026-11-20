@@ -460,7 +460,15 @@ impl crate::state::App {
             self.notice = Some(note);
         }
         self.live_mode = true;
-        self.selected_chat = self.chats.first().map_or(0, |c| c.id);
+        // Entering live mode is a chat switch too (the Add
+        // account path starts it from a running demo session):
+        // the composer state of the chat being left parks under
+        // its own id, and the first live chat starts from a
+        // clean composer, never with demo state inside it.
+        let first_live = self.chats.first().map_or(0, |c| c.id);
+        let previous = self.selected_chat;
+        self.switch_composer_chat(previous, first_live);
+        self.selected_chat = first_live;
         self.sync_conversation();
         self.send_backend(BackendCommand::ConnectQr);
         if fake {
@@ -489,6 +497,24 @@ impl crate::state::App {
             return;
         }
         self.send_backend(BackendCommand::ConnectPairCode { phone: digits });
+    }
+
+    /// Resolves the composer's reply target into the quote that
+    /// rides on the wire for the OPEN chat. The protocol id map
+    /// is global across chats, so the target must first prove it
+    /// belongs to the open conversation: a quote set in another
+    /// chat resolves to nothing here instead of landing in the
+    /// wrong conversation. (The per-chat parking keeps the
+    /// target from ever being foreign in the first place; this
+    /// is the boundary check behind it.)
+    pub(crate) fn live_quote_for_reply(&self) -> Option<QuotedRef> {
+        let (id, _, excerpt) = self.composer.reply_to.as_ref()?;
+        if !self.in_open_conversation(*id) {
+            return None;
+        }
+        let message_id = self.protocol_ids.get(id)?.clone();
+        let sender_jid = self.sender_jids.get(id).cloned();
+        Some(QuotedRef { message_id, sender_jid, excerpt: excerpt.chars().take(200).collect() })
     }
 
     /// Sends a text message to the currently selected live chat,

@@ -122,6 +122,18 @@ impl App {
 
     /// Applies the composer edit to the message being edited.
     pub(crate) fn apply_edit(&mut self, msg_id: u64, new_body: &str) {
+        // The edit target must live in the OPEN conversation.
+        // The composer takes the target from whichever chat the
+        // edit started in; without this check the live branch
+        // below would pair the open chat's JID with another
+        // chat's protocol id and edit a message in the wrong
+        // conversation. A target that is not here (its chat was
+        // left, or it was revoked meanwhile) refuses silently:
+        // the composer has already consumed the edit state, so
+        // nothing stale survives either.
+        if !self.in_open_conversation(msg_id) {
+            return;
+        }
         for msg in &mut self.conversation {
             if msg.id == msg_id {
                 msg.body = new_body.to_owned();

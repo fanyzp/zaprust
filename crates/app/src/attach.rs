@@ -47,9 +47,15 @@ impl App {
     /// documents; photos and videos may arrive as a set (the album
     /// send path).
     pub(crate) fn stage_files(&mut self, ctx: &egui::Context, paths: Vec<std::path::PathBuf>) {
+        if paths.is_empty() {
+            return;
+        }
         for path in paths {
             self.composer.staged.push(staged_from_path(ctx, &path));
         }
+        // The stage belongs to the chat it was attached in;
+        // `send_staged` refuses to send it anywhere else.
+        self.composer.staged_chat = Some(self.selected_chat);
     }
 
     /// Sends everything staged, as one media message per file
@@ -60,8 +66,22 @@ impl App {
         if self.composer.staged.is_empty() {
             return;
         }
+        // Hard backstop behind the per-chat parking: a stage
+        // that belongs to another chat (a switch path that did
+        // not park, restored state from an older build) is
+        // refused and dropped, never sent into the conversation
+        // that happens to be open.
+        if self.composer.staged_chat != Some(self.selected_chat) {
+            self.composer.staged.clear();
+            self.composer.staged_caption.clear();
+            self.composer.staged_chat = None;
+            self.notice =
+                Some("Those files were attached in a different chat and were not sent.".to_owned());
+            return;
+        }
         let staged = std::mem::take(&mut self.composer.staged);
         let caption = std::mem::take(&mut self.composer.staged_caption);
+        self.composer.staged_chat = None;
         // View-once only makes sense for one photo or video: an
         // album opens one photo at a time by its own rules.
         let single = staged.len() == 1;

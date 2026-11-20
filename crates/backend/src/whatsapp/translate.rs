@@ -672,6 +672,30 @@ pub(super) fn user_part(jid: &str) -> String {
     jid.split('@').next().unwrap_or(jid).to_owned()
 }
 
+/// The display name the server rendered for a group participant:
+/// the participant details' display name, else the username.
+/// Empty when the server provided neither. The raw phone number
+/// or LID is never substituted here: the app resolves a label
+/// from its own data or masks the identifier, because a bare
+/// number must not be the rendered name (privacy finding D5).
+pub(super) fn participant_name(p: &whatsapp_rust::GroupParticipant) -> String {
+    if let Some(details) = &p.details {
+        if let Some(name) = &details.display_name {
+            let name = name.trim();
+            if !name.is_empty() {
+                return name.to_owned();
+            }
+        }
+    }
+    if let Some(username) = &p.username {
+        let username = username.trim();
+        if !username.is_empty() {
+            return username.to_owned();
+        }
+    }
+    String::new()
+}
+
 #[cfg(test)]
 mod mute_action_tests {
     use super::mute_action_state;

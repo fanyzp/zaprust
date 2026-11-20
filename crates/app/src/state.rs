@@ -390,11 +390,28 @@ pub(crate) struct MediaState {
     pub(crate) voice_rates: std::collections::HashMap<u64, f32>,
 }
 
+/// One resolved group-member row for the profile panel. The
+/// address is the participant JID, used only as the target of
+/// backend commands; it is never rendered. The label is the
+/// person's resolved display name, or a masked identifier when
+/// no name is known. The detail is the secondary line: the phone
+/// number, present only under a resolved name for a
+/// number-addressed participant (a LID-addressed row shows no
+/// number, matching how WhatsApp hides it).
+#[derive(Clone)]
+pub(crate) struct MemberRow {
+    pub(crate) address: String,
+    pub(crate) label: String,
+    pub(crate) detail: Option<String>,
+    pub(crate) admin: bool,
+}
+
 /// Group state: member lists, modes and invite data reported by the backend, plus the join-by-link and create-group dialog state.
 pub(crate) struct GroupsState {
     /// Live mode: real group member lists fetched on demand for
-    /// the profile panel: (address, display name, is admin).
-    pub(crate) live_members: std::collections::HashMap<u64, Vec<(String, String, bool)>>,
+    /// the profile panel, labels resolved on arrival (see
+    /// `MemberRow`).
+    pub(crate) live_members: std::collections::HashMap<u64, Vec<MemberRow>>,
     /// Chats whose member list was already requested this panel
     /// session (avoids re-requesting every frame).
     pub(crate) members_requested: std::collections::HashSet<u64>,
@@ -408,7 +425,8 @@ pub(crate) struct GroupsState {
     /// the backend.
     pub(crate) modes: std::collections::HashMap<u64, (bool, bool)>,
     /// Pending membership requests for the group whose dock is
-    /// open: (chat id, (jid, display name) rows).
+    /// open: (chat id, (jid, resolved display label) rows). The
+    /// JID is the review command's target and is never rendered.
     pub(crate) join_requests: Option<(u64, Vec<(String, String)>)>,
     /// The join-group-by-link dialog state.
     pub(crate) join_link_open: bool,

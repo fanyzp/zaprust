@@ -1149,7 +1149,11 @@ pub enum BackendEvent {
     GroupMembers {
         /// Group JID.
         chat_jid: String,
-        /// (jid, display name, is admin) rows.
+        /// (jid, display name, is admin) rows. The display name
+        /// is the name the server rendered for the participant,
+        /// or empty when it rendered none; the host then resolves
+        /// a label from its own data or masks the identifier. It
+        /// is never the raw phone number or LID.
         members: Vec<(String, String, bool)>,
     },
     /// A group's invite link, answering `FetchGroupInviteLink`.
@@ -1183,7 +1187,11 @@ pub enum BackendEvent {
     JoinRequests {
         /// Group JID.
         chat_jid: String,
-        /// (jid, display name) rows.
+        /// (jid, display name) rows. The protocol carries no
+        /// name for a requester, so the real backend leaves the
+        /// display name empty and the host resolves a label from
+        /// its own data or masks the identifier; it is never the
+        /// raw phone number or LID.
         requests: Vec<(String, String)>,
     },
     /// The connection dropped (the backend will try to reconnect).

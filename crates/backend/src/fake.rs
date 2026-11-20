@@ -124,12 +124,6 @@ fn default_members() -> Vec<(String, String, bool)> {
     ]
 }
 
-/// The user part of a JID (before the `@`), used as a display
-/// fallback for participants the script does not name.
-fn user_part(jid: &str) -> String {
-    jid.split('@').next().unwrap_or(jid).to_owned()
-}
-
 /// The scripted chats, in display order.
 #[must_use]
 pub fn scripted_chats() -> Vec<LiveChat> {
@@ -1188,7 +1182,7 @@ impl Backend for FakeBackend {
                     let new_jid = format!("200000000{group_counter}@g.us");
                     group_state.insert(
                         new_jid.clone(),
-                        participants.iter().map(|p| (p.clone(), user_part(p), false)).collect(),
+                        participants.iter().map(|p| (p.clone(), String::new(), false)).collect(),
                     );
                     chat_state.insert(
                         new_jid.clone(),
@@ -1235,7 +1229,7 @@ impl Backend for FakeBackend {
                         crate::ParticipantOp::Add => {
                             for p in &participants {
                                 if !members.iter().any(|(j, _, _)| j == p) {
-                                    members.push((p.clone(), user_part(p), false));
+                                    members.push((p.clone(), String::new(), false));
                                 }
                             }
                         }

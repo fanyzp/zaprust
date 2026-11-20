@@ -25,7 +25,7 @@ use super::send::{
     outgoing_location_message, outgoing_text_message, send_media, stamp_ephemeral, OutgoingMedia,
 };
 use super::translate::{
-    privacy_map, translate_event, translate_message, translate_special, user_part,
+    participant_name, privacy_map, translate_event, translate_message, translate_special, user_part,
 };
 use super::util::{
     abort_latest, build_message_target, cap_poll_secrets, download_proto, lock_cache,
@@ -60,6 +60,15 @@ const SEND_MEDIA_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(6
 /// hostage, so past the budget the session ends anyway and the
 /// runtime drop aborts the bot.
 const SHUTDOWN_FLUSH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// (jid, display name) rows for a membership-request list. The
+/// protocol carries no name for a requester, so the display name
+/// is empty: the app resolves a label from its own data or masks
+/// the identifier. The raw phone number or LID must never be
+/// substituted as the name (privacy finding D5).
+fn request_rows(list: &[whatsapp_rust::MembershipRequest]) -> Vec<(String, String)> {
+    list.iter().map(|r| (r.jid.to_string(), String::new())).collect()
+}
 
 /// What the user should be told about a logout's deregistration
 /// outcome, if anything. The library always performs its local
@@ -1143,9 +1152,7 @@ pub(super) async fn run_async(
                             let members = meta
                                 .participants
                                 .iter()
-                                .map(|p| {
-                                    (p.jid.to_string(), user_part(&p.jid.to_string()), p.is_admin())
-                                })
+                                .map(|p| (p.jid.to_string(), participant_name(p), p.is_admin()))
                                 .collect();
                             events.emit(BackendEvent::GroupMembers {
                                 chat_jid: chat_jid.clone(),
@@ -1211,14 +1218,7 @@ pub(super) async fn run_async(
                 BackendCommand::FetchJoinRequests { chat_jid } => match chat_jid.parse::<Jid>() {
                     Ok(jid) => match client.groups().get_membership_requests(jid).await {
                         Ok(list) => {
-                            let requests = list
-                                .iter()
-                                .map(|r| {
-                                    let jid = r.jid.to_string();
-                                    let name = user_part(&jid);
-                                    (jid, name)
-                                })
-                                .collect();
+                            let requests = request_rows(&list);
                             events.emit(BackendEvent::JoinRequests {
                                 chat_jid: chat_jid.clone(),
                                 requests,
@@ -1251,14 +1251,7 @@ pub(super) async fn run_async(
                             match result {
                                 Ok(()) => match groups.get_membership_requests(jid).await {
                                     Ok(list) => {
-                                        let requests = list
-                                            .iter()
-                                            .map(|r| {
-                                                let j = r.jid.to_string();
-                                                let name = user_part(&j);
-                                                (j, name)
-                                            })
-                                            .collect();
+                                        let requests = request_rows(&list);
                                         events.emit(BackendEvent::JoinRequests {
                                             chat_jid: chat_jid.clone(),
                                             requests,

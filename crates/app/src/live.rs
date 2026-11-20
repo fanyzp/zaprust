@@ -1174,7 +1174,8 @@ impl crate::state::App {
                 }
             }
             BackendEvent::GroupMembers { chat_jid, members } => {
-                self.groups.live_members.insert(jid_id(&chat_jid), members);
+                let rows = self.resolve_member_rows(members);
+                self.groups.live_members.insert(jid_id(&chat_jid), rows);
             }
             BackendEvent::GroupInviteLink { chat_jid, link } => {
                 self.groups.invite_link = Some((jid_id(&chat_jid), link));
@@ -1186,7 +1187,8 @@ impl crate::state::App {
                 self.groups.modes.insert(jid_id(&chat_jid), (announce, locked));
             }
             BackendEvent::JoinRequests { chat_jid, requests } => {
-                self.groups.join_requests = Some((jid_id(&chat_jid), requests));
+                let rows = self.resolve_request_rows(requests);
+                self.groups.join_requests = Some((jid_id(&chat_jid), rows));
             }
             BackendEvent::ConnectionLost { reason } => {
                 if let Some(session) = &mut self.live {
@@ -2102,6 +2104,82 @@ impl crate::state::App {
         self.privacy_state = map;
     }
 
+    /// Names this session already knows for people, keyed by
+    /// JID: the titles of 1:1 chats (the push name the chat list
+    /// resolved for that partner) and the sender names carried
+    /// on mirrored messages. Built once per member/request
+    /// fetch so resolving a whole list stays a single pass over
+    /// the mirror. A chat title that is just the partner's own
+    /// number (the fallback when no push name was ever seen) is
+    /// not a name and is skipped.
+    fn known_person_names(&self) -> HashMap<String, String> {
+        let mut names: HashMap<String, String> = HashMap::new();
+        let Some(session) = &self.live else {
+            return names;
+        };
+        for (chat_id, jid) in &session.jids {
+            let Some(chat) = self.chats.iter().find(|c| c.id == *chat_id) else {
+                continue;
+            };
+            if chat.kind != ChatKind::Dm {
+                continue;
+            }
+            let title = chat.title.trim();
+            if !title.is_empty() && title != jid_user_part(jid) {
+                names.insert(jid.clone(), chat.title.clone());
+            }
+        }
+        for messages in session.messages.values() {
+            for (_, msg) in messages {
+                let Some(name) = &msg.sender else { continue };
+                if name.trim().is_empty() {
+                    continue;
+                }
+                if let Some(jid) = self.sender_jids.get(&msg.id) {
+                    names.entry(jid.clone()).or_insert_with(|| name.clone());
+                }
+            }
+        }
+        names
+    }
+
+    /// Resolves backend member rows into renderable rows (see
+    /// [`crate::state::MemberRow`]): the label is the best name
+    /// available for the participant and the detail the number
+    /// line. Backend addresses pass through untouched; they are
+    /// command targets, never labels.
+    fn resolve_member_rows(
+        &self,
+        members: Vec<(String, String, bool)>,
+    ) -> Vec<crate::state::MemberRow> {
+        let known = self.known_person_names();
+        members
+            .into_iter()
+            .map(|(address, name, admin)| {
+                let (label, named) = resolve_person_label(&name, &address, &known);
+                crate::state::MemberRow {
+                    detail: member_detail(&address, named),
+                    address,
+                    label,
+                    admin,
+                }
+            })
+            .collect()
+    }
+
+    /// Resolves backend join-request rows into (jid, label)
+    /// rows, with the same label rule as member rows.
+    fn resolve_request_rows(&self, requests: Vec<(String, String)>) -> Vec<(String, String)> {
+        let known = self.known_person_names();
+        requests
+            .into_iter()
+            .map(|(jid, name)| {
+                let (label, _) = resolve_person_label(&name, &jid, &known);
+                (jid, label)
+            })
+            .collect()
+    }
+
     /// Applies a read-receipts toggle change from the Privacy
     /// page. The local flag flips at once (it gates receipt
     /// sending, so turning receipts off takes effect immediately),
@@ -2224,6 +2302,69 @@ pub(crate) fn count_reactions(
 #[must_use]
 pub(crate) fn should_mark_read(read_receipts: bool, live_mode: bool) -> bool {
     read_receipts && live_mode
+}
+
+/// The user part of a JID (before the `@`).
+fn jid_user_part(jid: &str) -> &str {
+    jid.split('@').next().unwrap_or(jid)
+}
+
+/// A masked stand-in label for a person whose name is unknown:
+/// enough of the identifier to tell rows apart, never the full
+/// number or LID and never a full JID (`6281234567890@…` becomes
+/// `+628 ••• 7890`; a LID is masked the same way without the
+/// `+`). A user part that is not a long digit string is not a
+/// phone-like identifier and is returned unchanged.
+#[must_use]
+pub(crate) fn masked_identifier(jid: &str) -> String {
+    let user = jid_user_part(jid);
+    if user.len() < 7 || !user.bytes().all(|b| b.is_ascii_digit()) {
+        return user.to_owned();
+    }
+    let masked = format!("{} ••• {}", &user[..3], &user[user.len() - 4..]);
+    if jid.ends_with("@s.whatsapp.net") {
+        format!("+{masked}")
+    } else {
+        masked
+    }
+}
+
+/// The rendered label for one member or join-request row, and
+/// whether that label is a real name. The name the backend
+/// carried wins (for members, the name the server rendered);
+/// next, a name this session already knows for the JID (see
+/// `known_person_names`); last, a masked identifier, so
+/// a raw phone number or LID is never the label (privacy
+/// finding D5).
+#[must_use]
+pub(crate) fn resolve_person_label(
+    backend_name: &str,
+    jid: &str,
+    known: &HashMap<String, String>,
+) -> (String, bool) {
+    let backend_name = backend_name.trim();
+    if !backend_name.is_empty() {
+        return (backend_name.to_owned(), true);
+    }
+    if let Some(name) = known.get(jid) {
+        return (name.clone(), true);
+    }
+    (masked_identifier(jid), false)
+}
+
+/// The secondary line under a member row's label: the phone
+/// number, only under a resolved name and only for a
+/// number-addressed participant. A masked label never gets the
+/// full number beneath it (that would undo the masking), and a
+/// LID-addressed row shows no number at all, matching how
+/// WhatsApp hides numbers in LID-mode groups.
+#[must_use]
+pub(crate) fn member_detail(jid: &str, named: bool) -> Option<String> {
+    if named && jid.ends_with("@s.whatsapp.net") {
+        Some(format!("+{}", jid_user_part(jid)))
+    } else {
+        None
+    }
 }
 
 /// What a fetched `readreceipts` value means for the local
@@ -2769,6 +2910,160 @@ mod burst_drain_tests {
         assert_eq!(chat.unread, 2, "the badge counts history too");
         assert_eq!(app.pending_notifications.len(), 1, "only the live message queues a popup");
         assert_eq!(app.pending_notifications[0].body, "message fresh-1");
+    }
+
+    /// Privacy finding D5: member and join-request rows lead
+    /// with a name, never the raw phone number or the full JID.
+    /// The backend leaves the name empty when the server
+    /// rendered none; resolution falls back to names the session
+    /// already knows (a 1:1 chat's title, a message sender's
+    /// push name) and finally to a masked identifier.
+    const GROUP_JID: &str = "120207777777777777@g.us";
+    const ALICE_JID: &str = "6281111111111@s.whatsapp.net";
+    const BOB_JID: &str = "6282222222222@s.whatsapp.net";
+    const CAROL_JID: &str = "6283333333333@s.whatsapp.net";
+    const STRANGER_JID: &str = "6284444444444@s.whatsapp.net";
+    const LID_JID: &str = "555555555555555@lid";
+
+    /// Alice has a 1:1 chat (its title is her push name) and Bob
+    /// has spoken in the group (his push name rides his message).
+    fn seed_named_people(
+        app: &mut App,
+        tx: &std::sync::mpsc::Sender<BackendEvent>,
+        ctx: &egui::Context,
+    ) {
+        tx.send(BackendEvent::ChatUpsert(LiveChat {
+            jid: ALICE_JID.to_owned(),
+            title: "Alice Johnson".to_owned(),
+            kind: LiveChatKind::Dm,
+            preview: "hi".to_owned(),
+            preview_sender: None,
+            timestamp: BASE_TS,
+            unread: 0,
+            archived: false,
+            pinned: false,
+            ephemeral_secs: 0,
+            muted: false,
+        }))
+        .unwrap();
+        let mut bob_msg = LiveMessage::text(
+            "bob-1",
+            GROUP_JID,
+            Some("Bob Carter".to_owned()),
+            "hello group".to_owned(),
+            BASE_TS,
+            false,
+        );
+        bob_msg.sender_jid = Some(BOB_JID.to_owned());
+        tx.send(BackendEvent::MessageUpsert(bob_msg)).unwrap();
+        drain_all(app, ctx);
+    }
+
+    #[test]
+    fn member_rows_lead_with_names_and_mask_the_unknown() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        seed_named_people(&mut app, &tx, &ctx);
+        tx.send(BackendEvent::GroupMembers {
+            chat_jid: GROUP_JID.to_owned(),
+            members: vec![
+                (ALICE_JID.to_owned(), String::new(), false),
+                (BOB_JID.to_owned(), String::new(), true),
+                (CAROL_JID.to_owned(), "Carol Danvers".to_owned(), false),
+                (STRANGER_JID.to_owned(), String::new(), false),
+                (LID_JID.to_owned(), String::new(), false),
+            ],
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        let rows =
+            app.groups.live_members.get(&jid_id(GROUP_JID)).expect("the member rows are stored");
+        assert_eq!(rows.len(), 5);
+        // Resolved from the 1:1 chat title; the number is only
+        // the secondary line under a real name.
+        assert_eq!(rows[0].label, "Alice Johnson");
+        assert_eq!(rows[0].detail.as_deref(), Some("+6281111111111"));
+        assert!(!rows[0].admin);
+        // Resolved from the push name on his group message; the
+        // admin flag survives resolution.
+        assert_eq!(rows[1].label, "Bob Carter");
+        assert_eq!(rows[1].detail.as_deref(), Some("+6282222222222"));
+        assert!(rows[1].admin);
+        // The name the server rendered is carried through.
+        assert_eq!(rows[2].label, "Carol Danvers");
+        assert_eq!(rows[2].detail.as_deref(), Some("+6283333333333"));
+        // Unknown: a masked identifier, and no number line
+        // beneath it (that would undo the masking).
+        assert_eq!(rows[3].label, "+628 ••• 4444");
+        assert_eq!(rows[3].detail, None);
+        // LID-addressed and unknown: masked without a plus, and
+        // no number line at all.
+        assert_eq!(rows[4].label, "555 ••• 5555");
+        assert_eq!(rows[4].detail, None);
+        for row in rows {
+            assert!(!row.label.contains('@'), "no label is a JID: {}", row.label);
+            assert_ne!(row.address, row.label, "the address is never the label");
+        }
+    }
+
+    #[test]
+    fn join_request_rows_use_the_same_label_rule() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        seed_named_people(&mut app, &tx, &ctx);
+        tx.send(BackendEvent::JoinRequests {
+            chat_jid: GROUP_JID.to_owned(),
+            requests: vec![
+                (BOB_JID.to_owned(), String::new()),
+                (STRANGER_JID.to_owned(), String::new()),
+            ],
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        let (_, rows) = app.groups.join_requests.as_ref().expect("the requests are stored");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].1, "Bob Carter", "a requester who has spoken resolves to his name");
+        assert_eq!(rows[1].1, "+628 ••• 4444", "an unknown requester is masked");
+        for (_, label) in rows {
+            assert!(!label.contains('@'), "no request label is a JID: {label}");
+            assert!(!label.contains("6284444444444"), "no request label is a full number");
+        }
+        // The JID survives as the review command's target.
+        assert_eq!(rows[1].0, STRANGER_JID);
+    }
+
+    #[test]
+    fn masked_identifier_never_shows_a_full_number_or_jid() {
+        assert_eq!(masked_identifier("6281234567890@s.whatsapp.net"), "+628 ••• 7890");
+        assert_eq!(masked_identifier("123456789012345@lid"), "123 ••• 2345");
+        // Not phone-like: returned as the bare user part.
+        assert_eq!(masked_identifier("12345@s.whatsapp.net"), "12345");
+        let masked = masked_identifier(STRANGER_JID);
+        assert!(!masked.contains("6284444444444"));
+        assert!(!masked.contains('@'));
+    }
+
+    #[test]
+    fn person_label_prefers_backend_then_known_then_masked() {
+        let known = HashMap::from([(BOB_JID.to_owned(), "Bob Carter".to_owned())]);
+        assert_eq!(
+            resolve_person_label("Server Name", BOB_JID, &known),
+            ("Server Name".to_owned(), true),
+            "the carried name wins"
+        );
+        assert_eq!(
+            resolve_person_label("", BOB_JID, &known),
+            ("Bob Carter".to_owned(), true),
+            "a known name fills an empty one"
+        );
+        assert_eq!(
+            resolve_person_label("  ", STRANGER_JID, &known),
+            ("+628 ••• 4444".to_owned(), false),
+            "nothing known means the masked identifier"
+        );
+        // The detail line follows the label kind and the
+        // address form.
+        assert_eq!(member_detail(BOB_JID, true).as_deref(), Some("+6282222222222"));
+        assert_eq!(member_detail(BOB_JID, false), None, "no number under a masked label");
+        assert_eq!(member_detail(LID_JID, true), None, "no number for a LID row");
     }
 }
 

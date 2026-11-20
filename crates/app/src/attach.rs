@@ -40,6 +40,99 @@ fn staged_size_problem(size: u64) -> Option<String> {
     }
 }
 
+/// The directory holding pasted-image temp files. A paste is
+/// the one staged file the app creates itself (picked files
+/// stay where the user keeps them), so pastes get their own
+/// directory under the data dir, beside `exports` and
+/// `crashes`: everything in it is app-owned scratch with a
+/// lifecycle (see [`discard_pasted_temp`]).
+fn pasted_dir() -> std::path::PathBuf {
+    backend::data_dir().join("pasted")
+}
+
+/// A fresh, collision-free path for one pasted image inside
+/// `dir`. The old name was `pasted-{now_unix()}.png`, at
+/// one-second resolution: two pastes within the same second
+/// produced the same path, and the second paste overwrote the
+/// file the first staged item pointed at, so the first
+/// attachment silently became the second image. The counter
+/// follows the temp-name pattern core uses for its atomic
+/// writes (a process-wide atomic counter plus the pid);
+/// together with the timestamp it makes every name unique,
+/// for same-second pastes, for identical pixels pasted twice,
+/// and across two running instances.
+fn pasted_image_path_in(dir: &std::path::Path) -> std::path::PathBuf {
+    static PASTE_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let counter = PASTE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    dir.join(format!("pasted-{}-{}-{counter}.png", now_unix(), std::process::id()))
+}
+
+/// Whether `path` is a pasted-image temp file this app owns:
+/// anything inside the pasted dir, plus the legacy location
+/// (builds before the dedicated dir wrote pastes into the
+/// data dir root, beside the databases, under the same
+/// `pasted-` name pattern). Picked files never match: they
+/// live outside the data dir and keep their own names.
+fn is_pasted_temp(path: &std::path::Path, data_dir: &std::path::Path) -> bool {
+    if path.parent() == Some(data_dir.join("pasted").as_path()) {
+        return true;
+    }
+    path.parent() == Some(data_dir)
+        && path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.starts_with("pasted-") && n.ends_with(".png"))
+}
+
+/// Deletes `path` when it is a pasted-image temp file, and
+/// does nothing otherwise, so it is safe to call for every
+/// staged item at the end of its life: unstaged in the
+/// composer, sent, or dropped unsent. It must never be
+/// called for an item that is still staged or whose send
+/// read is still in flight; the staged-send poll calls it
+/// only once the worker's result for that file has arrived
+/// (the bytes are what gets sent, not the file).
+pub(crate) fn discard_pasted_temp(path: &std::path::Path) {
+    discard_pasted_temp_in(path, &backend::data_dir());
+}
+
+fn discard_pasted_temp_in(path: &std::path::Path, data_dir: &std::path::Path) {
+    if is_pasted_temp(path, data_dir) {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+/// Startup backstop for pasted-image temp files: removes the
+/// ones earlier sessions left behind (staged but never sent
+/// when the app closed, or a send still in flight at exit).
+/// Staged state is in-memory only, so at startup nothing in
+/// the pasted dir can still be staged or mid-send for this
+/// process and every file there is an orphan. The data dir
+/// root is swept for the legacy name pattern only; the
+/// databases and settings beside them are never touched.
+pub(crate) fn sweep_stale_pasted_images() {
+    sweep_stale_pasted_images_in(&backend::data_dir());
+}
+
+fn sweep_stale_pasted_images_in(data_dir: &std::path::Path) {
+    if let Ok(entries) = std::fs::read_dir(data_dir.join("pasted")) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file() {
+                let _ = std::fs::remove_file(path);
+            }
+        }
+    }
+    if let Ok(entries) = std::fs::read_dir(data_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file() && is_pasted_temp(&path, data_dir) {
+                let _ = std::fs::remove_file(path);
+            }
+        }
+    }
+}
+
 /// One file the staged-send worker has to read. Only the path
 /// crosses to the worker; the name, texture and other UI-side
 /// state stay on the UI thread in the matching
@@ -207,7 +300,12 @@ impl App {
         // refused and dropped, never sent into the conversation
         // that happens to be open.
         if self.composer.staged_chat != Some(self.selected_chat) {
-            self.composer.staged.clear();
+            // The dropped stage ends here: any pasted temp
+            // files backing it are deleted with it.
+            let dropped = std::mem::take(&mut self.composer.staged);
+            for item in &dropped {
+                discard_pasted_temp(&item.path);
+            }
             self.composer.staged_caption.clear();
             self.composer.staged_chat = None;
             self.notice =
@@ -260,6 +358,9 @@ impl App {
             if let Some(tex) = item.thumb {
                 self.media.textures.insert(msg_id, tex);
             }
+            // The send consumed the item: a pasted temp file
+            // backing it has no life past this point.
+            discard_pasted_temp(&item.path);
         }
         *engaged = true;
     }
@@ -354,6 +455,12 @@ impl App {
             }
         }
         for (entry, result) in completed {
+            // This file's read is finished (its result is
+            // here), so nothing is in flight for it anymore:
+            // once the send below is done, a pasted temp file
+            // backing it can be deleted. The bytes are what
+            // gets sent, never the file itself.
+            let temp_path = entry.item.path.clone();
             match result {
                 Ok(bytes) if self.live.is_some() => {
                     if let Some(send) = &mut self.staged_send {
@@ -377,11 +484,16 @@ impl App {
                     }
                 }
             }
+            discard_pasted_temp(&temp_path);
         }
         if disconnected {
             if let Some(mut send) = self.staged_send.take() {
                 while let Some(entry) = send.pending.pop_front() {
                     send.failed.push((entry.item.name.clone(), "could not be read".to_owned()));
+                    // The channel is disconnected, so the
+                    // worker is gone: no read of this file is
+                    // in flight, and its temp file can go.
+                    discard_pasted_temp(&entry.item.path);
                 }
                 if let Some(notice) = staged_send_summary(send.sent, &send.failed) {
                     self.notice = Some(notice);
@@ -488,21 +600,32 @@ impl App {
     /// Stages an image pasted from the clipboard. egui-winit turns
     /// a Ctrl+V over an image clipboard into `Event::PasteImage`
     /// (text pastes stay native `Paste` events for the input
-    /// field); the pixels land in a timestamped PNG under the data
-    /// dir so the staged-file flow sends them like any picked
-    /// photo.
+    /// field); the pixels land in a uniquely named PNG in the
+    /// pasted dir (see [`pasted_image_path_in`]) so the
+    /// staged-file flow sends them like any picked photo. The
+    /// file is a temp: it is deleted when the staged item is
+    /// unstaged, sent or dropped, and any file a previous
+    /// session left behind is swept at startup.
     pub(crate) fn stage_pasted_image(&mut self, ctx: &egui::Context, image: egui::ColorImage) {
         let [w, h] = image.size;
         let rgba = image::RgbaImage::from_fn(w as u32, h as u32, |x, y| {
             let c = image.pixels[y as usize * w + x as usize];
             image::Rgba([c.r(), c.g(), c.b(), c.a()])
         });
-        let path = backend::data_dir().join(format!("pasted-{}.png", now_unix()));
+        let dir = pasted_dir();
+        let _ = std::fs::create_dir_all(&dir);
+        let path = pasted_image_path_in(&dir);
         if let Err(e) = rgba.save(&path) {
             self.notice = Some(format!("Could not save the pasted image: {e}"));
             return;
         }
-        self.stage_files(ctx, vec![path]);
+        self.stage_files(ctx, vec![path.clone()]);
+        // Staging can refuse a file (empty, past the send
+        // cap): a refused paste was never staged, so its temp
+        // file has no owner left and is deleted right away.
+        if !self.composer.staged.iter().any(|s| s.path == path) {
+            discard_pasted_temp(&path);
+        }
     }
 
     /// Starts a voice recording (the composer's mic button). An
@@ -624,8 +747,9 @@ fn waveform_from_levels(levels: &[f32]) -> Vec<f32> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ext_png_jpeg, read_staged_file, run_staged_reads, staged_from_path, staged_send_summary,
-        staged_size_problem, StagedReadJob, MAX_SEND_BYTES,
+        discard_pasted_temp_in, ext_png_jpeg, pasted_image_path_in, read_staged_file,
+        run_staged_reads, staged_from_path, staged_send_summary, staged_size_problem,
+        sweep_stale_pasted_images_in, StagedReadJob, MAX_SEND_BYTES,
     };
 
     /// Writes a small temp file for the read tests and returns
@@ -735,6 +859,96 @@ mod tests {
         let notice = staged_send_summary(0, &failed).expect("a failed send reports");
         assert!(notice.starts_with("Nothing was sent."), "unexpected notice: {notice}");
         assert!(notice.contains("a.png"), "unexpected notice: {notice}");
+    }
+
+    /// A fresh fake data dir for the paste-temp tests, in the
+    /// layout the ownership rules expect (a `pasted` subdir
+    /// beside the root files).
+    fn fake_data_dir(name: &str) -> std::path::PathBuf {
+        let data = std::env::temp_dir().join(name);
+        let _ = std::fs::remove_dir_all(&data);
+        std::fs::create_dir_all(data.join("pasted")).expect("fake data dir creates");
+        data
+    }
+
+    #[test]
+    fn two_pastes_in_the_same_second_get_distinct_files() {
+        let dir = std::env::temp_dir().join("zaprust-paste-name-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("test dir creates");
+        // Both names are minted back to back, so they share a
+        // timestamp second: the old scheme returned one path
+        // for both and the second write clobbered the first.
+        let first = pasted_image_path_in(&dir);
+        let second = pasted_image_path_in(&dir);
+        assert_ne!(first, second, "same-second pastes must not share a path");
+        // Identical pixels pasted twice survive as two files.
+        std::fs::write(&first, b"same pixels").expect("first paste writes");
+        std::fs::write(&second, b"same pixels").expect("second paste writes");
+        assert_eq!(std::fs::read(&first).expect("first paste reads"), b"same pixels");
+        assert_eq!(std::fs::read(&second).expect("second paste reads"), b"same pixels");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn discard_removes_paste_temps_but_never_other_files() {
+        let data = fake_data_dir("zaprust-paste-discard-test");
+        // A paste in the dedicated dir and a legacy paste in
+        // the root are app-owned: both are deleted at the end
+        // of their staged life.
+        let current = data.join("pasted").join("pasted-1-2-3.png");
+        std::fs::write(&current, b"png").expect("paste writes");
+        discard_pasted_temp_in(&current, &data);
+        assert!(!current.exists(), "a finished paste temp is deleted");
+        let legacy = data.join("pasted-123.png");
+        std::fs::write(&legacy, b"png").expect("legacy paste writes");
+        discard_pasted_temp_in(&legacy, &data);
+        assert!(!legacy.exists(), "a legacy paste temp is deleted");
+        // Everything else survives: the app's own data files,
+        // a root file that merely starts with the prefix, and
+        // a user-picked photo elsewhere on disk that happens
+        // to carry a paste-like name.
+        let settings = data.join("settings.json");
+        std::fs::write(&settings, b"{}").expect("settings write");
+        discard_pasted_temp_in(&settings, &data);
+        assert!(settings.exists(), "data files are never paste temps");
+        let notes = data.join("pasted-notes.txt");
+        std::fs::write(&notes, b"hi").expect("notes write");
+        discard_pasted_temp_in(&notes, &data);
+        assert!(notes.exists(), "the legacy pattern only covers PNG pastes");
+        let picked_dir = std::env::temp_dir().join("zaprust-paste-picked-test");
+        std::fs::create_dir_all(&picked_dir).expect("picked dir creates");
+        let picked = picked_dir.join("pasted-123.png");
+        std::fs::write(&picked, b"png").expect("picked photo writes");
+        discard_pasted_temp_in(&picked, &data);
+        assert!(picked.exists(), "a picked file is never deleted");
+        let _ = std::fs::remove_dir_all(&data);
+        let _ = std::fs::remove_dir_all(&picked_dir);
+    }
+
+    #[test]
+    fn the_startup_sweep_removes_only_stale_pastes() {
+        let data = fake_data_dir("zaprust-paste-sweep-test");
+        let stale_a = data.join("pasted").join("pasted-1-2-3.png");
+        let stale_b = data.join("pasted").join("pasted-1-2-4.png");
+        let legacy = data.join("pasted-999.png");
+        for p in [&stale_a, &stale_b, &legacy] {
+            std::fs::write(p, b"png").expect("stale paste writes");
+        }
+        let settings = data.join("settings.json");
+        let archive = data.join("archive.db");
+        std::fs::write(&settings, b"{}").expect("settings write");
+        std::fs::write(&archive, b"db").expect("archive write");
+        let exports = data.join("exports");
+        std::fs::create_dir_all(&exports).expect("exports dir creates");
+        let export = exports.join("chat.txt");
+        std::fs::write(&export, b"log").expect("export writes");
+        sweep_stale_pasted_images_in(&data);
+        assert!(!stale_a.exists() && !stale_b.exists(), "orphaned pastes are swept");
+        assert!(!legacy.exists(), "legacy root pastes are swept");
+        assert!(settings.exists() && archive.exists(), "data files survive the sweep");
+        assert!(export.exists(), "other subdirectories survive the sweep");
+        let _ = std::fs::remove_dir_all(&data);
     }
 
     #[test]

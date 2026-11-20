@@ -138,6 +138,10 @@ fn main() -> eframe::Result {
     install_panic_hook();
     #[cfg(unix)]
     harden_data_dir();
+    // Pasted-image temp files from earlier sessions are
+    // orphans by construction (the stage is in-memory only);
+    // clear them before anything can stage a new paste.
+    crate::attach::sweep_stale_pasted_images();
     if std::env::args().any(|a| a == "--debug") {
         init_debug_tracing();
     }

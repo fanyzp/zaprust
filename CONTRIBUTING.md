@@ -23,7 +23,7 @@ and the client crates never draw anything.
 | `crates/core` | Pure logic, no GUI: data model, theme tokens, credentials, crash reports, rich-message reducers, update logic, debug redaction. |
 | `crates/backend` | The `Backend` trait plus the event/command protocol, the real WhatsApp backend, a deterministic fake backend for tests and screenshots, QR encoding, audio, and the panic-containing supervisor. |
 | `crates/store` | The app's own chat archive on SQLite, with versioned migrations. |
-| `crates/features/*` | One crate per native feature (quick replies, scheduled send, reminders, export, and the rest). Every feature is compiled in and switched in Settings; there is no plugin system. |
+| `crates/features/*` | One crate per native feature: `quick-replies`, `export-chat`, `stickers`, `giphy`. Every feature is compiled in and switched in Settings; there is no plugin system. |
 
 ### Frontend
 
@@ -52,7 +52,8 @@ lives in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 ```bash
 git clone https://github.com/fanyzp/zaprust
 cd zaprust
-cargo run -p app                   # demo mode
+cargo run -p app                   # the real client (live; links or reconnects an account)
+cargo run -p app -- --demo         # offline demo mode with sample data
 cargo run -p app -- --live --fake-backend --fake-linked   # scripted live mode
 ```
 
@@ -111,8 +112,11 @@ existing version tag as its input).
 
 ### Rust
 
-- Edition 2021, toolchain pinned, MSRV declared in the workspace
-  `Cargo.toml`.
+- Edition 2021. The toolchain is not pinned to a version: it floats
+  on stable (`rust-toolchain.toml` tracks the stable channel, CI
+  installs stable the same way). The floor is MSRV 1.85, declared in
+  the workspace `Cargo.toml` and inherited by every crate; do not
+  rely on language or std features newer than the MSRV.
 - `rustfmt` output is the only acceptable formatting. No manual exceptions.
 - Clippy must be warning-free. Any `#[allow(...)]` needs a one-line reason
   comment next to it.

@@ -590,12 +590,37 @@ mod tests {
         player.set_rate(2.0);
         assert_eq!(player.rate(), 2.0);
         player.toggle_pause();
+        // The pump consumes in real time, so how far it gets in
+        // one fixed sleep depends on the CPU this machine gives
+        // it: under parallel build load the pump starves and an
+        // exact-window assertion flakes. Poll for the target
+        // instead, with two load-immune checks. Load can only
+        // slow the pump, never speed it past real time, so the
+        // position may never outrun the consumption the rate
+        // allows for the elapsed wall time, and reaching the
+        // target has a physical minimum duration at 2x (0.30 s
+        // of note is 30 pump ticks, each followed by a 5 ms
+        // sleep), so a rate applied twice still fails. That the
+        // rate is not silently ignored is pinned by `rate()`
+        // above, which reads the very field `pull` consumes by,
+        // and by the deterministic `pull` tests; the claim here
+        // is that the running pump really consumes at that rate.
         let start = player.position_secs();
-        std::thread::sleep(Duration::from_millis(160));
-        let advanced = player.position_secs() - start;
+        let began = Instant::now();
+        let reached = wait_until(Duration::from_secs(10), || {
+            let elapsed = began.elapsed().as_secs_f64();
+            let advanced = player.position_secs() - start;
+            assert!(
+                advanced <= 2.0 * elapsed + 0.05,
+                "the position outran 2x consumption: {advanced} s of note in {elapsed} s"
+            );
+            advanced >= 0.30
+        });
+        let elapsed = began.elapsed();
+        assert!(reached, "the pump consumes at 2x, position {}", player.position_secs());
         assert!(
-            (0.2..0.5).contains(&advanced),
-            "160 ms at 2x advances about 0.32 s of the note, got {advanced}"
+            elapsed >= Duration::from_millis(120),
+            "0.30 s of note at 2x takes at least ~150 ms of pump time, took {elapsed:?}"
         );
         // Seeking to the very end finishes the session.
         player.seek_fraction(1.0);

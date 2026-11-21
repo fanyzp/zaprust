@@ -205,6 +205,13 @@ pub const FLAG_VIEW_ONCE_OPENED: i64 = 32;
 struct MessageData {
     #[serde(default)]
     kind: Option<backend::LiveMessageKind>,
+    /// The author's JID, archived with the message so actions
+    /// that must name the author (a group reaction above all)
+    /// still work on history after a restart, not only on
+    /// messages seen live this session. Rows written before
+    /// this field existed read back as None.
+    #[serde(default)]
+    sender_jid: Option<String>,
     #[serde(default)]
     reactions: Vec<(String, u32)>,
     #[serde(default)]
@@ -797,6 +804,7 @@ impl Store {
         let stored_body = if msg.view_once { "" } else { msg.body.as_str() };
         let data = MessageData {
             kind: stored_kind,
+            sender_jid: msg.sender_jid.clone(),
             reactions: msg.reactions.clone(),
             my_reaction: msg.my_reaction.clone(),
             quoted_sender: msg.quoted_sender.clone(),
@@ -1197,6 +1205,7 @@ impl Store {
                 row.get::<_, i64>(5)? != 0,
             );
             msg.kind = data.kind.unwrap_or(backend::LiveMessageKind::Text);
+            msg.sender_jid = data.sender_jid;
             msg.reactions = data.reactions;
             msg.my_reaction = data.my_reaction;
             msg.quoted_sender = data.quoted_sender;
@@ -1802,6 +1811,34 @@ mod tests {
         // A message archived without a reference stays without one.
         let plain = scripted_messages()[0].clone();
         assert_eq!(plain.voice_ref, None);
+    }
+
+    /// A message author's JID round-trips with the message: it
+    /// is the participant a group reaction must name, so an
+    /// archived group message keeps its author across a restart
+    /// instead of only while it is fresh in the session.
+    #[test]
+    fn sender_jid_round_trips_with_the_message() {
+        let store = Store::open_in_memory().unwrap();
+        let mut msg = scripted_messages()[0].clone();
+        msg.sender_jid = Some("6281234567890@s.whatsapp.net".to_owned());
+        store.upsert_message(&msg, 0).unwrap();
+        let rows = store.messages(&msg.chat_jid).unwrap();
+        assert_eq!(rows[0].0.sender_jid.as_deref(), Some("6281234567890@s.whatsapp.net"));
+        // A message archived without an author stays without one.
+        let plain = scripted_messages()[0].clone();
+        assert_eq!(plain.sender_jid, None);
+    }
+
+    /// Rows archived before the author JID was recorded carry a
+    /// data payload without the field at all; they still load,
+    /// with no author.
+    #[test]
+    fn message_data_without_sender_jid_loads_with_none() {
+        let mut value = serde_json::to_value(MessageData::default()).unwrap();
+        value.as_object_mut().unwrap().remove("sender_jid");
+        let data: MessageData = serde_json::from_value(value).unwrap();
+        assert_eq!(data.sender_jid, None);
     }
 
     fn video_reference() -> backend::VideoRef {

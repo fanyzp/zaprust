@@ -48,6 +48,71 @@ pub fn apply_vote(
     (options, mine)
 }
 
+/// A poll's aggregated state: the per-option tallies, my own
+/// current selection, and the latest ballot per voter the
+/// tallies were derived from.
+pub struct PollTally {
+    /// (label, votes) pairs, in poll order.
+    pub options: Vec<(String, u32)>,
+    /// Option indices I currently vote for.
+    pub my_votes: Vec<usize>,
+    /// Latest ballot per voter, keyed by voter JID.
+    pub ballots: Vec<(String, Vec<usize>)>,
+}
+
+/// Applies one voter's ballot to a poll's tallies, replacing that
+/// voter's previous ballot (last-vote-wins, the protocol's rule:
+/// a vote message carries the voter's whole current selection,
+/// and an empty selection clears the vote).
+///
+/// `ballots` holds the latest known selection per voter, keyed by
+/// voter JID; my own ballot lives in `my_votes` instead and is the
+/// one replaced when `from_me` is set. Counts move by the
+/// difference between the voter's old and new selections only, so
+/// re-applying the same ballot is a no-op and a voter who changes
+/// their mind never counts twice. Selections pointing outside
+/// `options` are dropped. Returns the new tally state.
+#[must_use]
+pub fn apply_poll_ballot(
+    options: &[(String, u32)],
+    my_votes: &[usize],
+    ballots: &[(String, Vec<usize>)],
+    voter: &str,
+    from_me: bool,
+    selected: &[usize],
+) -> PollTally {
+    let mut options = options.to_vec();
+    let mut mine: Vec<usize> = my_votes.to_vec();
+    let mut ballots: Vec<(String, Vec<usize>)> = ballots.to_vec();
+    let mut selected: Vec<usize> =
+        selected.iter().copied().filter(|i| *i < options.len()).collect();
+    selected.sort_unstable();
+    selected.dedup();
+    let old: Vec<usize> = if from_me {
+        mine.clone()
+    } else {
+        ballots.iter().find(|(v, _)| v == voter).map(|(_, s)| s.clone()).unwrap_or_default()
+    };
+    for idx in &old {
+        if let Some(entry) = options.get_mut(*idx) {
+            entry.1 = entry.1.saturating_sub(1);
+        }
+    }
+    for idx in &selected {
+        options[*idx].1 = options[*idx].1.saturating_add(1);
+    }
+    if from_me {
+        mine = selected;
+    } else if selected.is_empty() {
+        ballots.retain(|(v, _)| v != voter);
+    } else if let Some(entry) = ballots.iter_mut().find(|(v, _)| v == voter) {
+        entry.1 = selected;
+    } else {
+        ballots.push((voter.to_owned(), selected));
+    }
+    PollTally { options, my_votes: mine, ballots }
+}
+
 /// Percentage (0–100, rounded) of the total vote for each option.
 #[must_use]
 pub fn poll_percents(options: &[(String, u32)]) -> Vec<u32> {
@@ -226,6 +291,48 @@ mod tests {
         let (opts, mine) = apply_vote(&opts, &mine, true, 0);
         assert_eq!(mine, vec![2]);
         assert_eq!(opts[0].1, 3);
+    }
+
+    #[test]
+    fn poll_ballot_replaces_the_voters_previous_selection() {
+        let ballots: Vec<(String, Vec<usize>)> = Vec::new();
+        // A voter's first ballot adds to the baseline counts.
+        let PollTally { options: opts, my_votes: mine, ballots } =
+            apply_poll_ballot(&options(), &[], &ballots, "voter@s.whatsapp.net", false, &[1]);
+        assert_eq!(opts[1].1, 6);
+        assert!(mine.is_empty());
+        // The same voter changing their mind moves the vote, it
+        // never counts twice.
+        let PollTally { options: opts, ballots, .. } =
+            apply_poll_ballot(&opts, &mine, &ballots, "voter@s.whatsapp.net", false, &[2]);
+        assert_eq!(opts[1].1, 5);
+        assert_eq!(opts[2].1, 1);
+        assert_eq!(opts.iter().map(|(_, v)| v).sum::<u32>(), 9);
+        // Re-applying the identical ballot is a no-op.
+        let PollTally { options: opts, ballots, .. } =
+            apply_poll_ballot(&opts, &[], &ballots, "voter@s.whatsapp.net", false, &[2]);
+        assert_eq!(opts.iter().map(|(_, v)| v).sum::<u32>(), 9);
+        // An empty selection clears the ballot and its count.
+        let PollTally { options: opts, ballots, .. } =
+            apply_poll_ballot(&opts, &[], &ballots, "voter@s.whatsapp.net", false, &[]);
+        assert_eq!(opts[2].1, 0);
+        assert!(ballots.is_empty());
+    }
+
+    #[test]
+    fn poll_ballot_from_me_replaces_my_votes_not_a_ballot() {
+        let PollTally { options: opts, my_votes: mine, ballots } =
+            apply_poll_ballot(&options(), &[0], &[], "10000000001@s.whatsapp.net", true, &[2]);
+        assert_eq!(opts[0].1, 2);
+        assert_eq!(opts[2].1, 1);
+        assert_eq!(mine, vec![2]);
+        assert!(ballots.is_empty());
+        // Out-of-range selections are dropped, never counted; the
+        // ballot they replace is still retracted.
+        let PollTally { options: opts, my_votes: mine, .. } =
+            apply_poll_ballot(&opts, &mine, &ballots, "x", true, &[9]);
+        assert!(mine.is_empty());
+        assert_eq!(opts.iter().map(|(_, v)| v).sum::<u32>(), 7);
     }
 
     #[test]

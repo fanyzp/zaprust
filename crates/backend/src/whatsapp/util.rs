@@ -514,10 +514,7 @@ const MAX_VIDEO_THUMBNAIL_BYTES: usize = 256 * 1024;
 /// thumbnail, or carries one too large to be a thumbnail.
 pub(super) fn video_thumbnail_of(proto: &whatsapp_rust::prelude::wa::Message) -> Option<Vec<u8>> {
     let video = unwrap_media_proto(proto).video_message.as_option()?;
-    video
-        .jpeg_thumbnail
-        .clone()
-        .filter(|t| !t.is_empty() && t.len() <= MAX_VIDEO_THUMBNAIL_BYTES)
+    video.jpeg_thumbnail.clone().filter(|t| !t.is_empty() && t.len() <= MAX_VIDEO_THUMBNAIL_BYTES)
 }
 
 /// Rebuilds the library's validated download parameters from an

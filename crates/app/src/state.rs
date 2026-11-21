@@ -877,7 +877,21 @@ pub(crate) struct App {
     pub(crate) settings_page_open: bool,
     pub(crate) settings_tab: &'static str,
     pub(crate) pair_mode: PairMode,
+    /// The full international number the pairing request
+    /// consumes, composed from the selected country and the
+    /// national number on every edit (see `countries`).
     pub(crate) pair_phone: String,
+    /// The pairing form's selected country (ISO alpha-2),
+    /// preselected from the device locale; its dial code is
+    /// what `pair_phone` is composed with.
+    pub(crate) pair_country_iso: String,
+    /// The pairing form's national number as typed, without a
+    /// country code.
+    pub(crate) pair_national: String,
+    /// Whether the country picker popup is open.
+    pub(crate) country_picker_open: bool,
+    /// The country picker's search text.
+    pub(crate) country_search: String,
     pub(crate) pair_code_shown: bool,
     pub(crate) account_menu_open: bool,
     pub(crate) profile_anchor: Option<egui::Pos2>,
@@ -1450,7 +1464,14 @@ impl App {
                 _ => "Appearance",
             },
             pair_mode: if args.pair_code { PairMode::Code } else { PairMode::Qr },
-            pair_phone: String::new(),
+            pair_phone: crate::countries::compose_number(
+                crate::countries::default_country().dial,
+                "",
+            ),
+            pair_country_iso: crate::countries::default_country().iso.to_owned(),
+            pair_national: String::new(),
+            country_picker_open: false,
+            country_search: String::new(),
             pair_code_shown: args.pair_code,
             account_menu_open: args.account_menu,
             profile_anchor: None,

@@ -671,7 +671,12 @@ mod tests {
     fn written_report_is_owner_only() {
         use std::os::unix::fs::PermissionsExt;
         let dir = temp_dir("permissions");
-        let report = CrashReport::capture(env!("CARGO_PKG_VERSION"), "boom".to_owned(), None, "bt".to_owned());
+        let report = CrashReport::capture(
+            env!("CARGO_PKG_VERSION"),
+            "boom".to_owned(),
+            None,
+            "bt".to_owned(),
+        );
         let path = report.write_to(&dir, None).unwrap();
         let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600, "a crash report is created owner-only: {path:?}");
@@ -681,7 +686,12 @@ mod tests {
     #[test]
     fn unseen_report_respects_dismissal() {
         let dir = temp_dir("seen");
-        let report = CrashReport::capture(env!("CARGO_PKG_VERSION"), "boom".to_owned(), None, "bt".to_owned());
+        let report = CrashReport::capture(
+            env!("CARGO_PKG_VERSION"),
+            "boom".to_owned(),
+            None,
+            "bt".to_owned(),
+        );
         let ts = report.timestamp_unix;
         report.write_to(&dir, None).unwrap();
         assert!(unseen_report(&dir).is_some());

@@ -296,8 +296,13 @@ impl App {
                                 report_it = true;
                             }
                             let copy_label = if self.crash_copied { "Copied" } else { "Copy" };
-                            if crate::widgets::button(ui, t, copy_label, crate::widgets::Btn::Secondary)
-                                .clicked()
+                            if crate::widgets::button(
+                                ui,
+                                t,
+                                copy_label,
+                                crate::widgets::Btn::Secondary,
+                            )
+                            .clicked()
                             {
                                 copy = true;
                             }

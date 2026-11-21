@@ -644,9 +644,7 @@ fn stranded_files(data_dir: &std::path::Path) -> Vec<std::path::PathBuf> {
 /// The first I/O failure (creating the folder, moving a file);
 /// files already moved stay moved, and the caller reports the
 /// failure instead of starting over a half-moved data dir.
-fn move_stranded_data_aside(
-    data_dir: &std::path::Path,
-) -> std::io::Result<std::path::PathBuf> {
+fn move_stranded_data_aside(data_dir: &std::path::Path) -> std::io::Result<std::path::PathBuf> {
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -9299,10 +9297,7 @@ mod start_fresh_tests {
         assert!(backup.starts_with(&dir));
         assert_eq!(std::fs::read(backup.join("archive.db")).unwrap(), b"archive");
         assert_eq!(std::fs::read(backup.join("db.key")).unwrap(), b"malformed");
-        assert_eq!(
-            std::fs::read(backup.join("accounts/default/session.db")).unwrap(),
-            b"session"
-        );
+        assert_eq!(std::fs::read(backup.join("accounts/default/session.db")).unwrap(), b"session");
         assert!(!dir.join("archive.db").exists());
         assert!(!dir.join("db.key").exists());
         assert!(!account.join("session.db").exists());

@@ -42,6 +42,7 @@ mod chat_list;
 mod community;
 mod connect;
 mod conversation;
+mod countries;
 mod crash_ui;
 mod debug_ui;
 mod demo_avatars;

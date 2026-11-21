@@ -26,6 +26,9 @@ const COL_W: f32 = 360.0;
 /// The QR slot's edge: a square that holds the plate, its 10pt
 /// margin, the quiet zone, and the code (see `qr_layout`).
 const QR_SLOT: f32 = 248.0;
+/// The pairing form's width: the country selector, the number
+/// field, and the primary button all span exactly it.
+const FIELD_W: f32 = 258.0;
 
 impl App {
     /// Full-window connect screen (layout "C, centered minimal",
@@ -160,8 +163,8 @@ impl App {
                             egui::Layout::top_down(egui::Align::Center),
                             |ui| match self.pair_mode {
                                 PairMode::Qr => {
-                                    let (rect, _) =
-                                        ui.allocate_exact_size(Vec2::splat(QR_SLOT), Sense::hover());
+                                    let (rect, _) = ui
+                                        .allocate_exact_size(Vec2::splat(QR_SLOT), Sense::hover());
                                     // The pairing gate (live.rs): a
                                     // matrix is painted only for the
                                     // Live state, which requires a
@@ -216,6 +219,7 @@ impl App {
                     .clicked()
                 {
                     self.pair_mode = target;
+                    self.country_picker_open = false;
                 }
             },
         );
@@ -533,18 +537,34 @@ impl App {
         } else {
             ui.label(RichText::new("Enter your phone number").size(14.0).strong());
             ui.add_space(10.0);
-            // The shared text field: 238 inner width plus its frame
-            // margins gives the same 258 total the old hand-wrapped
-            // field occupied.
-            crate::widgets::text_field(ui, t, &mut self.pair_phone, "+1 …", 238.0);
+            let country = crate::countries::by_iso(&self.pair_country_iso)
+                .unwrap_or_else(|| crate::countries::default_country());
+            // The country selector: the selected country's flag,
+            // name, and dial code over a chevron. Opens the
+            // searchable country picker.
+            if self.country_selector(ui, t, country) {
+                self.country_picker_open = !self.country_picker_open;
+                if self.country_picker_open {
+                    self.country_search.clear();
+                }
+            }
+            ui.add_space(8.0);
+            // The number field: the selected dial code as a fixed
+            // prefix slot inside the field, the national number
+            // after it. Every edit recomposes `pair_phone`, the
+            // full international number the request consumes.
+            let changed = self.phone_number_field(ui, t, country);
+            if changed {
+                self.pair_phone =
+                    crate::countries::compose_number(country.dial, &self.pair_national);
+            }
             ui.add_space(12.0);
             // The shared primary button, stretched across the
-            // column width (258, the same width as the field above)
-            // by a cross-justified layout instead of the old
-            // hand-painted pill.
+            // form width (the same width as the fields above) by
+            // a cross-justified layout.
             let bresp = ui
                 .allocate_ui_with_layout(
-                    Vec2::new(258.0, 32.0),
+                    Vec2::new(FIELD_W, 32.0),
                     egui::Layout::top_down(egui::Align::Min).with_cross_justify(true),
                     |ui| {
                         crate::widgets::button(
@@ -557,11 +577,234 @@ impl App {
                 )
                 .inner;
             if bresp.clicked() {
-                self.pair_code_shown = true;
-                if self.live_mode {
-                    self.request_pair_code();
+                if self.pair_national.chars().any(|c| c.is_ascii_digit()) {
+                    self.pair_code_shown = true;
+                    if self.live_mode {
+                        self.request_pair_code();
+                    }
+                } else {
+                    self.notice = Some("Enter your phone number first.".to_owned());
                 }
             }
+        }
+        self.draw_country_picker(ui.ctx());
+    }
+
+    /// The country selector row over the number field: flag,
+    /// country name, dial code, chevron, at the form width and
+    /// the shared field height. Returns whether it was clicked.
+    fn country_selector(
+        &self,
+        ui: &mut egui::Ui,
+        t: Tokens,
+        country: &'static crate::countries::Country,
+    ) -> bool {
+        let (rect, resp) = ui.allocate_exact_size(Vec2::new(FIELD_W, 40.0), Sense::click());
+        let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+        let painter = ui.painter();
+        painter.rect_filled(rect, CornerRadius::same(8), crate::widgets::field_fill(t));
+        if resp.hovered() {
+            painter.rect_stroke(
+                rect,
+                CornerRadius::same(8),
+                Stroke::new(1.0_f32, rgb(t.border)),
+                egui::StrokeKind::Inside,
+            );
+        }
+        painter.text(
+            Pos2::new(rect.left() + 10.0, rect.center().y),
+            Align2::LEFT_CENTER,
+            crate::countries::flag_emoji(country.iso),
+            FontId::proportional(20.0),
+            rgb(t.text_primary),
+        );
+        painter.text(
+            Pos2::new(rect.left() + 46.0, rect.center().y),
+            Align2::LEFT_CENTER,
+            country.name,
+            FontId::proportional(13.5),
+            rgb(t.text_primary),
+        );
+        painter.text(
+            Pos2::new(rect.right() - 34.0, rect.center().y),
+            Align2::RIGHT_CENTER,
+            format!("+{}", country.dial),
+            FontId::proportional(13.0),
+            rgb(t.text_secondary),
+        );
+        draw_icon(
+            painter,
+            Icon::ChevronDown,
+            Pos2::new(rect.right() - 18.0, rect.center().y),
+            18.0,
+            rgb(t.text_secondary),
+            rgb(t.bg_panel_alt),
+        );
+        resp.clicked()
+    }
+
+    /// The number field under the selector: a fixed prefix slot
+    /// showing the selected dial code, then the national number
+    /// editor. Painted on an exact rect (like the stepper and
+    /// the code tiles) so the field is the form width at every
+    /// window size and for every dial code length. Returns
+    /// whether the national number changed.
+    fn phone_number_field(
+        &mut self,
+        ui: &mut egui::Ui,
+        t: Tokens,
+        country: &'static crate::countries::Country,
+    ) -> bool {
+        let (rect, _) = ui.allocate_exact_size(Vec2::new(FIELD_W, 40.0), Sense::hover());
+        ui.painter().rect_filled(rect, CornerRadius::same(8), crate::widgets::field_fill(t));
+        ui.painter().text(
+            Pos2::new(rect.left() + 10.0, rect.center().y),
+            Align2::LEFT_CENTER,
+            format!("+{}", country.dial),
+            FontId::proportional(13.5),
+            rgb(t.text_secondary),
+        );
+        let edit_rect = egui::Rect::from_min_max(
+            Pos2::new(rect.left() + 56.0, rect.top()),
+            Pos2::new(rect.right() - 6.0, rect.bottom()),
+        );
+        let mut slot = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(edit_rect)
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        );
+        let resp = slot.add(
+            egui::TextEdit::singleline(&mut self.pair_national)
+                .frame(egui::Frame::NONE)
+                .hint_text("812 3456 7890")
+                .desired_width(edit_rect.width()),
+        );
+        if resp.has_focus() {
+            ui.painter().rect_stroke(
+                rect,
+                CornerRadius::same(8),
+                Stroke::new(1.5_f32, rgb(t.accent)),
+                egui::StrokeKind::Inside,
+            );
+        }
+        resp.changed()
+    }
+
+    /// The country picker popup: a search field over the full
+    /// country list (flag, name, dial code per row), centred
+    /// over the window like the account modal. Closes on a
+    /// selection, on Escape, or on a click outside it (a click
+    /// that opened it this frame does not count).
+    fn draw_country_picker(&mut self, ctx: &egui::Context) {
+        // Whether the picker was already open when this frame
+        // began: the click that opens it lands outside the
+        // popup by construction and must not close it again in
+        // the same frame.
+        let was_open = ctx
+            .data(|d| d.get_temp::<bool>(egui::Id::unique("country_picker_seen")))
+            .unwrap_or(false);
+        ctx.data_mut(|d| {
+            d.insert_temp(egui::Id::unique("country_picker_seen"), self.country_picker_open);
+        });
+        if !self.country_picker_open {
+            return;
+        }
+        let t = self.tokens();
+        let area = ctx.content_rect();
+        let size = Vec2::new(320.0, 352.0);
+        let top = (area.top() + 110.0).min(area.bottom() - size.y - 8.0).max(area.top() + 8.0);
+        let rect = egui::Rect::from_min_size(Pos2::new(area.center().x - size.x / 2.0, top), size);
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.country_picker_open = false;
+            return;
+        }
+        if was_open && ctx.input(|i| i.pointer.any_click()) {
+            if let Some(pos) = ctx.input(|i| i.pointer.interact_pos()) {
+                if !rect.contains(pos) {
+                    self.country_picker_open = false;
+                    return;
+                }
+            }
+        }
+        let mut chosen: Option<&'static crate::countries::Country> = None;
+        egui::Area::new(egui::Id::unique("country_picker"))
+            .fixed_pos(rect.min)
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                let frame = crate::theme::glass_frame(t, 16)
+                    .inner_margin(Margin::symmetric(12, 10))
+                    .show(ui, |ui| {
+                        ui.set_width(size.x - 24.0);
+                        crate::widgets::text_field(
+                            ui,
+                            t,
+                            &mut self.country_search,
+                            "Search country",
+                            252.0,
+                        );
+                        ui.add_space(8.0);
+                        // Only the visible rows are built
+                        // (show_rows): building all ~225 rows
+                        // every frame would lay out every flag
+                        // glyph in the colour emoji font at once
+                        // and overflow the font atlas, which
+                        // stalls the frame entirely.
+                        let filtered: Vec<&crate::countries::Country> = crate::countries::COUNTRIES
+                            .iter()
+                            .filter(|c| crate::countries::matches(c, &self.country_search))
+                            .collect();
+                        egui::ScrollArea::vertical().max_height(262.0).show_rows(
+                            ui,
+                            38.0,
+                            filtered.len(),
+                            |ui, range| {
+                                for &country in &filtered[range] {
+                                    let (row, resp) = ui.allocate_exact_size(
+                                        Vec2::new(size.x - 24.0, 38.0),
+                                        Sense::click(),
+                                    );
+                                    let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+                                    if resp.hovered() {
+                                        ui.painter().rect_filled(
+                                            row,
+                                            CornerRadius::same(8),
+                                            rgb(t.bg_panel_alt),
+                                        );
+                                    }
+                                    ui.painter().text(
+                                        Pos2::new(row.left() + 8.0, row.center().y),
+                                        Align2::LEFT_CENTER,
+                                        crate::countries::flag_emoji(country.iso),
+                                        FontId::proportional(20.0),
+                                        rgb(t.text_primary),
+                                    );
+                                    ui.painter().text(
+                                        Pos2::new(row.left() + 48.0, row.center().y),
+                                        Align2::LEFT_CENTER,
+                                        country.name,
+                                        FontId::proportional(13.5),
+                                        rgb(t.text_primary),
+                                    );
+                                    ui.painter().text(
+                                        Pos2::new(row.right() - 8.0, row.center().y),
+                                        Align2::RIGHT_CENTER,
+                                        format!("+{}", country.dial),
+                                        FontId::proportional(13.0),
+                                        rgb(t.text_faint),
+                                    );
+                                    if resp.clicked() {
+                                        chosen = Some(country);
+                                    }
+                                }
+                            },
+                        );
+                    });
+                crate::theme::paint_glass_edge(ui.painter(), frame.response.rect, 16.0, t);
+            });
+        if let Some(country) = chosen {
+            self.pair_country_iso = country.iso.to_owned();
+            self.pair_phone = crate::countries::compose_number(country.dial, &self.pair_national);
+            self.country_picker_open = false;
         }
     }
 

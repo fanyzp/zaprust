@@ -843,7 +843,6 @@ pub(crate) struct App {
     pub(crate) zoom_percent: u32,
     pub(crate) enter_sends: bool,
     pub(crate) keep_archived: bool,
-    pub(crate) custom_title_bar: bool,
     pub(crate) sidebar_collapsed: bool,
     /// The current frame's layout mode, refreshed by the shell
     /// from the window width on every frame: true below
@@ -1408,7 +1407,6 @@ impl App {
             zoom_percent: 100,
             enter_sends: true,
             keep_archived: true,
-            custom_title_bar: true,
             sidebar_collapsed: args.sidebar_collapsed,
             single_pane: false,
             portrait: false,

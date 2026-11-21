@@ -176,21 +176,6 @@ impl App {
         ui.add_space(16.0);
         group_label(ui, t, &crate::i18n::t("appearance.interface"));
         settings_card(ui, t, |ui| {
-            let mut v = self.custom_title_bar;
-            row_hl(
-                ui,
-                &mut self.settings_highlight,
-                self.motion,
-                "appearance.title_bar",
-                t,
-                "Custom title bar",
-                "",
-                |ui| {
-                    switch(ui, &mut v, t);
-                },
-            );
-            self.custom_title_bar = v;
-            divider(ui, t);
             let mut glow = self.glow;
             row_hl(
                 ui,

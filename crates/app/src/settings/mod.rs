@@ -96,13 +96,6 @@ const SETTINGS_REGISTRY: &[SettingEntry] = &[
         keywords: "zoom interface size scale text ukuran antarmuka teks skala huruf",
     },
     SettingEntry {
-        id: "appearance.title_bar",
-        tab: "Appearance",
-        title_en: "Custom title bar",
-        title_id: "Bilah judul kustom",
-        keywords: "window controls titlebar jendela",
-    },
-    SettingEntry {
         id: "appearance.motion",
         tab: "Appearance",
         title_en: "Motion",
@@ -1029,6 +1022,24 @@ mod tests {
         assert!(result_ids("zzznomatch").is_empty());
         assert!(result_ids("").is_empty());
         assert!(result_ids("   ").is_empty());
+    }
+
+    #[test]
+    fn removed_title_bar_setting_is_not_searchable() {
+        // The Custom title bar toggle was a dead control: its
+        // field was read nowhere, it never reached the settings
+        // document, and the window always used the system
+        // decorations. The row and this registry entry were
+        // removed together; these are the queries that used to
+        // find it, in both languages.
+        for query in ["custom title bar", "titlebar", "bilah judul kustom", "window controls"] {
+            assert!(
+                !result_ids(query).iter().any(|(_, id)| *id == "appearance.title_bar"),
+                "the removed setting must not surface for {query:?}"
+            );
+        }
+        assert!(result_ids("titlebar").is_empty());
+        assert!(result_ids("bilah judul kustom").is_empty());
     }
 
     #[test]

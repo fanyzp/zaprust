@@ -6705,6 +6705,16 @@ mod chat_state_routing_tests {
         }
     }
 
+    /// The removed Custom title bar toggle leaves no trace in
+    /// the settings document: its field was never persisted
+    /// (nothing read it back either), and the field itself is
+    /// gone, so no key may appear here.
+    #[test]
+    fn settings_json_has_no_custom_title_bar_key() {
+        let (app, _tx, _ctx, _cmd_rx) = live_app();
+        assert!(app.settings_json().get("custom_title_bar").is_none());
+    }
+
     /// The connect-time privacy fetch reconciles the local
     /// read-receipts toggle with the account's setting (audit
     /// finding D3): the server value is adopted into the flag

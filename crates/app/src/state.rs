@@ -790,6 +790,13 @@ pub(crate) struct App {
     pub(crate) live_mode: bool,
     /// The running live session, when live mode is on.
     pub(crate) live: Option<crate::live::LiveSession>,
+    /// Why the most recent live start failed before a session
+    /// existed (for example the database key could not be read),
+    /// when it did. The connect screen renders this state instead
+    /// of any pairing surface: a start that never produced a
+    /// session must not present a scannable-looking code or a
+    /// waiting-for-scan status. Cleared by the next start attempt.
+    pub(crate) live_start_error: Option<String>,
     /// Transient user-facing notice (backend errors, feature
     /// crashes, export results). Shown as a dismissible banner.
     pub(crate) notice: Option<String>,
@@ -1302,6 +1309,7 @@ impl App {
             last_expiry_scan: 0,
             live_mode: false,
             live: None,
+            live_start_error: None,
             notice: None,
             crash_report: core::crash::unseen_report(&backend::data_dir().join("crashes")),
             crash_details_open: false,

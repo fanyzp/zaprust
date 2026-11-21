@@ -124,6 +124,13 @@ pub(crate) struct LiveSession {
     pub(crate) status: LinkStatus,
     /// Latest QR matrix to draw, when waiting for a scan.
     pub(crate) qr: Option<QrMatrix>,
+    /// When the current QR payload stops being valid, from the
+    /// validity window the library reported with it. A payload
+    /// past this instant is dead even if nothing else has
+    /// happened yet, so the expiry sweep drops it rather than
+    /// leaving a dead code on screen (the pairing-code field
+    /// below follows the same discipline).
+    pub(crate) qr_expires_at: Option<std::time::Instant>,
     /// Latest pairing code, when in code mode.
     pub(crate) pair_code: Option<String>,
     /// When the current pairing code arrived. Pair codes die after
@@ -160,6 +167,80 @@ pub(crate) struct LiveSession {
     /// rule): merely opening a chat, or a message arriving while
     /// its screen happens to be open, never marks anything read.
     pub(crate) engaged_chats: std::collections::HashSet<u64>,
+}
+
+impl LiveSession {
+    /// Drops the held QR payload and its validity window. Every
+    /// transition that ends the payload's session (connect,
+    /// logout, ban, connection loss, worker crash, failure,
+    /// expiry) goes through here, so a dead code can never linger
+    /// as if it were still scannable.
+    pub(crate) fn clear_qr(&mut self) {
+        self.qr = None;
+        self.qr_expires_at = None;
+    }
+}
+
+/// What the connect screen's QR area may present, decided from
+/// session state alone. This is the pairing gate: the `Live`
+/// variant, the only one that carries a matrix to paint, is
+/// reachable only while a session is in a pairable status AND
+/// holds a payload that session's backend delivered (and whose
+/// validity window the expiry sweep has not yet closed). Every
+/// other state presents words, never a code-shaped graphic, so a
+/// dead QR with a waiting-for-scan status is impossible by
+/// construction rather than by painter discipline.
+pub(crate) enum ConnectQr<'a> {
+    /// A current server-issued payload is on screen.
+    Live(&'a QrMatrix),
+    /// A live start was attempted and failed before any session
+    /// existed; carries the plain-language reason.
+    StartFailed(&'a str),
+    /// A session exists and is working toward a payload (or a
+    /// fresh one, after a rotation gap).
+    Connecting,
+    /// The session is down, ended, or already linked: pairing is
+    /// not possible from it right now. Carries the status so the
+    /// screen can name it.
+    Unavailable(&'a LinkStatus),
+    /// No live start was ever requested (demo mode): pairing here
+    /// is not real and must say so.
+    Demo,
+}
+
+impl crate::state::App {
+    /// The connect screen's QR-area state (see [`ConnectQr`]).
+    pub(crate) fn connect_qr(&self) -> ConnectQr<'_> {
+        if let Some(message) = &self.live_start_error {
+            return ConnectQr::StartFailed(message);
+        }
+        let Some(session) = &self.live else {
+            return ConnectQr::Demo;
+        };
+        match session.status {
+            LinkStatus::Starting => ConnectQr::Connecting,
+            LinkStatus::WaitingQr | LinkStatus::CodeReady => match &session.qr {
+                Some(matrix) => ConnectQr::Live(matrix),
+                None => ConnectQr::Connecting,
+            },
+            _ => ConnectQr::Unavailable(&session.status),
+        }
+    }
+
+    /// Drops the held QR payload once its validity window has
+    /// closed. Runs beside the pairing-code expiry in the
+    /// per-frame backend poll: a rotation normally replaces the
+    /// payload long before this fires, so it is the backstop for
+    /// a library that goes quiet without an exhaustion event.
+    fn sweep_qr_expiry(&mut self) {
+        if let Some(session) = &mut self.live {
+            let expired = session.qr.is_some()
+                && session.qr_expires_at.is_some_and(|at| at <= std::time::Instant::now());
+            if expired {
+                session.clear_qr();
+            }
+        }
+    }
 }
 
 /// Stable numeric ID for a JID (FNV-1a). The UI's model uses `u64`
@@ -468,6 +549,13 @@ impl crate::state::App {
         let db_key = match key_decision(&key_result, fake) {
             KeyDecision::Run(key) => key,
             KeyDecision::Abort(message) => {
+                // Recorded as state, not only as a notice: the
+                // connect screen must present this failure instead
+                // of a pairing surface for as long as no session
+                // exists (the notice banner alone can be dismissed,
+                // and the screen behind it used to fall through to
+                // a demo QR with a waiting-for-scan status).
+                self.live_start_error = Some(message.clone());
                 self.notice = Some(message);
                 return;
             }
@@ -547,6 +635,7 @@ impl crate::state::App {
             channels,
             status: LinkStatus::Starting,
             qr: None,
+            qr_expires_at: None,
             pair_code: None,
             pair_code_at: None,
             account: String::new(),
@@ -599,6 +688,7 @@ impl crate::state::App {
             }
         }
         self.live = Some(session);
+        self.live_start_error = None;
         if let Some(note) = archive_note {
             self.notice = Some(note);
         }
@@ -838,6 +928,11 @@ impl crate::state::App {
                 ctx.request_repaint();
             }
         }
+        // QR payloads die on the validity window the library
+        // reported with them; drop an expired one so a dead code
+        // is never presented as scannable (the same discipline as
+        // the pairing-code sweep below).
+        self.sweep_qr_expiry();
         // Pairing codes die after about three minutes. Clear an
         // expired code and return the panel to the request form so a
         // dead code is never presented as live (logic review F13).
@@ -938,13 +1033,33 @@ impl crate::state::App {
 
     fn apply_event(&mut self, event: BackendEvent) {
         match event {
-            BackendEvent::QrCode { payload } => {
+            BackendEvent::QrCode { payload, valid_for } => {
                 if let Some(session) = &mut self.live {
                     if let Ok(matrix) = backend::qr_matrix(&payload) {
                         session.qr = Some(matrix);
+                        session.qr_expires_at = Some(std::time::Instant::now() + valid_for);
                     }
                     if !session.status.is_linked() {
                         session.status = LinkStatus::WaitingQr;
+                    }
+                }
+            }
+            BackendEvent::QrExpired => {
+                if let Some(session) = &mut self.live {
+                    session.clear_qr();
+                    // The library issues no further codes for this
+                    // session. Unless a pairing code is still on
+                    // screen (that flow outlives the QR rotation
+                    // budget), the link attempt is over: say so as
+                    // a failure instead of waiting forever.
+                    if !session.status.is_linked()
+                        && !matches!(session.status, LinkStatus::CodeReady)
+                    {
+                        session.status = LinkStatus::Failed(
+                            "The QR code expired before it was scanned. \
+                             Restart Zaprust to link."
+                                .to_owned(),
+                        );
                     }
                 }
             }
@@ -968,7 +1083,7 @@ impl crate::state::App {
                     // and on every reconnect alike.
                     session.connected_at =
                         Some(i64::try_from(crate::state::now_unix()).unwrap_or(0));
-                    session.qr = None;
+                    session.clear_qr();
                     // A used code must never resurface on the
                     // connect screen (logic review F13).
                     session.pair_code = None;
@@ -981,6 +1096,7 @@ impl crate::state::App {
             BackendEvent::LoggedOut => {
                 if let Some(session) = &mut self.live {
                     session.status = LinkStatus::LoggedOut;
+                    session.clear_qr();
                 }
                 self.notice = Some("The device was logged out.".to_owned());
                 // A logged-out client belongs on the link screen,
@@ -992,6 +1108,7 @@ impl crate::state::App {
             BackendEvent::TemporaryBan { code } => {
                 if let Some(session) = &mut self.live {
                     session.status = LinkStatus::Banned(code);
+                    session.clear_qr();
                 }
             }
             BackendEvent::ChatUpsert(chat) => self.apply_chat_upsert(&chat),
@@ -1229,11 +1346,16 @@ impl crate::state::App {
                     if session.status.is_linked() || session.status == LinkStatus::WaitingQr {
                         session.status = LinkStatus::Lost(reason);
                     }
+                    // The pairing refs behind a held payload belong
+                    // to the connection that just dropped; a fresh
+                    // payload arrives with the reconnect.
+                    session.clear_qr();
                 }
             }
             BackendEvent::Crashed { summary, restarted } => {
                 if let Some(session) = &mut self.live {
                     session.status = LinkStatus::Crashed(summary);
+                    session.clear_qr();
                 }
                 // Sends caught by the crash can never complete; do
                 // not leave their echoes spinning (logic review F5).
@@ -1267,6 +1389,7 @@ impl crate::state::App {
                 if let Some(session) = &mut self.live {
                     if !session.status.is_linked() {
                         session.status = LinkStatus::Failed(message);
+                        session.clear_qr();
                     }
                 }
             }
@@ -2771,6 +2894,7 @@ mod burst_drain_tests {
             channels: BackendChannels { commands: cmd_tx, events: evt_rx },
             status: LinkStatus::Linked,
             qr: None,
+            qr_expires_at: None,
             pair_code: None,
             pair_code_at: None,
             account: "Test account".to_owned(),
@@ -3373,6 +3497,7 @@ mod chat_state_routing_tests {
             channels: BackendChannels { commands: cmd_tx, events: evt_rx },
             status: LinkStatus::Linked,
             qr: None,
+            qr_expires_at: None,
             pair_code: None,
             pair_code_at: None,
             account: "Test account".to_owned(),
@@ -4609,6 +4734,7 @@ mod mirror_pruning_tests {
             channels: BackendChannels { commands: cmd_tx, events: evt_rx },
             status: LinkStatus::Linked,
             qr: None,
+            qr_expires_at: None,
             pair_code: None,
             pair_code_at: None,
             account: "Test account".to_owned(),
@@ -4879,5 +5005,207 @@ mod mirror_pruning_tests {
             app.live.as_ref().unwrap().store.as_ref().unwrap().messages(CHAT_JID).unwrap();
         let row = archived.iter().find(|(m, _)| m.id == "f1").expect("the row is archived");
         assert_eq!(row.1, 0, "the archive row still records the cleared flag");
+    }
+}
+
+#[cfg(test)]
+mod qr_gate_tests {
+    //! The pairing gate (item 107): the connect screen may paint
+    //! a QR only from `ConnectQr::Live`, and that state must be
+    //! unreachable without a pairable session holding a current
+    //! server-issued payload. These tests pin the gate and the
+    //! payload lifecycle around it (receipt, expiry, clearing on
+    //! every session-ending transition). The incident they guard
+    //! against: a failed live start (database key unreadable) left
+    //! no session, and the connect screen painted a decorative
+    //! placeholder code with a waiting-for-scan status; WhatsApp's
+    //! scanner ignored it completely because it encoded nothing.
+
+    use super::*;
+    use crate::state::{App, Args};
+
+    fn app() -> (App, egui::Context) {
+        let ctx = egui::Context::default();
+        crate::theme::install_fonts(&ctx);
+        let mut app = App::new(Args::parse(), &ctx);
+        // App::new may have attempted a real live start against
+        // this machine's data dir; the gate tests own the state
+        // from here.
+        app.live = None;
+        app.live_mode = false;
+        app.live_start_error = None;
+        (app, ctx)
+    }
+
+    fn session(status: LinkStatus, with_payload: bool) -> LiveSession {
+        let (cmd_tx, _cmd_rx) = std::sync::mpsc::channel::<BackendCommand>();
+        let (_evt_tx, evt_rx) = std::sync::mpsc::channel::<BackendEvent>();
+        let mut session = LiveSession {
+            channels: BackendChannels { commands: cmd_tx, events: evt_rx },
+            status,
+            qr: None,
+            qr_expires_at: None,
+            pair_code: None,
+            pair_code_at: None,
+            account: String::new(),
+            connected_at: None,
+            store: None,
+            jids: HashMap::new(),
+            messages: HashMap::new(),
+            times: HashMap::new(),
+            fake: false,
+            flags: HashMap::new(),
+            engaged_chats: std::collections::HashSet::new(),
+        };
+        if with_payload {
+            session.qr = Some(backend::qr_matrix("ref,noise,identity,adv,1").unwrap());
+            session.qr_expires_at =
+                Some(std::time::Instant::now() + std::time::Duration::from_secs(60));
+        }
+        session
+    }
+
+    #[test]
+    fn no_session_and_no_error_is_demo() {
+        let (app, _ctx) = app();
+        assert!(matches!(app.connect_qr(), ConnectQr::Demo));
+    }
+
+    #[test]
+    fn failed_start_is_reported_not_painted() {
+        let (mut app, _ctx) = app();
+        app.live_start_error = Some("the database key could not be read".to_owned());
+        match app.connect_qr() {
+            ConnectQr::StartFailed(message) => {
+                assert!(message.contains("database key"));
+            }
+            _ => panic!("a failed start must surface as StartFailed"),
+        }
+    }
+
+    #[test]
+    fn failed_start_beats_a_leftover_session() {
+        // A restart that aborts on the key leaves the previous
+        // session struct in place; the newest fact is the failure,
+        // and the gate must not resurrect the old payload.
+        let (mut app, _ctx) = app();
+        app.live = Some(session(LinkStatus::WaitingQr, true));
+        app.live_start_error = Some("the database key could not be read".to_owned());
+        assert!(matches!(app.connect_qr(), ConnectQr::StartFailed(_)));
+    }
+
+    #[test]
+    fn pairable_status_without_payload_is_connecting() {
+        let (mut app, _ctx) = app();
+        app.live = Some(session(LinkStatus::Starting, false));
+        assert!(matches!(app.connect_qr(), ConnectQr::Connecting));
+        app.live = Some(session(LinkStatus::WaitingQr, false));
+        assert!(matches!(app.connect_qr(), ConnectQr::Connecting));
+    }
+
+    #[test]
+    fn pairable_status_with_payload_is_live() {
+        let (mut app, _ctx) = app();
+        app.live = Some(session(LinkStatus::WaitingQr, true));
+        assert!(matches!(app.connect_qr(), ConnectQr::Live(_)));
+        app.live = Some(session(LinkStatus::CodeReady, true));
+        assert!(matches!(app.connect_qr(), ConnectQr::Live(_)));
+    }
+
+    #[test]
+    fn down_session_holding_a_payload_is_never_live() {
+        // The pin for the whole gate: whatever a session still
+        // holds, a status that cannot pair must not reach the
+        // painter. (The lifecycle handlers also clear the payload
+        // on these transitions; the gate is the second wall.)
+        let (mut app, _ctx) = app();
+        for status in [
+            LinkStatus::Failed("boom".to_owned()),
+            LinkStatus::Lost("gone".to_owned()),
+            LinkStatus::Crashed("dead".to_owned()),
+            LinkStatus::LoggedOut,
+            LinkStatus::Banned(401),
+            LinkStatus::Linked,
+        ] {
+            app.live = Some(session(status, true));
+            assert!(
+                matches!(app.connect_qr(), ConnectQr::Unavailable(_)),
+                "status {:?} must not be Live",
+                app.live.as_ref().unwrap().status
+            );
+        }
+    }
+
+    #[test]
+    fn qr_event_stores_payload_with_its_validity_window() {
+        let (mut app, _ctx) = app();
+        app.live = Some(session(LinkStatus::Starting, false));
+        let before = std::time::Instant::now();
+        app.apply_event(BackendEvent::QrCode {
+            payload: "ref,noise,identity,adv,1".to_owned(),
+            valid_for: std::time::Duration::from_secs(60),
+        });
+        let live = app.live.as_ref().unwrap();
+        assert_eq!(live.status, LinkStatus::WaitingQr);
+        assert!(live.qr.is_some());
+        let expires = live.qr_expires_at.expect("the window is stored");
+        assert!(expires > before + std::time::Duration::from_secs(50));
+        assert!(expires <= before + std::time::Duration::from_secs(61));
+    }
+
+    #[test]
+    fn connection_loss_and_failure_clear_the_payload() {
+        let (mut app, _ctx) = app();
+        app.live = Some(session(LinkStatus::WaitingQr, true));
+        app.apply_event(BackendEvent::ConnectionLost { reason: "stream ended".to_owned() });
+        let live = app.live.as_ref().unwrap();
+        assert!(matches!(live.status, LinkStatus::Lost(_)));
+        assert!(live.qr.is_none() && live.qr_expires_at.is_none());
+
+        app.live = Some(session(LinkStatus::WaitingQr, true));
+        app.apply_event(BackendEvent::Error { message: "socket closed".to_owned() });
+        let live = app.live.as_ref().unwrap();
+        assert!(matches!(live.status, LinkStatus::Failed(_)));
+        assert!(live.qr.is_none() && live.qr_expires_at.is_none());
+    }
+
+    #[test]
+    fn qr_expired_clears_payload_and_fails_the_attempt() {
+        let (mut app, _ctx) = app();
+        app.live = Some(session(LinkStatus::WaitingQr, true));
+        app.apply_event(BackendEvent::QrExpired);
+        let live = app.live.as_ref().unwrap();
+        assert!(live.qr.is_none() && live.qr_expires_at.is_none());
+        assert!(matches!(live.status, LinkStatus::Failed(_)));
+    }
+
+    #[test]
+    fn qr_expired_keeps_a_pairing_code_flow_alive() {
+        // The library leaves the connection up when a pair-code
+        // flow is outstanding; the on-screen code must survive
+        // the QR budget ending.
+        let (mut app, _ctx) = app();
+        let mut s = session(LinkStatus::CodeReady, true);
+        s.pair_code = Some("ABCD1234".to_owned());
+        app.live = Some(s);
+        app.apply_event(BackendEvent::QrExpired);
+        let live = app.live.as_ref().unwrap();
+        assert!(live.qr.is_none());
+        assert_eq!(live.status, LinkStatus::CodeReady);
+        assert_eq!(live.pair_code.as_deref(), Some("ABCD1234"));
+    }
+
+    #[test]
+    fn expiry_sweep_drops_only_a_past_due_payload() {
+        let (mut app, _ctx) = app();
+        let mut stale = session(LinkStatus::WaitingQr, true);
+        stale.qr_expires_at = Some(std::time::Instant::now() - std::time::Duration::from_secs(1));
+        app.live = Some(stale);
+        app.sweep_qr_expiry();
+        assert!(app.live.as_ref().unwrap().qr.is_none());
+
+        app.live = Some(session(LinkStatus::WaitingQr, true));
+        app.sweep_qr_expiry();
+        assert!(app.live.as_ref().unwrap().qr.is_some());
     }
 }

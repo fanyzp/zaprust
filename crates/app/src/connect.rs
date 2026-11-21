@@ -1,8 +1,10 @@
 //! Connect flow (layout "C, centered minimal", chosen 2026-11-15)
 //! and the account switcher (layout "B, command modal", chosen
-//! 2026-11-13). Demo build, the QR pattern and the pairing code
-//! are deterministic placeholders; the real codes arrive with
-//! whatsapp-rust in the connect phase.
+//! 2026-11-13). The QR area is gated by
+//! [`crate::live::ConnectQr`]: only a current server-issued
+//! payload is ever painted as a code; every other state (demo,
+//! connecting, failed start, down session) renders words. The
+//! demo pairing code is a deterministic placeholder.
 
 use crate::icons::{draw as draw_icon, Icon};
 use crate::state::{App, PairMode, Screen};
@@ -137,28 +139,30 @@ impl App {
                                 PairMode::Qr => {
                                     let (rect, _) =
                                         ui.allocate_exact_size(Vec2::splat(248.0), Sense::hover());
-                                    let live_qr = self.live.as_ref().and_then(|s| s.qr.clone());
-                                    if let Some(matrix) = &live_qr {
-                                        draw_qr_matrix(ui.painter(), rect, matrix);
-                                    } else {
-                                        draw_demo_qr(ui.painter(), rect);
-                                    }
-                                    if self.live_mode {
-                                        ui.add_space(12.0);
-                                        if live_qr.is_some() {
+                                    // The pairing gate (live.rs): a
+                                    // matrix is painted only for the
+                                    // Live state, which requires a
+                                    // pairable session holding a
+                                    // current server-issued payload.
+                                    // Every other state renders
+                                    // words in this slot, never a
+                                    // code-shaped graphic.
+                                    match self.connect_qr() {
+                                        crate::live::ConnectQr::Live(matrix) => {
+                                            draw_qr_matrix(ui.painter(), rect, matrix);
+                                            ui.add_space(12.0);
+                                            let fake = self.live.as_ref().is_some_and(|s| s.fake);
                                             ui.label(
-                                                RichText::new("Live QR. Scan it with your phone.")
-                                                    .size(11.0)
-                                                    .color(rgb(t.text_faint)),
-                                            );
-                                        } else {
-                                            crate::widgets::loading_row(
-                                                ui,
-                                                "Waiting for WhatsApp to send a QR code\u{2026}",
-                                                11.0,
-                                                t.text_faint,
+                                                RichText::new(if fake {
+                                                    "Test mode code. WhatsApp cannot scan it."
+                                                } else {
+                                                    "Live QR. Scan it with your phone."
+                                                })
+                                                .size(11.0)
+                                                .color(rgb(t.text_faint)),
                                             );
                                         }
+                                        _ => self.connect_qr_placeholder(ui, rect, t),
                                     }
                                 }
                                 PairMode::Code => self.connect_code_panel(ui, t),
@@ -215,6 +219,12 @@ impl App {
         let mut slot = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(
             egui::Layout::left_to_right(egui::Align::Center).with_main_align(egui::Align::Center),
         ));
+        // A failed live start owns the line in both pair modes:
+        // nothing is waiting to be scanned or entered.
+        if self.live_start_error.is_some() {
+            slot.label(RichText::new("Could not connect.").size(12.5).color(rgb(t.danger)));
+            return;
+        }
         if self.live_mode {
             if let Some(session) = &self.live {
                 let failed = matches!(
@@ -232,6 +242,14 @@ impl App {
                     && matches!(session.status, crate::live::LinkStatus::WaitingQr)
                 {
                     "Waiting for WhatsApp to send a code.".to_owned()
+                } else if matches!(self.pair_mode, PairMode::Qr)
+                    && matches!(session.status, crate::live::LinkStatus::WaitingQr)
+                    && session.qr.is_none()
+                {
+                    // No payload is painted (the gate shows a
+                    // connecting state), so the line must not claim
+                    // a scan is being awaited.
+                    "Waiting for WhatsApp to send a QR code.".to_owned()
                 } else {
                     session.status.label()
                 };
@@ -256,10 +274,8 @@ impl App {
         }
         match self.pair_mode {
             PairMode::Qr => {
-                crate::widgets::spinner(&mut slot, 14.0);
-                slot.add_space(6.0);
                 slot.label(
-                    RichText::new("Waiting for scan\u{2026}")
+                    RichText::new("Demo mode. There is no code to scan here.")
                         .size(12.5)
                         .color(rgb(t.text_secondary)),
                 );
@@ -283,10 +299,93 @@ impl App {
         }
     }
 
+    /// The QR slot's non-code states (see
+    /// [`crate::live::ConnectQr`]): each is plain words centered
+    /// in the slot, so the eye lands on the state, not on a
+    /// graphic that looks scannable but is not.
+    fn connect_qr_placeholder(&mut self, ui: &mut egui::Ui, rect: egui::Rect, t: Tokens) {
+        // Classify into owned data first: the gate value borrows
+        // the session, and the failed-start arm below needs
+        // `&mut self` for its retry button.
+        enum Slot {
+            StartFailed(String),
+            Connecting,
+            Unavailable(String),
+            Demo,
+        }
+        let state = match self.connect_qr() {
+            crate::live::ConnectQr::Live(_) => return,
+            crate::live::ConnectQr::StartFailed(message) => Slot::StartFailed(message.to_owned()),
+            crate::live::ConnectQr::Connecting => Slot::Connecting,
+            crate::live::ConnectQr::Unavailable(status) => Slot::Unavailable(status.label()),
+            crate::live::ConnectQr::Demo => Slot::Demo,
+        };
+        let mut slot = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(rect)
+                .layout(egui::Layout::top_down(egui::Align::Center)),
+        );
+        match state {
+            Slot::StartFailed(message) => {
+                slot.add_space(28.0);
+                self.connect_start_failed_panel(&mut slot, t, &message);
+            }
+            Slot::Connecting => {
+                slot.add_space(96.0);
+                crate::widgets::loading_row(
+                    &mut slot,
+                    "Waiting for WhatsApp to send a QR code\u{2026}",
+                    12.0,
+                    t.text_secondary,
+                );
+            }
+            Slot::Unavailable(label) => {
+                slot.add_space(96.0);
+                slot.label(RichText::new(label).size(12.5).color(rgb(t.text_secondary)));
+            }
+            Slot::Demo => {
+                slot.add_space(84.0);
+                slot.label(RichText::new("Demo mode").size(14.0).strong());
+                slot.add_space(8.0);
+                slot.label(
+                    RichText::new(
+                        "Pairing is not real in the demo, and there is no code \
+                         to scan. Run Zaprust in live mode to link an account.",
+                    )
+                    .size(12.0)
+                    .color(rgb(t.text_secondary)),
+                );
+            }
+        }
+    }
+
+    /// The failed-live-start panel shared by the QR slot and the
+    /// pairing-code panel: the plain-language reason and the way
+    /// out (retry the start). The full technical text also rides
+    /// the notice banner; this panel is what stays on the connect
+    /// screen itself for as long as no session exists.
+    fn connect_start_failed_panel(&mut self, ui: &mut egui::Ui, t: Tokens, message: &str) {
+        ui.label(RichText::new("Could not connect").size(14.0).strong());
+        ui.add_space(8.0);
+        ui.label(RichText::new(message).size(12.0).color(rgb(t.text_secondary)));
+        ui.add_space(12.0);
+        if crate::widgets::button(ui, t, "Try again", crate::widgets::Btn::Primary).clicked() {
+            let ctx = ui.ctx().clone();
+            self.start_live(&ctx, false, false);
+        }
+    }
+
     /// The pairing entry inside the connect card: first the
     /// phone field, then the eight code boxes, centered in the
     /// column like everything else on this screen.
     fn connect_code_panel(&mut self, ui: &mut egui::Ui, t: Tokens) {
+        // A failed live start owns the whole card: the demo code
+        // path below must never present itself as the real flow
+        // to a user whose live start just failed.
+        if let Some(message) = self.live_start_error.clone() {
+            self.connect_start_failed_panel(ui, t, &message);
+            return;
+        }
         ui.add_space(6.0);
         if self.pair_code_shown {
             ui.label(RichText::new("Enter this code on your phone").size(14.0).strong());
@@ -678,11 +777,20 @@ fn pairing_code(phone: &str) -> String {
 
 /// Draws a real QR payload matrix (from the `backend` crate, which
 /// owns QR encoding) with a 4-module quiet zone.
+/// Layout of a painted code inside its slot: the white plate
+/// fills the slot, and modules begin after a 10pt plate margin
+/// plus the standard four-module quiet zone on every side. One
+/// cell size spans the whole code; it is fractional at the
+/// connect slot's size, which is safe because the painter draws
+/// vector rectangles (nothing is rasterized or resampled).
+fn qr_layout(rect: egui::Rect, modules: usize) -> (egui::Rect, f32) {
+    let inner = rect.shrink(10.0);
+    (inner, inner.width() / (modules + 8) as f32)
+}
+
 fn draw_qr_matrix(painter: &egui::Painter, rect: egui::Rect, matrix: &backend::QrMatrix) {
     painter.rect_filled(rect, CornerRadius::same(10), Color32::WHITE);
-    let inner = rect.shrink(10.0);
-    let total = matrix.size + 8; // + quiet zone on both sides
-    let cell = inner.width() / total as f32;
+    let (inner, cell) = qr_layout(rect, matrix.size);
     let black = Color32::from_rgb(0x11, 0x1B, 0x21);
     for y in 0..matrix.size {
         for x in 0..matrix.size {
@@ -701,46 +809,38 @@ fn draw_qr_matrix(painter: &egui::Painter, rect: egui::Rect, matrix: &backend::Q
     }
 }
 
-/// Draws a QR-looking placeholder: real finder patterns, deterministic
-/// pseudo-random data modules (xorshift on the module index). It does
-/// not encode anything.
-fn draw_demo_qr(painter: &egui::Painter, rect: egui::Rect) {
-    const N: usize = 25;
-    painter.rect_filled(rect, CornerRadius::same(10), Color32::WHITE);
-    let inner = rect.shrink(10.0);
-    let cell = inner.width() / N as f32;
-    let black = Color32::from_rgb(0x11, 0x1B, 0x21);
-    let in_finder = |x: usize, y: usize| -> Option<(usize, usize)> {
-        for (fx, fy) in [(0usize, 0usize), (N - 7, 0), (0, N - 7)] {
-            if x >= fx && x < fx + 7 && y >= fy && y < fy + 7 {
-                return Some((x - fx, y - fy));
-            }
+#[cfg(test)]
+mod qr_layout_tests {
+    use super::qr_layout;
+    use egui::{Pos2, Rect, Vec2};
+
+    #[test]
+    fn plate_margin_and_quiet_zone_are_reserved() {
+        // The connect slot is 248pt; payloads run from version 2
+        // (25 modules) up past version 13 (61) for pairing data.
+        for modules in [25usize, 41, 61, 97] {
+            let rect = Rect::from_min_size(Pos2::ZERO, Vec2::splat(248.0));
+            let (inner, cell) = qr_layout(rect, modules);
+            // The plate margin is exactly 10pt on every side.
+            assert_eq!(inner.left(), 10.0);
+            assert_eq!(inner.top(), 10.0);
+            assert_eq!(inner.width(), 228.0);
+            // The cell spans code plus both four-module quiet
+            // zones, no more and no less: the first dark module
+            // lands four cells in from the inner edge.
+            let spanned = cell * (modules + 8) as f32;
+            assert!((spanned - inner.width()).abs() < 0.05, "modules {modules}");
+            assert!(cell > 0.0);
         }
-        None
-    };
-    let mut state: u32 = 0x2545_F491;
-    for y in 0..N {
-        for x in 0..N {
-            let filled = if let Some((lx, ly)) = in_finder(x, y) {
-                lx == 0
-                    || lx == 6
-                    || ly == 0
-                    || ly == 6
-                    || ((2..=4).contains(&lx) && (2..=4).contains(&ly))
-            } else {
-                state ^= state << 13;
-                state ^= state >> 17;
-                state ^= state << 5;
-                state % 100 < 46
-            };
-            if filled {
-                let min = Pos2::new(inner.left() + x as f32 * cell, inner.top() + y as f32 * cell);
-                painter.rect_filled(
-                    egui::Rect::from_min_size(min, Vec2::splat(cell + 0.5)),
-                    CornerRadius::ZERO,
-                    black,
-                );
-            }
-        }
+    }
+
+    #[test]
+    fn cell_at_the_connect_slot_stays_legible() {
+        // A pairing payload encodes to roughly 61 modules; at
+        // the 248pt slot the module size must stay comfortably
+        // above the size phone cameras resolve at arm's length.
+        let rect = Rect::from_min_size(Pos2::ZERO, Vec2::splat(248.0));
+        let (_, cell) = qr_layout(rect, 61);
+        assert!(cell > 3.0, "cell was {cell}");
     }
 }

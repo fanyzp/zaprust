@@ -39,6 +39,7 @@ impl App {
             BackendEvent::QrCode { .. } => {
                 ("backend", "QrCode received (payload redacted)".to_owned(), None)
             }
+            BackendEvent::QrExpired => ("backend", "QrExpired".to_owned(), None),
             BackendEvent::PairCode { .. } => {
                 ("backend", "PairCode ready (code redacted)".to_owned(), None)
             }

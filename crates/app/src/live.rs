@@ -2544,6 +2544,9 @@ impl crate::state::App {
             self.selected_chat = next;
             self.sync_conversation();
         }
+        // The deleted chat's draft leaves the persisted set
+        // with the chat, or a restart would resurrect it.
+        self.persist_settings();
     }
 
     /// Applies a chat clearing the server reported (the chat

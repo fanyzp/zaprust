@@ -18,7 +18,10 @@ impl App {
                 &crate::i18n::t("chats_page.enter_sends_caption"),
                 |ui| switch(ui, &mut v, t),
             );
-            self.enter_sends = v;
+            if v != self.enter_sends {
+                self.enter_sends = v;
+                self.persist_settings();
+            }
             divider(ui, t);
             let mut v = self.keep_archived;
             row_hl(
@@ -31,7 +34,10 @@ impl App {
                 "Archived chats stay archived when new messages arrive",
                 |ui| switch(ui, &mut v, t),
             );
-            self.keep_archived = v;
+            if v != self.keep_archived {
+                self.keep_archived = v;
+                self.persist_settings();
+            }
         });
     }
 }

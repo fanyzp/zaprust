@@ -228,109 +228,7 @@ impl App {
         let dir = backend::data_dir();
         if let Some(text) = read_json_file(&dir.join("settings.json")) {
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
-                self.read_receipts = v["read_receipts"].as_bool().unwrap_or(true);
-                self.default_ephemeral_secs =
-                    v["default_ephemeral_secs"].as_u64().unwrap_or(0) as u32;
-                self.typing_indicators = v["typing_indicators"].as_bool().unwrap_or(true);
-                self.link_previews = v["link_previews"].as_bool().unwrap_or(true);
-                if let Some(s) = v["saturation"].as_f64() {
-                    self.saturation = s as f32;
-                }
-                if let Some(c) = v["contrast"].as_f64() {
-                    self.contrast = c as f32;
-                }
-                if let Some(g) = v["glow"].as_bool() {
-                    self.glow = g;
-                }
-                if let Some(z) = v["zoom_percent"].as_u64() {
-                    // The same clamp the Appearance control
-                    // applies, so a hand-edited file cannot push
-                    // the render scale outside the offered range.
-                    self.zoom_percent = (z as u32).clamp(80, 120);
-                }
-                if let Some(a) = v["seed"].as_array() {
-                    if a.len() == 3 {
-                        self.seed = core::theme::Rgb(
-                            a[0].as_u64().unwrap_or(0) as u8,
-                            a[1].as_u64().unwrap_or(0) as u8,
-                            a[2].as_u64().unwrap_or(0) as u8,
-                        );
-                    }
-                }
-                self.notify_messages = v["notify_messages"].as_bool().unwrap_or(true);
-                self.notify_groups = v["notify_groups"].as_bool().unwrap_or(true);
-                self.notify_sound = v["notify_sound"].as_bool().unwrap_or(true);
-                // The constructor default is false (message text
-                // in OS notifications is the privacy-sensitive
-                // behavior), so the loader fallback must agree: a
-                // settings file written without this key must not
-                // silently turn previews on (audit finding 11).
-                self.notify_preview = v["notify_preview"].as_bool().unwrap_or(false);
-                // Legacy blocked-contact copy. Builds before
-                // the A6 fix persisted the blocked set here, as
-                // chat ids; the set's home is now the encrypted
-                // archive (see `App::start_live`, which migrates
-                // this copy into the store on the first live
-                // start and never writes it back: settings_json
-                // no longer emits the field, so the next settings
-                // save scrubs it from this file). Reading it here
-                // keeps the panel's pre-connect display working
-                // until that migration runs. Chat ids are stored,
-                // not JIDs: the panel reasons in ids.
-                if let Some(blocked) = v["blocked_chats"].as_array() {
-                    self.blocked_chats =
-                        blocked.iter().filter_map(serde_json::Value::as_u64).collect();
-                }
-                if let Some(m) = v["motion"].as_str() {
-                    self.motion = crate::motion::MotionSetting::from_str_or_full(m);
-                }
-                if let Some(l) = v["language"].as_str() {
-                    self.language = l.to_owned();
-                    // Under test, App::new runs in many suites that
-                    // do not care about the developer's real
-                    // settings.json; applying it here flips the
-                    // global locale under the i18n tests' feet.
-                    // Real launches always apply it.
-                    if !cfg!(test) {
-                        crate::i18n::set_locale(l);
-                    }
-                }
-                if let Some(u) = v["update_last_check"].as_u64() {
-                    self.update.last_check = u;
-                }
-                self.update.auto_check = v["update_auto_check"].as_bool().unwrap_or(true);
-                // "My profile" identity: seed the editor state
-                // once from the persisted keys. In live mode these
-                // are only a cache of the last account read-back
-                // (the editor shows its loading state until the
-                // fresh read-back lands, so the cache is never
-                // presented as the account's current values); in
-                // demo mode they are the values themselves. Absent
-                // keys leave the defaults (empty name/about, no
-                // photo).
-                if let Some(n) = v["my_name"].as_str() {
-                    self.my_profile.name = n.to_owned();
-                }
-                if let Some(a) = v["my_about"].as_str() {
-                    self.my_profile.about = a.to_owned();
-                }
-                if let Some(p) = v["my_photo_path"].as_str() {
-                    if !p.is_empty() {
-                        self.my_profile.photo_path = Some(p.to_owned());
-                    }
-                }
-                if let Some(f) = v["features"].as_object() {
-                    had_features = true;
-                    for (id, on) in f {
-                        if let Some(b) = on.as_bool() {
-                            self.feature_flags.insert(id.clone(), b);
-                        }
-                    }
-                }
-                if let Some(g) = v["giphy_prefs"].as_object() {
-                    had_giphy = true;
-                    self.giphy_prefs = g.clone();
-                }
+                (had_features, had_giphy) = self.apply_settings_document(&v);
             }
         }
         // The my-profile seed ran above (or the settings file does
@@ -338,7 +236,196 @@ impl App {
         // either way the editor must never overwrite the state
         // with defaults after this point.
         self.my_profile.seeded = true;
+        // The settings load parks every composer draft by chat
+        // id, the open chat's included; the composer holds the
+        // open one directly, so move it over before any chat
+        // switch can park state again.
+        self.restore_open_draft();
         self.migrate_legacy_plugin_state(had_features, had_giphy);
+    }
+
+    /// Applies one parsed settings document to the app state:
+    /// the load half of the settings round trip, exactly what
+    /// [`App::load_persisted_state`] runs over settings.json.
+    /// Split out so tests can run a document produced by
+    /// [`App::settings_json`] through the real load path without
+    /// touching the real data dir. Returns whether the document
+    /// carried feature flags and GIF preferences (the legacy
+    /// migration only seeds what the document does not carry).
+    pub(crate) fn apply_settings_document(&mut self, v: &serde_json::Value) -> (bool, bool) {
+        let mut had_features = false;
+        let mut had_giphy = false;
+        self.read_receipts = v["read_receipts"].as_bool().unwrap_or(true);
+        self.enter_sends = v["enter_sends"].as_bool().unwrap_or(true);
+        self.keep_archived = v["keep_archived"].as_bool().unwrap_or(true);
+        self.default_ephemeral_secs = v["default_ephemeral_secs"].as_u64().unwrap_or(0) as u32;
+        self.typing_indicators = v["typing_indicators"].as_bool().unwrap_or(true);
+        self.link_previews = v["link_previews"].as_bool().unwrap_or(true);
+        if let Some(s) = v["saturation"].as_f64() {
+            self.saturation = s as f32;
+        }
+        if let Some(c) = v["contrast"].as_f64() {
+            self.contrast = c as f32;
+        }
+        if let Some(g) = v["glow"].as_bool() {
+            self.glow = g;
+        }
+        if let Some(z) = v["zoom_percent"].as_u64() {
+            // The same clamp the Appearance control
+            // applies, so a hand-edited file cannot push
+            // the render scale outside the offered range.
+            self.zoom_percent = (z as u32).clamp(80, 120);
+        }
+        // The theme choice: ThemeId's own deserialization
+        // maps retired palette names and anything unrecognized
+        // onto Dark instead of failing, so any string the file
+        // carries loads; a non-string value keeps the current
+        // choice.
+        if let Some(theme) = v
+            .get("theme")
+            .and_then(|raw| serde_json::from_value::<core::theme::ThemeId>(raw.clone()).ok())
+        {
+            self.theme_choice = theme;
+        }
+        if let Some(a) = v["seed"].as_array() {
+            if a.len() == 3 {
+                self.seed = core::theme::Rgb(
+                    a[0].as_u64().unwrap_or(0) as u8,
+                    a[1].as_u64().unwrap_or(0) as u8,
+                    a[2].as_u64().unwrap_or(0) as u8,
+                );
+            }
+        }
+        self.notify_messages = v["notify_messages"].as_bool().unwrap_or(true);
+        self.notify_groups = v["notify_groups"].as_bool().unwrap_or(true);
+        self.notify_sound = v["notify_sound"].as_bool().unwrap_or(true);
+        // The constructor default is false (message text
+        // in OS notifications is the privacy-sensitive
+        // behavior), so the loader fallback must agree: a
+        // settings file written without this key must not
+        // silently turn previews on (audit finding 11).
+        self.notify_preview = v["notify_preview"].as_bool().unwrap_or(false);
+        // Legacy blocked-contact copy. Builds before
+        // the A6 fix persisted the blocked set here, as
+        // chat ids; the set's home is now the encrypted
+        // archive (see `App::start_live`, which migrates
+        // this copy into the store on the first live
+        // start and never writes it back: settings_json
+        // no longer emits the field, so the next settings
+        // save scrubs it from this file). Reading it here
+        // keeps the panel's pre-connect display working
+        // until that migration runs. Chat ids are stored,
+        // not JIDs: the panel reasons in ids.
+        if let Some(blocked) = v["blocked_chats"].as_array() {
+            self.blocked_chats = blocked.iter().filter_map(serde_json::Value::as_u64).collect();
+        }
+        if let Some(m) = v["motion"].as_str() {
+            self.motion = crate::motion::MotionSetting::from_str_or_full(m);
+        }
+        if let Some(l) = v["language"].as_str() {
+            self.language = l.to_owned();
+            // Under test, App::new runs in many suites that
+            // do not care about the developer's real
+            // settings.json; applying it here flips the
+            // global locale under the i18n tests' feet.
+            // Real launches always apply it.
+            if !cfg!(test) {
+                crate::i18n::set_locale(l);
+            }
+        }
+        if let Some(u) = v["update_last_check"].as_u64() {
+            self.update.last_check = u;
+        }
+        self.update.auto_check = v["update_auto_check"].as_bool().unwrap_or(true);
+        // "My profile" identity: seed the editor state
+        // once from the persisted keys. In live mode these
+        // are only a cache of the last account read-back
+        // (the editor shows its loading state until the
+        // fresh read-back lands, so the cache is never
+        // presented as the account's current values); in
+        // demo mode they are the values themselves. Absent
+        // keys leave the defaults (empty name/about, no
+        // photo).
+        if let Some(n) = v["my_name"].as_str() {
+            self.my_profile.name = n.to_owned();
+        }
+        if let Some(a) = v["my_about"].as_str() {
+            self.my_profile.about = a.to_owned();
+        }
+        if let Some(p) = v["my_photo_path"].as_str() {
+            if !p.is_empty() {
+                self.my_profile.photo_path = Some(p.to_owned());
+            }
+        }
+        // Composer drafts, parked per chat id: the document
+        // the writer produces composes the parked map plus the
+        // open chat's draft under its own id, and the load puts
+        // them all back in the parked map (the open chat's is
+        // moved into the composer by restore_open_draft, at the
+        // end of the settings load). Whitespace-only entries
+        // carry no draft and are skipped, the parking rule in
+        // switch_composer_chat applied on the way in.
+        if let Some(drafts) = v["drafts"].as_object() {
+            for (id, text) in drafts {
+                if let (Ok(id), Some(text)) = (id.parse::<u64>(), text.as_str()) {
+                    if !text.trim().is_empty() {
+                        self.composer.chat_drafts.insert(id, text.to_owned());
+                    }
+                }
+            }
+        }
+        if let Some(f) = v["features"].as_object() {
+            had_features = true;
+            for (id, on) in f {
+                if let Some(b) = on.as_bool() {
+                    self.feature_flags.insert(id.clone(), b);
+                }
+            }
+        }
+        if let Some(g) = v["giphy_prefs"].as_object() {
+            had_giphy = true;
+            self.giphy_prefs = g.clone();
+        }
+        (had_features, had_giphy)
+    }
+
+    /// Moves the open chat's draft out of the parked map into
+    /// the composer. The settings load parks every draft by
+    /// chat id, the open chat's included, but the composer
+    /// holds the open one directly (and the chat list reads it
+    /// from there for the selected row). Runs at the end of the
+    /// settings load, before any chat switch can park state
+    /// again. A draft the constructor already placed (the
+    /// --demo-draft QA hook) wins; the parked copy then stays
+    /// parked and resurfaces on the next switch back.
+    pub(crate) fn restore_open_draft(&mut self) {
+        if self.composer.draft.is_empty() {
+            if let Some(draft) = self.composer.chat_drafts.remove(&self.selected_chat) {
+                self.composer.draft = draft;
+            }
+        }
+    }
+
+    /// The drafts value of the settings document: every parked
+    /// per-chat draft plus the open chat's draft under the
+    /// selected chat's id, keyed by chat id as a string (JSON
+    /// object keys are strings). Whitespace-only drafts carry
+    /// nothing worth restoring and are left out, the parking
+    /// rule in switch_composer_chat applied on the way out.
+    fn drafts_document(&self) -> serde_json::Value {
+        let mut map = serde_json::Map::new();
+        for (id, draft) in &self.composer.chat_drafts {
+            if !draft.trim().is_empty() {
+                map.insert(id.to_string(), serde_json::Value::String(draft.clone()));
+            }
+        }
+        if !self.composer.draft.trim().is_empty() {
+            map.insert(
+                self.selected_chat.to_string(),
+                serde_json::Value::String(self.composer.draft.clone()),
+            );
+        }
+        serde_json::Value::Object(map)
     }
 
     /// One-time migration from the pre-native plugin bookkeeping:
@@ -391,6 +478,8 @@ impl App {
     pub(crate) fn settings_json(&self) -> serde_json::Value {
         serde_json::json!({
             "read_receipts": self.read_receipts,
+            "enter_sends": self.enter_sends,
+            "keep_archived": self.keep_archived,
             "default_ephemeral_secs": self.default_ephemeral_secs,
             "typing_indicators": self.typing_indicators,
             "link_previews": self.link_previews,
@@ -398,6 +487,8 @@ impl App {
             "contrast": self.contrast,
             "glow": self.glow,
             "zoom_percent": self.zoom_percent,
+            "theme": self.theme_choice,
+            "drafts": self.drafts_document(),
             "seed": [self.seed.0, self.seed.1, self.seed.2],
             "notify_messages": self.notify_messages,
             "notify_groups": self.notify_groups,

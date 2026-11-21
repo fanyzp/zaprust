@@ -14,6 +14,7 @@ impl App {
                     if radio_row(ui, t, selected, Some(rgb(tokens.bg_app)), id.label(), "") {
                         self.theme_choice = *id;
                         self.apply_theme_choice(ui.ctx());
+                        self.persist_settings();
                     }
                     if i + 1 < ThemeId::ALL.len() {
                         divider_inset(ui, t, 60.0);
@@ -122,6 +123,7 @@ impl App {
                 }
                 if changed {
                     self.apply_theme_choice(ui.ctx());
+                    self.persist_settings();
                 }
             })
         });

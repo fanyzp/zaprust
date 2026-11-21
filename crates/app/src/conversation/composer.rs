@@ -471,6 +471,7 @@ impl App {
                                                 {
                                                     self.composer.editing_id = None;
                                                     self.composer.draft.clear();
+                                                    self.persist_settings();
                                                 }
                                             },
                                         );
@@ -881,6 +882,10 @@ impl App {
                                 *engaged = true;
                             }
                             self.composer.draft.clear();
+                            // The sent draft leaves the
+                            // persisted set with the send, or a
+                            // restart would resurrect it.
+                            self.persist_settings();
                         }
                     }
                     // Typing presence: composing
@@ -888,6 +893,15 @@ impl App {
                     // (live mode, toggle-gated).
                     if input_changed && self.live_mode {
                         self.set_typing(!self.composer.draft.trim().is_empty());
+                    }
+                    // Draft persistence: the settings document
+                    // carries the parked drafts plus the open
+                    // one, so a draft typed here survives a
+                    // restart. While media is staged the input
+                    // edits the staged caption instead, which is
+                    // not a draft and changes nothing here.
+                    if input_changed && self.composer.staged.is_empty() {
+                        self.persist_settings();
                     }
                     // A recording that ran into the cap auto-sends:
                     // the capture stopped growing, so the honest end

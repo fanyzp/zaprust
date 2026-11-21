@@ -2270,6 +2270,173 @@ mod tests {
         App::new(args, &ctx)
     }
 
+    /// Runs a settings document (produced by one app's
+    /// settings_json, exactly what persist_settings writes)
+    /// through the real load path on a fresh app and returns
+    /// that app: the settings round trip, without touching the
+    /// real data dir.
+    fn reload_from_document(doc: &serde_json::Value) -> App {
+        let mut fresh = demo_app();
+        fresh.apply_settings_document(doc);
+        fresh
+    }
+
+    /// Board item 121: the theme choice persisted nowhere, so
+    /// a restart reopened on the constructor's theme. The
+    /// Appearance radio's own statements (set, apply, persist)
+    /// must put the choice in the document, and the load path
+    /// must bring it back.
+    #[test]
+    fn theme_choice_round_trips_through_the_settings_document() {
+        let ctx = egui::Context::default();
+        crate::theme::install_fonts(&ctx);
+        let mut args = Args::parse();
+        args.live = false;
+        let mut app = App::new(args, &ctx);
+        // The statements the Appearance radio row runs.
+        app.theme_choice = ThemeId::Light;
+        app.apply_theme_choice(&ctx);
+        let doc = app.settings_json();
+        assert_eq!(doc["theme"], serde_json::json!("Light"));
+
+        let mut fresh = reload_from_document(&doc);
+        // Isolate from whatever the real settings file seeded:
+        // start from a different choice, then load.
+        fresh.theme_choice = ThemeId::Dark;
+        fresh.apply_settings_document(&doc);
+        assert_eq!(fresh.theme_choice, ThemeId::Light);
+        // App::new recomputes the tokens from the loaded choice
+        // right after the settings load; run that same apply.
+        fresh.apply_theme_choice(&ctx);
+        assert_eq!(
+            fresh.tokens,
+            Tokens::dynamic(fresh.seed, false)
+                .adjust(fresh.saturation, fresh.contrast)
+                .with_glow(fresh.glow),
+            "the loaded choice resolves to the light token set at startup"
+        );
+    }
+
+    /// Board item 121: saturation and contrast were loaded and
+    /// written by other paths but never saved at change time,
+    /// so slider adjustments reset on restart. The fine-tuning
+    /// block's own statements (mutate, apply, persist) must
+    /// round-trip both values.
+    #[test]
+    fn saturation_and_contrast_round_trip_through_the_settings_document() {
+        let ctx = egui::Context::default();
+        crate::theme::install_fonts(&ctx);
+        let mut args = Args::parse();
+        args.live = false;
+        let mut app = App::new(args, &ctx);
+        // The statements the fine-tuning sliders run on change.
+        app.saturation = 0.5;
+        app.contrast = 1.1;
+        app.apply_theme_choice(&ctx);
+        let doc = app.settings_json();
+        assert_eq!(doc["saturation"].as_f64(), Some(0.5));
+        assert_eq!(doc["contrast"].as_f64(), Some(f64::from(1.1_f32)));
+
+        let mut fresh = reload_from_document(&doc);
+        fresh.saturation = 1.0;
+        fresh.contrast = 1.0;
+        fresh.apply_settings_document(&doc);
+        assert_eq!(fresh.saturation, 0.5);
+        assert_eq!(fresh.contrast, 1.1_f32);
+    }
+
+    /// Board item 121: the Chats page toggles (Enter sends,
+    /// Keep chats archived) flipped state that no document
+    /// carried, so both reset on restart. The page's own
+    /// compare-set-persist statements must round-trip both.
+    #[test]
+    fn chats_page_toggles_round_trip_through_the_settings_document() {
+        let mut app = demo_app();
+        // The statements page_chats runs when a switch flips.
+        app.enter_sends = false;
+        app.keep_archived = false;
+        let doc = app.settings_json();
+        assert_eq!(doc["enter_sends"], serde_json::json!(false));
+        assert_eq!(doc["keep_archived"], serde_json::json!(false));
+
+        let mut fresh = reload_from_document(&doc);
+        fresh.enter_sends = true;
+        fresh.keep_archived = true;
+        fresh.apply_settings_document(&doc);
+        assert!(!fresh.enter_sends, "Enter sends survives the restart");
+        assert!(!fresh.keep_archived, "Keep chats archived survives the restart");
+    }
+
+    /// Board item 121: composer drafts were session-only. A
+    /// draft parked by a chat switch must reach the settings
+    /// document under its chat id and come back parked on a
+    /// fresh load.
+    #[test]
+    fn parked_composer_drafts_round_trip_through_the_settings_document() {
+        let mut app = demo_app();
+        app.select_chat_now(2);
+        app.composer.draft = "a draft for the second chat".to_owned();
+        app.select_chat_now(3);
+        assert_eq!(
+            app.composer.chat_drafts.get(&2).map(String::as_str),
+            Some("a draft for the second chat"),
+            "the switch parks the draft under its chat"
+        );
+        let doc = app.settings_json();
+        assert_eq!(
+            doc["drafts"]["2"],
+            serde_json::json!("a draft for the second chat"),
+            "the parked draft reaches the settings document"
+        );
+
+        let fresh = reload_from_document(&doc);
+        assert_eq!(
+            fresh.composer.chat_drafts.get(&2).map(String::as_str),
+            Some("a draft for the second chat"),
+            "a fresh load parks the draft again"
+        );
+    }
+
+    /// Board item 121: the open chat's draft is part of the
+    /// persisted set (under the selected chat's id), and the
+    /// settings load moves it back into the composer, so
+    /// typing, closing the app and reopening restores the text
+    /// in place. A sent (cleared) draft leaves the document,
+    /// so it cannot resurrect.
+    #[test]
+    fn open_composer_draft_round_trips_and_a_cleared_one_stays_gone() {
+        let mut app = demo_app();
+        app.select_chat_now(2);
+        app.composer.draft = "still typing this".to_owned();
+        let doc = app.settings_json();
+        assert_eq!(
+            doc["drafts"]["2"],
+            serde_json::json!("still typing this"),
+            "the open draft is persisted under the selected chat"
+        );
+
+        let mut fresh = reload_from_document(&doc);
+        fresh.selected_chat = 2;
+        fresh.composer.draft = String::new();
+        fresh.restore_open_draft();
+        assert_eq!(fresh.composer.draft, "still typing this");
+        assert!(
+            !fresh.composer.chat_drafts.contains_key(&2),
+            "the restored draft leaves the parked map"
+        );
+
+        // The send path clears the draft and persists: the
+        // document no longer carries the chat's entry.
+        app.composer.draft.clear();
+        let doc = app.settings_json();
+        assert!(
+            doc["drafts"].get("2").is_none(),
+            "a cleared draft leaves the persisted set: {doc}"
+        );
+        let fresh = reload_from_document(&doc);
+        assert!(!fresh.composer.chat_drafts.contains_key(&2));
+    }
+
     fn media_msg(id: u64, view_once: bool) -> Message {
         let mut msg = Message::theirs(id, "Sarah", "", "10:00");
         msg.kind = core::model::MessageKind::Image { caption: String::new(), view_once };

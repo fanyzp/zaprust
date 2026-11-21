@@ -526,10 +526,8 @@ impl App {
         let cover = if self.live_mode { None } else { self.media.photo_texture.clone() };
         let mut open: Option<u64> = None;
         let mut back = false;
-        let panel = egui::Panel::left("chat_list")
-            .resizable(true)
-            .default_size(350.0)
-            .size_range(280.0..=460.0)
+        let panel = self
+            .list_panel(root)
             .frame(
                 egui::Frame::new()
                     .fill(rgb(t.bg_panel))

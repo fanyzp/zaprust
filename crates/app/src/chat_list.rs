@@ -49,10 +49,8 @@ impl App {
         // Clicking an archived row below opens that chat
         // through the normal row-click path.
         let t = self.tokens();
-        let panel = egui::Panel::left("chat_list")
-            .resizable(true)
-            .default_size(350.0)
-            .size_range(280.0..=460.0)
+        let panel = self
+            .list_panel(root)
             .frame(egui::Frame::new().fill(rgb(t.bg_panel)).inner_margin(Margin::symmetric(10, 8)))
             .show(root, |ui| {
                 // Header row: the "Chats" title, then the panel

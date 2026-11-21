@@ -162,10 +162,8 @@ impl App {
         let none_starred = entries.is_empty();
         let mut open: Option<(u64, u64)> = None;
         let mut back = false;
-        let panel = egui::Panel::left("chat_list")
-            .resizable(true)
-            .default_size(350.0)
-            .size_range(280.0..=460.0)
+        let panel = self
+            .list_panel(root)
             .frame(egui::Frame::new().fill(rgb(t.bg_panel)).inner_margin(Margin::symmetric(10, 8)))
             .show(root, |ui| {
                 // Header: back to the chat list, then the title.

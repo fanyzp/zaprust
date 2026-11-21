@@ -21,9 +21,16 @@ pub(crate) mod quick_replies;
 
 /// The conversation column's side margin: the stream, the
 /// composer stack and the scroll-to-bottom button all inset
-/// from the panel edges by this one measure.
+/// from the panel edges by this one measure. A phone-width
+/// pane keeps a small fixed inset instead: the percentage
+/// would still leave the composer pill too little width for
+/// its input.
 pub(super) fn side_margin(panel_w: f32) -> f32 {
-    (panel_w * 0.055).clamp(14.0, 72.0)
+    if panel_w < 480.0 {
+        10.0
+    } else {
+        (panel_w * 0.055).clamp(14.0, 72.0)
+    }
 }
 
 impl App {
@@ -206,7 +213,7 @@ impl App {
         // cannot desync when the stack changes shape; the
         // measurement is stored where the composer is drawn,
         // further down.
-        let composer_clearance = self.composer.stack_h + self.composer.hint_bar_h + 20.0;
+        let composer_clearance = self.composer.stack_h + 20.0;
         let mut pending_actions: Vec<BubbleAction> = Vec::new();
         let chat = self.selected().clone();
         // Motion: a short fade covers the switch between chats.
@@ -231,7 +238,14 @@ impl App {
         // the conversation column keeps a usable share instead
         // of being squeezed to a sliver.
         let dock_target = if self.profile_open {
-            (root.available_rect_before_wrap().width() * 0.55).min(360.0)
+            if self.single_pane {
+                // Single-pane: the dock is the only thing on
+                // screen, so it takes the whole content width
+                // instead of squeezing the conversation beside it.
+                root.available_rect_before_wrap().width()
+            } else {
+                (root.available_rect_before_wrap().width() * 0.55).min(360.0)
+            }
         } else {
             0.0
         };
@@ -272,6 +286,29 @@ impl App {
                     .inner_margin(Margin::symmetric(12, 10))
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
+                            // Single-pane: the way back to the
+                            // list this conversation was opened
+                            // from. Only in single-pane mode (the
+                            // list is always visible beside the
+                            // conversation otherwise), and yielded
+                            // to the community back below when the
+                            // chat was entered through a community
+                            // home: that one leads back to the
+                            // home, whose own back reaches the list.
+                            if self.single_pane
+                                && self.community_origin.is_none()
+                                && crate::widgets::icon_button(
+                                    ui,
+                                    t,
+                                    crate::icons::Icon::ChevronLeft,
+                                    32.0,
+                                    &crate::i18n::t("common.back"),
+                                    None,
+                                )
+                                .clicked()
+                            {
+                                self.conversation_open = false;
+                            }
                             // Entered through a community home:
                             // a way back to it, offered while the
                             // open chat still belongs to that

@@ -60,8 +60,6 @@
 "conversation.type_message" = "Ketik pesan"
 
 # ---- composer hint bar ----
-"composer.hint" = "Enter mengirim · Shift+Enter baris baru · *tebal* _miring_ ~coret~ · Ctrl+V tempel gambar"
-"composer.hint_dismiss" = "Tutup hint pintasan"
 
 # ---- attach menu and composer attachments ----
 "attach.menu" = "Lampirkan: foto, dokumen, lokasi, poll"
@@ -119,8 +117,6 @@
 "settings.sub.receipts_off" = "Tanda dibaca mati"
 "settings.sub.features_active" = "fitur"
 "settings.sub.storage" = "Arsip, sesi dan cache"
-"chats_page.composer_hint" = "Hint pintasan composer"
-"chats_page.composer_hint_caption" = "Tampilkan baris pintasan di bawah kolom pesan"
 
 # ---- profile panel (partial) ----
 "profile.contact_info" = "Info kontak"

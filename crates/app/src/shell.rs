@@ -1,7 +1,7 @@
 //! App shell: the root frame dispatch, the navigation rail, and the
 //! collapsed-sidebar strip.
 
-use crate::state::{App, Screen};
+use crate::state::{layout_mode_for_width, App, LayoutMode, Screen};
 use crate::theme::{apply_visuals, rgb};
 use crate::widgets::rail_button;
 use core::filter::total_unread;
@@ -21,6 +21,12 @@ impl eframe::App for App {
         self.drain_os_notifications(&ctx);
         self.tick_expiry();
 
+        // The layout mode follows the window width: below the
+        // breakpoint the panes take turns (single-pane), above
+        // it they share the width (two-pane). Refreshed every
+        // frame so a resize switches behavior immediately.
+        self.single_pane =
+            layout_mode_for_width(ctx.content_rect().width()) == LayoutMode::SinglePane;
         if self.debug.mode {
             self.draw_debug_banner(ui);
         }
@@ -40,16 +46,26 @@ impl eframe::App for App {
             // own left panel (Starred, Calls, the Communities
             // overview); the conversation on the right stays in
             // place either way (the owner's left-panel rule).
-            match self.screen {
-                Screen::Starred => self.draw_starred_panel(ui),
-                Screen::Calls => self.draw_calls_panel(ui),
-                Screen::Communities => self.draw_communities_panel(ui),
-                _ => self.draw_chat_list(ui),
+            // In single-pane mode only one of the two is drawn:
+            // the list, or the open conversation (or community
+            // home) over it, never both squeezed side by side.
+            let show_list = !self.single_pane || !self.content_visible();
+            let show_content = !self.single_pane || self.content_visible();
+            if show_list {
+                match self.screen {
+                    Screen::Starred => self.draw_starred_panel(ui),
+                    Screen::Calls => self.draw_calls_panel(ui),
+                    Screen::Communities => self.draw_communities_panel(ui),
+                    _ => self.draw_chat_list(ui),
+                }
             }
-            self.draw_content(ui);
+            if show_content {
+                self.draw_content(ui);
+            }
         } else if self.screen == Screen::Settings {
-            // Settings is a single full-width page (back arrow,
-            // title, stacked sections), no side list.
+            // Settings fills the content area: nav and page side
+            // by side in two-pane mode, one at a time in
+            // single-pane mode (see draw_settings).
             self.draw_settings(ui);
         } else if self.screen == Screen::Debug {
             self.draw_simple_list_panel(ui, "Debug");
@@ -64,6 +80,28 @@ impl eframe::App for App {
 }
 
 impl App {
+    /// Whether the content pane (the conversation, or the open
+    /// community's home) is the pane on screen in single-pane
+    /// mode: a chat was opened, or a community home is up.
+    pub(crate) fn content_visible(&self) -> bool {
+        self.conversation_open || self.open_community.is_some()
+    }
+
+    /// The left list panel in the shape the layout mode needs:
+    /// the resizable 350-wide panel of the two-pane shell, or,
+    /// in single-pane mode, a panel spanning everything right
+    /// of the rail, since the list is then the only pane.
+    pub(crate) fn list_panel(&self, root: &egui::Ui) -> egui::Panel {
+        if self.single_pane {
+            egui::Panel::left("chat_list").exact_size(root.available_width())
+        } else {
+            egui::Panel::left("chat_list")
+                .resizable(true)
+                .default_size(350.0)
+                .size_range(280.0..=460.0)
+        }
+    }
+
     /// The content area next to the rail and chat list: the open
     /// community's home while one is open, otherwise the
     /// conversation.
@@ -143,6 +181,11 @@ impl App {
                         let count = if screen == Screen::Archived { archived_unread } else { 0 };
                         if rail_button(ui, *icon, label, self.screen == screen, badge, count, t) {
                             self.screen = screen;
+                            // Rail navigation lands on the new
+                            // screen's list: in single-pane mode
+                            // an open conversation closes back to
+                            // it (the two-pane layout ignores this).
+                            self.conversation_open = false;
                             self.filter = screen.filter();
                             self.open_community = None;
                             self.community_home_from_overview = false;

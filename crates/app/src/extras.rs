@@ -275,8 +275,6 @@ impl App {
                     self.blocked_chats =
                         blocked.iter().filter_map(serde_json::Value::as_u64).collect();
                 }
-                self.composer.hint_dismissed =
-                    v["composer_hint_dismissed"].as_bool().unwrap_or(false);
                 if let Some(m) = v["motion"].as_str() {
                     self.motion = crate::motion::MotionSetting::from_str_or_full(m);
                 }
@@ -398,7 +396,6 @@ impl App {
             // (privacy audit A6). Omitting the field also scrubs
             // the legacy copy older builds wrote, on the next
             // save.
-            "composer_hint_dismissed": self.composer.hint_dismissed,
             "motion": self.motion.as_str(),
             "language": self.language,
             "update_last_check": self.update.last_check,

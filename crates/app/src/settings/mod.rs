@@ -131,13 +131,6 @@ const SETTINGS_REGISTRY: &[SettingEntry] = &[
         keywords: "archive stays arsip",
     },
     SettingEntry {
-        id: "chats.composer_hint",
-        tab: "Chats",
-        title_en: "Composer shortcuts hint",
-        title_id: "Hint pintasan composer",
-        keywords: "shortcut hint enter shift bold italic strike paste tempel keyboard",
-    },
-    SettingEntry {
         id: "notifications.messages",
         tab: "Notifications",
         title_en: "Message notifications",
@@ -510,18 +503,31 @@ impl App {
                     // The shared icon button: hover wash, pressed
                     // step, pointing hand and tooltip, like every
                     // other icon button in the app. The chevron is
-                    // the bundled Material glyph.
+                    // the bundled Material glyph. In single-pane
+                    // mode, while a category page is showing, the
+                    // chevron steps back to the category list
+                    // instead of leaving Settings.
+                    let page_back = self.single_pane && self.settings_page_open;
+                    let back_tip = if page_back {
+                        crate::i18n::t("common.back")
+                    } else {
+                        crate::i18n::t("settings.back_chats")
+                    };
                     if crate::widgets::icon_button(
                         ui,
                         t,
                         crate::icons::Icon::ChevronLeft,
                         32.0,
-                        &crate::i18n::t("settings.back_chats"),
+                        &back_tip,
                         None,
                     )
                     .clicked()
                     {
-                        self.screen = crate::state::Screen::Chats;
+                        if page_back {
+                            self.settings_page_open = false;
+                        } else {
+                            self.screen = crate::state::Screen::Chats;
+                        }
                     }
                     ui.add_space(4.0);
                     ui.label(
@@ -530,51 +536,74 @@ impl App {
                     );
                 });
                 ui.add_space(14.0);
-                // Sidebar navigation: the category column on the
-                // left (with the search field above it), and on the
-                // right ONLY the selected category's page.
-                let full_h = ui.available_height();
-                ui.horizontal_top(|ui| {
-                    ui.allocate_ui_with_layout(
-                        Vec2::new(232.0, full_h),
-                        egui::Layout::top_down(egui::Align::Min),
-                        |ui| {
-                            self.settings_nav(ui, t);
-                        },
-                    );
-                    ui.add_space(20.0);
+                if self.single_pane && !self.settings_page_open {
+                    // Single-pane, category list: the nav takes
+                    // the whole width (scrollable, for short
+                    // landscape heights); picking a category
+                    // swaps it for that category's page.
                     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                        // The scroll area inherits the horizontal
-                        // layout of the nav row; the page itself is
-                        // a vertical stack, so force it here.
-                        ui.vertical(|ui| {
-                            ui.set_max_width(680.0);
-                            // The storage page's measured sizes are
-                            // cached per visit (see storage.rs):
-                            // showing any other page ends the visit,
-                            // so the next open measures again.
-                            if self.settings_tab != "Data & Storage" {
-                                self.storage_sizes = None;
-                            }
-                            match self.settings_tab {
-                                "Appearance" => self.page_appearance(ui, t),
-                                "Chats" => self.page_chats(ui, t),
-                                "Notifications" => self.page_notifications(ui, t),
-                                "Privacy & Security" => self.page_privacy(ui, t),
-                                "Features" => self.page_features(ui, t),
-                                "Data & Storage" => self.page_storage(ui, t),
-                                _ => self.page_about(ui, t),
-                            }
-                            ui.add_space(18.0);
-                            ui.label(
-                                RichText::new(crate::i18n::t("settings.apply_note"))
-                                    .size(11.5)
-                                    .color(rgb(t.text_faint)),
-                            );
-                        });
+                        self.settings_nav(ui, t);
                     });
-                });
+                } else if self.single_pane {
+                    // Single-pane, category page: the page takes
+                    // the whole width; the header chevron above
+                    // returns to the category list.
+                    self.settings_page(ui, t);
+                } else {
+                    // Sidebar navigation: the category column on
+                    // the left (with the search field above it),
+                    // and on the right ONLY the selected
+                    // category's page.
+                    let full_h = ui.available_height();
+                    ui.horizontal_top(|ui| {
+                        ui.allocate_ui_with_layout(
+                            Vec2::new(232.0, full_h),
+                            egui::Layout::top_down(egui::Align::Min),
+                            |ui| {
+                                self.settings_nav(ui, t);
+                            },
+                        );
+                        ui.add_space(20.0);
+                        self.settings_page(ui, t);
+                    });
+                }
             });
+    }
+
+    /// The selected category's page in its scroll area, shared
+    /// by the two-pane layout (beside the nav column) and the
+    /// single-pane layout (the whole width).
+    fn settings_page(&mut self, ui: &mut egui::Ui, t: core::theme::Tokens) {
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            // The scroll area inherits the horizontal layout of
+            // the nav row in two-pane mode; the page itself is a
+            // vertical stack, so force it here.
+            ui.vertical(|ui| {
+                ui.set_max_width(680.0);
+                // The storage page's measured sizes are cached
+                // per visit (see storage.rs): showing any other
+                // page ends the visit, so the next open measures
+                // again.
+                if self.settings_tab != "Data & Storage" {
+                    self.storage_sizes = None;
+                }
+                match self.settings_tab {
+                    "Appearance" => self.page_appearance(ui, t),
+                    "Chats" => self.page_chats(ui, t),
+                    "Notifications" => self.page_notifications(ui, t),
+                    "Privacy & Security" => self.page_privacy(ui, t),
+                    "Features" => self.page_features(ui, t),
+                    "Data & Storage" => self.page_storage(ui, t),
+                    _ => self.page_about(ui, t),
+                }
+                ui.add_space(18.0);
+                ui.label(
+                    RichText::new(crate::i18n::t("settings.apply_note"))
+                        .size(11.5)
+                        .color(rgb(t.text_faint)),
+                );
+            });
+        });
     }
 
     /// The navigation column: the search field, then either the
@@ -598,6 +627,9 @@ impl App {
                 let dot = item == "About" && self.update_available();
                 if settings_nav_row(ui, t, item, selected, dot) {
                     self.settings_tab = item;
+                    // In single-pane mode this swaps the list
+                    // for the page (ignored in two-pane mode).
+                    self.settings_page_open = true;
                 }
             }
             return;
@@ -644,6 +676,7 @@ impl App {
         }
         if let Some((tab, id)) = activate {
             self.settings_tab = tab;
+            self.settings_page_open = true;
             self.settings_highlight =
                 Some(SettingHighlight { id, started: ui.ctx().input(|i| i.time), scroll: true });
             self.settings_search.clear();

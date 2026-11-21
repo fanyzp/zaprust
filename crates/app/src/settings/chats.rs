@@ -32,26 +32,6 @@ impl App {
                 |ui| switch(ui, &mut v, t),
             );
             self.keep_archived = v;
-            divider(ui, t);
-            // The hint bar's re-show switch: dismissing the bar in
-            // the composer sets this off, and this is the only way
-            // back on, so the dismissed surface is never lost.
-            let mut show = !self.composer.hint_dismissed;
-            row_hl(
-                ui,
-                &mut self.settings_highlight,
-                self.motion,
-                "chats.composer_hint",
-                t,
-                &crate::i18n::t("chats_page.composer_hint"),
-                &crate::i18n::t("chats_page.composer_hint_caption"),
-                |ui| switch(ui, &mut show, t),
-            );
-            let new_dismissed = !show;
-            if new_dismissed != self.composer.hint_dismissed {
-                self.composer.hint_dismissed = new_dismissed;
-                self.persist_settings();
-            }
         });
     }
 }

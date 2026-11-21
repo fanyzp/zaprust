@@ -288,6 +288,35 @@ impl Screen {
     }
 }
 
+/// How the shell arranges its panes at a given window width.
+/// Two-pane is the desktop arrangement: the rail, the list
+/// panel and the conversation side by side. Below the
+/// breakpoint there is no honest room for both content panes,
+/// so the shell goes single-pane: the list and the conversation
+/// take turns full-width, like a phone app.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LayoutMode {
+    TwoPane,
+    SinglePane,
+}
+
+/// The window width where the two-pane shell stops working,
+/// built from the layout's own constants: the rail (60) plus
+/// the list panel's default width (350) plus the narrowest
+/// conversation column that still holds the composer pill and
+/// readable bubbles (550). Below it, keeping both panes only
+/// crushes them (the graded small-width failure), so the shell
+/// switches to single-pane instead.
+pub(crate) const SINGLE_PANE_BREAKPOINT: f32 = 60.0 + 350.0 + 550.0;
+
+pub(crate) fn layout_mode_for_width(width: f32) -> LayoutMode {
+    if width < SINGLE_PANE_BREAKPOINT {
+        LayoutMode::SinglePane
+    } else {
+        LayoutMode::TwoPane
+    }
+}
+
 /// How the connect screen links: QR scan or 8-character pairing code.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PairMode {
@@ -563,18 +592,12 @@ pub(crate) struct ComposerState {
     /// `send_staged`: the hard backstop that refuses the send
     /// if the stage ever outlives a switch that did not park it.
     pub(crate) staged_chat: Option<u64>,
-    /// The composer's shortcut hint bar was dismissed (persisted;
-    /// re-showable from Settings > Chats).
-    pub(crate) hint_dismissed: bool,
     /// Measured height of the floating composer stack (accessory
     /// lines, quick replies panel and pill) from the last frame
     /// it was drawn. The conversation reserves exactly this much
     /// bottom clearance, so the clearance cannot desync when the
     /// stack changes shape.
     pub(crate) stack_h: f32,
-    /// Measured height of the composer hint bar (its own area
-    /// under the pill); 0 while dismissed or recording.
-    pub(crate) hint_bar_h: f32,
     /// The composer's "+" rich-message menu is open.
     pub(crate) rich_menu_open: bool,
     /// The poll builder draft, when open.
@@ -632,6 +655,21 @@ pub(crate) struct App {
     pub(crate) keep_archived: bool,
     pub(crate) custom_title_bar: bool,
     pub(crate) sidebar_collapsed: bool,
+    /// The current frame's layout mode, refreshed by the shell
+    /// from the window width on every frame: true below
+    /// [`SINGLE_PANE_BREAKPOINT`], where the list and the
+    /// conversation take turns instead of sharing the width.
+    pub(crate) single_pane: bool,
+    /// Single-pane navigation: a conversation is open over the
+    /// list. Set whenever a chat is selected, cleared by the
+    /// conversation's back affordance and by rail navigation.
+    /// Ignored by the two-pane layout, where the conversation
+    /// is always on screen.
+    pub(crate) conversation_open: bool,
+    /// Single-pane Settings navigation: the selected category's
+    /// page is showing instead of the category list. Ignored by
+    /// the two-pane layout, where nav and page sit side by side.
+    pub(crate) settings_page_open: bool,
     pub(crate) settings_tab: &'static str,
     pub(crate) pair_mode: PairMode,
     pub(crate) pair_phone: String,
@@ -1120,9 +1158,7 @@ impl App {
                 chat_drafts: std::collections::HashMap::new(),
                 chat_parked: std::collections::HashMap::new(),
                 staged_chat: None,
-                hint_dismissed: false,
                 stack_h: 84.0,
-                hint_bar_h: 0.0,
                 rich_menu_open: false,
                 poll_draft: None,
                 staged: Vec::new(),
@@ -1140,6 +1176,9 @@ impl App {
             keep_archived: true,
             custom_title_bar: true,
             sidebar_collapsed: args.sidebar_collapsed,
+            single_pane: false,
+            conversation_open: false,
+            settings_page_open: false,
             settings_tab: match std::env::args()
                 .collect::<Vec<_>>()
                 .windows(2)
@@ -1518,6 +1557,10 @@ impl App {
         // The switch fade is armed here; the conversation draw
         // starts it on the next frame (it owns the egui clock).
         self.anim.chat_fade_pending = true;
+        // Selecting a chat opens it: in the single-pane layout
+        // this is what brings the conversation on screen over
+        // the list (the two-pane layout ignores the flag).
+        self.conversation_open = true;
         // The composer state belongs to the chat being left:
         // park it and restore the target chat's before anything
         // else observes the new selection.
@@ -2404,5 +2447,41 @@ mod tests {
             matches!(last.kind, core::model::MessageKind::Voice { secs: 1, .. }),
             "the sent note is the recorded second"
         );
+    }
+
+    /// The layout-mode decision: every phone-like and small
+    /// width from the owner's grading set lands in single-pane,
+    /// the passing desktop widths stay two-pane, and the switch
+    /// happens exactly at the breakpoint, which is the layout's
+    /// own constants added up (rail + list panel + the
+    /// narrowest honest conversation column).
+    #[test]
+    fn layout_mode_switches_at_the_breakpoint() {
+        use super::{layout_mode_for_width, LayoutMode, SINGLE_PANE_BREAKPOINT};
+        assert_eq!(SINGLE_PANE_BREAKPOINT, 60.0 + 350.0 + 550.0);
+        for w in [360.0, 390.0, 600.0, 800.0, 844.0] {
+            assert_eq!(layout_mode_for_width(w), LayoutMode::SinglePane, "width {w}");
+        }
+        for w in [1180.0, 1440.0] {
+            assert_eq!(layout_mode_for_width(w), LayoutMode::TwoPane, "width {w}");
+        }
+        assert_eq!(layout_mode_for_width(SINGLE_PANE_BREAKPOINT - 1.0), LayoutMode::SinglePane);
+        assert_eq!(layout_mode_for_width(SINGLE_PANE_BREAKPOINT), LayoutMode::TwoPane);
+    }
+
+    /// Single-pane pane selection: a fresh app shows the list
+    /// (nothing is open over it); selecting a chat is what opens
+    /// the conversation pane, which is also how the --select-chat
+    /// QA flag lands on the conversation at narrow widths.
+    #[test]
+    fn selecting_a_chat_opens_the_conversation_pane() {
+        let mut app = demo_app();
+        assert!(!app.conversation_open, "a fresh app shows the list pane");
+        assert!(!app.content_visible());
+        app.select_chat_now(2);
+        assert!(app.conversation_open, "selecting a chat opens its conversation");
+        assert!(app.content_visible());
+        app.conversation_open = false;
+        assert!(!app.content_visible(), "the back affordance returns to the list");
     }
 }

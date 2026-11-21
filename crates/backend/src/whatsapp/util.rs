@@ -486,6 +486,165 @@ pub(super) async fn fetch_voice_by_ref(
     client.download(&params, download_limits()).await.map_err(download_error_message)
 }
 
+/// Extracts the persistable re-download reference of a video
+/// message (see [`crate::VideoRef`]), or `None` when the message
+/// is not a video or its payload does not carry a complete
+/// reference. The completeness rule is the photo one: every
+/// field the CDN download validates must be present and
+/// well-formed, because a partial reference can only fail later.
+pub(super) fn video_ref_of(proto: &whatsapp_rust::prelude::wa::Message) -> Option<crate::VideoRef> {
+    let video = unwrap_media_proto(proto).video_message.as_option()?;
+    let direct_path = video.direct_path.clone().filter(|p| !p.is_empty())?;
+    let media_key = video.media_key.clone().filter(|k| k.len() == 32)?;
+    let file_sha256 = video.file_sha256.clone().filter(|h| h.len() == 32)?;
+    let file_enc_sha256 = video.file_enc_sha256.clone().filter(|h| h.len() == 32)?;
+    let file_length = video.file_length?;
+    Some(crate::VideoRef { direct_path, media_key, file_sha256, file_enc_sha256, file_length })
+}
+
+/// The largest wire thumbnail a video reference will archive.
+/// A video thumbnail is a small poster frame (WhatsApp's own
+/// are a few kilobytes); anything larger is not a thumbnail
+/// worth carrying in the message archive.
+const MAX_VIDEO_THUMBNAIL_BYTES: usize = 256 * 1024;
+
+/// Extracts the JPEG thumbnail a video message's payload
+/// carries: a real frame of the video, produced by the sender's
+/// client. `None` when the message is not a video, carries no
+/// thumbnail, or carries one too large to be a thumbnail.
+pub(super) fn video_thumbnail_of(proto: &whatsapp_rust::prelude::wa::Message) -> Option<Vec<u8>> {
+    let video = unwrap_media_proto(proto).video_message.as_option()?;
+    video
+        .jpeg_thumbnail
+        .clone()
+        .filter(|t| !t.is_empty() && t.len() <= MAX_VIDEO_THUMBNAIL_BYTES)
+}
+
+/// Rebuilds the library's validated download parameters from an
+/// archived video reference (see [`photo_download_params`] for
+/// why a rebuild failure means the stored value is malformed).
+pub(super) fn video_download_params(
+    reference: &crate::VideoRef,
+) -> Result<whatsapp_rust::download::DownloadParams, String> {
+    whatsapp_rust::download::DownloadParams::encrypted(
+        reference.direct_path.clone(),
+        &reference.media_key,
+        &reference.file_sha256,
+        &reference.file_enc_sha256,
+        reference.file_length,
+        whatsapp_rust::download::MediaType::Video,
+    )
+    .map_err(|_| "That video's stored download reference is not usable.".to_owned())
+}
+
+/// Downloads a video message's bytes into memory for playback.
+/// Only view-once videos take this path: viewing inside the app
+/// is what view-once permits, while writing the bytes to a file
+/// is what it forbids (regular videos stream to the cache file
+/// instead, see [`fetch_video_to_file`]). The byte budget still
+/// applies.
+pub(super) async fn fetch_video_bytes(
+    client: &whatsapp_rust::Client,
+    proto: &whatsapp_rust::prelude::wa::Message,
+) -> Result<Vec<u8>, String> {
+    let proto = unwrap_media_proto(proto);
+    let Some(video) = proto.video_message.as_option() else {
+        return Err("That message is not a video.".to_owned());
+    };
+    check_declared_length(video.file_length)?;
+    client.download(video, download_limits()).await.map_err(download_error_message)
+}
+
+/// Downloads a view-once video's bytes into memory from its
+/// archived reference. Same in-memory discipline as
+/// [`fetch_video_bytes`].
+pub(super) async fn fetch_video_by_ref(
+    client: &whatsapp_rust::Client,
+    reference: &crate::VideoRef,
+) -> Result<Vec<u8>, String> {
+    check_declared_length(Some(reference.file_length))?;
+    let params = video_download_params(reference)?;
+    client.download(&params, download_limits()).await.map_err(download_error_message)
+}
+
+/// Creates the cache file a video download streams into, with
+/// the same owner-only discipline as [`download_proto`]'s file:
+/// the contents are decrypted media in plaintext.
+fn create_cache_file(dir: &std::path::Path, stem: &str) -> Result<std::fs::File, String> {
+    std::fs::create_dir_all(dir)
+        .map_err(|e| format!("Could not create the video cache folder: {e}"))?;
+    let path = dir.join(format!("{stem}.mp4"));
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let file = opts.open(&path).map_err(|e| format!("Could not create the video file: {e}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = file.set_permissions(std::fs::Permissions::from_mode(0o600));
+    }
+    Ok(file)
+}
+
+/// Streams a video message's bytes into a new file named
+/// `<stem>.mp4` inside `dir`, returning the saved path. The
+/// library streams the decrypted plaintext straight into the
+/// file, so no whole-file buffer ever sits in memory. On failure
+/// (or abandonment, see [`PartialFileGuard`]) the partial file
+/// is removed, so a broken download never leaves a file behind
+/// that looks complete. Only regular videos take this path;
+/// view-once videos are fetched into memory instead.
+pub(super) async fn fetch_video_to_file(
+    client: &whatsapp_rust::Client,
+    proto: &whatsapp_rust::prelude::wa::Message,
+    dir: &std::path::Path,
+    stem: &str,
+) -> Result<std::path::PathBuf, String> {
+    let proto = unwrap_media_proto(proto);
+    let Some(video) = proto.video_message.as_option() else {
+        return Err("That message is not a video.".to_owned());
+    };
+    check_declared_length(video.file_length)?;
+    let path = dir.join(format!("{stem}.mp4"));
+    let file = create_cache_file(dir, stem)?;
+    let mut guard = PartialFileGuard { path: path.clone(), armed: true };
+    match client.download_to_writer(video, file, download_limits()).await {
+        Ok(_file) => {
+            guard.armed = false;
+            Ok(path)
+        }
+        Err(e) => Err(download_error_message(e)),
+    }
+}
+
+/// Streams a video's bytes into the cache file from its
+/// archived reference, for messages the session's protocol
+/// cache no longer holds. Same streaming discipline as
+/// [`fetch_video_to_file`].
+pub(super) async fn fetch_video_file_by_ref(
+    client: &whatsapp_rust::Client,
+    reference: &crate::VideoRef,
+    dir: &std::path::Path,
+    stem: &str,
+) -> Result<std::path::PathBuf, String> {
+    check_declared_length(Some(reference.file_length))?;
+    let params = video_download_params(reference)?;
+    let path = dir.join(format!("{stem}.mp4"));
+    let file = create_cache_file(dir, stem)?;
+    let mut guard = PartialFileGuard { path: path.clone(), armed: true };
+    match client.download_to_writer(&params, file, download_limits()).await {
+        Ok(_file) => {
+            guard.armed = false;
+            Ok(path)
+        }
+        Err(e) => Err(download_error_message(e)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -811,5 +970,119 @@ mod tests {
         assert!(voice_download_params(&reference).is_ok());
         let malformed = crate::VoiceRef { media_key: vec![1u8; 4], ..reference.clone() };
         assert!(voice_download_params(&malformed).is_err());
+    }
+
+    fn video_proto_complete() -> wa::Message {
+        let mut video = wa::message::VideoMessage::default();
+        video.direct_path = Some("/v/t62.7118-24/video.enc".to_owned());
+        video.media_key = Some(vec![7u8; 32]);
+        video.file_sha256 = Some(vec![8u8; 32]);
+        video.file_enc_sha256 = Some(vec![9u8; 32]);
+        video.file_length = Some(1_234_567);
+        video.jpeg_thumbnail = Some(vec![0xFF, 0xD8, 0xFF, 0xE0]);
+        let mut msg = wa::Message::default();
+        msg.video_message = MessageField::some(video);
+        msg
+    }
+
+    /// The video reference is extracted whole from a complete
+    /// payload, including through the wrappers a video can
+    /// arrive inside.
+    #[test]
+    fn video_ref_comes_from_a_complete_payload() {
+        for proto in [
+            video_proto_complete(),
+            wrap_view_once(video_proto_complete()),
+            wrap_ephemeral(video_proto_complete()),
+        ] {
+            let reference = video_ref_of(&proto).expect("a complete video yields a reference");
+            assert_eq!(reference.direct_path, "/v/t62.7118-24/video.enc");
+            assert_eq!(reference.media_key, vec![7u8; 32]);
+            assert_eq!(reference.file_sha256, vec![8u8; 32]);
+            assert_eq!(reference.file_enc_sha256, vec![9u8; 32]);
+            assert_eq!(reference.file_length, 1_234_567);
+        }
+    }
+
+    /// Any missing or malformed field makes the video reference
+    /// absent, exactly like the photo rule.
+    #[test]
+    fn video_ref_rejects_incomplete_payloads() {
+        // The bare default video message (no CDN fields at all).
+        let mut msg = wa::Message::default();
+        msg.video_message = MessageField::some(wa::message::VideoMessage::default());
+        assert!(video_ref_of(&msg).is_none());
+        // One field short: no file length.
+        let mut video = wa::message::VideoMessage::default();
+        video.direct_path = Some("/v/t62.7118-24/video.enc".to_owned());
+        video.media_key = Some(vec![7u8; 32]);
+        video.file_sha256 = Some(vec![8u8; 32]);
+        video.file_enc_sha256 = Some(vec![9u8; 32]);
+        let mut msg = wa::Message::default();
+        msg.video_message = MessageField::some(video);
+        assert!(video_ref_of(&msg).is_none());
+        // A digest of the wrong length is malformed, not a reference.
+        let mut video = wa::message::VideoMessage::default();
+        video.direct_path = Some("/v/t62.7118-24/video.enc".to_owned());
+        video.media_key = Some(vec![7u8; 32]);
+        video.file_sha256 = Some(vec![8u8; 16]);
+        video.file_enc_sha256 = Some(vec![9u8; 32]);
+        video.file_length = Some(10);
+        let mut msg = wa::Message::default();
+        msg.video_message = MessageField::some(video);
+        assert!(video_ref_of(&msg).is_none());
+        // A photo is not a video, and vice versa.
+        assert!(video_ref_of(&photo_proto_complete()).is_none());
+        assert!(photo_ref_of(&video_proto_complete()).is_none());
+        assert!(video_ref_of(&wa::Message::default()).is_none());
+    }
+
+    /// The thumbnail is the payload's own JPEG bytes, taken
+    /// verbatim; absent, empty and oversized thumbnails yield
+    /// none (the video then presents its neutral tile, never a
+    /// generated picture).
+    #[test]
+    fn video_thumbnail_comes_from_the_payload() {
+        let thumb = video_thumbnail_of(&video_proto_complete()).expect("a thumbnail is carried");
+        assert_eq!(thumb, vec![0xFF, 0xD8, 0xFF, 0xE0]);
+        // Through a wrapper, too.
+        assert!(video_thumbnail_of(&wrap_view_once(video_proto_complete())).is_some());
+        // No thumbnail on the payload.
+        let mut video = wa::message::VideoMessage::default();
+        video.jpeg_thumbnail = None;
+        let mut msg = wa::Message::default();
+        msg.video_message = MessageField::some(video);
+        assert!(video_thumbnail_of(&msg).is_none());
+        // An empty thumbnail is no thumbnail.
+        let mut video = wa::message::VideoMessage::default();
+        video.jpeg_thumbnail = Some(Vec::new());
+        let mut msg = wa::Message::default();
+        msg.video_message = MessageField::some(video);
+        assert!(video_thumbnail_of(&msg).is_none());
+        // Oversized is not a poster frame; it is refused.
+        let mut video = wa::message::VideoMessage::default();
+        video.jpeg_thumbnail = Some(vec![0u8; MAX_VIDEO_THUMBNAIL_BYTES + 1]);
+        let mut msg = wa::Message::default();
+        msg.video_message = MessageField::some(video);
+        assert!(video_thumbnail_of(&msg).is_none());
+        // Not a video at all.
+        assert!(video_thumbnail_of(&voice_proto_complete()).is_none());
+        assert!(video_thumbnail_of(&wa::Message::default()).is_none());
+    }
+
+    /// An archived video reference rebuilds validated download
+    /// parameters; a malformed one is refused up front.
+    #[test]
+    fn video_download_params_validate_the_reference() {
+        let reference = crate::VideoRef {
+            direct_path: "/v/t62.7118-24/video.enc".to_owned(),
+            media_key: vec![7u8; 32],
+            file_sha256: vec![8u8; 32],
+            file_enc_sha256: vec![9u8; 32],
+            file_length: 1_234_567,
+        };
+        assert!(video_download_params(&reference).is_ok());
+        let malformed = crate::VideoRef { media_key: vec![1u8; 4], ..reference.clone() };
+        assert!(video_download_params(&malformed).is_err());
     }
 }

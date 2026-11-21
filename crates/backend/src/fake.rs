@@ -1445,6 +1445,14 @@ impl Backend for FakeBackend {
                             .to_owned(),
                     });
                 }
+                BackendCommand::FetchVideo { chat_jid, message_id, .. } => {
+                    events.emit(BackendEvent::VideoFetchFailed {
+                        chat_jid,
+                        message_id,
+                        message: "Test mode has no fetchable media: its messages are scripted."
+                            .to_owned(),
+                    });
+                }
                 BackendCommand::Disconnect => {
                     events.emit(BackendEvent::LoggedOut);
                 }

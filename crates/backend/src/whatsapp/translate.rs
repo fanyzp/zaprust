@@ -384,6 +384,13 @@ pub(super) fn translate_message(ctx: &MessageContext) -> Option<(LiveChat, LiveM
     // A voice message's reference travels the same way, so the
     // note stays fetchable for playback in later sessions.
     msg.voice_ref = super::util::voice_ref_of(&ctx.message);
+    // A video's reference and its embedded thumbnail travel the
+    // same way: the reference keeps the video fetchable for
+    // playback in later sessions, and the thumbnail (a real
+    // frame of the video, made by the sender's client) is the
+    // video's visual identity until its bytes are played.
+    msg.video_ref = super::util::video_ref_of(&ctx.message);
+    msg.video_thumbnail = super::util::video_thumbnail_of(&ctx.message);
     if let LiveMessageKind::Other(label) = &msg.kind {
         if msg.body == "[non-text message]" {
             msg.body = label.clone();

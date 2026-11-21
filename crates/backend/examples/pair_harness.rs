@@ -61,6 +61,11 @@ fn summarize(event: &BackendEvent) -> String {
         BackendEvent::VoiceFetchFailed { message, .. } => {
             format!("VoiceFetchFailed {message}")
         }
+        BackendEvent::VideoBytes { bytes, .. } => format!("VideoBytes {} bytes", bytes.len()),
+        BackendEvent::VideoReady { path, .. } => format!("VideoReady {path}"),
+        BackendEvent::VideoFetchFailed { message, .. } => {
+            format!("VideoFetchFailed {message}")
+        }
         BackendEvent::TypingReceived { .. } => "TypingReceived".to_owned(),
         BackendEvent::GroupMembers { .. } => "GroupMembers".to_owned(),
         BackendEvent::GroupInviteLink { .. } => "GroupInviteLink".to_owned(),

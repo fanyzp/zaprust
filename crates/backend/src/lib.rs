@@ -678,6 +678,30 @@ pub enum BackendCommand {
         /// Archived re-download reference, when the caller has one.
         voice_ref: Option<VoiceRef>,
     },
+    /// Fetch a video message's bytes for playback. Answered with
+    /// `VideoReady`, `VideoBytes` or `VideoFetchFailed`. A
+    /// regular video is streamed to a file in the app's video
+    /// cache (videos are far larger than photos or voice notes,
+    /// so they are not buffered whole in memory) and answered
+    /// with `VideoReady`. A view-once video is answered with
+    /// `VideoBytes` instead: its bytes travel in memory only and
+    /// are never written to disk, the same rule view-once photos
+    /// follow. The caller states the message's view-once flag
+    /// because a fetch served from the archived reference alone
+    /// has no protocol payload left to read it from. When the
+    /// message is no longer in the session's protocol cache, the
+    /// caller passes the archived [`VideoRef`] it stored with
+    /// the message; without either source the fetch fails.
+    FetchVideo {
+        /// Chat JID.
+        chat_jid: String,
+        /// Protocol ID of the video message.
+        message_id: String,
+        /// Archived re-download reference, when the caller has one.
+        video_ref: Option<VideoRef>,
+        /// Whether the message is view-once (memory-only fetch).
+        view_once: bool,
+    },
     /// Stop the backend worker.
     Shutdown,
 }
@@ -943,6 +967,27 @@ pub struct VoiceRef {
     pub file_length: u64,
 }
 
+/// The persistable CDN reference of one video message: the same
+/// re-download material as [`PhotoRef`], extracted from the wire
+/// video payload and archived with the message so a video stays
+/// fetchable for playback after a restart. It carries the media
+/// key, so it belongs in the encrypted archive only, and for a
+/// view-once video it is dropped once the single view has been
+/// spent.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct VideoRef {
+    /// CDN path of the encrypted media.
+    pub direct_path: String,
+    /// Media decryption key (32 bytes).
+    pub media_key: Vec<u8>,
+    /// SHA-256 of the decrypted bytes (32 bytes).
+    pub file_sha256: Vec<u8>,
+    /// SHA-256 of the encrypted bytes (32 bytes).
+    pub file_enc_sha256: Vec<u8>,
+    /// Announced plaintext size in bytes.
+    pub file_length: u64,
+}
+
 /// A message as the backend reports it (protocol-neutral).
 #[derive(Debug, Clone, PartialEq)]
 pub struct LiveMessage {
@@ -999,6 +1044,18 @@ pub struct LiveMessage {
     /// other kind, and for voice messages whose wire payload did
     /// not carry a complete reference.
     pub voice_ref: Option<VoiceRef>,
+    /// For a video message: the reference its bytes can be
+    /// re-downloaded from (see [`VideoRef`]). `None` for every
+    /// other kind, and for video messages whose wire payload did
+    /// not carry a complete reference.
+    pub video_ref: Option<VideoRef>,
+    /// For a video message: the JPEG thumbnail the sender's
+    /// client embedded in the wire payload, a real frame of the
+    /// video itself. This is the video's visual identity until
+    /// its bytes are fetched and played; it is never generated
+    /// locally. `None` for every other kind, and for videos
+    /// whose payload carried no thumbnail.
+    pub video_thumbnail: Option<Vec<u8>>,
 }
 
 impl LiveMessage {
@@ -1034,6 +1091,8 @@ impl LiveMessage {
             expires_at: 0,
             photo_ref: None,
             voice_ref: None,
+            video_ref: None,
+            video_thumbnail: None,
         }
     }
 }
@@ -1353,6 +1412,38 @@ pub enum BackendEvent {
         /// Chat JID the voice message belongs to.
         chat_jid: String,
         /// Protocol ID of the voice message.
+        message_id: String,
+        /// Why the fetch failed, in user words.
+        message: String,
+    },
+    /// A view-once video fetch for playback finished; the
+    /// decrypted bytes are carried in memory and were never
+    /// written to disk.
+    VideoBytes {
+        /// Chat JID the video belongs to.
+        chat_jid: String,
+        /// Protocol ID of the video message.
+        message_id: String,
+        /// The video's decrypted bytes (an encoded MP4 file).
+        bytes: Vec<u8>,
+    },
+    /// A regular video fetch for playback finished; the
+    /// decrypted bytes were streamed to a file in the app's
+    /// video cache, never buffered whole in memory.
+    VideoReady {
+        /// Chat JID the video belongs to.
+        chat_jid: String,
+        /// Protocol ID of the video message.
+        message_id: String,
+        /// Absolute path of the cached video file.
+        path: String,
+    },
+    /// A video fetch for playback failed. Reported per message
+    /// (not as a global `Error`); the message is in user words.
+    VideoFetchFailed {
+        /// Chat JID the video belongs to.
+        chat_jid: String,
+        /// Protocol ID of the video message.
         message_id: String,
         /// Why the fetch failed, in user words.
         message: String,

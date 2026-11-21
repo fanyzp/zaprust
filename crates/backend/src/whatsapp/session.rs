@@ -29,7 +29,8 @@ use super::translate::{
 };
 use super::util::{
     abort_latest, build_message_target, cap_poll_secrets, download_proto, fetch_photo_by_ref,
-    fetch_photo_bytes, fetch_voice_by_ref, fetch_voice_bytes, lock_cache, parse_address,
+    fetch_photo_bytes, fetch_video_by_ref, fetch_video_bytes, fetch_video_file_by_ref,
+    fetch_video_to_file, fetch_voice_by_ref, fetch_voice_bytes, lock_cache, parse_address,
     proto_is_view_once, received_poll_secret, spawn_latest, unix_now, LatestTask, PollSecrets,
     ProtoCache,
 };
@@ -1506,6 +1507,85 @@ pub(super) async fn run_async(
                                 message_id,
                                 message,
                             }),
+                        }
+                    });
+                }
+                BackendCommand::FetchVideo { chat_jid, message_id, video_ref, view_once } => {
+                    // Playback fetch (see the command's docs).
+                    // Resolution order mirrors FetchPhoto: the
+                    // session's protocol payload first, then the
+                    // archived reference. The view-once flag picks
+                    // the discipline: view-once bytes travel in
+                    // memory only, regular videos stream into the
+                    // video cache folder. The transfer runs as its
+                    // own task so the dispatch loop never waits
+                    // behind the network.
+                    let proto = lock_cache(&proto_cache)
+                        .0
+                        .get(&(chat_jid.clone(), message_id.clone()))
+                        .cloned();
+                    let client = client.clone();
+                    let events = events.clone();
+                    let dir = config.data_dir.join("video-cache");
+                    // The stem follows the same naming contract
+                    // as media downloads (see FetchPhoto's sibling
+                    // DownloadMedia arm), so the app's bookkeeping
+                    // can name the cached file without a second
+                    // scheme.
+                    let stem = crate::downloaded_media_stem(&chat_jid, &message_id);
+                    tokio::spawn(async move {
+                        if view_once {
+                            let fetched = match (&proto, &video_ref) {
+                                (Some(proto), _) => fetch_video_bytes(&client, proto).await,
+                                (None, Some(reference)) => {
+                                    fetch_video_by_ref(&client, reference).await
+                                }
+                                (None, None) => {
+                                    Err("That video is not available: it was received \
+                                                     before this session and has no stored \
+                                                     download reference."
+                                        .to_owned())
+                                }
+                            };
+                            match fetched {
+                                Ok(bytes) => events.emit(BackendEvent::VideoBytes {
+                                    chat_jid,
+                                    message_id,
+                                    bytes,
+                                }),
+                                Err(message) => events.emit(BackendEvent::VideoFetchFailed {
+                                    chat_jid,
+                                    message_id,
+                                    message,
+                                }),
+                            }
+                        } else {
+                            let fetched = match (&proto, &video_ref) {
+                                (Some(proto), _) => {
+                                    fetch_video_to_file(&client, proto, &dir, &stem).await
+                                }
+                                (None, Some(reference)) => {
+                                    fetch_video_file_by_ref(&client, reference, &dir, &stem).await
+                                }
+                                (None, None) => {
+                                    Err("That video is not available: it was received \
+                                                     before this session and has no stored \
+                                                     download reference."
+                                        .to_owned())
+                                }
+                            };
+                            match fetched {
+                                Ok(path) => events.emit(BackendEvent::VideoReady {
+                                    chat_jid,
+                                    message_id,
+                                    path: path.to_string_lossy().into_owned(),
+                                }),
+                                Err(message) => events.emit(BackendEvent::VideoFetchFailed {
+                                    chat_jid,
+                                    message_id,
+                                    message,
+                                }),
+                            }
                         }
                     });
                 }

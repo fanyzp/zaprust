@@ -755,6 +755,15 @@ impl crate::state::App {
                             // so every action on history silently
                             // no-oped (logic review F2).
                             self.protocol_ids.insert(message_id(&m.chat_jid, &m.id), m.id.clone());
+                            // The author's JID is seeded the same
+                            // way: a group reaction must name the
+                            // author, and an archived message whose
+                            // author was never seeded could not be
+                            // reacted to after a restart.
+                            if let Some(jid) = &m.sender_jid {
+                                self.sender_jids
+                                    .insert(message_id(&m.chat_jid, &m.id), jid.clone());
+                            }
                             // A photo's re-download reference is
                             // seeded the same way, so a photo from
                             // before this session can still be
@@ -1647,6 +1656,10 @@ impl crate::state::App {
                 let mid = message_id(&chat_jid, &pid);
                 let key = format!("{chat_id}:{mid}");
                 if actor == "Me" {
+                    // The server has spoken for my reaction: any
+                    // optimistic change awaiting settlement is
+                    // confirmed by this report, whatever it says.
+                    self.pending_reactions.remove(&mid);
                     if emoji.is_empty() {
                         self.my_reactions.remove(&mid);
                     } else {
@@ -1682,6 +1695,32 @@ impl crate::state::App {
                 if self.selected_chat == chat_id {
                     self.sync_conversation();
                 }
+            }
+            BackendEvent::ReactionFailed { chat_jid, message_id: pid, message } => {
+                let chat_id = jid_id(&chat_jid);
+                let mid = message_id(&chat_jid, &pid);
+                // Same display treatment as the generic error
+                // path: backend text can embed server-supplied
+                // strings, so it is scrubbed before it can reach
+                // the notice banner.
+                let message = core::crash::scrub_for_display(&message);
+                tracing::warn!("reaction failed: {message}");
+                if let Some(previous) = self.pending_reactions.remove(&mid) {
+                    // The change never reached the server: put my
+                    // reaction back to what it was before it, in
+                    // the picker state and in the actor-derived
+                    // counts alike.
+                    match &previous {
+                        Some(emoji) => {
+                            self.my_reactions.insert(mid, emoji.clone());
+                        }
+                        None => {
+                            self.my_reactions.remove(&mid);
+                        }
+                    }
+                    self.apply_my_reaction_to_actors(chat_id, mid, previous.as_deref());
+                }
+                self.notice = Some(human_error(&message));
             }
             BackendEvent::MessageEdited { chat_jid, message_id: pid, new_body } => {
                 let chat_id = jid_id(&chat_jid);
@@ -2756,6 +2795,52 @@ impl crate::state::App {
         }
     }
 
+    /// Writes my own reaction into the actor map and derives
+    /// the message's counts from it, the exact bookkeeping the
+    /// ReactionUpdate handler runs when the server reports a
+    /// reaction. The optimistic send path and the failure
+    /// rollback both go through here so local state has a single
+    /// representation: when the server's echo of my change
+    /// arrives it re-applies the identical write and nothing
+    /// moves, and a rollback is the same write with the older
+    /// value. `mine` is my current emoji, or None for no
+    /// reaction.
+    pub(crate) fn apply_my_reaction_to_actors(
+        &mut self,
+        chat_id: u64,
+        msg_id: u64,
+        mine: Option<&str>,
+    ) {
+        let key = format!("{chat_id}:{msg_id}");
+        let counts = {
+            let actors = self.reaction_actors.entry(key.clone()).or_default();
+            match mine {
+                Some(emoji) => {
+                    actors.insert("Me".to_owned(), emoji.to_owned());
+                }
+                None => {
+                    actors.remove("Me");
+                }
+            }
+            count_reactions(actors)
+        };
+        if let Some(entry) = self.live.as_mut().and_then(|s| s.messages.get_mut(&chat_id)) {
+            for (_, m) in entry.iter_mut() {
+                if m.id == msg_id {
+                    m.reactions = counts.clone();
+                }
+            }
+        }
+        if counts.is_empty() {
+            self.reaction_actors.remove(&key);
+        }
+        if self.selected_chat == chat_id {
+            if let Some(msg) = self.conversation.iter_mut().find(|m| m.id == msg_id) {
+                msg.reactions = counts;
+            }
+        }
+    }
+
     /// Drops every per-message helper entry kept for one live
     /// message: its protocol ID, sender JID, receipt log,
     /// reaction state, archive flags, and any pending read
@@ -2780,6 +2865,7 @@ impl crate::state::App {
         self.sender_jids.remove(&msg_id);
         self.receipt_log.remove(&msg_id);
         self.my_reactions.remove(&msg_id);
+        self.pending_reactions.remove(&msg_id);
         self.reaction_actors.remove(&format!("{chat_id}:{msg_id}"));
         if let Some(pid) = protocol_id {
             let mut drained = false;
@@ -8311,5 +8397,324 @@ mod logout_tests {
         app.poll_backend(&ctx);
         assert!(app.live.is_some(), "the failure state is kept");
         assert!(!app.logged_out);
+    }
+}
+
+#[cfg(test)]
+mod reaction_tests {
+    use super::*;
+    use crate::state::{App, Args};
+
+    const GROUP_JID: &str = "120363001234567890@g.us";
+    const DM_JID: &str = "6281234567890@s.whatsapp.net";
+    const ALICE_JID: &str = "6281111111111@s.whatsapp.net";
+
+    /// An app in live mode on a hand-fed backend channel, the
+    /// same harness shape as the other live test modules.
+    fn live_app() -> (
+        App,
+        std::sync::mpsc::Sender<BackendEvent>,
+        egui::Context,
+        std::sync::mpsc::Receiver<BackendCommand>,
+    ) {
+        let ctx = egui::Context::default();
+        crate::theme::install_fonts(&ctx);
+        let mut app = App::new(Args::parse(), &ctx);
+        app.live_start_error = None;
+        app.logged_out = false;
+        let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<BackendCommand>();
+        let (evt_tx, evt_rx) = std::sync::mpsc::channel::<BackendEvent>();
+        app.live = Some(LiveSession {
+            channels: BackendChannels { commands: cmd_tx, events: evt_rx },
+            status: LinkStatus::Linked,
+            qr: None,
+            qr_expires_at: None,
+            pair_code: None,
+            pair_code_at: None,
+            account: "Test account".to_owned(),
+            connected_at: None,
+            store: Some(store::Store::open_in_memory().unwrap()),
+            jids: HashMap::new(),
+            messages: HashMap::new(),
+            times: HashMap::new(),
+            fake: true,
+            logout_requested: false,
+            flags: HashMap::new(),
+            engaged_chats: std::collections::HashSet::new(),
+            photo_refs: HashMap::new(),
+            voice_refs: HashMap::new(),
+            video_refs: HashMap::new(),
+            video_thumbs: HashMap::new(),
+        });
+        app.live_mode = true;
+        (app, evt_tx, ctx, cmd_rx)
+    }
+
+    fn drain_all(app: &mut App, ctx: &egui::Context) {
+        for _ in 0..64 {
+            app.poll_backend(ctx);
+            if app.event_queue.is_empty() {
+                return;
+            }
+        }
+        panic!("the event queue did not drain");
+    }
+
+    fn sent_commands(cmd_rx: &std::sync::mpsc::Receiver<BackendCommand>) -> Vec<BackendCommand> {
+        let mut out = Vec::new();
+        while let Ok(cmd) = cmd_rx.try_recv() {
+            out.push(cmd);
+        }
+        out
+    }
+
+    /// Feeds one message into the live mirror and opens its
+    /// chat, returning the app message ID.
+    fn open_message(
+        app: &mut App,
+        tx: &std::sync::mpsc::Sender<BackendEvent>,
+        ctx: &egui::Context,
+        msg: LiveMessage,
+    ) -> u64 {
+        let chat_jid = msg.chat_jid.clone();
+        let proto = msg.id.clone();
+        tx.send(BackendEvent::MessageUpsert(msg)).unwrap();
+        drain_all(app, ctx);
+        app.selected_chat = jid_id(&chat_jid);
+        app.sync_conversation();
+        message_id(&chat_jid, &proto)
+    }
+
+    fn alice_group_message() -> LiveMessage {
+        let mut msg = LiveMessage::text(
+            "g1",
+            GROUP_JID,
+            Some("Alice".to_owned()),
+            "hello group",
+            1_700_000_000,
+            false,
+        );
+        msg.sender_jid = Some(ALICE_JID.to_owned());
+        msg
+    }
+
+    fn mirror_reactions(app: &App, chat_id: u64, mid: u64) -> Vec<(String, u32)> {
+        let mirror = app.live.as_ref().unwrap().messages.get(&chat_id).unwrap();
+        mirror.iter().find(|(_, m)| m.id == mid).unwrap().1.reactions.clone()
+    }
+
+    fn react_command(
+        cmd_rx: &std::sync::mpsc::Receiver<BackendCommand>,
+    ) -> (String, String, Option<String>, bool, String) {
+        let sent = sent_commands(cmd_rx);
+        let found = sent.iter().find_map(|c| match c {
+            BackendCommand::React { chat_jid, message_id, sender_jid, from_me, emoji } => Some((
+                chat_jid.clone(),
+                message_id.clone(),
+                sender_jid.clone(),
+                *from_me,
+                emoji.clone(),
+            )),
+            _ => None,
+        });
+        found.expect("a reaction command is sent")
+    }
+
+    /// A group reaction names the participant who authored the
+    /// target message: the JID recorded for the message when it
+    /// arrived is what the command carries, not None.
+    #[test]
+    fn group_reaction_names_the_message_author() {
+        let (mut app, tx, ctx, cmd_rx) = live_app();
+        let mid = open_message(&mut app, &tx, &ctx, alice_group_message());
+        app.apply_reaction(mid, "👍");
+        let (chat_jid, message_id, sender_jid, from_me, emoji) = react_command(&cmd_rx);
+        assert_eq!(chat_jid, GROUP_JID);
+        assert_eq!(message_id, "g1");
+        assert_eq!(sender_jid.as_deref(), Some(ALICE_JID), "the author is named");
+        assert!(!from_me);
+        assert_eq!(emoji, "👍");
+    }
+
+    /// Reacting to my own group message needs no sender: the
+    /// library resolves my group identity itself, and a sender
+    /// in my name could even be the wrong one (PN vs LID
+    /// addressing is the library's call).
+    #[test]
+    fn own_group_reaction_omits_the_sender() {
+        let (mut app, tx, ctx, cmd_rx) = live_app();
+        let msg = LiveMessage::text("g2", GROUP_JID, None, "my own", 1_700_000_000, true);
+        let mid = open_message(&mut app, &tx, &ctx, msg);
+        app.apply_reaction(mid, "👍");
+        let (_, _, sender_jid, from_me, _) = react_command(&cmd_rx);
+        assert_eq!(sender_jid, None);
+        assert!(from_me);
+    }
+
+    /// Direct-chat reactions are unchanged: no sender is
+    /// attached even though the partner's JID is on record,
+    /// because a DM key carries no participant.
+    #[test]
+    fn dm_reaction_carries_no_sender() {
+        let (mut app, tx, ctx, cmd_rx) = live_app();
+        let mut msg =
+            LiveMessage::text("d1", DM_JID, Some("Partner".to_owned()), "hi", 1_700_000_000, false);
+        msg.sender_jid = Some(DM_JID.to_owned());
+        let mid = open_message(&mut app, &tx, &ctx, msg);
+        app.apply_reaction(mid, "👍");
+        let (chat_jid, _, sender_jid, from_me, _) = react_command(&cmd_rx);
+        assert_eq!(chat_jid, DM_JID);
+        assert_eq!(sender_jid, None);
+        assert!(!from_me);
+    }
+
+    /// The optimistic write and the server's echo of my own
+    /// reaction are the same write into the actor map: the echo
+    /// confirms the pending change and the count does not move.
+    #[test]
+    fn my_reaction_echo_confirms_without_double_counting() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        let chat_id = jid_id(GROUP_JID);
+        let mid = open_message(&mut app, &tx, &ctx, alice_group_message());
+        tx.send(BackendEvent::ReactionUpdate {
+            chat_jid: GROUP_JID.to_owned(),
+            message_id: "g1".to_owned(),
+            actor: "Alice".to_owned(),
+            emoji: "👍".to_owned(),
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(mirror_reactions(&app, chat_id, mid), vec![("👍".to_owned(), 1)]);
+
+        app.apply_reaction(mid, "👍");
+        assert_eq!(mirror_reactions(&app, chat_id, mid), vec![("👍".to_owned(), 2)]);
+        assert_eq!(app.my_reactions.get(&mid).map(String::as_str), Some("👍"));
+        assert!(app.pending_reactions.contains_key(&mid), "the change awaits settlement");
+
+        tx.send(BackendEvent::ReactionUpdate {
+            chat_jid: GROUP_JID.to_owned(),
+            message_id: "g1".to_owned(),
+            actor: "Me".to_owned(),
+            emoji: "👍".to_owned(),
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(
+            mirror_reactions(&app, chat_id, mid),
+            vec![("👍".to_owned(), 2)],
+            "the echo does not count me twice"
+        );
+        assert!(!app.pending_reactions.contains_key(&mid), "the echo confirms the change");
+        assert_eq!(app.my_reactions.get(&mid).map(String::as_str), Some("👍"));
+    }
+
+    /// My reaction disappearing server-side (removed from
+    /// another device) converges the local state to the
+    /// server's set: my picker state clears and my count goes.
+    #[test]
+    fn server_removal_of_my_reaction_converges() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        let chat_id = jid_id(GROUP_JID);
+        let mid = open_message(&mut app, &tx, &ctx, alice_group_message());
+        app.apply_reaction(mid, "❤️");
+        tx.send(BackendEvent::ReactionUpdate {
+            chat_jid: GROUP_JID.to_owned(),
+            message_id: "g1".to_owned(),
+            actor: "Me".to_owned(),
+            emoji: "❤️".to_owned(),
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(mirror_reactions(&app, chat_id, mid), vec![("❤️".to_owned(), 1)]);
+
+        tx.send(BackendEvent::ReactionUpdate {
+            chat_jid: GROUP_JID.to_owned(),
+            message_id: "g1".to_owned(),
+            actor: "Me".to_owned(),
+            emoji: String::new(),
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(mirror_reactions(&app, chat_id, mid).is_empty(), "my count is gone");
+        assert!(!app.my_reactions.contains_key(&mid), "my picker state clears");
+        assert!(
+            !app.reaction_actors.contains_key(&format!("{chat_id}:{mid}")),
+            "the emptied actor entry is dropped"
+        );
+    }
+
+    /// A reaction the backend reports as failed rolls the
+    /// optimistic state back to what the server last confirmed,
+    /// and the failure reaches the notice banner.
+    #[test]
+    fn failed_group_reaction_rolls_back() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        let chat_id = jid_id(GROUP_JID);
+        let mid = open_message(&mut app, &tx, &ctx, alice_group_message());
+        tx.send(BackendEvent::ReactionUpdate {
+            chat_jid: GROUP_JID.to_owned(),
+            message_id: "g1".to_owned(),
+            actor: "Alice".to_owned(),
+            emoji: "👍".to_owned(),
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+
+        app.apply_reaction(mid, "❤️");
+        let mut optimistic = mirror_reactions(&app, chat_id, mid);
+        optimistic.sort();
+        assert_eq!(optimistic, vec![("❤️".to_owned(), 1), ("👍".to_owned(), 1)]);
+        assert_eq!(app.my_reactions.get(&mid).map(String::as_str), Some("❤️"));
+
+        tx.send(BackendEvent::ReactionFailed {
+            chat_jid: GROUP_JID.to_owned(),
+            message_id: "g1".to_owned(),
+            message: "Reaction failed: connection lost".to_owned(),
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(
+            mirror_reactions(&app, chat_id, mid),
+            vec![("👍".to_owned(), 1)],
+            "only Alice's confirmed reaction remains"
+        );
+        assert!(!app.my_reactions.contains_key(&mid), "my optimistic reaction is undone");
+        assert!(!app.pending_reactions.contains_key(&mid), "nothing stays pending");
+        let view = app.conversation.iter().find(|m| m.id == mid).unwrap();
+        assert_eq!(view.reactions, vec![("👍".to_owned(), 1)], "the open view rolls back too");
+        let notice = app.notice.clone().unwrap_or_default();
+        assert!(notice.contains("Reaction failed"), "the failure is surfaced: {notice}");
+    }
+
+    /// Rolling back a *change* of reaction restores the emoji
+    /// the server had confirmed before, not an empty state.
+    #[test]
+    fn failed_reaction_change_restores_the_previous_emoji() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        let chat_id = jid_id(GROUP_JID);
+        let mid = open_message(&mut app, &tx, &ctx, alice_group_message());
+        app.apply_reaction(mid, "👍");
+        tx.send(BackendEvent::ReactionUpdate {
+            chat_jid: GROUP_JID.to_owned(),
+            message_id: "g1".to_owned(),
+            actor: "Me".to_owned(),
+            emoji: "👍".to_owned(),
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(mirror_reactions(&app, chat_id, mid), vec![("👍".to_owned(), 1)]);
+
+        app.apply_reaction(mid, "❤️");
+        assert_eq!(mirror_reactions(&app, chat_id, mid), vec![("❤️".to_owned(), 1)]);
+
+        tx.send(BackendEvent::ReactionFailed {
+            chat_jid: GROUP_JID.to_owned(),
+            message_id: "g1".to_owned(),
+            message: "Reaction failed: connection lost".to_owned(),
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(mirror_reactions(&app, chat_id, mid), vec![("👍".to_owned(), 1)]);
+        assert_eq!(app.my_reactions.get(&mid).map(String::as_str), Some("👍"));
     }
 }

@@ -1044,6 +1044,12 @@ pub(crate) struct App {
         std::collections::HashMap<String, std::collections::HashMap<String, String>>,
     /// My current reaction per app message ID.
     pub(crate) my_reactions: std::collections::HashMap<u64, String>,
+    /// Live mode: my reaction per app message ID as it was
+    /// before a change the backend has not yet settled (None =
+    /// I had none). The entry is taken when the change is sent;
+    /// the server's echo of my reaction drops it (confirmed),
+    /// and a ReactionFailed restores it verbatim (rolled back).
+    pub(crate) pending_reactions: std::collections::HashMap<u64, Option<String>>,
     /// Media picker state: the emoji, GIF and sticker panel, its drafts and results, decoded textures and in-flight workers.
     pub(crate) picker: PickerState,
     /// The live voice recorder, present while a recording runs.
@@ -1526,6 +1532,7 @@ impl App {
             },
             reaction_actors: std::collections::HashMap::new(),
             my_reactions: std::collections::HashMap::new(),
+            pending_reactions: std::collections::HashMap::new(),
             picker: PickerState {
                 open: args.picker.is_some(),
                 tab: args.picker.clone().unwrap_or_else(|| "emoji".to_owned()),

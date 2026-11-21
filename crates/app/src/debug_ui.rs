@@ -81,6 +81,9 @@ impl App {
             BackendEvent::ReactionUpdate { emoji, .. } => {
                 ("message", format!("ReactionUpdate {emoji}"), None)
             }
+            BackendEvent::ReactionFailed { message, .. } => {
+                ("message", format!("ReactionFailed {message}"), None)
+            }
             BackendEvent::MessageEdited { .. } => ("message", "MessageEdited".to_owned(), None),
             BackendEvent::MessageRevoked { .. } => ("message", "MessageRevoked".to_owned(), None),
             BackendEvent::DisappearingChanged { chat_jid, duration_secs } => {

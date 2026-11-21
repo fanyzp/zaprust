@@ -100,10 +100,35 @@ impl App {
                 self.live.as_ref().and_then(|s| s.jids.get(&chat_id).cloned()),
                 self.protocol_ids.get(&msg_id).cloned(),
             ) {
+                // A group reaction must name the message's
+                // author: the library builds the target key's
+                // participant from it and refuses a group target
+                // authored by someone else without one. The
+                // author is the JID recorded for the message
+                // when it arrived (or seeded from the archive).
+                // My own messages need none (the library resolves
+                // my group identity itself), and neither do direct
+                // chats, whose keys carry no participant.
+                let sender_jid = if !from_me && jid.ends_with("@g.us") {
+                    self.sender_jids.get(&msg_id).cloned()
+                } else {
+                    None
+                };
+                // Remember what my reaction was before this
+                // change until the backend settles it: the echo
+                // confirms, a ReactionFailed restores this value.
+                // An unsettled earlier change keeps its older
+                // snapshot.
+                self.pending_reactions.entry(msg_id).or_insert_with(|| current.clone());
+                // The optimistic write goes through the actor
+                // map, the same representation the server's echo
+                // reconciles into, so the two cannot drift apart
+                // or count me twice.
+                self.apply_my_reaction_to_actors(chat_id, msg_id, new_mine.as_deref());
                 self.send_backend(BackendCommand::React {
                     chat_jid: jid,
                     message_id: proto,
-                    sender_jid: None,
+                    sender_jid,
                     from_me,
                     emoji: new_mine.clone().unwrap_or_default(),
                 });

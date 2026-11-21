@@ -9,8 +9,18 @@ use eframe::egui::{self, Align2, CornerRadius, Margin, Pos2, RichText, Stroke, V
 /// Opens `url` in the system browser. On failure, copies the URL to
 /// the clipboard and sets a notice telling the user what happened.
 pub(crate) fn open_or_copy(app: &mut App, ui: &egui::Ui, url: &str) {
-    if let Ok(()) = open::that(url) {
-    } else {
+    open_or_copy_with(app, ui, url, |url: &str| open::that(url));
+}
+
+/// [`open_or_copy`] with the system opener injected, so the
+/// fallback is exercisable in tests that have no browser.
+fn open_or_copy_with(
+    app: &mut App,
+    ui: &egui::Ui,
+    url: &str,
+    opener: impl Fn(&str) -> std::io::Result<()>,
+) {
+    if opener(url).is_err() {
         ui.ctx().copy_text(url.to_owned());
         app.notice =
             Some("Could not open a browser, the link was copied to your clipboard.".to_owned());
@@ -257,5 +267,87 @@ impl App {
             self.crash_details_open = false;
         }
         let _ = Align2::CENTER_CENTER;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::Args;
+
+    const URL: &str = "https://example.invalid/zaprust-test-link";
+
+    fn demo_app(ctx: &egui::Context) -> App {
+        let mut app = App::new(Args::parse(), ctx);
+        // App::new may have attempted a real live start against
+        // this machine's data dir (and left its failure notice
+        // behind when that start refused); the test owns the
+        // state from here and wants a clean demo shell.
+        app.live = None;
+        app.live_mode = false;
+        app.notice = None;
+        app
+    }
+
+    fn no_browser(_: &str) -> std::io::Result<()> {
+        Err(std::io::Error::new(std::io::ErrorKind::NotFound, "no opener in the test rig"))
+    }
+
+    fn browser(_: &str) -> std::io::Result<()> {
+        Ok(())
+    }
+
+    fn run(
+        app: &mut App,
+        ctx: &egui::Context,
+        opener: fn(&str) -> std::io::Result<()>,
+    ) -> egui::FullOutput {
+        ctx.begin_pass(egui::RawInput::default());
+        egui::Area::new(egui::Id::unique("open-or-copy-test")).show(ctx, |ui| {
+            open_or_copy_with(app, ui, URL, opener);
+        });
+        let mut out = ctx.end_pass();
+        // No renderer will ever apply this frame's texture
+        // deltas; clear them so dropping the output is quiet.
+        out.textures_delta.clear();
+        out
+    }
+
+    fn copied_texts(out: &egui::FullOutput) -> Vec<&str> {
+        out.platform_output
+            .commands
+            .iter()
+            .filter_map(|c| match c {
+                egui::OutputCommand::CopyText(s) => Some(s.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The About page's Report a bug action (and the crash
+    /// banner's report link) reach the browser through
+    /// open_or_copy: when the opener fails, the exact URL
+    /// must land on the clipboard and the user must be told.
+    #[test]
+    fn a_failed_open_copies_the_url_and_says_so() {
+        let ctx = egui::Context::default();
+        let mut app = demo_app(&ctx);
+        let out = run(&mut app, &ctx, no_browser);
+        assert_eq!(copied_texts(&out), [URL], "the link lands on the clipboard instead");
+        assert_eq!(
+            app.notice.as_deref(),
+            Some("Could not open a browser, the link was copied to your clipboard.")
+        );
+    }
+
+    /// When the opener succeeds, nothing is copied and no
+    /// notice appears: the browser has the link.
+    #[test]
+    fn a_successful_open_leaves_clipboard_and_notice_alone() {
+        let ctx = egui::Context::default();
+        let mut app = demo_app(&ctx);
+        let out = run(&mut app, &ctx, browser);
+        assert!(copied_texts(&out).is_empty());
+        assert_eq!(app.notice, None);
     }
 }

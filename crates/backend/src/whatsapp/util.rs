@@ -357,6 +357,73 @@ pub(super) async fn download_proto(
     }
 }
 
+/// Extracts the persistable re-download reference of a photo
+/// message (see [`crate::PhotoRef`]), or `None` when the message
+/// is not a photo or its payload does not carry a complete
+/// reference. A reference is complete only when every field the
+/// CDN download validates is present and well-formed; a partial
+/// one is worthless after the session ends, so it is reported as
+/// absent rather than archived in a shape that can only fail.
+pub(super) fn photo_ref_of(proto: &whatsapp_rust::prelude::wa::Message) -> Option<crate::PhotoRef> {
+    let image = unwrap_media_proto(proto).image_message.as_option()?;
+    let direct_path = image.direct_path.clone().filter(|p| !p.is_empty())?;
+    let media_key = image.media_key.clone().filter(|k| k.len() == 32)?;
+    let file_sha256 = image.file_sha256.clone().filter(|h| h.len() == 32)?;
+    let file_enc_sha256 = image.file_enc_sha256.clone().filter(|h| h.len() == 32)?;
+    let file_length = image.file_length?;
+    Some(crate::PhotoRef { direct_path, media_key, file_sha256, file_enc_sha256, file_length })
+}
+
+/// Rebuilds the library's validated download parameters from an
+/// archived photo reference. The library re-validates every field
+/// (key and digest lengths, encrypted media type), so a reference
+/// that was archived complete cannot silently degrade: a failure
+/// here means the stored value itself is malformed.
+pub(super) fn photo_download_params(
+    reference: &crate::PhotoRef,
+) -> Result<whatsapp_rust::download::DownloadParams, String> {
+    whatsapp_rust::download::DownloadParams::encrypted(
+        reference.direct_path.clone(),
+        &reference.media_key,
+        &reference.file_sha256,
+        &reference.file_enc_sha256,
+        reference.file_length,
+        whatsapp_rust::download::MediaType::Image,
+    )
+    .map_err(|_| "That photo's stored download reference is not usable.".to_owned())
+}
+
+/// Downloads a photo message's bytes into memory for display.
+/// Unlike [`download_proto`] nothing is written to disk, and
+/// view-once photos are allowed: viewing inside the app is
+/// exactly what view-once permits, while saving to disk is what
+/// it forbids. The byte budget still applies, so one hostile or
+/// accidental giant photo cannot fill the app's memory either.
+pub(super) async fn fetch_photo_bytes(
+    client: &whatsapp_rust::Client,
+    proto: &whatsapp_rust::prelude::wa::Message,
+) -> Result<Vec<u8>, String> {
+    let proto = unwrap_media_proto(proto);
+    let Some(image) = proto.image_message.as_option() else {
+        return Err("That message is not a photo.".to_owned());
+    };
+    check_declared_length(image.file_length)?;
+    client.download(image, download_limits()).await.map_err(download_error_message)
+}
+
+/// Downloads a photo's bytes into memory from its archived
+/// reference, for messages the session's protocol cache no
+/// longer holds. Same in-memory discipline as
+/// [`fetch_photo_bytes`].
+pub(super) async fn fetch_photo_by_ref(
+    client: &whatsapp_rust::Client,
+    reference: &crate::PhotoRef,
+) -> Result<Vec<u8>, String> {
+    check_declared_length(Some(reference.file_length))?;
+    let params = photo_download_params(reference)?;
+    client.download(&params, download_limits()).await.map_err(download_error_message)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -520,5 +587,85 @@ mod tests {
                 tokio::time::sleep(std::time::Duration::from_millis(300)).await;
             });
         assert!(lock_cache(&landed).is_empty());
+    }
+
+    /// A photo proto carrying a complete set of CDN fields, the
+    /// shape a real received photo arrives in.
+    fn photo_proto_complete() -> wa::Message {
+        let mut image = wa::message::ImageMessage::default();
+        image.direct_path = Some("/v/t62.7118-24/photo.enc".to_owned());
+        image.media_key = Some(vec![7u8; 32]);
+        image.file_sha256 = Some(vec![8u8; 32]);
+        image.file_enc_sha256 = Some(vec![9u8; 32]);
+        image.file_length = Some(123_456);
+        let mut msg = wa::Message::default();
+        msg.image_message = MessageField::some(image);
+        msg
+    }
+
+    /// The photo reference is extracted whole from a complete
+    /// payload, including through the view-once and ephemeral
+    /// wrappers a photo can arrive inside.
+    #[test]
+    fn photo_ref_comes_from_a_complete_payload() {
+        for proto in [
+            photo_proto_complete(),
+            wrap_view_once(photo_proto_complete()),
+            wrap_ephemeral(photo_proto_complete()),
+        ] {
+            let reference = photo_ref_of(&proto).expect("a complete photo yields a reference");
+            assert_eq!(reference.direct_path, "/v/t62.7118-24/photo.enc");
+            assert_eq!(reference.media_key, vec![7u8; 32]);
+            assert_eq!(reference.file_sha256, vec![8u8; 32]);
+            assert_eq!(reference.file_enc_sha256, vec![9u8; 32]);
+            assert_eq!(reference.file_length, 123_456);
+        }
+    }
+
+    /// Any missing or malformed field makes the reference absent:
+    /// a partial reference can never be downloaded from later, so
+    /// archiving one would only defer the failure.
+    #[test]
+    fn photo_ref_rejects_incomplete_payloads() {
+        // The bare default image (no CDN fields at all).
+        assert!(photo_ref_of(&image_proto()).is_none());
+        // One field short: no direct path.
+        let mut image = wa::message::ImageMessage::default();
+        image.media_key = Some(vec![7u8; 32]);
+        image.file_sha256 = Some(vec![8u8; 32]);
+        image.file_enc_sha256 = Some(vec![9u8; 32]);
+        image.file_length = Some(10);
+        let mut msg = wa::Message::default();
+        msg.image_message = MessageField::some(image);
+        assert!(photo_ref_of(&msg).is_none());
+        // A key of the wrong length is malformed, not a reference.
+        let mut image = wa::message::ImageMessage::default();
+        image.direct_path = Some("/v/t62.7118-24/photo.enc".to_owned());
+        image.media_key = Some(vec![1u8; 16]);
+        image.file_sha256 = Some(vec![8u8; 32]);
+        image.file_enc_sha256 = Some(vec![9u8; 32]);
+        image.file_length = Some(10);
+        let mut msg = wa::Message::default();
+        msg.image_message = MessageField::some(image);
+        assert!(photo_ref_of(&msg).is_none());
+        // Not a photo at all.
+        assert!(photo_ref_of(&wa::Message::default()).is_none());
+    }
+
+    /// An archived reference rebuilds validated download
+    /// parameters; a malformed one is refused with the user-facing
+    /// message instead of reaching the library half-built.
+    #[test]
+    fn photo_download_params_validate_the_reference() {
+        let reference = crate::PhotoRef {
+            direct_path: "/v/t62.7118-24/photo.enc".to_owned(),
+            media_key: vec![7u8; 32],
+            file_sha256: vec![8u8; 32],
+            file_enc_sha256: vec![9u8; 32],
+            file_length: 123_456,
+        };
+        assert!(photo_download_params(&reference).is_ok());
+        let malformed = crate::PhotoRef { media_key: vec![1u8; 4], ..reference.clone() };
+        assert!(photo_download_params(&malformed).is_err());
     }
 }

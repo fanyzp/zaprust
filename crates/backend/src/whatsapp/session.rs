@@ -28,9 +28,9 @@ use super::translate::{
     participant_name, privacy_map, translate_event, translate_message, translate_special,
 };
 use super::util::{
-    abort_latest, build_message_target, cap_poll_secrets, download_proto, lock_cache,
-    parse_address, proto_is_view_once, received_poll_secret, spawn_latest, unix_now, LatestTask,
-    PollSecrets, ProtoCache,
+    abort_latest, build_message_target, cap_poll_secrets, download_proto, fetch_photo_by_ref,
+    fetch_photo_bytes, lock_cache, parse_address, proto_is_view_once, received_poll_secret,
+    spawn_latest, unix_now, LatestTask, PollSecrets, ProtoCache,
 };
 
 /// How many session events may wait for the event callbacks.
@@ -1431,6 +1431,44 @@ pub(super) async fn run_async(
                                 .to_owned(),
                         }),
                     }
+                }
+                BackendCommand::FetchPhoto { chat_jid, message_id, photo_ref } => {
+                    // Display fetch, in memory only (see the
+                    // command's docs). Resolution order: the
+                    // session's protocol payload first (it is the
+                    // message as received, wrappers and all), then
+                    // the archived reference the caller archived
+                    // with the message. Like the download, the
+                    // transfer runs as its own task so the dispatch
+                    // loop never waits behind the network.
+                    let proto = lock_cache(&proto_cache)
+                        .0
+                        .get(&(chat_jid.clone(), message_id.clone()))
+                        .cloned();
+                    let client = client.clone();
+                    let events = events.clone();
+                    tokio::spawn(async move {
+                        let fetched = match (&proto, &photo_ref) {
+                            (Some(proto), _) => fetch_photo_bytes(&client, proto).await,
+                            (None, Some(reference)) => fetch_photo_by_ref(&client, reference).await,
+                            (None, None) => Err("That photo is not available: it was received \
+                                                 before this session and has no stored \
+                                                 download reference."
+                                .to_owned()),
+                        };
+                        match fetched {
+                            Ok(bytes) => events.emit(BackendEvent::PhotoBytes {
+                                chat_jid,
+                                message_id,
+                                bytes,
+                            }),
+                            Err(message) => events.emit(BackendEvent::PhotoFetchFailed {
+                                chat_jid,
+                                message_id,
+                                message,
+                            }),
+                        }
+                    });
                 }
                 BackendCommand::SetPrivacy { category, value } => {
                     use whatsapp_rust::privacy_settings::{PrivacyCategory, PrivacyValue};

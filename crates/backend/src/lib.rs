@@ -646,6 +646,22 @@ pub enum BackendCommand {
         /// Protocol ID of the media message.
         message_id: String,
     },
+    /// Fetch a photo message's bytes for display. Answered with
+    /// `PhotoBytes` or `PhotoFetchFailed`. The bytes travel in
+    /// memory only: nothing is written to disk, which is also
+    /// what makes this the one fetch path a view-once photo may
+    /// take. When the message is no longer in the session's
+    /// protocol cache (a photo from before this session), the
+    /// caller passes the archived [`PhotoRef`] it stored with
+    /// the message; without either source the fetch fails.
+    FetchPhoto {
+        /// Chat JID.
+        chat_jid: String,
+        /// Protocol ID of the photo message.
+        message_id: String,
+        /// Archived re-download reference, when the caller has one.
+        photo_ref: Option<PhotoRef>,
+    },
     /// Stop the backend worker.
     Shutdown,
 }
@@ -870,6 +886,28 @@ pub enum ParticipantOp {
     Demote,
 }
 
+/// The persistable CDN reference of one photo: everything needed
+/// to re-download its bytes later, without the original protocol
+/// message. The backend extracts it from the wire payload when a
+/// photo arrives; the app archives it with the message, so a photo
+/// stays fetchable after a restart (the session's protocol cache
+/// alone would forget it). It carries the media key, so it belongs
+/// in the encrypted archive only, and for a view-once photo it is
+/// dropped once the single view has been spent.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PhotoRef {
+    /// CDN path of the encrypted media.
+    pub direct_path: String,
+    /// Media decryption key (32 bytes).
+    pub media_key: Vec<u8>,
+    /// SHA-256 of the decrypted bytes (32 bytes).
+    pub file_sha256: Vec<u8>,
+    /// SHA-256 of the encrypted bytes (32 bytes).
+    pub file_enc_sha256: Vec<u8>,
+    /// Announced plaintext size in bytes.
+    pub file_length: u64,
+}
+
 /// A message as the backend reports it (protocol-neutral).
 #[derive(Debug, Clone, PartialEq)]
 pub struct LiveMessage {
@@ -916,6 +954,11 @@ pub struct LiveMessage {
     /// the backend from the message timestamp plus the ephemeral
     /// expiration the wire carried. `0` means it never expires.
     pub expires_at: i64,
+    /// For a photo message: the reference its bytes can be
+    /// re-downloaded from (see [`PhotoRef`]). `None` for every
+    /// other kind, and for photos whose wire payload did not
+    /// carry a complete reference.
+    pub photo_ref: Option<PhotoRef>,
 }
 
 impl LiveMessage {
@@ -949,6 +992,7 @@ impl LiveMessage {
             view_once: false,
             sender_jid: None,
             expires_at: 0,
+            photo_ref: None,
         }
     }
 }
@@ -1229,6 +1273,28 @@ pub enum BackendEvent {
         message_id: String,
         /// Absolute path of the saved file.
         path: String,
+    },
+    /// A photo fetch for display finished; the decrypted bytes
+    /// are carried in memory and were never written to disk.
+    PhotoBytes {
+        /// Chat JID the photo belongs to.
+        chat_jid: String,
+        /// Protocol ID of the photo message.
+        message_id: String,
+        /// The photo's decrypted bytes (an encoded image).
+        bytes: Vec<u8>,
+    },
+    /// A photo fetch for display failed. Reported per message
+    /// (not as a global `Error`) so a chat full of unavailable
+    /// photos cannot flood the notice line; the message is in
+    /// user words.
+    PhotoFetchFailed {
+        /// Chat JID the photo belongs to.
+        chat_jid: String,
+        /// Protocol ID of the photo message.
+        message_id: String,
+        /// Why the fetch failed, in user words.
+        message: String,
     },
     /// A chat partner started or stopped typing (or recording).
     TypingReceived {

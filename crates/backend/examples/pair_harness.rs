@@ -53,6 +53,10 @@ fn summarize(event: &BackendEvent) -> String {
         BackendEvent::IncomingCall { .. } => "IncomingCall".to_owned(),
         BackendEvent::CallChanged { phase, .. } => format!("CallChanged {phase:?}"),
         BackendEvent::MediaSaved { .. } => "MediaSaved".to_owned(),
+        BackendEvent::PhotoBytes { bytes, .. } => format!("PhotoBytes {} bytes", bytes.len()),
+        BackendEvent::PhotoFetchFailed { message, .. } => {
+            format!("PhotoFetchFailed {message}")
+        }
         BackendEvent::TypingReceived { .. } => "TypingReceived".to_owned(),
         BackendEvent::GroupMembers { .. } => "GroupMembers".to_owned(),
         BackendEvent::GroupInviteLink { .. } => "GroupInviteLink".to_owned(),

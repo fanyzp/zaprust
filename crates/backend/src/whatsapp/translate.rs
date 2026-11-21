@@ -376,6 +376,11 @@ pub(super) fn translate_message(ctx: &MessageContext) -> Option<(LiveChat, LiveM
     let (kind, view_once) = classify_kind(ctx);
     msg.kind = kind;
     msg.view_once = view_once;
+    // A photo's re-download reference travels with the message so
+    // the app can archive it: the photo's bytes stay fetchable
+    // after this session's protocol cache is gone. Non-photos and
+    // incomplete payloads yield no reference.
+    msg.photo_ref = super::util::photo_ref_of(&ctx.message);
     if let LiveMessageKind::Other(label) = &msg.kind {
         if msg.body == "[non-text message]" {
             msg.body = label.clone();

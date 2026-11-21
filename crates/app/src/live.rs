@@ -1722,6 +1722,38 @@ impl crate::state::App {
                 }
                 self.notice = Some(human_error(&message));
             }
+            BackendEvent::StarFailed { chat_jid, message_id: pid, message } => {
+                let chat_id = jid_id(&chat_jid);
+                let mid = message_id(&chat_jid, &pid);
+                // Same display treatment as the generic error
+                // path: backend text can embed server-supplied
+                // strings, so it is scrubbed before it can reach
+                // the notice banner.
+                let message = core::crash::scrub_for_display(&message);
+                tracing::warn!("star failed: {message}");
+                if let Some(previous) = self.pending_stars.remove(&mid) {
+                    // The change never reached the server: put
+                    // the star back to what it was before it,
+                    // through the same adoption path a server
+                    // report takes.
+                    self.apply_star_changed(chat_id, mid, &pid, previous);
+                }
+                self.notice = Some(human_error(&message));
+            }
+            BackendEvent::PinFailed { chat_jid, message_id: pid, message } => {
+                let chat_id = jid_id(&chat_jid);
+                let mid = message_id(&chat_jid, &pid);
+                // Scrubbed before display, like the star path
+                // above and the generic error path.
+                let message = core::crash::scrub_for_display(&message);
+                tracing::warn!("pin failed: {message}");
+                if let Some(previous) = self.pending_pins.remove(&mid) {
+                    // The change never reached the server: put
+                    // the pin back to what it was before it.
+                    self.apply_pin_restored(chat_id, mid, &pid, previous);
+                }
+                self.notice = Some(human_error(&message));
+            }
             BackendEvent::MessageEdited { chat_jid, message_id: pid, new_body } => {
                 let chat_id = jid_id(&chat_jid);
                 let mid = message_id(&chat_jid, &pid);
@@ -2261,6 +2293,11 @@ impl crate::state::App {
         // so the flag write-through below finds the archive row
         // even for a message this session has not re-upserted.
         self.protocol_ids.insert(msg_id, protocol_id.to_owned());
+        // A server report settles any star change of mine still
+        // pending for this message: the reported state is the
+        // state now, whether it confirms my change or supersedes
+        // it, so nothing remains to roll back.
+        self.pending_stars.remove(&msg_id);
         if let Some(entry) = self.live.as_mut().and_then(|s| s.messages.get_mut(&chat_id)) {
             for (_, m) in entry.iter_mut() {
                 if m.id == msg_id {
@@ -2269,6 +2306,35 @@ impl crate::state::App {
             }
         }
         self.set_live_flag(chat_id, msg_id, store::FLAG_STARRED, starred);
+        if self.selected_chat == chat_id {
+            self.sync_conversation();
+        }
+    }
+
+    /// Restores the pin state a refused pin change started
+    /// from (see [`BackendEvent::PinFailed`]): the mirror flips
+    /// back and the flag write-through updates the session flag
+    /// map and the archive row, exactly how `apply_star_changed`
+    /// lands a star rollback, minus any backend command (the
+    /// change being undone never reached the server).
+    pub(crate) fn apply_pin_restored(
+        &mut self,
+        chat_id: u64,
+        msg_id: u64,
+        protocol_id: &str,
+        pinned: bool,
+    ) {
+        // The protocol-id bookkeeping an upsert would have done,
+        // so the flag write-through below finds the archive row.
+        self.protocol_ids.insert(msg_id, protocol_id.to_owned());
+        if let Some(entry) = self.live.as_mut().and_then(|s| s.messages.get_mut(&chat_id)) {
+            for (_, m) in entry.iter_mut() {
+                if m.id == msg_id {
+                    m.pinned = pinned;
+                }
+            }
+        }
+        self.set_live_flag(chat_id, msg_id, store::FLAG_PINNED_MESSAGE, pinned);
         if self.selected_chat == chat_id {
             self.sync_conversation();
         }
@@ -2569,6 +2635,20 @@ impl crate::state::App {
             }
             if live.pinned {
                 flags |= store::FLAG_PINNED_MESSAGE;
+            }
+            // A server copy already carrying the state a pending
+            // star or pin change was aiming at settles that
+            // change: the backend accepted it, so a failure
+            // report arriving later for it must not roll anything
+            // back. A copy showing neither state settles nothing
+            // (it may predate the change). No event reports a
+            // message pin adopted elsewhere, so this adoption is
+            // the pin's only confirmation path.
+            if live.starred && self.pending_stars.get(&msg_id) == Some(&false) {
+                self.pending_stars.remove(&msg_id);
+            }
+            if live.pinned && self.pending_pins.get(&msg_id) == Some(&false) {
+                self.pending_pins.remove(&msg_id);
             }
             if flags != session.flags.get(&msg_id).copied().unwrap_or(0) {
                 if flags == 0 {
@@ -8726,5 +8806,350 @@ mod reaction_tests {
         drain_all(&mut app, &ctx);
         assert_eq!(mirror_reactions(&app, chat_id, mid), vec![("👍".to_owned(), 1)]);
         assert_eq!(app.my_reactions.get(&mid).map(String::as_str), Some("👍"));
+    }
+}
+
+#[cfg(test)]
+mod star_pin_tests {
+    use super::*;
+    use crate::state::{App, Args};
+
+    const GROUP_JID: &str = "120363001234567890@g.us";
+    const DM_JID: &str = "6281234567890@s.whatsapp.net";
+    const ALICE_JID: &str = "6281111111111@s.whatsapp.net";
+
+    /// An app in live mode on a hand-fed backend channel, the
+    /// same harness shape as the other live test modules.
+    fn live_app() -> (
+        App,
+        std::sync::mpsc::Sender<BackendEvent>,
+        egui::Context,
+        std::sync::mpsc::Receiver<BackendCommand>,
+    ) {
+        let ctx = egui::Context::default();
+        crate::theme::install_fonts(&ctx);
+        let mut app = App::new(Args::parse(), &ctx);
+        app.live_start_error = None;
+        app.logged_out = false;
+        let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<BackendCommand>();
+        let (evt_tx, evt_rx) = std::sync::mpsc::channel::<BackendEvent>();
+        app.live = Some(LiveSession {
+            channels: BackendChannels { commands: cmd_tx, events: evt_rx },
+            status: LinkStatus::Linked,
+            qr: None,
+            qr_expires_at: None,
+            pair_code: None,
+            pair_code_at: None,
+            account: "Test account".to_owned(),
+            connected_at: None,
+            store: Some(store::Store::open_in_memory().unwrap()),
+            jids: HashMap::new(),
+            messages: HashMap::new(),
+            times: HashMap::new(),
+            fake: true,
+            logout_requested: false,
+            flags: HashMap::new(),
+            engaged_chats: std::collections::HashSet::new(),
+            photo_refs: HashMap::new(),
+            voice_refs: HashMap::new(),
+            video_refs: HashMap::new(),
+            video_thumbs: HashMap::new(),
+        });
+        app.live_mode = true;
+        (app, evt_tx, ctx, cmd_rx)
+    }
+
+    fn drain_all(app: &mut App, ctx: &egui::Context) {
+        for _ in 0..64 {
+            app.poll_backend(ctx);
+            if app.event_queue.is_empty() {
+                return;
+            }
+        }
+        panic!("the event queue did not drain");
+    }
+
+    fn sent_commands(cmd_rx: &std::sync::mpsc::Receiver<BackendCommand>) -> Vec<BackendCommand> {
+        let mut out = Vec::new();
+        while let Ok(cmd) = cmd_rx.try_recv() {
+            out.push(cmd);
+        }
+        out
+    }
+
+    /// Feeds one message into the live mirror and opens its
+    /// chat, returning the app message ID.
+    fn open_message(
+        app: &mut App,
+        tx: &std::sync::mpsc::Sender<BackendEvent>,
+        ctx: &egui::Context,
+        msg: LiveMessage,
+    ) -> u64 {
+        let chat_jid = msg.chat_jid.clone();
+        let proto = msg.id.clone();
+        tx.send(BackendEvent::MessageUpsert(msg)).unwrap();
+        drain_all(app, ctx);
+        app.selected_chat = jid_id(&chat_jid);
+        app.sync_conversation();
+        message_id(&chat_jid, &proto)
+    }
+
+    fn alice_group_message() -> LiveMessage {
+        let mut msg = LiveMessage::text(
+            "g1",
+            GROUP_JID,
+            Some("Alice".to_owned()),
+            "hello group",
+            1_700_000_000,
+            false,
+        );
+        msg.sender_jid = Some(ALICE_JID.to_owned());
+        msg
+    }
+
+    fn mirror_flag(app: &App, chat_id: u64, mid: u64, pin: bool) -> bool {
+        let mirror = app.live.as_ref().unwrap().messages.get(&chat_id).unwrap();
+        let msg = &mirror.iter().find(|(_, m)| m.id == mid).unwrap().1;
+        if pin {
+            msg.pinned
+        } else {
+            msg.starred
+        }
+    }
+
+    fn view_flag(app: &App, mid: u64, pin: bool) -> bool {
+        let msg = app.conversation.iter().find(|m| m.id == mid).unwrap();
+        if pin {
+            msg.pinned
+        } else {
+            msg.starred
+        }
+    }
+
+    fn archived_flags(app: &App, chat_jid: &str, protocol_id: &str) -> i64 {
+        let store = app.live.as_ref().unwrap().store.as_ref().unwrap();
+        store
+            .messages(chat_jid)
+            .unwrap()
+            .into_iter()
+            .find(|(m, _)| m.id == protocol_id)
+            .expect("the message reached the archive")
+            .1
+    }
+
+    fn star_command(
+        cmd_rx: &std::sync::mpsc::Receiver<BackendCommand>,
+    ) -> (String, String, Option<String>, bool, bool) {
+        let sent = sent_commands(cmd_rx);
+        let found = sent.iter().find_map(|c| match c {
+            BackendCommand::StarMessage { chat_jid, message_id, sender_jid, from_me, star } => {
+                Some((chat_jid.clone(), message_id.clone(), sender_jid.clone(), *from_me, *star))
+            }
+            _ => None,
+        });
+        found.expect("a star command is sent")
+    }
+
+    fn pin_command(
+        cmd_rx: &std::sync::mpsc::Receiver<BackendCommand>,
+    ) -> (String, String, Option<String>, bool, bool) {
+        let sent = sent_commands(cmd_rx);
+        let found = sent.iter().find_map(|c| match c {
+            BackendCommand::PinMessage { chat_jid, message_id, sender_jid, from_me, pin } => {
+                Some((chat_jid.clone(), message_id.clone(), sender_jid.clone(), *from_me, *pin))
+            }
+            _ => None,
+        });
+        found.expect("a pin command is sent")
+    }
+
+    /// A group star names the participant who authored the
+    /// target message: the JID recorded for the message when it
+    /// arrived is what the command carries, not None.
+    #[test]
+    fn group_star_names_the_message_author() {
+        let (mut app, tx, ctx, cmd_rx) = live_app();
+        let mid = open_message(&mut app, &tx, &ctx, alice_group_message());
+        app.toggle_star_message(mid);
+        let (chat_jid, message_id, sender_jid, from_me, star) = star_command(&cmd_rx);
+        assert_eq!(chat_jid, GROUP_JID);
+        assert_eq!(message_id, "g1");
+        assert_eq!(sender_jid.as_deref(), Some(ALICE_JID), "the author is named");
+        assert!(!from_me);
+        assert!(star);
+        assert_eq!(app.pending_stars.get(&mid), Some(&false), "the change awaits settlement");
+    }
+
+    /// A group pin follows the same author rule as the star.
+    #[test]
+    fn group_pin_names_the_message_author() {
+        let (mut app, tx, ctx, cmd_rx) = live_app();
+        let mid = open_message(&mut app, &tx, &ctx, alice_group_message());
+        app.toggle_pin_message(mid);
+        let (chat_jid, message_id, sender_jid, from_me, pin) = pin_command(&cmd_rx);
+        assert_eq!(chat_jid, GROUP_JID);
+        assert_eq!(message_id, "g1");
+        assert_eq!(sender_jid.as_deref(), Some(ALICE_JID), "the author is named");
+        assert!(!from_me);
+        assert!(pin);
+        assert_eq!(app.pending_pins.get(&mid), Some(&false), "the change awaits settlement");
+    }
+
+    /// Starring my own group message needs no sender: the
+    /// library resolves my group identity itself, and a sender
+    /// in my name could even be the wrong one (PN vs LID
+    /// addressing is the library's call).
+    #[test]
+    fn own_group_star_omits_the_sender() {
+        let (mut app, tx, ctx, cmd_rx) = live_app();
+        let msg = LiveMessage::text("g2", GROUP_JID, None, "my own", 1_700_000_000, true);
+        let mid = open_message(&mut app, &tx, &ctx, msg);
+        app.toggle_star_message(mid);
+        let (_, _, sender_jid, from_me, _) = star_command(&cmd_rx);
+        assert_eq!(sender_jid, None);
+        assert!(from_me);
+    }
+
+    /// Direct-chat stars are unchanged: no sender is attached
+    /// even though the partner's JID is on record, because a DM
+    /// key carries no participant.
+    #[test]
+    fn dm_star_carries_no_sender() {
+        let (mut app, tx, ctx, cmd_rx) = live_app();
+        let mut msg =
+            LiveMessage::text("d1", DM_JID, Some("Partner".to_owned()), "hi", 1_700_000_000, false);
+        msg.sender_jid = Some(DM_JID.to_owned());
+        let mid = open_message(&mut app, &tx, &ctx, msg);
+        app.toggle_star_message(mid);
+        let (chat_jid, _, sender_jid, from_me, _) = star_command(&cmd_rx);
+        assert_eq!(chat_jid, DM_JID);
+        assert_eq!(sender_jid, None);
+        assert!(!from_me);
+    }
+
+    /// A star the backend reports as failed rolls the
+    /// optimistic state back everywhere it landed: the open
+    /// view, the session mirror, and the persisted archive
+    /// flag. The failure reaches the notice banner.
+    #[test]
+    fn failed_group_star_rolls_back() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        let chat_id = jid_id(GROUP_JID);
+        let mid = open_message(&mut app, &tx, &ctx, alice_group_message());
+        app.toggle_star_message(mid);
+        assert!(view_flag(&app, mid, false), "the optimistic star shows");
+        assert!(mirror_flag(&app, chat_id, mid, false));
+        assert_eq!(archived_flags(&app, GROUP_JID, "g1"), store::FLAG_STARRED);
+
+        tx.send(BackendEvent::StarFailed {
+            chat_jid: GROUP_JID.to_owned(),
+            message_id: "g1".to_owned(),
+            message: "Starring failed: connection lost".to_owned(),
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(!view_flag(&app, mid, false), "the open view rolls back");
+        assert!(!mirror_flag(&app, chat_id, mid, false), "the mirror rolls back");
+        assert_eq!(archived_flags(&app, GROUP_JID, "g1"), 0, "the archive flag clears");
+        assert!(!app.pending_stars.contains_key(&mid), "nothing stays pending");
+        let notice = app.notice.clone().unwrap_or_default();
+        assert!(notice.contains("Starring failed"), "the failure is surfaced: {notice}");
+    }
+
+    /// The pin counterpart: a refused pin restores the
+    /// unpinned state in the view, the mirror, and the archive.
+    #[test]
+    fn failed_group_pin_rolls_back() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        let chat_id = jid_id(GROUP_JID);
+        let mid = open_message(&mut app, &tx, &ctx, alice_group_message());
+        app.toggle_pin_message(mid);
+        assert!(view_flag(&app, mid, true), "the optimistic pin shows");
+        assert!(mirror_flag(&app, chat_id, mid, true));
+        assert_eq!(archived_flags(&app, GROUP_JID, "g1"), store::FLAG_PINNED_MESSAGE);
+
+        tx.send(BackendEvent::PinFailed {
+            chat_jid: GROUP_JID.to_owned(),
+            message_id: "g1".to_owned(),
+            message: "Pinning the message failed: connection lost".to_owned(),
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(!view_flag(&app, mid, true), "the open view rolls back");
+        assert!(!mirror_flag(&app, chat_id, mid, true), "the mirror rolls back");
+        assert_eq!(archived_flags(&app, GROUP_JID, "g1"), 0, "the archive flag clears");
+        assert!(!app.pending_pins.contains_key(&mid), "nothing stays pending");
+        let notice = app.notice.clone().unwrap_or_default();
+        assert!(notice.contains("Pinning the message failed"), "the failure is surfaced: {notice}");
+    }
+
+    /// Rolling back an *unstar* restores the star the server
+    /// had confirmed before, not an empty state.
+    #[test]
+    fn failed_unstar_restores_the_star() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        let chat_id = jid_id(GROUP_JID);
+        let mut msg = alice_group_message();
+        msg.starred = true;
+        let mid = open_message(&mut app, &tx, &ctx, msg);
+        assert!(view_flag(&app, mid, false), "the message starts starred");
+
+        app.toggle_star_message(mid);
+        assert!(!view_flag(&app, mid, false), "the optimistic unstar shows");
+        assert_eq!(app.pending_stars.get(&mid), Some(&true));
+
+        tx.send(BackendEvent::StarFailed {
+            chat_jid: GROUP_JID.to_owned(),
+            message_id: "g1".to_owned(),
+            message: "Starring failed: connection lost".to_owned(),
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(view_flag(&app, mid, false), "the confirmed star is restored");
+        assert!(mirror_flag(&app, chat_id, mid, false));
+        assert_eq!(archived_flags(&app, GROUP_JID, "g1"), store::FLAG_STARRED);
+        assert!(!app.pending_stars.contains_key(&mid), "nothing stays pending");
+    }
+
+    /// A server report of the star settles the pending change:
+    /// the value stays, and the snapshot is gone, so a later
+    /// failure report for a different change starts from the
+    /// confirmed state.
+    #[test]
+    fn server_star_report_confirms_the_pending_change() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        let chat_id = jid_id(GROUP_JID);
+        let mid = open_message(&mut app, &tx, &ctx, alice_group_message());
+        app.toggle_star_message(mid);
+        assert!(app.pending_stars.contains_key(&mid));
+
+        tx.send(BackendEvent::StarChanged {
+            chat_jid: GROUP_JID.to_owned(),
+            message_id: "g1".to_owned(),
+            starred: true,
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(mirror_flag(&app, chat_id, mid, false), "the star stands");
+        assert!(!app.pending_stars.contains_key(&mid), "the report confirms the change");
+    }
+
+    /// An upsert that already carries the pinned state settles
+    /// a pending pin (the pin has no report event of its own):
+    /// the value stays and the snapshot is gone.
+    #[test]
+    fn pin_upsert_confirms_the_pending_change() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        let chat_id = jid_id(GROUP_JID);
+        let mid = open_message(&mut app, &tx, &ctx, alice_group_message());
+        app.toggle_pin_message(mid);
+        assert!(app.pending_pins.contains_key(&mid));
+
+        let mut confirmed = alice_group_message();
+        confirmed.pinned = true;
+        tx.send(BackendEvent::MessageUpsert(confirmed)).unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(mirror_flag(&app, chat_id, mid, true), "the pin stands");
+        assert!(!app.pending_pins.contains_key(&mid), "the upsert confirms the change");
     }
 }

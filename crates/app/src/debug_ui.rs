@@ -84,6 +84,12 @@ impl App {
             BackendEvent::ReactionFailed { message, .. } => {
                 ("message", format!("ReactionFailed {message}"), None)
             }
+            BackendEvent::StarFailed { message, .. } => {
+                ("message", format!("StarFailed {message}"), None)
+            }
+            BackendEvent::PinFailed { message, .. } => {
+                ("message", format!("PinFailed {message}"), None)
+            }
             BackendEvent::MessageEdited { .. } => ("message", "MessageEdited".to_owned(), None),
             BackendEvent::MessageRevoked { .. } => ("message", "MessageRevoked".to_owned(), None),
             BackendEvent::DisappearingChanged { chat_jid, duration_secs } => {

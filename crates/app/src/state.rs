@@ -1049,6 +1049,18 @@ pub(crate) struct App {
     /// the server's echo of my reaction drops it (confirmed),
     /// and a ReactionFailed restores it verbatim (rolled back).
     pub(crate) pending_reactions: std::collections::HashMap<u64, Option<String>>,
+    /// Live mode: the starred value of a message before a
+    /// star change the backend has not yet settled. The entry
+    /// is taken when the change is sent; a server report of
+    /// the message's star state (StarChanged, or an upsert
+    /// already carrying the new state) drops it (confirmed),
+    /// and a StarFailed restores it verbatim (rolled back).
+    pub(crate) pending_stars: std::collections::HashMap<u64, bool>,
+    /// Live mode: the pinned value of a message before a pin
+    /// change the backend has not yet settled; the pin
+    /// counterpart of `pending_stars`, settled by an upsert
+    /// carrying the new state and restored by a PinFailed.
+    pub(crate) pending_pins: std::collections::HashMap<u64, bool>,
     /// Media picker state: the emoji, GIF and sticker panel, its drafts and results, decoded textures and in-flight workers.
     pub(crate) picker: PickerState,
     /// The live voice recorder, present while a recording runs.
@@ -1531,6 +1543,8 @@ impl App {
             reaction_actors: std::collections::HashMap::new(),
             my_reactions: std::collections::HashMap::new(),
             pending_reactions: std::collections::HashMap::new(),
+            pending_stars: std::collections::HashMap::new(),
+            pending_pins: std::collections::HashMap::new(),
             picker: PickerState {
                 open: args.picker.is_some(),
                 tab: args.picker.clone().unwrap_or_else(|| "emoji".to_owned()),

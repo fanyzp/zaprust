@@ -649,11 +649,32 @@ impl App {
             if let (Some(jid), Some(pid)) =
                 (self.live_jid(self.selected_chat), self.protocol_ids.get(&msg_id).cloned())
             {
+                // A group star must name the message's author:
+                // the library builds the target key's participant
+                // from it and refuses a group target authored by
+                // someone else without one. The author is the JID
+                // recorded for the message when it arrived (or
+                // seeded from the archive). My own messages need
+                // none (the library resolves my group identity
+                // itself), and neither do direct chats, whose
+                // keys carry no participant. The same rule
+                // reactions follow.
+                let from_me = msg.sender.is_none();
+                let sender_jid = if !from_me && jid.ends_with("@g.us") {
+                    self.sender_jids.get(&msg_id).cloned()
+                } else {
+                    None
+                };
+                // Remember the pre-change value until the
+                // backend settles it: a server report confirms,
+                // a StarFailed restores this value. An unsettled
+                // earlier change keeps its older snapshot.
+                self.pending_stars.entry(msg_id).or_insert(msg.starred);
                 self.send_backend(backend::BackendCommand::StarMessage {
                     chat_jid: jid,
                     message_id: pid,
-                    sender_jid: None,
-                    from_me: msg.sender.is_none(),
+                    sender_jid,
+                    from_me,
                     star: on,
                 });
             }
@@ -702,11 +723,26 @@ impl App {
             if let (Some(jid), Some(pid)) =
                 (self.live_jid(self.selected_chat), self.protocol_ids.get(&msg_id).cloned())
             {
+                // The author-naming rule is the same as for
+                // stars (and reactions): a group pin target
+                // authored by someone else is refused without
+                // its participant, my own messages and direct
+                // chats need no sender.
+                let from_me = msg.sender.is_none();
+                let sender_jid = if !from_me && jid.ends_with("@g.us") {
+                    self.sender_jids.get(&msg_id).cloned()
+                } else {
+                    None
+                };
+                // The pre-change snapshot a PinFailed restores;
+                // an unsettled earlier change keeps its older
+                // snapshot.
+                self.pending_pins.entry(msg_id).or_insert(msg.pinned);
                 self.send_backend(backend::BackendCommand::PinMessage {
                     chat_jid: jid,
                     message_id: pid,
-                    sender_jid: None,
-                    from_me: msg.sender.is_none(),
+                    sender_jid,
+                    from_me,
                     pin: on,
                 });
             }

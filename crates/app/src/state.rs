@@ -544,6 +544,45 @@ pub(crate) struct MediaState {
     /// session starts at the stored rate, and cycling the pill
     /// mid-play updates both this map and the live session.
     pub(crate) voice_rates: std::collections::HashMap<u64, f32>,
+    /// Decoded video thumbnail textures per app message ID: the
+    /// real JPEG frame the sender's client embedded in the
+    /// video's payload, decoded once and painted by the bubble
+    /// and the viewer. A video without thumbnail bytes has no
+    /// entry and paints its neutral tile; nothing generated is
+    /// ever substituted. Bounded like `textures`.
+    pub(crate) video_textures: crate::extras::TextureCache<u64>,
+    /// Video byte fetches in flight or failed, per app message
+    /// ID. Absence means no fetch has been requested yet. A
+    /// landed fetch removes the entry and records the source in
+    /// `video_files` (regular videos) or `video_bytes`
+    /// (view-once videos) instead.
+    pub(crate) video_fetch: std::collections::HashMap<u64, PhotoFetchState>,
+    /// Fetched cache files for regular videos, per app message
+    /// ID, ready to hand to the player.
+    pub(crate) video_files: std::collections::HashMap<u64, String>,
+    /// Fetched bytes for view-once videos, per app message ID.
+    /// Memory only: view-once bytes are never written to disk.
+    pub(crate) video_bytes: std::collections::HashMap<u64, Vec<u8>>,
+    /// The video player session for the video open in the
+    /// viewer, when one is loaded. The player owns the position:
+    /// it is the presentation timestamp of the frame on screen
+    /// or the playback clock's target, never a simulated
+    /// estimate.
+    pub(crate) video_player: Option<crate::video::VideoPlayer>,
+    /// The view-once video whose real content (its own
+    /// thumbnail or a decoded frame) was actually presented
+    /// during the current viewing. Closing the viewer spends
+    /// the single view only when this names the viewed message:
+    /// a view-once video that never presented anything real has
+    /// not been viewed, and its allowance survives.
+    pub(crate) video_presented: Option<u64>,
+    /// The texture holding the video player's currently
+    /// presented frame, updated in place as frames advance.
+    pub(crate) video_frame: Option<egui::TextureHandle>,
+    /// Which frame `video_frame` currently holds, as (message
+    /// ID, presentation timestamp bits): a frame is uploaded
+    /// only when this changes.
+    pub(crate) video_frame_key: Option<(u64, u64)>,
 }
 
 /// One resolved group-member row for the profile panel. The
@@ -1367,6 +1406,14 @@ impl App {
                 voice_pending_seek: std::collections::HashMap::new(),
                 voice_sink: crate::player::VoiceSink::Device,
                 voice_rates: std::collections::HashMap::new(),
+                video_textures: crate::extras::TextureCache::new(crate::extras::MAX_MEDIA_TEXTURES),
+                video_fetch: std::collections::HashMap::new(),
+                video_files: std::collections::HashMap::new(),
+                video_bytes: std::collections::HashMap::new(),
+                video_player: None,
+                video_presented: None,
+                video_frame: None,
+                video_frame_key: None,
             },
             unread_divider: initial_divider,
             scroll_bottom_requested: false,

@@ -99,12 +99,17 @@
 "viewer.photo" = "Foto"
 "viewer.view_once" = "Foto sekali lihat"
 "viewer.photo_failed" = "Foto ini tidak dapat dimuat."
+"viewer.video" = "Video"
+"viewer.view_once_video" = "Video sekali lihat"
+"viewer.video_failed" = "Video ini tidak dapat dimuat."
 
 # ---- photos ----
 "photo.unavailable" = "Foto tidak tersedia"
 "voice.unavailable" = "Pesan suara tidak tersedia"
 "voice.demo_unavailable" = "Pesan suara tidak dapat diputar dalam mode uji."
+"video.demo_unavailable" = "Video tidak dapat diputar dalam mode uji."
 "photo.view_once_not_loaded" = "Foto itu tidak dapat dimuat, jadi belum terpakai. Kamu bisa mencoba membukanya lagi nanti."
+"video.view_once_not_loaded" = "Video itu tidak dapat dimuat, jadi belum terpakai. Kamu bisa mencoba membukanya lagi nanti."
 
 # ---- settings shell ----
 "settings.title" = "Pengaturan"

@@ -107,12 +107,17 @@
 "viewer.photo" = "Photo"
 "viewer.view_once" = "View once photo"
 "viewer.photo_failed" = "This photo could not be loaded."
+"viewer.video" = "Video"
+"viewer.view_once_video" = "View once video"
+"viewer.video_failed" = "This video could not be loaded."
 
 # ---- photos ----
 "photo.unavailable" = "Photo unavailable"
 "voice.unavailable" = "Voice message unavailable"
 "voice.demo_unavailable" = "Voice messages cannot be played in test mode."
+"video.demo_unavailable" = "Videos cannot be played in test mode."
 "photo.view_once_not_loaded" = "That photo could not be loaded, so it has not been used up. You can try opening it again later."
+"video.view_once_not_loaded" = "That video could not be loaded, so it has not been used up. You can try opening it again later."
 
 # ---- settings shell ----
 "settings.title" = "Settings"

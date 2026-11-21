@@ -110,6 +110,12 @@ pub(crate) struct MediaCtx {
     /// app, identical for the bubble, the album grid and the
     /// viewer.
     pub(crate) photo_tile: crate::media::PhotoTile,
+    /// What this message's video tile may honestly show (its own
+    /// thumbnail or the neutral tile), decided by the app.
+    pub(crate) video_tile: crate::media::VideoTile,
+    /// This video's decoded thumbnail texture, when its wire
+    /// thumbnail bytes are here: a real frame of the video.
+    pub(crate) video_thumb: Option<egui::TextureId>,
     /// Playback snapshot for this voice message, when a playback
     /// session is active for it (playing or paused).
     pub(crate) voice: Option<VoiceSnap>,
@@ -1107,6 +1113,20 @@ pub(crate) fn message_bubble(
                         CornerRadius::same(INNER_CARD_RADIUS),
                         rgb(t.bg_panel_alt),
                     );
+                    // The video's own thumbnail paints when its
+                    // bytes are here: a real frame of the video,
+                    // never a generated picture. Without one the
+                    // neutral panel above is the presentation.
+                    if media.video_tile == crate::media::VideoTile::Thumb {
+                        if let Some(tex) = media.video_thumb {
+                            painter.image(
+                                tex,
+                                img_rect,
+                                Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(1.0, 1.0)),
+                                Color32::WHITE,
+                            );
+                        }
+                    }
                     // Play triangle + duration chip, WhatsApp-style.
                     let c = img_rect.center();
                     painter.circle_filled(c, 22.0, rgb(t.accent));
@@ -1571,6 +1591,7 @@ pub(crate) fn message_album(
     items: &[Message],
     t: Tokens,
     textures: &crate::extras::TextureCache<u64>,
+    video_textures: &crate::extras::TextureCache<u64>,
     demo: Option<egui::TextureId>,
 ) -> Vec<BubbleAction> {
     let mut actions = Vec::new();
@@ -1613,7 +1634,14 @@ pub(crate) fn message_album(
             ),
             Vec2::new(ALBUM_TILE_W, ALBUM_TILE_H),
         );
-        let tex = textures.get(&item.id).map(egui::TextureHandle::id).or(demo);
+        // A video cell paints its own thumbnail or the neutral
+        // placeholder: the demo photo and the photo texture cache
+        // belong to photos, and a video must never borrow them.
+        let tex = if matches!(item.kind, MessageKind::Video { .. }) {
+            video_textures.get(&item.id).map(egui::TextureHandle::id)
+        } else {
+            textures.get(&item.id).map(egui::TextureHandle::id).or(demo)
+        };
         if let Some(tex) = tex {
             painter.image(
                 tex,

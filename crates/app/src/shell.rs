@@ -350,18 +350,18 @@ impl App {
         root.ctx().data_mut(|d| d.insert_temp(egui::Id::unique("viewer_was_open"), open_now));
         let now = root.ctx().input(|i| i.time);
         let reveal_p = crate::motion::Anim::drive(&mut self.anim.viewer_reveal, root.ctx(), now);
-        let (caption, view_once, is_photo) = self
+        let (caption, view_once, is_photo, video_secs) = self
             .conversation
             .iter()
             .find(|m| m.id == id)
             .map(|m| match &m.kind {
                 core::model::MessageKind::Image { caption, view_once } => {
-                    (caption.clone(), *view_once, true)
+                    (caption.clone(), *view_once, true, 0)
                 }
-                core::model::MessageKind::Video { caption, view_once, .. } => {
-                    (caption.clone(), *view_once, false)
+                core::model::MessageKind::Video { caption, view_once, secs } => {
+                    (caption.clone(), *view_once, false, *secs)
                 }
-                _ => (String::new(), false, false),
+                _ => (String::new(), false, false, 0),
             })
             .unwrap_or_default();
         // Opening the viewer on a photo is what starts (or
@@ -395,10 +395,16 @@ impl App {
         if tile == crate::media::PhotoTile::Demo && self.media.photo_texture.is_none() {
             self.media.photo_texture = Some(crate::media::demo_photo(root.ctx()));
         }
-        let header = if view_once {
-            crate::i18n::t("viewer.view_once")
+        let header = if is_photo {
+            if view_once {
+                crate::i18n::t("viewer.view_once")
+            } else {
+                crate::i18n::t("viewer.photo")
+            }
+        } else if view_once {
+            crate::i18n::t("viewer.view_once_video")
         } else {
-            crate::i18n::t("viewer.photo")
+            crate::i18n::t("viewer.video")
         };
         let screen_rect = root.ctx().content_rect();
         let mut close = !exiting && root.ctx().input(|i| i.key_pressed(egui::Key::Escape));
@@ -415,9 +421,16 @@ impl App {
                     egui::CornerRadius::ZERO,
                     egui::Color32::from_rgba_unmultiplied(8, 10, 12, 242),
                 );
+                // Videos paint through their own body (the real
+                // thumbnail, real decoded frames, honest states);
+                // photos keep the reveal sequence below.
+                let mut video_a = 0.0;
+                if !is_photo {
+                    video_a = self.draw_video_body(ui, rect, id, view_once, video_secs, exiting);
+                }
                 // The loading phase: a small spinner where the
                 // photo will sit, fading out as the photo reveals.
-                if spinner_a > 0.001 {
+                if is_photo && spinner_a > 0.001 {
                     ui.set_opacity(spinner_a * view_p);
                     let spinner_rect = egui::Rect::from_center_size(
                         egui::Pos2::new(rect.center().x, rect.center().y - 24.0),
@@ -436,7 +449,7 @@ impl App {
                 // content. A live photo whose bytes are not here
                 // paints nothing in this block; the loading phase
                 // or the failure note speaks for it instead.
-                if photo_a > 0.001 {
+                if is_photo && photo_a > 0.001 {
                     ui.set_opacity(photo_a);
                     let tex = self.media.textures.get(&id).cloned().or_else(|| {
                         if tile == crate::media::PhotoTile::Demo {
@@ -472,7 +485,7 @@ impl App {
                     ui.set_opacity(view_p);
                 }
                 // A failed fetch says so, in place of any image.
-                if !exiting && tile == crate::media::PhotoTile::Failed {
+                if is_photo && !exiting && tile == crate::media::PhotoTile::Failed {
                     ui.painter().text(
                         egui::Pos2::new(rect.center().x, rect.center().y - 24.0),
                         egui::Align2::CENTER_CENTER,
@@ -481,8 +494,10 @@ impl App {
                         egui::Color32::from_rgb(200, 208, 214),
                     );
                 }
-                // The caption reveals with the photo, not before it.
-                if photo_a > 0.001 {
+                // The caption reveals with the content, not
+                // before it.
+                let content_a = if is_photo { photo_a } else { video_a };
+                if content_a > 0.001 {
                     let cap_y =
                         rect.center().y + (rect.width().min(740.0) * 400.0 / 600.0) / 2.0 + 2.0;
                     ui.painter().text(
@@ -494,7 +509,7 @@ impl App {
                             230,
                             235,
                             240,
-                            (255.0 * photo_a) as u8,
+                            (255.0 * content_a) as u8,
                         ),
                     );
                 }
@@ -551,5 +566,307 @@ impl App {
             // cleanup live in close_photo_viewer.
             self.close_photo_viewer(id, view_once);
         }
+    }
+
+    /// The video half of the media viewer. The video's own
+    /// thumbnail is its poster; once its bytes are here the real
+    /// player presents decoded frames with a working play/pause
+    /// and seek bar; while the bytes are missing the states are
+    /// honest (loading, failed with a retry, the test-mode note
+    /// in demo mode). No substitute image is ever painted.
+    /// Returns 1.0 when real content (the thumbnail or a decoded
+    /// frame) is on screen, else 0.0; presenting real content of
+    /// a view-once video is recorded here for the close path's
+    /// spend decision.
+    fn draw_video_body(
+        &mut self,
+        ui: &mut egui::Ui,
+        rect: egui::Rect,
+        id: u64,
+        view_once: bool,
+        secs: u32,
+        exiting: bool,
+    ) -> f32 {
+        let t = self.tokens();
+        let route = self.video_play_route(id);
+        // Opening the viewer is what starts the byte fetch, and
+        // landed bytes start the player (paused on its first
+        // frame).
+        if !exiting {
+            match route {
+                crate::media::VideoPlayRoute::Idle => self.ensure_video_fetch(id, view_once),
+                crate::media::VideoPlayRoute::Ready => self.start_video_player(id, secs),
+                _ => {}
+            }
+        }
+        // The poster: the video's own thumbnail.
+        let thumb = Self::video_thumb_texture(&mut self.media, self.live.as_ref(), ui.ctx(), id);
+        let thumb_aspect = self
+            .media
+            .video_textures
+            .get(&id)
+            .map(|h| h.aspect_ratio())
+            .filter(|a| a.is_finite() && *a > 0.05);
+        // Pump the player and upload its presented frame.
+        let mut playing = false;
+        let mut position = 0.0;
+        let mut duration = f64::from(secs);
+        let mut player_failed: Option<String> = None;
+        let mut has_player = false;
+        if let Some(player) = self.media.video_player.as_mut().filter(|p| p.key == id) {
+            has_player = true;
+            player.pump();
+            if let Some(frame) = &player.current {
+                let key = (id, frame.pts.to_bits());
+                if self.media.video_frame_key != Some(key) {
+                    let image = egui::ColorImage::from_rgba_unmultiplied(
+                        [frame.width as usize, frame.height as usize],
+                        &frame.rgba,
+                    );
+                    match &mut self.media.video_frame {
+                        Some(handle) => handle.set(image, egui::TextureOptions::LINEAR),
+                        None => {
+                            self.media.video_frame = Some(ui.ctx().load_texture(
+                                "video-frame",
+                                image,
+                                egui::TextureOptions::LINEAR,
+                            ));
+                        }
+                    }
+                    self.media.video_frame_key = Some(key);
+                }
+            }
+            playing = player.is_playing();
+            position = player.position();
+            duration = player.info.duration_secs;
+            player_failed = player.failed.clone();
+            if player.current.is_some() && view_once {
+                self.media.video_presented = Some(id);
+            }
+            if playing {
+                ui.ctx().request_repaint_after(std::time::Duration::from_millis(16));
+            } else if player.current.is_none() && player_failed.is_none() {
+                // The first frame is still decoding.
+                ui.ctx().request_repaint_after(std::time::Duration::from_millis(30));
+            }
+        }
+        let frame_aspect = self
+            .media
+            .video_player
+            .as_ref()
+            .filter(|p| p.key == id)
+            .and_then(|p| p.current.as_ref())
+            .map(|f| f.width as f32 / f.height.max(1) as f32)
+            .filter(|a| a.is_finite() && *a > 0.05);
+        let aspect = frame_aspect.or(thumb_aspect).unwrap_or(600.0 / 400.0);
+        let max_w = (rect.width() - 120.0).min(620.0);
+        let frame_rect = egui::Rect::from_center_size(
+            egui::Pos2::new(rect.center().x, rect.center().y - 24.0),
+            egui::Vec2::new(max_w, max_w / aspect),
+        );
+        let painter = ui.painter().clone();
+        painter.rect_filled(frame_rect, egui::CornerRadius::same(6), rgb(t.bg_panel_alt));
+        let mut content_a = 0.0;
+        // A decoded frame wins; the thumbnail is the poster
+        // until (and unless) the player presents.
+        let frame_tex = if self.media.video_frame_key.is_some_and(|(mid, _)| mid == id) {
+            self.media.video_frame.as_ref().map(egui::TextureHandle::id)
+        } else {
+            None
+        };
+        if let Some(tex) = frame_tex {
+            painter.image(
+                tex,
+                frame_rect,
+                egui::Rect::from_min_max(egui::Pos2::new(0.0, 0.0), egui::Pos2::new(1.0, 1.0)),
+                egui::Color32::WHITE,
+            );
+            content_a = 1.0;
+        } else if let Some(tex) = thumb {
+            painter.image(
+                tex,
+                frame_rect,
+                egui::Rect::from_min_max(egui::Pos2::new(0.0, 0.0), egui::Pos2::new(1.0, 1.0)),
+                egui::Color32::WHITE,
+            );
+            content_a = 1.0;
+            if view_once {
+                self.media.video_presented = Some(id);
+            }
+        } else {
+            // The neutral tile: a video glyph on the panel, the
+            // same presentation as the bubble without a
+            // thumbnail.
+            crate::icons::draw(
+                &painter,
+                crate::icons::Icon::Video,
+                frame_rect.center(),
+                40.0,
+                rgb(t.text_faint),
+                rgb(t.bg_panel_alt),
+            );
+        }
+        let note_color = egui::Color32::from_rgb(200, 208, 214);
+        if let Some(message) = &player_failed {
+            // A decode or read failure, in the player's own
+            // user-facing words.
+            painter.text(
+                frame_rect.center() + egui::Vec2::new(0.0, 44.0),
+                egui::Align2::CENTER_CENTER,
+                message,
+                egui::FontId::proportional(13.0),
+                note_color,
+            );
+        } else if has_player {
+            // Transport: a play/pause disc over the frame, and a
+            // seek bar with real positions under it.
+            let disc = egui::Rect::from_center_size(frame_rect.center(), egui::Vec2::splat(56.0));
+            let resp = ui
+                .interact(disc, egui::Id::unique("video_toggle"), egui::Sense::click())
+                .on_hover_cursor(egui::CursorIcon::PointingHand);
+            painter.circle_filled(frame_rect.center(), 28.0, rgb(t.accent));
+            crate::icons::draw(
+                &painter,
+                if playing { crate::icons::Icon::Pause } else { crate::icons::Icon::Play },
+                frame_rect.center(),
+                26.0,
+                egui::Color32::WHITE,
+                rgb(t.accent),
+            );
+            if resp.clicked() && !exiting {
+                if let Some(player) = self.media.video_player.as_mut().filter(|p| p.key == id) {
+                    player.toggle();
+                }
+            }
+            // Seek bar: the filled part is the presented
+            // position over the real duration; clicking or
+            // dragging seeks there.
+            let bar = egui::Rect::from_min_size(
+                egui::Pos2::new(frame_rect.left(), frame_rect.bottom() + 14.0),
+                egui::Vec2::new(frame_rect.width(), 4.0),
+            );
+            painter.rect_filled(
+                bar,
+                egui::CornerRadius::same(2),
+                egui::Color32::from_rgba_unmultiplied(255, 255, 255, 60),
+            );
+            if duration > 0.0 {
+                let frac = (position / duration).clamp(0.0, 1.0) as f32;
+                let filled =
+                    egui::Rect::from_min_size(bar.min, egui::Vec2::new(bar.width() * frac, 4.0));
+                painter.rect_filled(filled, egui::CornerRadius::same(2), rgb(t.accent));
+            }
+            let bar_resp = ui
+                .interact(
+                    bar.expand2(egui::Vec2::new(0.0, 6.0)),
+                    egui::Id::unique("video_seek"),
+                    egui::Sense::click_and_drag(),
+                )
+                .on_hover_cursor(egui::CursorIcon::PointingHand);
+            if !exiting && (bar_resp.clicked() || bar_resp.dragged()) {
+                if let Some(pos) = bar_resp.interact_pointer_pos() {
+                    let frac = ((pos.x - bar.left()) / bar.width()).clamp(0.0, 1.0);
+                    if let Some(player) = self.media.video_player.as_mut().filter(|p| p.key == id) {
+                        player.seek(f64::from(frac) * duration);
+                    }
+                }
+            }
+            painter.text(
+                egui::Pos2::new(bar.left(), bar.bottom() + 8.0),
+                egui::Align2::LEFT_TOP,
+                format!("{} / {}", video_clock(position), video_clock(duration)),
+                egui::FontId::proportional(11.5),
+                note_color,
+            );
+        } else {
+            match route {
+                crate::media::VideoPlayRoute::DemoUnavailable => {
+                    painter.text(
+                        frame_rect.center() + egui::Vec2::new(0.0, 44.0),
+                        egui::Align2::CENTER_CENTER,
+                        crate::i18n::t("video.demo_unavailable"),
+                        egui::FontId::proportional(13.0),
+                        note_color,
+                    );
+                }
+                crate::media::VideoPlayRoute::Failed => {
+                    painter.text(
+                        frame_rect.center() + egui::Vec2::new(0.0, 44.0),
+                        egui::Align2::CENTER_CENTER,
+                        crate::i18n::t("viewer.video_failed"),
+                        egui::FontId::proportional(13.0),
+                        note_color,
+                    );
+                    // Clicking the tile retries the fetch.
+                    let resp = ui
+                        .interact(frame_rect, egui::Id::unique("video_retry"), egui::Sense::click())
+                        .on_hover_cursor(egui::CursorIcon::PointingHand);
+                    if resp.clicked() && !exiting {
+                        self.retry_video_fetch(id, view_once);
+                    }
+                }
+                crate::media::VideoPlayRoute::Loading | crate::media::VideoPlayRoute::Idle => {
+                    // The bytes are on their way: a spinner over
+                    // the poster, and a repaint tick so it lands
+                    // without waiting for input.
+                    let spinner_rect =
+                        egui::Rect::from_center_size(frame_rect.center(), egui::Vec2::splat(36.0));
+                    ui.new_child(
+                        egui::UiBuilder::new()
+                            .max_rect(spinner_rect)
+                            .layout(egui::Layout::top_down(egui::Align::Center)),
+                    )
+                    .add(egui::Spinner::new().size(28.0));
+                    ui.ctx().request_repaint_after(std::time::Duration::from_millis(60));
+                }
+                crate::media::VideoPlayRoute::Ready => {}
+            }
+            // The video's facts, under the poster: duration and,
+            // once the bytes are here, their size.
+            let size_bytes =
+                self.media.video_bytes.get(&id).map(|b| b.len() as u64).or_else(|| {
+                    self.media
+                        .video_files
+                        .get(&id)
+                        .and_then(|p| std::fs::metadata(p).ok())
+                        .map(|m| m.len())
+                });
+            let facts = match size_bytes {
+                Some(bytes) => {
+                    format!("{}  ·  {}", video_clock(f64::from(secs)), video_size(bytes))
+                }
+                None => video_clock(f64::from(secs)),
+            };
+            painter.text(
+                egui::Pos2::new(frame_rect.center().x, frame_rect.bottom() + 12.0),
+                egui::Align2::CENTER_TOP,
+                facts,
+                egui::FontId::proportional(11.5),
+                note_color,
+            );
+        }
+        content_a
+    }
+}
+
+/// A playback clock reading: `m:ss` under an hour, `h:mm:ss`
+/// above it. Pure formatting for the viewer's transport line.
+fn video_clock(secs: f64) -> String {
+    let total = secs.max(0.0) as u64;
+    if total >= 3600 {
+        format!("{}:{:02}:{:02}", total / 3600, (total % 3600) / 60, total % 60)
+    } else {
+        format!("{}:{:02}", total / 60, total % 60)
+    }
+}
+
+/// A byte count in the viewer's facts line.
+fn video_size(bytes: u64) -> String {
+    if bytes >= 1024 * 1024 {
+        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+    } else if bytes >= 1024 {
+        format!("{} KB", bytes / 1024)
+    } else {
+        format!("{bytes} B")
     }
 }

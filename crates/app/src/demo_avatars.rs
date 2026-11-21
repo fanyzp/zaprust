@@ -157,6 +157,8 @@ mod tests {
             engaged_chats: std::collections::HashSet::new(),
             photo_refs: HashMap::new(),
             voice_refs: HashMap::new(),
+            video_refs: HashMap::new(),
+            video_thumbs: HashMap::new(),
         }
     }
 

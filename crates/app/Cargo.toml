@@ -54,6 +54,10 @@ rfd = { version = "0.17.2", default-features = false, features = ["xdg-portal"] 
 cpal = "0.18"
 ogg = "0.9"
 opus = "0.4.0"
+# H.264 decode for received videos: builds its bundled OpenH264
+# sources, so no platform needs a system codec package. Paired
+# with the in-house MP4 demuxer in video.rs.
+openh264 = "0.9"
 # Bundled libopus: the voice-note encoder builds its own C sources so
 # no platform needs a system opus package.
 opusic-sys = { version = "0.7", features = ["bundled"] }

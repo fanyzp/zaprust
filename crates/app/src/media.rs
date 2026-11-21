@@ -133,6 +133,41 @@ pub(crate) enum PhotoTile {
     Idle,
 }
 
+/// What a video message's tile may honestly show. Unlike photos
+/// there is no demo variant: a video's visual identity is its
+/// own embedded thumbnail (a real frame made by the sender's
+/// client) or nothing. A video without thumbnail bytes paints
+/// the neutral tile in every mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum VideoTile {
+    /// The video's own thumbnail bytes are here.
+    Thumb,
+    /// No thumbnail bytes: the neutral video tile (glyph and
+    /// duration) is the honest presentation.
+    #[default]
+    Neutral,
+}
+
+/// Where pressing play on a video message stands. The viewer
+/// paints from this one decision, so the play gesture can never
+/// drift from the fetch state it depends on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum VideoPlayRoute {
+    /// Not a live session: scripted videos have no real bytes,
+    /// and the honest answer is the test-mode notice.
+    DemoUnavailable,
+    /// The bytes are here (a cache file or memory); the player
+    /// can start.
+    Ready,
+    /// A byte fetch is in flight.
+    Loading,
+    /// The byte fetch ran and failed; offer a retry.
+    Failed,
+    /// No fetch has been requested yet; pressing play starts
+    /// one.
+    Idle,
+}
+
 /// Longest side, in pixels, of a decoded display photo. Bubbles
 /// paint photos a few hundred points wide and the viewer caps at
 /// a similar scale, so decoding a multi-megapixel original at

@@ -65,6 +65,7 @@ mod starred;
 mod state;
 mod theme;
 mod update;
+mod video;
 mod widgets;
 
 use state::{App, Args};

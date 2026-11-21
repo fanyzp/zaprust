@@ -176,6 +176,18 @@ impl App {
                         } else {
                             None
                         };
+                        // Video cells in the grid paint their own
+                        // thumbnails; decode any that are here.
+                        for item in run_items {
+                            if matches!(item.kind, core::model::MessageKind::Video { .. }) {
+                                Self::video_thumb_texture(
+                                    &mut self.media,
+                                    self.live.as_ref(),
+                                    ui.ctx(),
+                                    item.id,
+                                );
+                            }
+                        }
                         let album_actions = ui
                             .scope(|ui| {
                                 if alpha < 0.999 {
@@ -186,6 +198,7 @@ impl App {
                                     run_items,
                                     t,
                                     &self.media.textures,
+                                    &self.media.video_textures,
                                     album_demo,
                                 )
                             })
@@ -249,6 +262,17 @@ impl App {
                         },
                         own_photo: self.media.textures.get(&msg.id).map(egui::TextureHandle::id),
                         photo_tile,
+                        video_tile: self.video_tile(msg.id),
+                        video_thumb: if matches!(msg.kind, core::model::MessageKind::Video { .. }) {
+                            Self::video_thumb_texture(
+                                &mut self.media,
+                                self.live.as_ref(),
+                                ui.ctx(),
+                                msg.id,
+                            )
+                        } else {
+                            None
+                        },
                         voice: match &self.media.voice_player {
                             Some(player) if player.id == msg.id => {
                                 Some(crate::bubble::VoiceSnap {

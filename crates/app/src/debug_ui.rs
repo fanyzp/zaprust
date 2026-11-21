@@ -141,6 +141,15 @@ impl App {
             BackendEvent::VoiceFetchFailed { chat_jid, message, .. } => {
                 ("backend", format!("VoiceFetchFailed for {chat_jid}: {message}"), None)
             }
+            BackendEvent::VideoBytes { chat_jid, bytes, .. } => {
+                ("backend", format!("VideoBytes for {chat_jid}: {} bytes", bytes.len()), None)
+            }
+            BackendEvent::VideoReady { chat_jid, path, .. } => {
+                ("backend", format!("VideoReady for {chat_jid} -> {path}"), None)
+            }
+            BackendEvent::VideoFetchFailed { chat_jid, message, .. } => {
+                ("backend", format!("VideoFetchFailed for {chat_jid}: {message}"), None)
+            }
             BackendEvent::TypingReceived { chat_jid, typing } => {
                 ("backend", format!("TypingReceived {chat_jid} typing={typing}"), None)
             }

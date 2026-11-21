@@ -171,6 +171,17 @@ pub(crate) struct LiveSession {
     /// fetch passes the reference along, so a voice note from
     /// before this session stays playable.
     pub(crate) voice_refs: HashMap<u64, backend::VoiceRef>,
+    /// Video re-download references per numeric message ID,
+    /// seeded and extended exactly like `photo_refs`. A playback
+    /// fetch passes the reference along, so a video from before
+    /// this session stays playable.
+    pub(crate) video_refs: HashMap<u64, backend::VideoRef>,
+    /// Video thumbnails (the wire JPEG bytes) per numeric
+    /// message ID, seeded and extended exactly like
+    /// `video_refs`, so a video's bubble and viewer can present
+    /// its own frame in later sessions without fetching its
+    /// bytes.
+    pub(crate) video_thumbs: HashMap<u64, Vec<u8>>,
     /// Chats where the user performed a real read action (scrolled
     /// to the newest messages, focused or typed in the composer,
     /// sent a reply) since the last receipt went out. Read
@@ -660,6 +671,8 @@ impl crate::state::App {
             engaged_chats: std::collections::HashSet::new(),
             photo_refs: HashMap::new(),
             voice_refs: HashMap::new(),
+            video_refs: HashMap::new(),
+            video_thumbs: HashMap::new(),
         };
         // Load the archive into the rendered data. Live mode never
         // shows demo data: start from empty and fill from the archive.
@@ -703,6 +716,19 @@ impl crate::state::App {
                                 session
                                     .voice_refs
                                     .insert(message_id(&m.chat_jid, &m.id), reference.clone());
+                            }
+                            // A video's reference and thumbnail
+                            // are seeded the same way, for
+                            // playback and presentation.
+                            if let Some(reference) = &m.video_ref {
+                                session
+                                    .video_refs
+                                    .insert(message_id(&m.chat_jid, &m.id), reference.clone());
+                            }
+                            if let Some(thumb) = &m.video_thumbnail {
+                                session
+                                    .video_thumbs
+                                    .insert(message_id(&m.chat_jid, &m.id), thumb.clone());
                             }
                         }
                         session.messages.insert(
@@ -1419,6 +1445,38 @@ impl crate::state::App {
                     }
                 }
             }
+            BackendEvent::VideoBytes { chat_jid, message_id: pid, bytes } => {
+                // View-once bytes, memory only. They are kept
+                // for the viewer (which starts the player from
+                // them); the fetch state clears either way.
+                let mid = message_id(&chat_jid, &pid);
+                if self.media.video_fetch.get(&mid) == Some(&crate::state::PhotoFetchState::Loading)
+                {
+                    self.media.video_fetch.remove(&mid);
+                    self.media.video_bytes.insert(mid, bytes);
+                }
+            }
+            BackendEvent::VideoReady { chat_jid, message_id: pid, path } => {
+                // A regular video's bytes are on disk in the
+                // video cache; the path is what the player opens.
+                let mid = message_id(&chat_jid, &pid);
+                if self.media.video_fetch.get(&mid) == Some(&crate::state::PhotoFetchState::Loading)
+                {
+                    self.media.video_fetch.remove(&mid);
+                    self.media.video_files.insert(mid, path);
+                }
+            }
+            BackendEvent::VideoFetchFailed { chat_jid, message_id: pid, message } => {
+                let mid = message_id(&chat_jid, &pid);
+                // Only a fetch still in flight can fail (see the
+                // photo arm). The viewer paints the failed state
+                // and offers a retry.
+                if self.media.video_fetch.get(&mid) == Some(&crate::state::PhotoFetchState::Loading)
+                {
+                    self.media.video_fetch.insert(mid, crate::state::PhotoFetchState::Failed);
+                    self.notice = Some(message);
+                }
+            }
             BackendEvent::TypingReceived { chat_jid, typing } => {
                 let chat_id = jid_id(&chat_jid);
                 if typing {
@@ -2034,6 +2092,12 @@ impl crate::state::App {
             if let Some(reference) = &live.voice_ref {
                 session.voice_refs.insert(msg_id, reference.clone());
             }
+            if let Some(reference) = &live.video_ref {
+                session.video_refs.insert(msg_id, reference.clone());
+            }
+            if let Some(thumb) = &live.video_thumbnail {
+                session.video_thumbs.insert(msg_id, thumb.clone());
+            }
             let mut flags = session.flags.get(&msg_id).copied().unwrap_or(0);
             if live.starred {
                 flags |= store::FLAG_STARRED;
@@ -2555,10 +2619,11 @@ impl crate::state::App {
         }
     }
 
-    /// Closes the photo viewer on one message. A view-once photo
-    /// consumes its single view here, and only under the honesty
-    /// rule: in a real live session the view is spent solely when
-    /// the photo's real pixels were actually painted during this
+    /// Closes the media viewer on one message (the viewer is
+    /// shared by photos and videos). A view-once photo consumes
+    /// its single view here, and only under the honesty rule: in
+    /// a real live session the view is spent solely when the
+    /// photo's real pixels were actually painted during this
     /// viewing (tracked in `MediaState::view_once_shown`). When
     /// they never arrived, the allowance survives, the failure is
     /// said out loud, and the photo can be opened again later.
@@ -2566,22 +2631,56 @@ impl crate::state::App {
     /// fixture photo is the content, so closing spends the view).
     /// A spent live view also drops the decoded pixels and the
     /// archived re-download reference, so nothing can bring the
-    /// photo back afterwards.
+    /// photo back afterwards. A view-once video follows the same
+    /// rule against its own presentation record
+    /// (`MediaState::video_presented`).
     pub(crate) fn close_photo_viewer(&mut self, id: u64, view_once: bool) {
+        // The video player belongs to this viewing; closing the
+        // viewer stops it (dropping the player stops its worker
+        // thread).
+        if self.media.video_player.as_ref().is_some_and(|p| p.key == id) {
+            self.media.video_player = None;
+        }
         if view_once {
-            let spent = self.photo_demo_allowed() || self.media.view_once_shown == Some(id);
-            if spent {
-                self.mark_view_once_opened(id);
-                if !self.photo_demo_allowed() {
-                    self.media.textures.remove(&id);
-                    self.drop_photo_ref(id);
+            // A view-once video follows the same honesty rule as
+            // a view-once photo, gated on its own presentation
+            // record: the view is spent only when the video's
+            // real content (its thumbnail or a decoded frame)
+            // was actually presented during this viewing.
+            let is_video = self
+                .conversation
+                .iter()
+                .any(|m| m.id == id && matches!(m.kind, core::model::MessageKind::Video { .. }));
+            if is_video {
+                let spent = self.photo_demo_allowed() || self.media.video_presented == Some(id);
+                if spent {
+                    self.mark_view_once_opened(id);
+                    if !self.photo_demo_allowed() {
+                        self.media.video_bytes.remove(&id);
+                        self.media.video_textures.remove(&id);
+                        self.drop_video_ref(id);
+                    }
+                } else {
+                    self.notice = Some(crate::i18n::t("video.view_once_not_loaded"));
                 }
             } else {
-                self.notice = Some(crate::i18n::t("photo.view_once_not_loaded"));
+                let spent = self.photo_demo_allowed() || self.media.view_once_shown == Some(id);
+                if spent {
+                    self.mark_view_once_opened(id);
+                    if !self.photo_demo_allowed() {
+                        self.media.textures.remove(&id);
+                        self.drop_photo_ref(id);
+                    }
+                } else {
+                    self.notice = Some(crate::i18n::t("photo.view_once_not_loaded"));
+                }
             }
         }
         if self.media.view_once_shown == Some(id) {
             self.media.view_once_shown = None;
+        }
+        if self.media.video_presented == Some(id) {
+            self.media.video_presented = None;
         }
         self.media.viewing_photo = None;
     }
@@ -2601,6 +2700,150 @@ impl crate::state::App {
             (&session.store, chat_jid, protocol_id)
         {
             let _ = store.clear_photo_ref(&chat_jid, &protocol_id);
+        }
+    }
+
+    /// What a video message's tile may honestly show right now
+    /// (see [`crate::media::VideoTile`]): the video's own
+    /// embedded thumbnail when those bytes are here, otherwise
+    /// the neutral tile. Unlike photos there is no demo variant:
+    /// a video never paints a generated picture, in any mode.
+    pub(crate) fn video_tile(&self, msg_id: u64) -> crate::media::VideoTile {
+        if self.media.video_textures.contains_key(&msg_id)
+            || self.live.as_ref().is_some_and(|s| s.video_thumbs.contains_key(&msg_id))
+        {
+            crate::media::VideoTile::Thumb
+        } else {
+            crate::media::VideoTile::Neutral
+        }
+    }
+
+    /// The decoded texture for one video's thumbnail, decoding
+    /// and caching the wire bytes on first use. `None` when the
+    /// video carries no thumbnail bytes (or they do not decode):
+    /// the neutral tile paints instead. An associated function
+    /// over the two state fields it touches, so paint code that
+    /// already borrows other parts of the app can still call it.
+    pub(crate) fn video_thumb_texture(
+        media: &mut crate::state::MediaState,
+        live: Option<&LiveSession>,
+        ctx: &egui::Context,
+        msg_id: u64,
+    ) -> Option<egui::TextureId> {
+        if let Some(handle) = media.video_textures.get(&msg_id) {
+            return Some(handle.id());
+        }
+        let bytes = live?.video_thumbs.get(&msg_id)?.clone();
+        let handle = crate::media::decode_photo(ctx, &bytes)?;
+        let id = handle.id();
+        media.video_textures.insert(msg_id, handle);
+        Some(id)
+    }
+
+    /// Where pressing play on one video message stands (see
+    /// [`crate::media::VideoPlayRoute`]). One decision function
+    /// for the bubble and the viewer, so the play gesture can
+    /// never drift from the fetch state it depends on.
+    pub(crate) fn video_play_route(&self, msg_id: u64) -> crate::media::VideoPlayRoute {
+        if !self.live_mode {
+            return crate::media::VideoPlayRoute::DemoUnavailable;
+        }
+        if self.media.video_files.contains_key(&msg_id)
+            || self.media.video_bytes.contains_key(&msg_id)
+        {
+            return crate::media::VideoPlayRoute::Ready;
+        }
+        match self.media.video_fetch.get(&msg_id) {
+            Some(crate::state::PhotoFetchState::Loading) => crate::media::VideoPlayRoute::Loading,
+            Some(crate::state::PhotoFetchState::Failed) => crate::media::VideoPlayRoute::Failed,
+            None => crate::media::VideoPlayRoute::Idle,
+        }
+    }
+
+    /// Starts the byte fetch for one video message of the open
+    /// chat, unless its bytes are already here or a fetch is
+    /// already running. The fetch passes the message's archived
+    /// re-download reference along, so a video the backend no
+    /// longer holds in its session cache is still fetchable.
+    /// Only live sessions fetch; demo mode's scripted videos
+    /// have no bytes to fetch (see `video_play_route`).
+    pub(crate) fn ensure_video_fetch(&mut self, msg_id: u64, view_once: bool) {
+        if !self.live_mode
+            || self.media.video_files.contains_key(&msg_id)
+            || self.media.video_bytes.contains_key(&msg_id)
+            || self.media.video_fetch.contains_key(&msg_id)
+        {
+            return;
+        }
+        let (chat_jid, video_ref) = {
+            let Some(session) = &self.live else { return };
+            let Some(chat_jid) = session.jids.get(&self.selected_chat).cloned() else {
+                return;
+            };
+            (chat_jid, session.video_refs.get(&msg_id).cloned())
+        };
+        let Some(protocol_id) = self.protocol_ids.get(&msg_id).cloned() else {
+            // A live video without a protocol id can never be
+            // addressed; record the failure instead of spinning.
+            self.media.video_fetch.insert(msg_id, crate::state::PhotoFetchState::Failed);
+            return;
+        };
+        self.media.video_fetch.insert(msg_id, crate::state::PhotoFetchState::Loading);
+        self.send_backend(BackendCommand::FetchVideo {
+            chat_jid,
+            message_id: protocol_id,
+            video_ref,
+            view_once,
+        });
+    }
+
+    /// Re-runs a failed video byte fetch (the viewer's retry
+    /// gesture).
+    pub(crate) fn retry_video_fetch(&mut self, msg_id: u64, view_once: bool) {
+        if self.media.video_fetch.get(&msg_id) == Some(&crate::state::PhotoFetchState::Failed) {
+            self.media.video_fetch.remove(&msg_id);
+        }
+        self.ensure_video_fetch(msg_id, view_once);
+    }
+
+    /// Creates the video player for one message whose bytes are
+    /// here: a regular video plays from its cache file, a
+    /// view-once video from memory. A player for a different
+    /// message is replaced (dropping it stops its worker).
+    /// `seconds` is the message's stated duration; the player
+    /// corrects it from the stream itself once demuxed.
+    pub(crate) fn start_video_player(&mut self, msg_id: u64, seconds: u32) {
+        if self.media.video_player.as_ref().is_some_and(|p| p.key == msg_id) {
+            return;
+        }
+        let source = if let Some(path) = self.media.video_files.get(&msg_id) {
+            crate::video::VideoSource::File(std::path::PathBuf::from(path))
+        } else if let Some(bytes) = self.media.video_bytes.get(&msg_id) {
+            crate::video::VideoSource::Bytes(bytes.clone())
+        } else {
+            return;
+        };
+        let info =
+            crate::video::VideoInfo { width: 0, height: 0, duration_secs: f64::from(seconds) };
+        self.media.video_player = Some(crate::video::VideoPlayer::start(msg_id, source, info));
+    }
+
+    /// Removes one message's video re-download reference and
+    /// thumbnail from the session maps and from the archive.
+    fn drop_video_ref(&mut self, msg_id: u64) {
+        let protocol_id = self.protocol_ids.get(&msg_id).cloned();
+        let Some(session) = &mut self.live else { return };
+        session.video_refs.remove(&msg_id);
+        session.video_thumbs.remove(&msg_id);
+        let chat_jid = session
+            .messages
+            .iter()
+            .find(|(_, msgs)| msgs.iter().any(|(_, m)| m.id == msg_id))
+            .and_then(|(chat_id, _)| session.jids.get(chat_id).cloned());
+        if let (Some(store), Some(chat_jid), Some(protocol_id)) =
+            (&session.store, chat_jid, protocol_id)
+        {
+            let _ = store.clear_video_ref(&chat_jid, &protocol_id);
         }
     }
 
@@ -3262,6 +3505,8 @@ mod burst_drain_tests {
             engaged_chats: std::collections::HashSet::new(),
             photo_refs: HashMap::new(),
             voice_refs: HashMap::new(),
+            video_refs: HashMap::new(),
+            video_thumbs: HashMap::new(),
         });
         app.live_mode = true;
         (app, evt_tx, ctx, cmd_rx)
@@ -3809,6 +4054,276 @@ mod burst_drain_tests {
         assert!(app.media.opened_view_once.contains(&mid));
     }
 
+    /// A small real JPEG, encoded in memory, standing in for a
+    /// video's wire thumbnail bytes.
+    fn jpeg_bytes() -> Vec<u8> {
+        let img = image::RgbaImage::from_pixel(4, 3, image::Rgba([40, 120, 200, 255]));
+        let mut buf = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(img).write_to(&mut buf, image::ImageFormat::Jpeg).unwrap();
+        buf.into_inner()
+    }
+
+    /// A video upsert carrying its re-download reference and,
+    /// optionally, its embedded thumbnail: the shape the backend
+    /// now delivers for every video whose wire payload was
+    /// complete.
+    fn video_message(id: &str, ts: i64, view_once: bool, with_thumb: bool) -> LiveMessage {
+        let mut live =
+            LiveMessage::text(id, CHAT_JID, Some("Sender".to_owned()), String::new(), ts, false);
+        live.kind = backend::LiveMessageKind::Media {
+            media: backend::MediaKind::Video,
+            caption: String::new(),
+            seconds: 1,
+            size_bytes: 3_992,
+        };
+        live.view_once = view_once;
+        live.video_ref = Some(backend::VideoRef {
+            direct_path: "/v/t62.7118-24/video.enc".to_owned(),
+            media_key: vec![7u8; 32],
+            file_sha256: vec![8u8; 32],
+            file_enc_sha256: vec![9u8; 32],
+            file_length: 3_992,
+        });
+        if with_thumb {
+            live.video_thumbnail = Some(jpeg_bytes());
+        }
+        live
+    }
+
+    /// Item 111: a video's tile is its own wire thumbnail when
+    /// those bytes arrived with the message, and the neutral
+    /// tile when they did not. There is no third option: no mode
+    /// ever paints a generated picture for a video.
+    #[test]
+    fn video_tile_is_the_wire_thumbnail_or_neutral() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        make_real(&mut app);
+        tx.send(BackendEvent::MessageUpsert(video_message("vid-1", BASE_TS, false, true))).unwrap();
+        tx.send(BackendEvent::MessageUpsert(video_message("vid-2", BASE_TS + 1, false, false)))
+            .unwrap();
+        drain_all(&mut app, &ctx);
+        let with = message_id(CHAT_JID, "vid-1");
+        let without = message_id(CHAT_JID, "vid-2");
+        assert_eq!(app.video_tile(with), crate::media::VideoTile::Thumb);
+        assert_eq!(app.video_tile(without), crate::media::VideoTile::Neutral);
+        // The thumbnail decodes into a real texture.
+        let tex = App::video_thumb_texture(&mut app.media, app.live.as_ref(), &ctx, with);
+        assert!(tex.is_some(), "the wire thumbnail decodes");
+        assert!(app.media.video_textures.contains_key(&with));
+        // The archived copy round-trips too (later sessions).
+        let stored = app.live.as_ref().unwrap().store.as_ref().unwrap().messages(CHAT_JID).unwrap();
+        let row = &stored.iter().find(|(m, _)| m.id == "vid-1").unwrap().0;
+        assert_eq!(row.video_thumbnail.as_deref(), Some(jpeg_bytes().as_slice()));
+        assert!(row.video_ref.is_some());
+    }
+
+    /// Item 111: pressing play on a live video fetches its bytes
+    /// with the archived reference riding along (and the
+    /// view-once discipline for a view-once video); the route
+    /// tracks the fetch state, and a second request while one
+    /// runs sends nothing.
+    #[test]
+    fn video_fetch_sends_the_command_with_the_archived_reference() {
+        let (mut app, tx, ctx, cmd_rx) = live_app();
+        make_real(&mut app);
+        tx.send(BackendEvent::MessageUpsert(video_message("vid-1", BASE_TS, false, true))).unwrap();
+        drain_all(&mut app, &ctx);
+        app.selected_chat = jid_id(CHAT_JID);
+        let mid = message_id(CHAT_JID, "vid-1");
+
+        assert_eq!(app.video_play_route(mid), crate::media::VideoPlayRoute::Idle);
+        app.ensure_video_fetch(mid, false);
+        assert_eq!(app.video_play_route(mid), crate::media::VideoPlayRoute::Loading);
+        match cmd_rx.try_recv() {
+            Ok(BackendCommand::FetchVideo { chat_jid, message_id, video_ref, view_once }) => {
+                assert_eq!(chat_jid, CHAT_JID);
+                assert_eq!(message_id, "vid-1");
+                assert!(!view_once, "a regular video fetches to a cache file");
+                let reference = video_ref.expect("the archived reference rides along");
+                assert_eq!(reference.direct_path, "/v/t62.7118-24/video.enc");
+                assert_eq!(reference.file_length, 3_992);
+            }
+            other => panic!("expected a FetchVideo command, got {other:?}"),
+        }
+        app.ensure_video_fetch(mid, false);
+        assert!(cmd_rx.try_recv().is_err(), "a running fetch is not duplicated");
+
+        // The landed file flips the route to Ready.
+        tx.send(BackendEvent::VideoReady {
+            chat_jid: CHAT_JID.to_owned(),
+            message_id: "vid-1".to_owned(),
+            path: "/tmp/zaprust-test-video.mp4".to_owned(),
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(app.video_play_route(mid), crate::media::VideoPlayRoute::Ready);
+        assert_eq!(
+            app.media.video_files.get(&mid).map(String::as_str),
+            Some("/tmp/zaprust-test-video.mp4")
+        );
+    }
+
+    /// Item 111: a failed video fetch marks the route Failed and
+    /// a retry runs the fetch again.
+    #[test]
+    fn video_fetch_failure_marks_the_route_failed() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        make_real(&mut app);
+        tx.send(BackendEvent::MessageUpsert(video_message("vid-1", BASE_TS, false, false)))
+            .unwrap();
+        drain_all(&mut app, &ctx);
+        app.selected_chat = jid_id(CHAT_JID);
+        let mid = message_id(CHAT_JID, "vid-1");
+
+        app.ensure_video_fetch(mid, false);
+        tx.send(BackendEvent::VideoFetchFailed {
+            chat_jid: CHAT_JID.to_owned(),
+            message_id: "vid-1".to_owned(),
+            message: "Download failed.".to_owned(),
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(app.video_play_route(mid), crate::media::VideoPlayRoute::Failed);
+        app.retry_video_fetch(mid, false);
+        assert_eq!(app.video_play_route(mid), crate::media::VideoPlayRoute::Loading);
+    }
+
+    /// Item 111: view-once video bytes land in memory (never a
+    /// file), the player starts from them and presents a real
+    /// decoded frame of the actual video.
+    #[test]
+    fn view_once_video_bytes_start_a_real_player() {
+        let (mut app, tx, ctx, cmd_rx) = live_app();
+        make_real(&mut app);
+        tx.send(BackendEvent::MessageUpsert(video_message("vid-vo", BASE_TS, true, true))).unwrap();
+        drain_all(&mut app, &ctx);
+        app.selected_chat = jid_id(CHAT_JID);
+        let mid = message_id(CHAT_JID, "vid-vo");
+
+        app.ensure_video_fetch(mid, true);
+        match cmd_rx.try_recv() {
+            Ok(BackendCommand::FetchVideo { view_once, .. }) => {
+                assert!(view_once, "a view-once video fetches into memory only");
+            }
+            other => panic!("expected a FetchVideo command, got {other:?}"),
+        }
+        tx.send(BackendEvent::VideoBytes {
+            chat_jid: CHAT_JID.to_owned(),
+            message_id: "vid-vo".to_owned(),
+            bytes: include_bytes!("testdata/tiny.mp4").to_vec(),
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(app.media.video_bytes.contains_key(&mid), "the bytes are held in memory");
+        assert!(!app.media.video_files.contains_key(&mid), "never as a file");
+        assert_eq!(app.video_play_route(mid), crate::media::VideoPlayRoute::Ready);
+
+        app.start_video_player(mid, 1);
+        let player = app.media.video_player.as_ref().expect("the player started");
+        assert_eq!(player.key, mid);
+        // Pump the app-side handle until the worker presents the
+        // first real frame.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        loop {
+            let presented = {
+                let player = app.media.video_player.as_mut().unwrap();
+                player.pump();
+                player.current.is_some()
+            };
+            if presented {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "the first frame never arrived");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let player = app.media.video_player.as_ref().unwrap();
+        let frame = player.current.as_ref().unwrap();
+        assert_eq!((frame.width, frame.height), (128, 96));
+        assert_eq!(frame.pts, 0.0);
+    }
+
+    /// Item 111, the view-once gate for video: closing the
+    /// viewer on a view-once video whose real content was never
+    /// presented does NOT spend the view. The reference and the
+    /// thumbnail survive, in the session and in the archive.
+    #[test]
+    fn view_once_video_close_without_presentation_keeps_the_view() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        make_real(&mut app);
+        tx.send(BackendEvent::MessageUpsert(video_message("vid-vo", BASE_TS, true, true))).unwrap();
+        drain_all(&mut app, &ctx);
+        app.selected_chat = jid_id(CHAT_JID);
+        app.sync_conversation();
+        let mid = message_id(CHAT_JID, "vid-vo");
+        app.media.viewing_photo = Some(mid);
+
+        app.close_photo_viewer(mid, true);
+        assert!(
+            !app.media.opened_view_once.contains(&mid),
+            "an unpresented video has not been viewed"
+        );
+        assert!(app.notice.is_some(), "the kept view is said out loud");
+        assert_eq!(
+            app.notice.as_deref(),
+            Some(crate::i18n::t("video.view_once_not_loaded").as_str())
+        );
+        let session = app.live.as_ref().unwrap();
+        assert!(session.video_refs.contains_key(&mid), "the reference survives for a retry");
+        assert!(session.video_thumbs.contains_key(&mid), "the thumbnail survives too");
+        let stored = session.store.as_ref().unwrap().messages(CHAT_JID).unwrap();
+        let row = &stored.iter().find(|(m, _)| m.id == "vid-vo").unwrap().0;
+        assert!(row.video_ref.is_some(), "the archived reference survives");
+        assert!(row.video_thumbnail.is_some(), "the archived thumbnail survives");
+    }
+
+    /// Item 111, the other half: once the video's real content
+    /// was presented in the viewer, closing spends the view
+    /// completely: the opened state persists, the in-memory
+    /// bytes are dropped, and the reference and thumbnail are
+    /// removed from the session and the archive.
+    #[test]
+    fn view_once_video_close_after_presentation_spends_the_view() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        make_real(&mut app);
+        tx.send(BackendEvent::MessageUpsert(video_message("vid-vo", BASE_TS, true, true))).unwrap();
+        drain_all(&mut app, &ctx);
+        app.selected_chat = jid_id(CHAT_JID);
+        app.sync_conversation();
+        let mid = message_id(CHAT_JID, "vid-vo");
+        app.media.video_bytes.insert(mid, vec![1, 2, 3]);
+        // The viewer presented the video's real thumbnail during
+        // this viewing.
+        app.media.video_presented = Some(mid);
+        app.media.viewing_photo = Some(mid);
+
+        app.close_photo_viewer(mid, true);
+        assert!(app.media.opened_view_once.contains(&mid), "the view is spent");
+        assert!(!app.media.video_bytes.contains_key(&mid), "the in-memory bytes are dropped");
+        assert!(app.media.video_presented.is_none(), "the presentation record clears");
+        let session = app.live.as_ref().unwrap();
+        assert!(!session.video_refs.contains_key(&mid), "the session reference is dropped");
+        assert!(!session.video_thumbs.contains_key(&mid), "the session thumbnail is dropped");
+        let stored = session.store.as_ref().unwrap().messages(CHAT_JID).unwrap();
+        let (row, flags) = stored.iter().find(|(m, _)| m.id == "vid-vo").unwrap();
+        assert_ne!(flags & store::FLAG_VIEW_ONCE_OPENED, 0, "the spend persists");
+        assert!(row.video_ref.is_none(), "the archived reference is dropped");
+        assert!(row.video_thumbnail.is_none(), "the archived thumbnail is dropped");
+    }
+
+    /// Item 111: without a live session there is nothing to
+    /// play: the route is the honest test-mode answer and no
+    /// fetch is ever sent.
+    #[test]
+    fn video_route_without_a_session_is_demo_unavailable() {
+        let (mut app, _tx, _ctx, cmd_rx) = live_app();
+        app.live = None;
+        app.live_mode = false;
+        assert_eq!(app.video_play_route(42), crate::media::VideoPlayRoute::DemoUnavailable);
+        app.ensure_video_fetch(42, false);
+        assert!(cmd_rx.try_recv().is_err(), "no fetch leaves a sessionless app");
+        assert!(!app.media.video_fetch.contains_key(&42));
+    }
+
     /// Privacy finding C6: backend error text is largely library
     /// Display output and can embed server-supplied strings,
     /// phone numbers, and secret shapes. The surfaces that
@@ -4352,6 +4867,8 @@ mod chat_state_routing_tests {
             engaged_chats: std::collections::HashSet::new(),
             photo_refs: HashMap::new(),
             voice_refs: HashMap::new(),
+            video_refs: HashMap::new(),
+            video_thumbs: HashMap::new(),
         });
         app.live_mode = true;
         (app, evt_tx, ctx, cmd_rx)
@@ -5591,6 +6108,8 @@ mod mirror_pruning_tests {
             engaged_chats: std::collections::HashSet::new(),
             photo_refs: HashMap::new(),
             voice_refs: HashMap::new(),
+            video_refs: HashMap::new(),
+            video_thumbs: HashMap::new(),
         });
         app.live_mode = true;
         (app, evt_tx, ctx, cmd_rx)
@@ -5903,6 +6422,8 @@ mod qr_gate_tests {
             engaged_chats: std::collections::HashSet::new(),
             photo_refs: HashMap::new(),
             voice_refs: HashMap::new(),
+            video_refs: HashMap::new(),
+            video_thumbs: HashMap::new(),
         };
         if with_payload {
             session.qr = Some(backend::qr_matrix("ref,noise,identity,adv,1").unwrap());

@@ -232,6 +232,20 @@ struct MessageData {
     /// sessions.
     #[serde(default)]
     voice_ref: Option<backend::VoiceRef>,
+    /// A video's re-download reference, archived with the message
+    /// so its bytes stay fetchable in later sessions. Dropped for
+    /// a view-once video once its single view has been spent (see
+    /// [`Store::clear_video_ref`]).
+    #[serde(default)]
+    video_ref: Option<backend::VideoRef>,
+    /// A video's embedded JPEG thumbnail (a real frame of the
+    /// video), archived with the message so its bubble and
+    /// viewer can present the video's own image in later
+    /// sessions without fetching its bytes. Dropped together
+    /// with the reference for a view-once video once its view
+    /// has been spent.
+    #[serde(default)]
+    video_thumbnail: Option<Vec<u8>>,
 }
 
 /// The archive store: one SQLite file, versioned schema.
@@ -751,6 +765,8 @@ impl Store {
             view_once: msg.view_once,
             photo_ref: msg.photo_ref.clone(),
             voice_ref: msg.voice_ref.clone(),
+            video_ref: msg.video_ref.clone(),
+            video_thumbnail: msg.video_thumbnail.clone(),
         };
         let data_json = serde_json::to_string(&data).map_err(|e| {
             StoreError::Sqlite(rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
@@ -952,6 +968,45 @@ impl Store {
         Ok(())
     }
 
+    /// Drops the stored video reference and thumbnail of one
+    /// message, leaving the rest of the row untouched. This is
+    /// how a view-once video's re-download capability ends: the
+    /// reference is what makes the bytes fetchable, and the
+    /// thumbnail is a real frame of the sealed content, so once
+    /// the single view has been spent the archive must keep
+    /// neither. A message without either (or no such message) is
+    /// a quiet no-op.
+    ///
+    /// # Errors
+    /// [`StoreError`] on SQLite failures.
+    pub fn clear_video_ref(&self, chat_jid: &str, id: &str) -> Result<(), StoreError> {
+        use rusqlite::OptionalExtension;
+        let data_text: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT data FROM messages WHERE chat_jid = ?1 AND id = ?2",
+                params![chat_jid, id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()?
+            .flatten();
+        let Some(data_text) = data_text else { return Ok(()) };
+        let mut data: MessageData = serde_json::from_str(&data_text).unwrap_or_default();
+        if data.video_ref.is_none() && data.video_thumbnail.is_none() {
+            return Ok(());
+        }
+        data.video_ref = None;
+        data.video_thumbnail = None;
+        let data_json = serde_json::to_string(&data).map_err(|e| {
+            StoreError::Sqlite(rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
+        })?;
+        self.conn.execute(
+            "UPDATE messages SET data = ?3 WHERE chat_jid = ?1 AND id = ?2",
+            params![chat_jid, id, data_json],
+        )?;
+        Ok(())
+    }
+
     /// All archived chats, most recent first.
     ///
     /// # Errors
@@ -1016,6 +1071,8 @@ impl Store {
             msg.view_once = data.view_once;
             msg.photo_ref = data.photo_ref;
             msg.voice_ref = data.voice_ref;
+            msg.video_ref = data.video_ref;
+            msg.video_thumbnail = data.video_thumbnail;
             msg.expires_at = row.get(8)?;
             let flags: i64 = row.get(7)?;
             Ok((msg, flags))
@@ -1413,6 +1470,63 @@ mod tests {
         // A message archived without a reference stays without one.
         let plain = scripted_messages()[0].clone();
         assert_eq!(plain.voice_ref, None);
+    }
+
+    fn video_reference() -> backend::VideoRef {
+        backend::VideoRef {
+            direct_path: "/v/t62.7118-24/video.enc".to_owned(),
+            media_key: vec![7u8; 32],
+            file_sha256: vec![8u8; 32],
+            file_enc_sha256: vec![9u8; 32],
+            file_length: 1_234_567,
+        }
+    }
+
+    fn video_thumbnail() -> Vec<u8> {
+        vec![0xFF, 0xD8, 0xFF, 0xE0, 1, 2, 3, 0xFF, 0xD9]
+    }
+
+    /// A video's re-download reference and its embedded thumbnail
+    /// round-trip with the message: the reference keeps the video
+    /// fetchable after a restart, the thumbnail keeps its bubble
+    /// and viewer honest (the video's own frame, not a generated
+    /// picture) without fetching its bytes.
+    #[test]
+    fn video_ref_and_thumbnail_round_trip_with_the_message() {
+        let store = Store::open_in_memory().unwrap();
+        let mut msg = scripted_messages()[0].clone();
+        msg.video_ref = Some(video_reference());
+        msg.video_thumbnail = Some(video_thumbnail());
+        store.upsert_message(&msg, 0).unwrap();
+        let rows = store.messages(&msg.chat_jid).unwrap();
+        assert_eq!(rows[0].0.video_ref, Some(video_reference()));
+        assert_eq!(rows[0].0.video_thumbnail, Some(video_thumbnail()));
+        // A message archived without either stays without either.
+        let plain = scripted_messages()[0].clone();
+        assert_eq!(plain.video_ref, None);
+        assert_eq!(plain.video_thumbnail, None);
+    }
+
+    /// Clearing a video reference (the view-once spend) removes
+    /// the reference and the thumbnail together: the row, its
+    /// body and its kind all survive, and clearing a row that has
+    /// neither (or does not exist) is a quiet no-op.
+    #[test]
+    fn clear_video_ref_drops_reference_and_thumbnail() {
+        let store = Store::open_in_memory().unwrap();
+        let mut msg = scripted_messages()[0].clone();
+        msg.video_ref = Some(video_reference());
+        msg.video_thumbnail = Some(video_thumbnail());
+        store.upsert_message(&msg, 0).unwrap();
+        store.clear_video_ref(&msg.chat_jid, &msg.id).unwrap();
+        let rows = store.messages(&msg.chat_jid).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].0.video_ref, None);
+        assert_eq!(rows[0].0.video_thumbnail, None);
+        assert_eq!(rows[0].0.body, msg.body);
+        assert_eq!(rows[0].0.kind, msg.kind);
+        store.clear_video_ref(&msg.chat_jid, &msg.id).unwrap();
+        store.clear_video_ref(&msg.chat_jid, "no-such-id").unwrap();
     }
 
     /// Clearing a photo reference (the view-once spend) removes

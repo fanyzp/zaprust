@@ -148,7 +148,7 @@ impl From<std::io::Error> for StoreError {
 }
 
 /// The newest schema version this build migrates to.
-pub const SCHEMA_VERSION: i64 = 8;
+pub const SCHEMA_VERSION: i64 = 9;
 
 /// `store_meta` key recording that the one-time freelist purge
 /// (see [`Store::open`]) has run for this archive. The purge
@@ -655,6 +655,29 @@ impl Store {
                     )?;
                     tx.execute_batch("PRAGMA user_version = 8;")?;
                 }
+                8 => {
+                    // v9: the call history. One row per completed
+                    // call, keyed by the protocol call id: a call
+                    // reported twice (its end event and a
+                    // missed-call event) is stored once. The rows
+                    // are metadata only (peer, direction, outcome,
+                    // duration); call media is never recorded.
+                    tx.execute_batch(
+                        "CREATE TABLE IF NOT EXISTS calls (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            call_id TEXT NOT NULL UNIQUE,
+                            chat_jid TEXT NOT NULL,
+                            video INTEGER NOT NULL DEFAULT 0,
+                            outgoing INTEGER NOT NULL DEFAULT 0,
+                            missed INTEGER NOT NULL DEFAULT 0,
+                            duration_secs INTEGER NOT NULL DEFAULT 0,
+                            started_at INTEGER NOT NULL DEFAULT 0
+                        );
+                        CREATE INDEX IF NOT EXISTS idx_calls_started
+                            ON calls (started_at);",
+                    )?;
+                    tx.execute_batch("PRAGMA user_version = 9;")?;
+                }
                 _ => return Err(StoreError::BadSchemaVersion(version)),
             }
             tx.commit()?;
@@ -1038,6 +1061,65 @@ impl Store {
         Ok(out)
     }
 
+    /// Records one completed call in the call history. The
+    /// protocol call ID is unique: recording the same call twice
+    /// (its end event and a missed-call event can both report it)
+    /// keeps the first record and reports `Ok(None)`. On a fresh
+    /// record, returns its archive row ID.
+    ///
+    /// # Errors
+    /// [`StoreError`] on SQLite failures.
+    pub fn record_call(&self, record: &backend::CallRecord) -> Result<Option<u64>, StoreError> {
+        let changed = self.conn.execute(
+            "INSERT OR IGNORE INTO calls
+                (call_id, chat_jid, video, outgoing, missed, duration_secs, started_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                record.call_id,
+                record.chat_jid,
+                i64::from(record.video),
+                i64::from(record.outgoing),
+                i64::from(record.missed),
+                i64::from(record.duration_secs),
+                record.started_at,
+            ],
+        )?;
+        if changed == 0 {
+            return Ok(None);
+        }
+        let rowid = self.conn.last_insert_rowid();
+        Ok(u64::try_from(rowid).ok())
+    }
+
+    /// The recorded call history, newest first (by ring/placement
+    /// time; ties break toward the most recently recorded).
+    ///
+    /// # Errors
+    /// [`StoreError`] on SQLite failures.
+    pub fn call_history(&self) -> Result<Vec<backend::CallRecord>, StoreError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, call_id, chat_jid, video, outgoing, missed, duration_secs, started_at
+             FROM calls ORDER BY started_at DESC, id DESC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(backend::CallRecord {
+                id: u64::try_from(row.get::<_, i64>(0)?).unwrap_or(0),
+                call_id: row.get(1)?,
+                chat_jid: row.get(2)?,
+                video: row.get::<_, i64>(3)? != 0,
+                outgoing: row.get::<_, i64>(4)? != 0,
+                missed: row.get::<_, i64>(5)? != 0,
+                duration_secs: u32::try_from(row.get::<_, i64>(6)?).unwrap_or(0),
+                started_at: row.get(7)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
     /// All archived messages of one chat, oldest first, each with
     /// its flags bitfield.
     ///
@@ -1193,6 +1275,81 @@ mod tests {
             std::env::temp_dir().join(format!("zaprust-store-test-{tag}-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         dir.join("archive.db")
+    }
+
+    fn call_record(call_id: &str, started_at: i64) -> backend::CallRecord {
+        backend::CallRecord {
+            id: 0,
+            call_id: call_id.to_owned(),
+            chat_jid: "12025550111@s.whatsapp.net".to_owned(),
+            video: false,
+            outgoing: false,
+            missed: true,
+            duration_secs: 0,
+            started_at,
+        }
+    }
+
+    /// The call history round-trips every field and reads back
+    /// newest first, the order the Calls panel renders.
+    #[test]
+    fn call_history_round_trips_newest_first() {
+        let store = Store::open_in_memory().unwrap();
+        let mut connected = call_record("call-old", 1_700_000_000);
+        connected.missed = false;
+        connected.outgoing = true;
+        connected.video = true;
+        connected.duration_secs = 125;
+        store.record_call(&connected).unwrap();
+        store.record_call(&call_record("call-new", 1_700_003_600)).unwrap();
+        let history = store.call_history().unwrap();
+        assert_eq!(history.len(), 2);
+        let newest = &history[0];
+        assert_eq!(newest.call_id, "call-new");
+        assert!(newest.missed && !newest.outgoing && !newest.video);
+        assert_ne!(newest.id, 0, "read-back records carry their row id");
+        let oldest = &history[1];
+        assert_eq!(oldest.call_id, "call-old");
+        assert_eq!(oldest.chat_jid, "12025550111@s.whatsapp.net");
+        assert!(oldest.video && oldest.outgoing && !oldest.missed);
+        assert_eq!(oldest.duration_secs, 125);
+        assert_eq!(oldest.started_at, 1_700_000_000);
+    }
+
+    /// A call reported twice (its end event and a missed-call
+    /// event) is stored once, under the first record.
+    #[test]
+    fn record_call_keeps_only_the_first_record_of_a_call() {
+        let store = Store::open_in_memory().unwrap();
+        let first = store.record_call(&call_record("call-1", 1_700_000_000)).unwrap();
+        assert!(first.is_some(), "the first record is stored");
+        let mut duplicate = call_record("call-1", 1_700_000_000);
+        duplicate.missed = false;
+        duplicate.duration_secs = 30;
+        let second = store.record_call(&duplicate).unwrap();
+        assert!(second.is_none(), "the duplicate is ignored");
+        let history = store.call_history().unwrap();
+        assert_eq!(history.len(), 1);
+        assert!(history[0].missed, "the first record wins");
+    }
+
+    /// The history is durable: records written by one open are
+    /// read back by the next, so the Calls panel survives an app
+    /// restart.
+    #[test]
+    fn call_history_survives_a_reopen() {
+        let path = temp_db_path("calls");
+        let _ = std::fs::remove_file(&path);
+        let key = [7u8; 32];
+        {
+            let store = Store::open(&path, &key).unwrap();
+            store.record_call(&call_record("call-1", 1_700_000_000)).unwrap();
+        }
+        let store = Store::open(&path, &key).unwrap();
+        let history = store.call_history().unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].call_id, "call-1");
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

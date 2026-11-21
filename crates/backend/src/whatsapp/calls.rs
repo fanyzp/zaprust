@@ -132,6 +132,28 @@ pub(super) fn handle_call_event(
                 });
             }
         }
+        Event::CallEndedElsewhere(ended) => {
+            use whatsapp_rust::wacore::types::call::ElsewhereOutcome;
+            // The library dispatches this outcome before the
+            // terminate stanza that follows it, so clearing the
+            // ringing slot here (the same conditional clear as
+            // Terminate and MissedCall) leaves that stanza
+            // nothing to announce: the call ends exactly once,
+            // through this event, carrying the outcome the other
+            // device reached instead of a plain "Call ended"
+            // the app would have to record as missed. Whether
+            // the slot held the offer or not, the app hears the
+            // same event: it ends the ringing prompt for a shown
+            // call and records the history entry for an unshown
+            // one.
+            release_slot_if(slot, |e| is_offer_for(e, &ended.call_id));
+            sink.emit(BackendEvent::CallEndedElsewhere {
+                call_id: ended.call_id.clone(),
+                chat_jid: ended.from.to_string(),
+                answered: matches!(ended.outcome, ElsewhereOutcome::Accepted),
+                at: ended.timestamp.timestamp(),
+            });
+        }
         _ => {}
     }
 }
@@ -626,6 +648,104 @@ mod tests {
             announced,
             crate::BackendEvent::CallMissed { ref call_id, ref chat_jid, at: 1_700_000_000 }
             if call_id == "call-offline" && chat_jid == "12025550111@s.whatsapp.net"
+        ));
+    }
+
+    use whatsapp_rust::wacore::types::call::{CallEndedElsewhere, ElsewhereOutcome};
+
+    /// Builds a protocol ended-elsewhere event from the test
+    /// caller, stamped `at_secs`.
+    fn elsewhere_event(
+        call_id: &str,
+        outcome: ElsewhereOutcome,
+        at_secs: i64,
+    ) -> std::sync::Arc<Event> {
+        use whatsapp_rust::wacore::chrono::DateTime;
+        let at = DateTime::from_timestamp(at_secs, 0).expect("valid timestamp");
+        std::sync::Arc::new(Event::CallEndedElsewhere(CallEndedElsewhere::new(
+            caller(),
+            call_id.to_owned(),
+            at,
+            outcome,
+        )))
+    }
+
+    /// The ringing call was answered on the phone: the outcome
+    /// clears the slot and is reported as an answered
+    /// CallEndedElsewhere. The terminate stanza the library
+    /// dispatches right after the outcome then finds the slot
+    /// empty and announces nothing, so the call ends exactly
+    /// once, with the elsewhere outcome, instead of a plain
+    /// "Call ended" the app would record as missed.
+    #[test]
+    fn answered_elsewhere_clears_the_ringing_call_and_reports_once() {
+        let slot = ringing_slot("call-a");
+        let (sink, rx) = test_sink();
+        handle_call_event(
+            &elsewhere_event("call-a", ElsewhereOutcome::Accepted, 1_700_000_100),
+            &slot,
+            &sink,
+        );
+        assert!(lock_cache(&slot).is_none(), "the slot is cleared");
+        let announced = rx.try_recv().expect("the elsewhere outcome is reported");
+        assert!(matches!(
+            announced,
+            crate::BackendEvent::CallEndedElsewhere {
+                ref call_id, ref chat_jid, answered: true, at: 1_700_000_100
+            } if call_id == "call-a" && chat_jid == "12025550111@s.whatsapp.net"
+        ));
+        handle_call_event(&call_event(terminate_action("call-a")), &slot, &sink);
+        assert!(rx.try_recv().is_err(), "the trailing Terminate announces nothing more");
+    }
+
+    /// An ended-elsewhere report for a call whose offer is not
+    /// the slot's (it rang while another call held the line)
+    /// leaves the ringing offer untouched and is still reported,
+    /// with the declined outcome: the app never showed that
+    /// call, but it belongs in the history as answered
+    /// elsewhere, not missed.
+    #[test]
+    fn rejected_elsewhere_for_an_unshown_call_keeps_the_ringing_offer() {
+        let slot = ringing_slot("call-a");
+        let (sink, rx) = test_sink();
+        handle_call_event(
+            &elsewhere_event("call-b", ElsewhereOutcome::Rejected, 1_700_000_200),
+            &slot,
+            &sink,
+        );
+        let peeked = lock_cache(&slot).clone();
+        assert!(
+            peeked.is_some_and(|e| is_offer_for(&e, "call-a")),
+            "the ringing offer survives another call's elsewhere outcome"
+        );
+        let announced = rx.try_recv().expect("the unshown call's outcome is reported");
+        assert!(matches!(
+            announced,
+            crate::BackendEvent::CallEndedElsewhere {
+                ref call_id, answered: false, at: 1_700_000_200, ..
+            } if call_id == "call-b"
+        ));
+    }
+
+    /// A call that rang and ended elsewhere while this device
+    /// was away never had an offer in the slot: the outcome is
+    /// reported as-is, stamped with the protocol event's own
+    /// timestamp.
+    #[test]
+    fn ended_elsewhere_without_an_offer_reports_the_outcome() {
+        let slot: CallIncoming = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let (sink, rx) = test_sink();
+        handle_call_event(
+            &elsewhere_event("call-offline", ElsewhereOutcome::Accepted, 1_700_000_300),
+            &slot,
+            &sink,
+        );
+        let announced = rx.try_recv().expect("the replayed outcome is reported");
+        assert!(matches!(
+            announced,
+            crate::BackendEvent::CallEndedElsewhere {
+                ref call_id, answered: true, at: 1_700_000_300, ..
+            } if call_id == "call-offline"
         ));
     }
 }

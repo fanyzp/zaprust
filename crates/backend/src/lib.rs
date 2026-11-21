@@ -1494,6 +1494,29 @@ pub enum BackendEvent {
         /// replays).
         at: i64,
     },
+    /// A call that rang this account ended on another of the
+    /// account's devices: the phone answered it, or the phone
+    /// declined it. Emitted once per such call, whether or not
+    /// this device ever showed the call ringing: when it did,
+    /// the event ends the ringing prompt; when it did not
+    /// (another call held the line, or the call rang and ended
+    /// while this device was away), the event is the only word
+    /// the history gets about the call. Either way the call
+    /// was answered somewhere, so its history entry is an
+    /// incoming call that is NOT missed, with no duration on
+    /// this device: the talk happened on the other one.
+    CallEndedElsewhere {
+        /// Call identifier (protocol call id).
+        call_id: String,
+        /// Chat JID of the caller (the 1:1 chat with them).
+        chat_jid: String,
+        /// True when another device answered the call; false
+        /// when another device declined it.
+        answered: bool,
+        /// When the call ended elsewhere, unix seconds (the
+        /// protocol event's own timestamp).
+        at: i64,
+    },
     /// A media download finished; the file is on disk.
     MediaSaved {
         /// Chat JID the media belongs to.

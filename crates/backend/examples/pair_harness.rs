@@ -53,6 +53,9 @@ fn summarize(event: &BackendEvent) -> String {
         BackendEvent::IncomingCall { .. } => "IncomingCall".to_owned(),
         BackendEvent::CallChanged { phase, .. } => format!("CallChanged {phase:?}"),
         BackendEvent::CallMissed { .. } => "CallMissed".to_owned(),
+        BackendEvent::CallEndedElsewhere { answered, .. } => {
+            format!("CallEndedElsewhere answered={answered}")
+        }
         BackendEvent::MediaSaved { .. } => "MediaSaved".to_owned(),
         BackendEvent::PhotoBytes { bytes, .. } => format!("PhotoBytes {} bytes", bytes.len()),
         BackendEvent::PhotoFetchFailed { message, .. } => {

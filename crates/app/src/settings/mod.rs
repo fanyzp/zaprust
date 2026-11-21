@@ -22,7 +22,7 @@ mod storage;
 use crate::state::App;
 use crate::theme::rgb;
 use crate::widgets::{
-    avatar, chip, form_row, number_field, radio_row, select, stepper, switch, text_field_password,
+    avatar, chip, form_row, number_field, radio_row, select, switch, text_field_password,
     FORM_CONTROL_W,
 };
 use core::theme::ThemeId;
@@ -89,11 +89,11 @@ const SETTINGS_REGISTRY: &[SettingEntry] = &[
         keywords: "glass effect tinted surfaces kaca efek permukaan",
     },
     SettingEntry {
-        id: "appearance.zoom",
+        id: "appearance.font_size",
         tab: "Appearance",
-        title_en: "Zoom",
-        title_id: "Zoom",
-        keywords: "interface size scale ukuran antarmuka",
+        title_en: "Font size",
+        title_id: "Ukuran font",
+        keywords: "zoom interface size scale text ukuran antarmuka teks skala huruf",
     },
     SettingEntry {
         id: "appearance.title_bar",

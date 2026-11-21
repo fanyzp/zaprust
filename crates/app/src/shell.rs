@@ -1,7 +1,7 @@
 //! App shell: the root frame dispatch, the navigation rail, and the
 //! collapsed-sidebar strip.
 
-use crate::state::{layout_mode_for_size, App, LayoutMode, Screen};
+use crate::state::{effective_pixels_per_point, layout_mode_for_content, App, LayoutMode, Screen};
 use crate::theme::{apply_visuals, rgb};
 use crate::widgets::rail_button;
 use core::filter::total_unread;
@@ -14,26 +14,32 @@ impl eframe::App for App {
             self.sidebar_collapsed = !self.sidebar_collapsed;
         }
         apply_visuals(&ctx, self.tokens);
-        ctx.set_pixels_per_point(self.zoom_percent as f32 / 100.0);
+        // The layout mode follows the window's PHYSICAL size:
+        // below the breakpoint the panes take turns
+        // (single-pane), above it they share the width
+        // (two-pane), and a portrait single-pane window takes
+        // the native phone arrangement (portrait). The content
+        // rect is in points at the pixels-per-point currently
+        // in effect, so the mode helper scales it back to
+        // physical pixels first: the density applied below can
+        // then never move the breakpoint. Refreshed every frame
+        // so a resize switches behavior immediately.
+        // `single_pane` stays true in portrait mode: every "not
+        // two-pane" behavior (pane swapping, the back chevron,
+        // the full-width profile dock) applies there too.
+        let mode = layout_mode_for_content(ctx.content_rect().size(), ctx.pixels_per_point());
+        self.single_pane = mode != LayoutMode::TwoPane;
+        self.portrait = mode == LayoutMode::Portrait;
+        // The render scale: the user's font-size preference
+        // composed with the mode's automatic density factor
+        // (the small modes step down a touch; see state.rs).
+        ctx.set_pixels_per_point(effective_pixels_per_point(self.zoom_percent, mode));
         self.poll_backend(&ctx);
         self.poll_workers(&ctx);
         self.poll_update(&ctx);
         self.drain_os_notifications(&ctx);
         self.tick_expiry();
 
-        // The layout mode follows the window size: below the
-        // breakpoint the panes take turns (single-pane), above
-        // it they share the width (two-pane), and a portrait
-        // single-pane window takes the native phone arrangement
-        // (portrait). Refreshed every frame so a resize switches
-        // behavior immediately. `single_pane` stays true in
-        // portrait mode: every "not two-pane" behavior (pane
-        // swapping, the back chevron, the full-width profile
-        // dock) applies there too.
-        let content = ctx.content_rect();
-        let mode = layout_mode_for_size(content.width(), content.height());
-        self.single_pane = mode != LayoutMode::TwoPane;
-        self.portrait = mode == LayoutMode::Portrait;
         if self.debug.mode {
             self.draw_debug_banner(ui);
         }

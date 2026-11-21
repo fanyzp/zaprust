@@ -241,3 +241,8 @@
 "appearance.contrast" = "Kontras"
 "appearance.saturation" = "Saturasi"
 "appearance.reset" = "Atur ulang"
+"appearance.font_size" = "Ukuran font"
+"appearance.font_size_caption" = "Seberapa besar teks dan kontrol digambar, di seluruh aplikasi. Jendela kecil juga mengecil sedikit dengan sendirinya."
+"appearance.font_small" = "Kecil"
+"appearance.font_default" = "Bawaan"
+"appearance.font_large" = "Besar"

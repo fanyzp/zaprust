@@ -2300,14 +2300,23 @@ impl crate::state::App {
         }
     }
 
-    /// Whether the generated demo photo may stand in for a photo
-    /// message's pixels: demo mode, and the fake backend's test
-    /// mode (whose photos are scripted fixtures, labelled test
-    /// data). In a real live session it may never: a received
-    /// photo shows its own bytes or an honest placeholder, never
-    /// a substitute image.
-    pub(crate) fn photo_demo_allowed(&self) -> bool {
+    /// Whether bundled demo fixtures may stand in as content:
+    /// demo mode, and the fake backend's test mode (whose data
+    /// is scripted fixtures, labelled test data). In a real live
+    /// session they may never: demo material presented as a real
+    /// person's data is a fabrication, however small. Every
+    /// fixture lookup (demo photo, demo avatars) gates on this
+    /// one predicate.
+    pub(crate) fn demo_fixtures_allowed(&self) -> bool {
         !self.live_mode || self.live.as_ref().is_some_and(|s| s.fake)
+    }
+
+    /// Whether the generated demo photo may stand in for a photo
+    /// message's pixels (see [`App::demo_fixtures_allowed`]). In
+    /// a real live session a received photo shows its own bytes
+    /// or an honest placeholder, never a substitute image.
+    pub(crate) fn photo_demo_allowed(&self) -> bool {
+        self.demo_fixtures_allowed()
     }
 
     /// What a photo message's tile may honestly show right now

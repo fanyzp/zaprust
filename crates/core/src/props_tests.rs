@@ -73,7 +73,7 @@ proptest! {
     ) {
         let home = format!("/home/{user}");
         let raw = format!("boom in {home}/secret/file.rs while {message}");
-        let mut report = CrashReport::capture(raw, Some("src/lib.rs:1:1".to_owned()), "bt".to_owned());
+        let mut report = CrashReport::capture(env!("CARGO_PKG_VERSION"), raw, Some("src/lib.rs:1:1".to_owned()), "bt".to_owned());
         report.redact(Path::new(&home));
         prop_assert!(!report.panic_message.contains(&home));
         let json = serde_json::to_string(&report).expect("serializes");

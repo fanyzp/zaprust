@@ -55,7 +55,12 @@ pub struct CrashReport {
 }
 
 impl CrashReport {
-    /// Builds a report from panic parts. Secret-shaped values are
+    /// Builds a report from panic parts. The app version is
+    /// passed in by the caller (the app binary's panic hook)
+    /// rather than read from this crate's own package version:
+    /// the stamp must name the application that crashed, and the
+    /// two only coincide while the workspace version stays
+    /// unified. Secret-shaped values are
     /// scrubbed HERE, at capture (SEC-15), not only inside
     /// [`CrashReport::write_to`]: the panic hook holds the original
     /// report and prints `report.summary()` to stderr, so the
@@ -64,9 +69,14 @@ impl CrashReport {
     /// redaction still happens in `write_to` / [`CrashReport::redact`],
     /// which know the home directory.
     #[must_use]
-    pub fn capture(panic_message: String, location: Option<String>, backtrace: String) -> Self {
+    pub fn capture(
+        app_version: &str,
+        panic_message: String,
+        location: Option<String>,
+        backtrace: String,
+    ) -> Self {
         Self {
-            app_version: env!("CARGO_PKG_VERSION").to_owned(),
+            app_version: app_version.to_owned(),
             os: std::env::consts::OS.to_owned(),
             arch: std::env::consts::ARCH.to_owned(),
             timestamp_unix: unix_now(),
@@ -637,6 +647,7 @@ mod tests {
         let dir = temp_dir("roundtrip");
         let home = Path::new("/home/someone");
         let report = CrashReport::capture(
+            env!("CARGO_PKG_VERSION"),
             "index out of bounds in /home/someone/app".to_owned(),
             Some("/home/someone/src/main.rs:10:5".to_owned()),
             "frame at /home/someone/lib.rs".to_owned(),
@@ -660,7 +671,7 @@ mod tests {
     fn written_report_is_owner_only() {
         use std::os::unix::fs::PermissionsExt;
         let dir = temp_dir("permissions");
-        let report = CrashReport::capture("boom".to_owned(), None, "bt".to_owned());
+        let report = CrashReport::capture(env!("CARGO_PKG_VERSION"), "boom".to_owned(), None, "bt".to_owned());
         let path = report.write_to(&dir, None).unwrap();
         let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600, "a crash report is created owner-only: {path:?}");
@@ -670,7 +681,7 @@ mod tests {
     #[test]
     fn unseen_report_respects_dismissal() {
         let dir = temp_dir("seen");
-        let report = CrashReport::capture("boom".to_owned(), None, "bt".to_owned());
+        let report = CrashReport::capture(env!("CARGO_PKG_VERSION"), "boom".to_owned(), None, "bt".to_owned());
         let ts = report.timestamp_unix;
         report.write_to(&dir, None).unwrap();
         assert!(unseen_report(&dir).is_some());
@@ -682,6 +693,7 @@ mod tests {
     #[test]
     fn crash_issue_url_is_prefilled_and_clean() {
         let report = CrashReport::capture(
+            env!("CARGO_PKG_VERSION"),
             "boom".to_owned(),
             Some("src/x.rs:1:1".to_owned()),
             "bt".to_owned(),
@@ -698,6 +710,7 @@ mod tests {
         // SEC-14: JSON spellings and Basic auth must not survive,
         // in the in-memory report, its summary, or the file.
         let report = CrashReport::capture(
+            env!("CARGO_PKG_VERSION"),
             r#"failed with {"api_key": "jsonsecret123", "apiKey": "camelSecret456", "apikey": "lowerSecret789"} and Authorization: Basic dXNlcjpwYXNzd29yZA=="#.to_owned(),
             None,
             "bt".to_owned(),
@@ -710,12 +723,23 @@ mod tests {
         }
         // Existing shapes stay covered (Bearer via the debug scrubber).
         let report = CrashReport::capture(
+            env!("CARGO_PKG_VERSION"),
             "Authorization: Bearer abcDEF123456789".to_owned(),
             None,
             "bt".to_owned(),
         );
         assert!(!report.summary().contains("abcDEF123456789"), "{}", report.summary());
         assert!(report.summary().contains("Bearer ***"), "{}", report.summary());
+    }
+
+    /// The version stamp is whatever the caller passed, never
+    /// this crate's own package version: the panic hook passes
+    /// the app binary's version, and a report must carry that.
+    #[test]
+    fn capture_stamps_the_version_it_is_given() {
+        let report = CrashReport::capture("9.9.9-pin", "boom".to_owned(), None, "bt".to_owned());
+        assert_eq!(report.app_version, "9.9.9-pin");
+        assert!(report.full_text().starts_with("Zaprust 9.9.9-pin crash report"));
     }
 
     #[test]

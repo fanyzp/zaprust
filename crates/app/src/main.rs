@@ -184,17 +184,18 @@ fn main() -> eframe::Result {
         init_debug_tracing();
     }
     let args = Args::parse();
-    let options = eframe::NativeOptions {
-        viewport: eframe::egui::ViewportBuilder::default()
-            .with_inner_size([1180.0, 760.0])
-            // Phone-like windows are supported (the shell goes
-            // single-pane below its breakpoint), so the minimum
-            // sits under the narrowest of those sizes instead of
-            // forbidding them outright.
-            .with_min_inner_size([320.0, 480.0])
-            .with_title("Zaprust"),
-        ..Default::default()
-    };
+    let mut viewport = eframe::egui::ViewportBuilder::default()
+        .with_inner_size([1180.0, 760.0])
+        // Phone-like windows are supported (the shell goes
+        // single-pane below its breakpoint), so the minimum
+        // sits under the narrowest of those sizes instead of
+        // forbidding them outright.
+        .with_min_inner_size([320.0, 480.0])
+        .with_title("Zaprust");
+    if let Some(icon) = window_icon() {
+        viewport = viewport.with_icon(icon);
+    }
+    let options = eframe::NativeOptions { viewport, ..Default::default() };
     eframe::run_native(
         "Zaprust",
         options,
@@ -220,6 +221,19 @@ fn main() -> eframe::Result {
 /// titles). No production panic site does so today (every
 /// interpolating `panic!`/`expect`/`assert!` in the workspace is
 /// in test code); keep it that way.
+/// The window icon: the app's official green chat-bubble mark,
+/// the same artwork the desktop file declares, decoded from the
+/// bundled PNG. Without it the window wears the toolkit's
+/// default icon, which is not Zaprust's mark. A decode failure
+/// is not fatal: the app starts without a custom icon rather
+/// than not starting at all.
+fn window_icon() -> Option<std::sync::Arc<eframe::egui::IconData>> {
+    const BYTES: &[u8] = include_bytes!("../../../packaging/icons/zaprust-256.png");
+    let img = image::load_from_memory(BYTES).ok()?.to_rgba8();
+    let (width, height) = img.dimensions();
+    Some(std::sync::Arc::new(eframe::egui::IconData { rgba: img.into_raw(), width, height }))
+}
+
 /// Builds the crash report for a panic, stamped with THIS
 /// crate's version: the report must name the application that
 /// crashed (the app binary), not the core crate's package
@@ -268,6 +282,16 @@ mod version_tests {
     fn crash_reports_carry_the_app_version() {
         let report = super::capture_report("boom".to_owned(), None, "bt".to_owned());
         assert_eq!(report.app_version, env!("CARGO_PKG_VERSION"));
+    }
+
+    /// The window icon is the bundled 256px mark, decoded:
+    /// the window must never fall back to the toolkit default
+    /// because the artwork failed to load.
+    #[test]
+    fn window_icon_is_the_bundled_mark_at_full_size() {
+        let icon = super::window_icon().expect("the bundled icon decodes");
+        assert_eq!((icon.width, icon.height), (256, 256));
+        assert_eq!(icon.rgba.len(), 256 * 256 * 4);
     }
 }
 

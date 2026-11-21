@@ -731,3 +731,133 @@ impl App {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::Args;
+
+    /// A demo-mode app with the popup motion off, so the
+    /// context menu paints at its final geometry on the
+    /// first frame.
+    fn menu_app(ctx: &egui::Context) -> App {
+        crate::theme::install_fonts(ctx);
+        let mut app = App::new(Args::parse(), ctx);
+        // App::new may have attempted a real live start against
+        // this machine's data dir; the test owns the state from
+        // here and wants the plain demo shell.
+        app.live = None;
+        app.live_mode = false;
+        app.motion = crate::motion::MotionSetting::Off;
+        app
+    }
+
+    fn run_menu(
+        app: &mut App,
+        ctx: &egui::Context,
+        events: Vec<egui::Event>,
+        time: f64,
+    ) -> egui::FullOutput {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(900.0, 700.0),
+            )),
+            time: Some(time),
+            events,
+            ..Default::default()
+        };
+        let mut out = ctx.run_pass(input, |ctx| app.draw_context_menu(ctx));
+        // No renderer will ever apply this frame's texture
+        // deltas; clear them so dropping the output is quiet.
+        out.textures_delta.clear();
+        out
+    }
+
+    /// The centre of the painted label `label` in a frame's
+    /// output shapes: where a user's pointer would land.
+    fn label_centre(out: &egui::FullOutput, label: &str) -> Option<egui::Pos2> {
+        out.shapes.iter().find_map(|clipped| match &clipped.shape {
+            egui::Shape::Text(text) if text.galley.job.text == label => {
+                let size = text.galley.size();
+                Some(egui::pos2(text.pos.x + size.x / 2.0, text.pos.y + size.y / 2.0))
+            }
+            _ => None,
+        })
+    }
+
+    fn copied_texts(out: &egui::FullOutput) -> Vec<&str> {
+        out.platform_output
+            .commands
+            .iter()
+            .filter_map(|c| match c {
+                egui::OutputCommand::CopyText(s) => Some(s.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The Copy text row of the message context menu, clicked
+    /// for real: the frame paints the menu, the test reads
+    /// the row's painted position back out of the frame,
+    /// presses and releases the pointer there, and the
+    /// clipboard boundary must receive the message's exact
+    /// body as a copy command.
+    #[test]
+    fn copy_text_menu_item_copies_the_exact_message_body() {
+        let ctx = egui::Context::default();
+        let mut app = menu_app(&ctx);
+        let body = "kopi tubruk, no sugar, 100% exact";
+        app.conversation = vec![Message::theirs(4242, "Alice", body, "09:41")];
+        app.bubble_menu = Some(4242);
+
+        // The first frame only sizes the popup area (its shapes
+        // are culled until the area has a stored rect), so the
+        // menu becomes readable on the second frame.
+        let _ = run_menu(&mut app, &ctx, Vec::new(), 0.0);
+        let painted = run_menu(&mut app, &ctx, Vec::new(), 0.05);
+        let at = label_centre(&painted, "Copy text")
+            .expect("a text message's menu paints a Copy text row");
+
+        let press = vec![
+            egui::Event::PointerMoved(at),
+            egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ];
+        run_menu(&mut app, &ctx, press, 0.10);
+        let release = vec![egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        }];
+        let clicked = run_menu(&mut app, &ctx, release, 0.15);
+
+        assert_eq!(copied_texts(&clicked), [body], "the click copies the body verbatim");
+        assert_eq!(app.bubble_menu, None, "the action closes the menu");
+        assert!(app.composer.reply_to.is_none(), "the click did not land on Reply");
+        assert_eq!(app.reaction_picker_id, None, "the click did not land on React");
+        assert_eq!(app.forward_from, None, "the click did not land on Forward");
+    }
+
+    /// Copy text is a text-message action: a media message's
+    /// menu paints its other rows but no Copy text row.
+    #[test]
+    fn media_message_menu_paints_no_copy_text_row() {
+        let ctx = egui::Context::default();
+        let mut app = menu_app(&ctx);
+        let mut msg = Message::theirs(4243, "Alice", "", "09:42");
+        msg.kind = MessageKind::Image { caption: String::new(), view_once: false };
+        app.conversation = vec![msg];
+        app.bubble_menu = Some(4243);
+
+        let _ = run_menu(&mut app, &ctx, Vec::new(), 0.0);
+        let painted = run_menu(&mut app, &ctx, Vec::new(), 0.05);
+        assert!(label_centre(&painted, "Star").is_some(), "the menu itself painted");
+        assert!(label_centre(&painted, "Copy text").is_none(), "no copy row for media");
+    }
+}

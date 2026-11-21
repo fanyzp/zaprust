@@ -37,6 +37,11 @@ impl App {
         // in an album run or a system row can never wedge
         // stick-to-bottom off for this view.
         let locate_pending = self.scroll_to_message.is_some();
+        // Display fetches for photo messages whose real bytes are
+        // not here yet. The paint loop below borrows the
+        // conversation, so requests are collected here and
+        // dispatched after the scroll pass, before the return.
+        let mut pending_photo_fetches: Vec<u64> = Vec::new();
         let scroll_out = egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .stick_to_bottom(!self.qa_scroll_top && self.scroll_to_message.is_none())
@@ -135,6 +140,17 @@ impl App {
                     // card; the run is consumed in a single step.
                     let run = album_run_len(&self.conversation, idx);
                     if run >= 2 {
+                        // Photos in the run fetch their real bytes
+                        // for display, like single photo bubbles.
+                        for item in &self.conversation[idx..idx + run] {
+                            if matches!(
+                                item.kind,
+                                core::model::MessageKind::Image { view_once: false, .. }
+                            ) && self.photo_tile(item.id) == crate::media::PhotoTile::Idle
+                            {
+                                pending_photo_fetches.push(item.id);
+                            }
+                        }
                         let run_items = &self.conversation[idx..idx + run];
                         let (alpha, rise) = crate::anim::message_entrance(
                             ui,
@@ -147,9 +163,19 @@ impl App {
                         if rise > 0.01 {
                             ui.add_space(rise);
                         }
-                        if self.media.photo_texture.is_none() {
+                        // The demo photo may fill album cells only
+                        // where it is the disclosed content (demo
+                        // and test mode); a real live session's
+                        // cells show the photo itself or the
+                        // neutral placeholder.
+                        if self.photo_demo_allowed() && self.media.photo_texture.is_none() {
                             self.media.photo_texture = Some(crate::media::demo_photo(ui.ctx()));
                         }
+                        let album_demo = if self.photo_demo_allowed() {
+                            self.media.photo_texture.as_ref().map(egui::TextureHandle::id)
+                        } else {
+                            None
+                        };
                         let album_actions = ui
                             .scope(|ui| {
                                 if alpha < 0.999 {
@@ -160,7 +186,7 @@ impl App {
                                     run_items,
                                     t,
                                     &self.media.textures,
-                                    self.media.photo_texture.as_ref().map(egui::TextureHandle::id),
+                                    album_demo,
                                 )
                             })
                             .inner;
@@ -205,9 +231,24 @@ impl App {
                     let group_incoming = chat.kind == core::model::ChatKind::Group
                         && !msg.is_mine()
                         && msg.kind != core::model::MessageKind::System;
+                    // A photo bubble whose real bytes are not
+                    // here yet asks for them (dispatched after the
+                    // scroll pass); its tile state decides what
+                    // the bubble may honestly paint meanwhile.
+                    let photo_tile = self.photo_tile(msg.id);
+                    if matches!(msg.kind, core::model::MessageKind::Image { view_once: false, .. })
+                        && photo_tile == crate::media::PhotoTile::Idle
+                    {
+                        pending_photo_fetches.push(msg.id);
+                    }
                     let media = MediaCtx {
-                        photo: self.media.photo_texture.as_ref().map(egui::TextureHandle::id),
+                        photo: if photo_tile == crate::media::PhotoTile::Demo {
+                            self.media.photo_texture.as_ref().map(egui::TextureHandle::id)
+                        } else {
+                            None
+                        },
                         own_photo: self.media.textures.get(&msg.id).map(egui::TextureHandle::id),
+                        photo_tile,
                         voice: match &self.media.voice_playing {
                             Some(vp) if vp.id == msg.id => {
                                 Some(crate::bubble::VoiceSnap {
@@ -462,6 +503,11 @@ impl App {
             } else if vp.is_playing() {
                 ui.ctx().request_repaint_after(std::time::Duration::from_millis(40));
             }
+        }
+
+        // The photo display fetches the paint pass asked for.
+        for id in pending_photo_fetches {
+            self.ensure_photo_fetch(id);
         }
 
         (scroll_out, full_rect)

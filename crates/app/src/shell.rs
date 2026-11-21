@@ -311,9 +311,12 @@ impl App {
 
 impl App {
     /// Full-screen photo viewer. Regular photos open freely; a
-    /// view-once photo consumes its allowance on close: the bubble
-    /// collapses to the "Opened" receipt and can never be viewed
-    /// again, like the real thing.
+    /// view-once photo consumes its allowance on close, and only
+    /// when its real pixels were actually shown during the
+    /// viewing: the bubble then collapses to the "Opened" receipt
+    /// and can never be viewed again, like the real thing. A
+    /// view-once photo whose bytes never arrived keeps its
+    /// allowance (see `App::close_photo_viewer`).
     pub(crate) fn draw_photo_viewer(&mut self, root: &mut egui::Ui) {
         // Snapshot the photo id while open: the exit animation
         // outlives the state, like the other popups.
@@ -347,27 +350,51 @@ impl App {
         root.ctx().data_mut(|d| d.insert_temp(egui::Id::unique("viewer_was_open"), open_now));
         let now = root.ctx().input(|i| i.time);
         let reveal_p = crate::motion::Anim::drive(&mut self.anim.viewer_reveal, root.ctx(), now);
-        // 0.0-0.55: loading only. 0.55-1.0: the photo crossfades in
-        // with a slight scale-up.
-        let photo_a = ((reveal_p - 0.55) / 0.45).clamp(0.0, 1.0);
-        let spinner_a = (1.0 - photo_a * 1.6).clamp(0.0, 1.0);
-        if self.media.photo_texture.is_none() {
-            self.media.photo_texture = Some(crate::media::demo_photo(root.ctx()));
-        }
-        let (caption, view_once) = self
+        let (caption, view_once, is_photo) = self
             .conversation
             .iter()
             .find(|m| m.id == id)
             .map(|m| match &m.kind {
                 core::model::MessageKind::Image { caption, view_once } => {
-                    (caption.clone(), *view_once)
+                    (caption.clone(), *view_once, true)
                 }
                 core::model::MessageKind::Video { caption, view_once, .. } => {
-                    (caption.clone(), *view_once)
+                    (caption.clone(), *view_once, false)
                 }
-                _ => (String::new(), false),
+                _ => (String::new(), false, false),
             })
             .unwrap_or_default();
+        // Opening the viewer on a photo is what starts (or
+        // retries) its display fetch: bubbles fetch regular
+        // photos on sight, but a view-once photo is fetched only
+        // once the user actually opens it.
+        if open_now && !was_open && is_photo {
+            match self.photo_tile(id) {
+                crate::media::PhotoTile::Idle => self.ensure_photo_fetch(id),
+                crate::media::PhotoTile::Failed => self.retry_photo_fetch(id),
+                _ => {}
+            }
+        }
+        let tile = self.photo_tile(id);
+        let paintable =
+            matches!(tile, crate::media::PhotoTile::Real | crate::media::PhotoTile::Demo);
+        // 0.0-0.55: loading only. 0.55-1.0: the photo crossfades in
+        // with a slight scale-up. The reveal completes only when
+        // there is something true to reveal: while a live photo is
+        // still being fetched the loading phase holds, and a
+        // failed fetch never reveals a substitute image.
+        let photo_a =
+            if paintable || exiting { ((reveal_p - 0.55) / 0.45).clamp(0.0, 1.0) } else { 0.0 };
+        let spinner_a = if exiting || tile == crate::media::PhotoTile::Failed {
+            0.0
+        } else if paintable {
+            (1.0 - photo_a * 1.6).clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+        if tile == crate::media::PhotoTile::Demo && self.media.photo_texture.is_none() {
+            self.media.photo_texture = Some(crate::media::demo_photo(root.ctx()));
+        }
         let header = if view_once {
             crate::i18n::t("viewer.view_once")
         } else {
@@ -404,18 +431,27 @@ impl App {
                     .add(egui::Spinner::new().size(30.0));
                     ui.set_opacity(view_p);
                 }
-                // The message's own pixels when they exist (a photo
-                // sent from disk), the demo photo otherwise. Hidden
-                // while the loading phase runs, then scaled in.
+                // The photo's own pixels: the decoded real bytes,
+                // or the demo fixture where that is the disclosed
+                // content. A live photo whose bytes are not here
+                // paints nothing in this block; the loading phase
+                // or the failure note speaks for it instead.
                 if photo_a > 0.001 {
                     ui.set_opacity(photo_a);
-                    let tex = self
-                        .media
-                        .textures
-                        .get(&id)
-                        .cloned()
-                        .or_else(|| self.media.photo_texture.clone());
+                    let tex = self.media.textures.get(&id).cloned().or_else(|| {
+                        if tile == crate::media::PhotoTile::Demo {
+                            self.media.photo_texture.clone()
+                        } else {
+                            None
+                        }
+                    });
                     if let Some(tex) = &tex {
+                        if view_once && tile == crate::media::PhotoTile::Real {
+                            // The real pixels are on screen: this
+                            // viewing is what spends the single
+                            // view, recorded for the close path.
+                            self.media.view_once_shown = Some(id);
+                        }
                         let max_w = (rect.width() - 120.0).min(620.0);
                         let scale = 0.96 + 0.04 * photo_a;
                         let size = egui::Vec2::new(max_w * scale, max_w * scale * 400.0 / 600.0);
@@ -434,6 +470,16 @@ impl App {
                         );
                     }
                     ui.set_opacity(view_p);
+                }
+                // A failed fetch says so, in place of any image.
+                if !exiting && tile == crate::media::PhotoTile::Failed {
+                    ui.painter().text(
+                        egui::Pos2::new(rect.center().x, rect.center().y - 24.0),
+                        egui::Align2::CENTER_CENTER,
+                        crate::i18n::t("viewer.photo_failed"),
+                        egui::FontId::proportional(14.0),
+                        egui::Color32::from_rgb(200, 208, 214),
+                    );
                 }
                 // The caption reveals with the photo, not before it.
                 if photo_a > 0.001 {
@@ -499,13 +545,11 @@ impl App {
                 }
             });
         if close && !exiting {
-            // Only a view-once photo consumes its allowance; regular
-            // photos reopen freely. The opened state is persisted
-            // with the message, so it survives a restart too.
-            if view_once {
-                self.mark_view_once_opened(id);
-            }
-            self.media.viewing_photo = None;
+            // Only a view-once photo consumes its allowance, and
+            // only when its real pixels were actually shown;
+            // regular photos reopen freely. The decision and the
+            // cleanup live in close_photo_viewer.
+            self.close_photo_viewer(id, view_once);
         }
     }
 }

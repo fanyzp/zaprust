@@ -1016,6 +1016,18 @@ impl<K: PartialEq> TextureCache<K> {
         }
     }
 
+    /// Removes one entry, freeing its texture. Returns whether an
+    /// entry was present.
+    pub(crate) fn remove<Q>(&mut self, key: &Q) -> bool
+    where
+        K: std::borrow::Borrow<Q>,
+        Q: PartialEq + ?Sized,
+    {
+        let before = self.entries.len();
+        self.entries.retain(|(k, _)| k.borrow() != key);
+        self.entries.len() != before
+    }
+
     pub(crate) fn clear(&mut self) {
         self.entries.clear();
     }

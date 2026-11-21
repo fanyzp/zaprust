@@ -160,6 +160,12 @@ pub(crate) struct LiveSession {
     /// bits: deleted, starred, pinned), preserved across upserts
     /// and persisted in the store.
     pub(crate) flags: HashMap<u64, i64>,
+    /// Photo re-download references per numeric message ID,
+    /// seeded from the archive at start and extended by every
+    /// photo upsert. A display fetch for a photo the backend no
+    /// longer holds in its session cache passes the reference
+    /// along, so photos from before this session stay fetchable.
+    pub(crate) photo_refs: HashMap<u64, backend::PhotoRef>,
     /// Chats where the user performed a real read action (scrolled
     /// to the newest messages, focused or typed in the composer,
     /// sent a reply) since the last receipt went out. Read
@@ -647,6 +653,7 @@ impl crate::state::App {
             fake,
             flags: HashMap::new(),
             engaged_chats: std::collections::HashSet::new(),
+            photo_refs: HashMap::new(),
         };
         // Load the archive into the rendered data. Live mode never
         // shows demo data: start from empty and fill from the archive.
@@ -675,6 +682,15 @@ impl crate::state::App {
                             // so every action on history silently
                             // no-oped (logic review F2).
                             self.protocol_ids.insert(message_id(&m.chat_jid, &m.id), m.id.clone());
+                            // A photo's re-download reference is
+                            // seeded the same way, so a photo from
+                            // before this session can still be
+                            // fetched for display.
+                            if let Some(reference) = &m.photo_ref {
+                                session
+                                    .photo_refs
+                                    .insert(message_id(&m.chat_jid, &m.id), reference.clone());
+                            }
                         }
                         session.messages.insert(
                             jid_id(&chat.jid),
@@ -915,7 +931,7 @@ impl crate::state::App {
             self.event_batch.active = true;
             while let Some(event) = self.event_queue.pop_front() {
                 self.trace_event(&event);
-                self.apply_event(event);
+                self.apply_event(ctx, event);
                 applied += 1;
                 // At least one event always applies, so a single
                 // slow event can never starve the queue.
@@ -1031,7 +1047,7 @@ impl crate::state::App {
         }
     }
 
-    fn apply_event(&mut self, event: BackendEvent) {
+    fn apply_event(&mut self, ctx: &egui::Context, event: BackendEvent) {
         match event {
             BackendEvent::QrCode { payload, valid_for } => {
                 if let Some(session) = &mut self.live {
@@ -1315,6 +1331,33 @@ impl crate::state::App {
             }
             BackendEvent::MediaSaved { path, .. } => {
                 self.notice = Some(format!("Saved to {path}"));
+            }
+            BackendEvent::PhotoBytes { chat_jid, message_id: pid, bytes } => {
+                // The fetched bytes become the message's texture:
+                // from here on its bubble, album cell and viewer
+                // paint the photo itself. Bytes that do not decode
+                // are a failed fetch, never a reason to substitute
+                // another image.
+                let mid = message_id(&chat_jid, &pid);
+                match crate::media::decode_photo(ctx, &bytes) {
+                    Some(tex) => {
+                        self.media.textures.insert(mid, tex);
+                        self.media.photo_fetch.remove(&mid);
+                    }
+                    None => {
+                        self.media.photo_fetch.insert(mid, crate::state::PhotoFetchState::Failed);
+                    }
+                }
+            }
+            BackendEvent::PhotoFetchFailed { chat_jid, message_id: pid, .. } => {
+                let mid = message_id(&chat_jid, &pid);
+                // Only a fetch still in flight can fail; a late
+                // failure must not clobber a photo that has since
+                // landed.
+                if self.media.photo_fetch.get(&mid) == Some(&crate::state::PhotoFetchState::Loading)
+                {
+                    self.media.photo_fetch.insert(mid, crate::state::PhotoFetchState::Failed);
+                }
             }
             BackendEvent::TypingReceived { chat_jid, typing } => {
                 let chat_id = jid_id(&chat_jid);
@@ -1925,6 +1968,9 @@ impl crate::state::App {
         let mut new_incoming = false;
         if let Some(session) = &mut self.live {
             let msg_id = message_id(&live.chat_jid, &live.id);
+            if let Some(reference) = &live.photo_ref {
+                session.photo_refs.insert(msg_id, reference.clone());
+            }
             let mut flags = session.flags.get(&msg_id).copied().unwrap_or(0);
             if live.starred {
                 flags |= store::FLAG_STARRED;
@@ -2174,6 +2220,10 @@ impl crate::state::App {
         protocol_id: Option<&str>,
     ) {
         self.protocol_ids.remove(&msg_id);
+        if let Some(session) = &mut self.live {
+            session.photo_refs.remove(&msg_id);
+        }
+        self.media.photo_fetch.remove(&msg_id);
         self.sender_jids.remove(&msg_id);
         self.receipt_log.remove(&msg_id);
         self.my_reactions.remove(&msg_id);
@@ -2247,6 +2297,127 @@ impl crate::state::App {
         });
         if let Some(chat_id) = chat_id {
             self.set_live_flag(chat_id, msg_id, store::FLAG_VIEW_ONCE_OPENED, true);
+        }
+    }
+
+    /// Whether the generated demo photo may stand in for a photo
+    /// message's pixels: demo mode, and the fake backend's test
+    /// mode (whose photos are scripted fixtures, labelled test
+    /// data). In a real live session it may never: a received
+    /// photo shows its own bytes or an honest placeholder, never
+    /// a substitute image.
+    pub(crate) fn photo_demo_allowed(&self) -> bool {
+        !self.live_mode || self.live.as_ref().is_some_and(|s| s.fake)
+    }
+
+    /// What a photo message's tile may honestly show right now
+    /// (see [`crate::media::PhotoTile`]): the decoded real bytes
+    /// when they are here, the demo fixture where that is the
+    /// disclosed content, otherwise the fetch state.
+    pub(crate) fn photo_tile(&self, msg_id: u64) -> crate::media::PhotoTile {
+        if self.media.textures.contains_key(&msg_id) {
+            return crate::media::PhotoTile::Real;
+        }
+        if self.photo_demo_allowed() {
+            return crate::media::PhotoTile::Demo;
+        }
+        match self.media.photo_fetch.get(&msg_id) {
+            Some(crate::state::PhotoFetchState::Loading) => crate::media::PhotoTile::Loading,
+            Some(crate::state::PhotoFetchState::Failed) => crate::media::PhotoTile::Failed,
+            None => crate::media::PhotoTile::Idle,
+        }
+    }
+
+    /// Starts the display fetch for one photo message of the open
+    /// chat, unless its bytes are already here or a fetch is
+    /// already running. The fetch passes the message's archived
+    /// re-download reference along, so a photo the backend no
+    /// longer holds in its session cache is still fetchable.
+    /// Only real live sessions fetch: demo and test mode paint
+    /// their fixture photo instead.
+    pub(crate) fn ensure_photo_fetch(&mut self, msg_id: u64) {
+        if self.photo_demo_allowed() || self.media.textures.contains_key(&msg_id) {
+            return;
+        }
+        if self.media.photo_fetch.contains_key(&msg_id) {
+            return;
+        }
+        let (chat_jid, photo_ref) = {
+            let Some(session) = &self.live else { return };
+            let Some(chat_jid) = session.jids.get(&self.selected_chat).cloned() else {
+                return;
+            };
+            (chat_jid, session.photo_refs.get(&msg_id).cloned())
+        };
+        let Some(protocol_id) = self.protocol_ids.get(&msg_id).cloned() else {
+            // A live photo without a protocol id can never be
+            // addressed; record the failure instead of spinning.
+            self.media.photo_fetch.insert(msg_id, crate::state::PhotoFetchState::Failed);
+            return;
+        };
+        self.media.photo_fetch.insert(msg_id, crate::state::PhotoFetchState::Loading);
+        self.send_backend(BackendCommand::FetchPhoto {
+            chat_jid,
+            message_id: protocol_id,
+            photo_ref,
+        });
+    }
+
+    /// Re-runs a failed display fetch (opening the viewer on a
+    /// failed photo is the retry gesture).
+    pub(crate) fn retry_photo_fetch(&mut self, msg_id: u64) {
+        if self.media.photo_fetch.get(&msg_id) == Some(&crate::state::PhotoFetchState::Failed) {
+            self.media.photo_fetch.remove(&msg_id);
+        }
+        self.ensure_photo_fetch(msg_id);
+    }
+
+    /// Closes the photo viewer on one message. A view-once photo
+    /// consumes its single view here, and only under the honesty
+    /// rule: in a real live session the view is spent solely when
+    /// the photo's real pixels were actually painted during this
+    /// viewing (tracked in `MediaState::view_once_shown`). When
+    /// they never arrived, the allowance survives, the failure is
+    /// said out loud, and the photo can be opened again later.
+    /// Demo and test mode keep the standing behaviour (their
+    /// fixture photo is the content, so closing spends the view).
+    /// A spent live view also drops the decoded pixels and the
+    /// archived re-download reference, so nothing can bring the
+    /// photo back afterwards.
+    pub(crate) fn close_photo_viewer(&mut self, id: u64, view_once: bool) {
+        if view_once {
+            let spent = self.photo_demo_allowed() || self.media.view_once_shown == Some(id);
+            if spent {
+                self.mark_view_once_opened(id);
+                if !self.photo_demo_allowed() {
+                    self.media.textures.remove(&id);
+                    self.drop_photo_ref(id);
+                }
+            } else {
+                self.notice = Some(crate::i18n::t("photo.view_once_not_loaded"));
+            }
+        }
+        if self.media.view_once_shown == Some(id) {
+            self.media.view_once_shown = None;
+        }
+        self.media.viewing_photo = None;
+    }
+
+    /// Removes one message's photo re-download reference from the
+    /// session map and from the archive.
+    fn drop_photo_ref(&mut self, msg_id: u64) {
+        let protocol_id = self.protocol_ids.get(&msg_id).cloned();
+        let Some(session) = &mut self.live else { return };
+        session.photo_refs.remove(&msg_id);
+        let chat_jid = session
+            .messages
+            .iter()
+            .find(|(_, msgs)| msgs.iter().any(|(_, m)| m.id == msg_id))
+            .and_then(|(chat_id, _)| session.jids.get(chat_id).cloned());
+        if let (Some(store), Some(chat_jid), Some(protocol_id)) =
+            (&session.store, chat_jid, protocol_id)
+        {
+            let _ = store.clear_photo_ref(&chat_jid, &protocol_id);
         }
     }
 
@@ -2906,6 +3077,7 @@ mod burst_drain_tests {
             fake: true,
             flags: HashMap::new(),
             engaged_chats: std::collections::HashSet::new(),
+            photo_refs: HashMap::new(),
         });
         app.live_mode = true;
         (app, evt_tx, ctx, cmd_rx)
@@ -3082,6 +3254,221 @@ mod burst_drain_tests {
             0,
             "the opened state is persisted with the message's flags"
         );
+    }
+
+    /// A photo upsert carrying its re-download reference, the
+    /// shape the backend now delivers for every photo whose wire
+    /// payload was complete.
+    fn photo_message(id: &str, ts: i64, view_once: bool) -> LiveMessage {
+        let mut live =
+            LiveMessage::text(id, CHAT_JID, Some("Sender".to_owned()), String::new(), ts, false);
+        live.kind = backend::LiveMessageKind::Media {
+            media: backend::MediaKind::Photo,
+            caption: String::new(),
+            seconds: 0,
+            size_bytes: 123_456,
+        };
+        live.view_once = view_once;
+        live.photo_ref = Some(backend::PhotoRef {
+            direct_path: "/v/t62.7118-24/photo.enc".to_owned(),
+            media_key: vec![7u8; 32],
+            file_sha256: vec![8u8; 32],
+            file_enc_sha256: vec![9u8; 32],
+            file_length: 123_456,
+        });
+        live
+    }
+
+    /// A small real image, encoded in memory, standing in for
+    /// fetched photo bytes.
+    fn png_bytes() -> Vec<u8> {
+        let img = image::RgbaImage::from_pixel(2, 2, image::Rgba([200, 40, 40, 255]));
+        let mut buf = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(img).write_to(&mut buf, image::ImageFormat::Png).unwrap();
+        buf.into_inner()
+    }
+
+    /// Turns the harness session into a real one: the harness
+    /// runs the fake backend (test mode, where the fixture photo
+    /// is the disclosed content), while the photo-fetch behaviour
+    /// under test is the real live session's.
+    fn make_real(app: &mut App) {
+        app.live.as_mut().unwrap().fake = false;
+    }
+
+    /// Item 109: a real live session never paints the demo
+    /// fixture for a received photo. Before any fetch the tile is
+    /// Idle, the fetch command carries the archived reference,
+    /// and a second request while one is running sends nothing.
+    #[test]
+    fn photo_fetch_sends_the_command_with_the_archived_reference() {
+        let (mut app, tx, ctx, cmd_rx) = live_app();
+        make_real(&mut app);
+        tx.send(BackendEvent::MessageUpsert(photo_message("ph-1", BASE_TS, false))).unwrap();
+        drain_all(&mut app, &ctx);
+        app.selected_chat = jid_id(CHAT_JID);
+        let mid = message_id(CHAT_JID, "ph-1");
+
+        assert_eq!(app.photo_tile(mid), crate::media::PhotoTile::Idle);
+        app.ensure_photo_fetch(mid);
+        assert_eq!(app.photo_tile(mid), crate::media::PhotoTile::Loading);
+        match cmd_rx.try_recv() {
+            Ok(BackendCommand::FetchPhoto { chat_jid, message_id, photo_ref }) => {
+                assert_eq!(chat_jid, CHAT_JID);
+                assert_eq!(message_id, "ph-1");
+                let reference = photo_ref.expect("the archived reference rides along");
+                assert_eq!(reference.direct_path, "/v/t62.7118-24/photo.enc");
+                assert_eq!(reference.file_length, 123_456);
+            }
+            other => panic!("expected a FetchPhoto command, got {other:?}"),
+        }
+        app.ensure_photo_fetch(mid);
+        assert!(cmd_rx.try_recv().is_err(), "a running fetch is not duplicated");
+    }
+
+    /// Item 109: fetched bytes become the message's own texture,
+    /// and the tile flips to Real. In the fake session the same
+    /// message would have painted the fixture instead (the mode
+    /// split the honesty rule draws).
+    #[test]
+    fn photo_bytes_install_the_real_texture() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        tx.send(BackendEvent::MessageUpsert(photo_message("ph-1", BASE_TS, false))).unwrap();
+        drain_all(&mut app, &ctx);
+        let mid = message_id(CHAT_JID, "ph-1");
+        assert_eq!(app.photo_tile(mid), crate::media::PhotoTile::Demo, "test mode fixture");
+
+        make_real(&mut app);
+        app.selected_chat = jid_id(CHAT_JID);
+        app.ensure_photo_fetch(mid);
+        tx.send(BackendEvent::PhotoBytes {
+            chat_jid: CHAT_JID.to_owned(),
+            message_id: "ph-1".to_owned(),
+            bytes: png_bytes(),
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(app.media.textures.contains_key(&mid), "the real bytes are the texture now");
+        assert!(!app.media.photo_fetch.contains_key(&mid), "the fetch state clears");
+        assert_eq!(app.photo_tile(mid), crate::media::PhotoTile::Real);
+    }
+
+    /// Item 109: a failed fetch marks the tile Failed (the
+    /// placeholder state), and bytes that do not decode fail the
+    /// same way. Neither path ever falls back to the demo photo
+    /// in a real session.
+    #[test]
+    fn photo_fetch_failure_marks_the_tile_failed() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        make_real(&mut app);
+        tx.send(BackendEvent::MessageUpsert(photo_message("ph-1", BASE_TS, false))).unwrap();
+        drain_all(&mut app, &ctx);
+        app.selected_chat = jid_id(CHAT_JID);
+        let mid = message_id(CHAT_JID, "ph-1");
+
+        app.ensure_photo_fetch(mid);
+        tx.send(BackendEvent::PhotoFetchFailed {
+            chat_jid: CHAT_JID.to_owned(),
+            message_id: "ph-1".to_owned(),
+            message: "Download failed.".to_owned(),
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(app.photo_tile(mid), crate::media::PhotoTile::Failed);
+
+        app.retry_photo_fetch(mid);
+        assert_eq!(app.photo_tile(mid), crate::media::PhotoTile::Loading);
+        tx.send(BackendEvent::PhotoBytes {
+            chat_jid: CHAT_JID.to_owned(),
+            message_id: "ph-1".to_owned(),
+            bytes: vec![1, 2, 3],
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(
+            app.photo_tile(mid),
+            crate::media::PhotoTile::Failed,
+            "undecodable bytes are a failed fetch, not a photo"
+        );
+        assert!(!app.media.textures.contains_key(&mid));
+    }
+
+    /// Item 109, the view-once half: closing the viewer on a
+    /// view-once photo whose real pixels were never shown does
+    /// NOT spend the view. The opened set stays empty, the user
+    /// is told, and the archived re-download reference survives
+    /// so the photo can still be opened later.
+    #[test]
+    fn view_once_close_without_shown_pixels_keeps_the_view() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        make_real(&mut app);
+        tx.send(BackendEvent::MessageUpsert(photo_message("vo-ph", BASE_TS, true))).unwrap();
+        drain_all(&mut app, &ctx);
+        let mid = message_id(CHAT_JID, "vo-ph");
+        app.media.viewing_photo = Some(mid);
+
+        app.close_photo_viewer(mid, true);
+        assert!(!app.media.opened_view_once.contains(&mid), "an unshown photo has not been viewed");
+        assert!(app.notice.is_some(), "the kept view is said out loud");
+        assert!(app.media.viewing_photo.is_none(), "the viewer still closes");
+        let session = app.live.as_ref().unwrap();
+        assert!(session.photo_refs.contains_key(&mid), "the reference survives for a retry");
+        let stored = session.store.as_ref().unwrap().messages(CHAT_JID).unwrap();
+        let row = &stored.iter().find(|(m, _)| m.id == "vo-ph").unwrap().0;
+        assert!(row.photo_ref.is_some(), "the archived reference survives too");
+    }
+
+    /// Item 109, the other half: once the real pixels were
+    /// actually painted, closing spends the view, and the spend
+    /// is complete: the opened state persists, the decoded pixels
+    /// are dropped, and the re-download reference is removed from
+    /// the session and the archive, so the photo cannot be
+    /// brought back.
+    #[test]
+    fn view_once_close_after_shown_pixels_spends_the_view() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        make_real(&mut app);
+        tx.send(BackendEvent::MessageUpsert(photo_message("vo-ph", BASE_TS, true))).unwrap();
+        drain_all(&mut app, &ctx);
+        app.selected_chat = jid_id(CHAT_JID);
+        let mid = message_id(CHAT_JID, "vo-ph");
+
+        app.ensure_photo_fetch(mid);
+        tx.send(BackendEvent::PhotoBytes {
+            chat_jid: CHAT_JID.to_owned(),
+            message_id: "vo-ph".to_owned(),
+            bytes: png_bytes(),
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(app.media.textures.contains_key(&mid));
+        // The viewer painted the real pixels during this viewing.
+        app.media.view_once_shown = Some(mid);
+        app.media.viewing_photo = Some(mid);
+
+        app.close_photo_viewer(mid, true);
+        assert!(app.media.opened_view_once.contains(&mid), "the view is spent");
+        assert!(!app.media.textures.contains_key(&mid), "the pixels are dropped");
+        let session = app.live.as_ref().unwrap();
+        assert!(!session.photo_refs.contains_key(&mid), "the session reference is dropped");
+        let stored = session.store.as_ref().unwrap().messages(CHAT_JID).unwrap();
+        let (row, flags) = stored.iter().find(|(m, _)| m.id == "vo-ph").unwrap();
+        assert_ne!(flags & store::FLAG_VIEW_ONCE_OPENED, 0, "the spend persists");
+        assert!(row.photo_ref.is_none(), "the archived reference is dropped");
+    }
+
+    /// The mode split, pinned from the other side: in test mode
+    /// the fixture photo is the content, so closing the viewer on
+    /// a view-once photo spends the view exactly as before.
+    #[test]
+    fn view_once_close_in_test_mode_still_spends_the_view() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        tx.send(BackendEvent::MessageUpsert(photo_message("vo-ph", BASE_TS, true))).unwrap();
+        drain_all(&mut app, &ctx);
+        let mid = message_id(CHAT_JID, "vo-ph");
+        app.media.viewing_photo = Some(mid);
+        app.close_photo_viewer(mid, true);
+        assert!(app.media.opened_view_once.contains(&mid));
     }
 
     /// Privacy finding C6: backend error text is largely library
@@ -3509,6 +3896,7 @@ mod chat_state_routing_tests {
             fake: true,
             flags: HashMap::new(),
             engaged_chats: std::collections::HashSet::new(),
+            photo_refs: HashMap::new(),
         });
         app.live_mode = true;
         (app, evt_tx, ctx, cmd_rx)
@@ -4746,6 +5134,7 @@ mod mirror_pruning_tests {
             fake: true,
             flags: HashMap::new(),
             engaged_chats: std::collections::HashSet::new(),
+            photo_refs: HashMap::new(),
         });
         app.live_mode = true;
         (app, evt_tx, ctx, cmd_rx)
@@ -5056,6 +5445,7 @@ mod qr_gate_tests {
             fake: false,
             flags: HashMap::new(),
             engaged_chats: std::collections::HashSet::new(),
+            photo_refs: HashMap::new(),
         };
         if with_payload {
             session.qr = Some(backend::qr_matrix("ref,noise,identity,adv,1").unwrap());
@@ -5138,13 +5528,16 @@ mod qr_gate_tests {
 
     #[test]
     fn qr_event_stores_payload_with_its_validity_window() {
-        let (mut app, _ctx) = app();
+        let (mut app, ctx) = app();
         app.live = Some(session(LinkStatus::Starting, false));
         let before = std::time::Instant::now();
-        app.apply_event(BackendEvent::QrCode {
-            payload: "ref,noise,identity,adv,1".to_owned(),
-            valid_for: std::time::Duration::from_secs(60),
-        });
+        app.apply_event(
+            &ctx,
+            BackendEvent::QrCode {
+                payload: "ref,noise,identity,adv,1".to_owned(),
+                valid_for: std::time::Duration::from_secs(60),
+            },
+        );
         let live = app.live.as_ref().unwrap();
         assert_eq!(live.status, LinkStatus::WaitingQr);
         assert!(live.qr.is_some());
@@ -5155,15 +5548,15 @@ mod qr_gate_tests {
 
     #[test]
     fn connection_loss_and_failure_clear_the_payload() {
-        let (mut app, _ctx) = app();
+        let (mut app, ctx) = app();
         app.live = Some(session(LinkStatus::WaitingQr, true));
-        app.apply_event(BackendEvent::ConnectionLost { reason: "stream ended".to_owned() });
+        app.apply_event(&ctx, BackendEvent::ConnectionLost { reason: "stream ended".to_owned() });
         let live = app.live.as_ref().unwrap();
         assert!(matches!(live.status, LinkStatus::Lost(_)));
         assert!(live.qr.is_none() && live.qr_expires_at.is_none());
 
         app.live = Some(session(LinkStatus::WaitingQr, true));
-        app.apply_event(BackendEvent::Error { message: "socket closed".to_owned() });
+        app.apply_event(&ctx, BackendEvent::Error { message: "socket closed".to_owned() });
         let live = app.live.as_ref().unwrap();
         assert!(matches!(live.status, LinkStatus::Failed(_)));
         assert!(live.qr.is_none() && live.qr_expires_at.is_none());
@@ -5171,9 +5564,9 @@ mod qr_gate_tests {
 
     #[test]
     fn qr_expired_clears_payload_and_fails_the_attempt() {
-        let (mut app, _ctx) = app();
+        let (mut app, ctx) = app();
         app.live = Some(session(LinkStatus::WaitingQr, true));
-        app.apply_event(BackendEvent::QrExpired);
+        app.apply_event(&ctx, BackendEvent::QrExpired);
         let live = app.live.as_ref().unwrap();
         assert!(live.qr.is_none() && live.qr_expires_at.is_none());
         assert!(matches!(live.status, LinkStatus::Failed(_)));
@@ -5184,11 +5577,11 @@ mod qr_gate_tests {
         // The library leaves the connection up when a pair-code
         // flow is outstanding; the on-screen code must survive
         // the QR budget ending.
-        let (mut app, _ctx) = app();
+        let (mut app, ctx) = app();
         let mut s = session(LinkStatus::CodeReady, true);
         s.pair_code = Some("ABCD1234".to_owned());
         app.live = Some(s);
-        app.apply_event(BackendEvent::QrExpired);
+        app.apply_event(&ctx, BackendEvent::QrExpired);
         let live = app.live.as_ref().unwrap();
         assert!(live.qr.is_none());
         assert_eq!(live.status, LinkStatus::CodeReady);

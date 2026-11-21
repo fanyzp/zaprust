@@ -461,12 +461,25 @@ pub(crate) struct CallsState {
 }
 
 /// Media state: decoded photo textures, the photo viewer and view-once tracking, and voice-note playback.
+/// One live photo fetch's progress, tracked per message in
+/// [`MediaState::photo_fetch`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PhotoFetchState {
+    /// The fetch command was sent; the bytes have not landed.
+    Loading,
+    /// The fetch answered with a failure (or with bytes that did
+    /// not decode); the photo is unavailable until retried.
+    Failed,
+}
+
 pub(crate) struct MediaState {
     /// Lazily-created demo photo texture.
     pub(crate) photo_texture: Option<egui::TextureHandle>,
     /// Decoded photo textures per app message ID: picked files and
-    /// received media render their own pixels, everything else falls
-    /// back to the demo photo texture. Bounded (see
+    /// fetched received photos render their own pixels. In a real
+    /// live session nothing is substituted for a photo whose bytes
+    /// are not here (see `photo_fetch`); the demo photo texture
+    /// stands in only in demo and test mode. Bounded (see
     /// `extras::TextureCache`): the oldest texture is evicted once
     /// the cap is passed.
     pub(crate) textures: crate::extras::TextureCache<u64>,
@@ -477,6 +490,18 @@ pub(crate) struct MediaState {
     pub(crate) opened_view_once: std::collections::HashSet<u64>,
     /// The view-once photo currently open in the viewer, if any.
     pub(crate) viewing_photo: Option<u64>,
+    /// Live photo fetches in flight or failed, per app message ID.
+    /// Absence means no fetch has been requested yet. A successful
+    /// fetch removes the entry and lands the decoded texture in
+    /// `textures` instead.
+    pub(crate) photo_fetch: std::collections::HashMap<u64, PhotoFetchState>,
+    /// The view-once photo whose real pixels were actually
+    /// painted in the viewer during the current viewing. Closing
+    /// the viewer spends the single view only when this names the
+    /// viewed message: a view-once photo whose bytes never
+    /// arrived (or were never painted) has not been viewed, and
+    /// its allowance survives.
+    pub(crate) view_once_shown: Option<u64>,
     /// Voice-note playback state (demo: simulated progress, no audio).
     pub(crate) voice_playing: Option<VoicePlayback>,
     /// Per-message voice playback rates chosen on the speed pill,
@@ -1298,6 +1323,8 @@ impl App {
                 ),
                 opened_view_once: std::collections::HashSet::new(),
                 viewing_photo: if args.open_viewonce { Some(112) } else { None },
+                photo_fetch: std::collections::HashMap::new(),
+                view_once_shown: None,
                 voice_playing: None,
                 voice_rates: std::collections::HashMap::new(),
             },

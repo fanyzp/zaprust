@@ -129,6 +129,12 @@ impl App {
             BackendEvent::MediaSaved { chat_jid, path, .. } => {
                 ("backend", format!("MediaSaved for {chat_jid} -> {path}"), None)
             }
+            BackendEvent::PhotoBytes { chat_jid, bytes, .. } => {
+                ("backend", format!("PhotoBytes for {chat_jid}: {} bytes", bytes.len()), None)
+            }
+            BackendEvent::PhotoFetchFailed { chat_jid, message, .. } => {
+                ("backend", format!("PhotoFetchFailed for {chat_jid}: {message}"), None)
+            }
             BackendEvent::TypingReceived { chat_jid, typing } => {
                 ("backend", format!("TypingReceived {chat_jid} typing={typing}"), None)
             }

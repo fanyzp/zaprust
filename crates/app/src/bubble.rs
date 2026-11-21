@@ -101,6 +101,11 @@ pub(crate) struct MediaCtx {
     /// from disk and its pixels were decoded; wins over the demo
     /// photo.
     pub(crate) own_photo: Option<egui::TextureId>,
+    /// What this message's photo tile may honestly show (real
+    /// bytes, the demo fixture, or a fetch state). Decided by the
+    /// app, identical for the bubble, the album grid and the
+    /// viewer.
+    pub(crate) photo_tile: crate::media::PhotoTile,
     /// Playback snapshot for this voice message, when a playback
     /// session is active for it (playing or paused).
     pub(crate) voice: Option<VoiceSnap>,
@@ -998,7 +1003,18 @@ pub(crate) fn message_bubble(
             }
             MessageKind::Image { caption, view_once: false } => {
                 let img_rect = Rect::from_min_size(Pos2::new(x, y), Vec2::new(inner_w, 200.0));
-                if let Some(tex) = media.own_photo.or(media.photo) {
+                // The tile paints the photo itself when its bytes
+                // are here (or the demo fixture, where that is the
+                // disclosed content). While the bytes are missing
+                // it paints a neutral placeholder that is plainly
+                // not a photo: a real live session never
+                // substitutes another image for a received photo.
+                let tex = match media.photo_tile {
+                    crate::media::PhotoTile::Real => media.own_photo,
+                    crate::media::PhotoTile::Demo => media.own_photo.or(media.photo),
+                    _ => None,
+                };
+                if let Some(tex) = tex {
                     painter.image(
                         tex,
                         img_rect,
@@ -1011,6 +1027,29 @@ pub(crate) fn message_bubble(
                         CornerRadius::same(INNER_CARD_RADIUS),
                         rgb(t.bg_panel_alt),
                     );
+                    let center = img_rect.center();
+                    crate::icons::draw(
+                        painter,
+                        crate::icons::Icon::Image,
+                        Pos2::new(center.x, center.y - 8.0),
+                        30.0,
+                        rgb(t.text_faint),
+                        rgb(t.bg_panel_alt),
+                    );
+                    if media.photo_tile == crate::media::PhotoTile::Failed {
+                        let g = layout_text(
+                            ui,
+                            &crate::i18n::t("photo.unavailable"),
+                            FontId::proportional(11.0),
+                            rgb(t.text_faint),
+                            inner_w - 16.0,
+                        );
+                        painter.galley(
+                            Pos2::new(center.x - g.size().x / 2.0, center.y + 10.0),
+                            g,
+                            rgb(t.text_faint),
+                        );
+                    }
                 }
                 if !caption.is_empty() {
                     let g = crate::markdown::galley(

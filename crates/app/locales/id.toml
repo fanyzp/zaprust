@@ -98,6 +98,11 @@
 # ---- photo viewer ----
 "viewer.photo" = "Foto"
 "viewer.view_once" = "Foto sekali lihat"
+"viewer.photo_failed" = "Foto ini tidak dapat dimuat."
+
+# ---- photos ----
+"photo.unavailable" = "Foto tidak tersedia"
+"photo.view_once_not_loaded" = "Foto itu tidak dapat dimuat, jadi belum terpakai. Kamu bisa mencoba membukanya lagi nanti."
 
 # ---- settings shell ----
 "settings.title" = "Pengaturan"

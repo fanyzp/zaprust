@@ -109,3 +109,50 @@ pub(crate) fn load_thumb(
     let image = ColorImage::from_rgba_unmultiplied(size, rgba.as_raw());
     Some(ctx.load_texture("staged-thumb", image, egui::TextureOptions::LINEAR))
 }
+
+/// What a photo message's tile may honestly show right now. The
+/// decision is made once per message by `App::photo_tile` and
+/// consumed by the bubble, the album grid and the photo viewer,
+/// so the three surfaces can never disagree about whether a
+/// photo is real, a demo stand-in, or still missing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum PhotoTile {
+    /// The photo's own bytes are decoded and ready to paint.
+    Real,
+    /// The generated demo photo stands in. Only ever chosen in
+    /// demo mode and the fake backend's test mode, whose photos
+    /// are disclosed fixtures; a real live session never picks it
+    /// for a received photo.
+    Demo,
+    /// A fetch for the real bytes is in flight.
+    Loading,
+    /// The fetch ran and failed; the photo is unavailable.
+    Failed,
+    /// No fetch has been requested yet.
+    #[default]
+    Idle,
+}
+
+/// Longest side, in pixels, of a decoded display photo. Bubbles
+/// paint photos a few hundred points wide and the viewer caps at
+/// a similar scale, so decoding a multi-megapixel original at
+/// full size would only cost memory; this cap keeps the texture
+/// comfortably above both surfaces.
+const DISPLAY_PHOTO_CAP: u32 = 1024;
+
+/// Decodes fetched photo bytes into a texture for display.
+/// Returns None when the bytes are not a decodable image; the
+/// caller treats that as a failed fetch, never as a reason to
+/// substitute another image.
+pub(crate) fn decode_photo(ctx: &egui::Context, bytes: &[u8]) -> Option<egui::TextureHandle> {
+    let img = image::load_from_memory(bytes).ok()?;
+    let img = if img.width() > DISPLAY_PHOTO_CAP || img.height() > DISPLAY_PHOTO_CAP {
+        img.resize(DISPLAY_PHOTO_CAP, DISPLAY_PHOTO_CAP, image::imageops::FilterType::Triangle)
+    } else {
+        img
+    };
+    let rgba = img.to_rgba8();
+    let size = [rgba.width() as usize, rgba.height() as usize];
+    let image = ColorImage::from_rgba_unmultiplied(size, rgba.as_raw());
+    Some(ctx.load_texture("photo", image, egui::TextureOptions::LINEAR))
+}

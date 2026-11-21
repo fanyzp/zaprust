@@ -292,12 +292,6 @@ impl App {
                     );
                     ui.add_space(6.0);
                     ui.label(
-                        RichText::new(crate::i18n::t("attach.location_caption"))
-                            .size(12.0)
-                            .color(rgb(t.text_secondary)),
-                    );
-                    ui.add_space(6.0);
-                    ui.label(
                         RichText::new(crate::i18n::t("attach.location_name"))
                             .font(crate::theme::medium(13.0)),
                     );

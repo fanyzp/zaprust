@@ -4,7 +4,7 @@ use super::*;
 
 impl App {
     pub(crate) fn page_storage(&mut self, ui: &mut egui::Ui, t: core::theme::Tokens) {
-        page_header(ui, &crate::i18n::t("settings.storage"), &crate::i18n::t("storage.subtitle"));
+        page_header(ui, &crate::i18n::t("settings.storage"));
         // Real sizes, measured from the app data dir when the
         // page opened and then cached: this draw runs on every
         // repaint, and a recursive walk of the whole data dir is

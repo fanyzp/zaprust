@@ -98,7 +98,7 @@ impl App {
                 "about.auto_check",
                 t,
                 "Automatic checks",
-                "Once a day, ask GitHub whether a newer version exists",
+                "",
                 |ui| switch(ui, &mut auto, t),
             );
             if auto != self.update.auto_check {
@@ -123,24 +123,13 @@ impl App {
                         },
                     );
                 } else {
-                    row_with(
-                        ui,
-                        t,
-                        "Update",
-                        "Downloads, verifies, and swaps in the new version.",
-                        |ui| {
-                            if crate::widgets::button(
-                                ui,
-                                t,
-                                "Update now",
-                                crate::widgets::Btn::Primary,
-                            )
+                    row_with(ui, t, "Update", "", |ui| {
+                        if crate::widgets::button(ui, t, "Update now", crate::widgets::Btn::Primary)
                             .clicked()
-                            {
-                                update_now = true;
-                            }
-                        },
-                    );
+                        {
+                            update_now = true;
+                        }
+                    });
                 }
             }
             if self.update.phase == UpdatePhase::Ready {
@@ -166,32 +155,26 @@ impl App {
     }
 
     pub(crate) fn page_about(&mut self, ui: &mut egui::Ui, t: core::theme::Tokens) {
-        page_header(ui, "About", "Version information and credits.");
+        page_header(ui, "About");
         let repo = core::crash::GITHUB_REPO;
         let repo_url = format!("https://github.com/{repo}");
         let mut report_bug = false;
         group_label(ui, t, "App & build");
         settings_card(ui, t, |ui| {
-            row_with(
-                ui,
-                t,
-                "Zaprust",
-                "A native WhatsApp client in Rust, every feature built in",
-                |ui| {
-                    ui.label(
-                        RichText::new(if self.live_mode {
-                            if self.live.as_ref().is_some_and(|s| s.fake) {
-                                "Live mode (test mode)"
-                            } else {
-                                "Live mode"
-                            }
+            row_with(ui, t, "Zaprust", "", |ui| {
+                ui.label(
+                    RichText::new(if self.live_mode {
+                        if self.live.as_ref().is_some_and(|s| s.fake) {
+                            "Live mode (test mode)"
                         } else {
-                            "Demo mode"
-                        })
-                        .color(rgb(t.text_secondary)),
-                    );
-                },
-            );
+                            "Live mode"
+                        }
+                    } else {
+                        "Demo mode"
+                    })
+                    .color(rgb(t.text_secondary)),
+                );
+            });
             divider(ui, t);
             row_hl(
                 ui,
@@ -213,7 +196,7 @@ impl App {
                 "about.build",
                 t,
                 "Build",
-                "Git commit · build channel · target platform",
+                "",
                 |ui| {
                     ui.label(
                         RichText::new(format!(
@@ -278,7 +261,7 @@ impl App {
                 "about.contributors",
                 t,
                 "Contributors",
-                "A solo project for now, contributions welcome",
+                "",
                 |ui| {
                     ui.hyperlink_to("Contributors", format!("{repo_url}/graphs/contributors"));
                 },
@@ -291,7 +274,7 @@ impl App {
                 "about.report_bug",
                 t,
                 "Report a bug",
-                "Opens a prefilled GitHub issue",
+                "",
                 |ui| {
                     if crate::widgets::button(ui, t, "Report a bug", crate::widgets::Btn::Primary)
                         .clicked()

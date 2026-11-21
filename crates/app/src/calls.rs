@@ -7,8 +7,6 @@
 //! contact's avatar and name (missed calls in the danger
 //! color), a direction glyph with the type and duration line, a
 //! date, and an info button that opens the contact's info dock.
-//! A footer hint at the panel bottom explains the new call
-//! button.
 //!
 //! Portrait mode draws its own slice of the same data, cut to
 //! the owner's phone reference (the native dialer's log): big
@@ -364,31 +362,11 @@ impl App {
                     &mut self.calls.search,
                 );
                 ui.add_space(10.0);
-                // The footer hint, laid out before the content
-                // so the content region can leave exactly its
-                // height at the bottom: the hint is a galley
-                // with a hard wrap width (a Label asks its
-                // layout for the one-line width and never
-                // wraps, so at the minimum panel width it bled
-                // under the conversation), painted under the
-                // content region below.
+                // The content region takes the rest of the
+                // panel; there is no footer text under it (the
+                // new call button explains itself).
                 let width = ui.available_width();
-                let mut job = egui::text::LayoutJob::single_section(
-                    crate::i18n::t("calls.footer_hint"),
-                    egui::TextFormat {
-                        font_id: FontId::proportional(12.0),
-                        color: rgb(t.text_faint),
-                        ..Default::default()
-                    },
-                );
-                job.wrap.max_width = width;
-                // No halign on the job: a center-aligned job's
-                // galley paints its rows offset out of the
-                // rect it was measured for. The block is
-                // centered by hand at paint time instead.
-                let galley = ui.ctx().fonts_mut(|f| f.layout_job(job));
-                let footer_h = 6.0 + galley.size().y + 8.0;
-                let content_h = (ui.available_height() - footer_h).max(0.0);
+                let content_h = ui.available_height();
                 ui.allocate_ui_with_layout(
                     Vec2::new(width, content_h),
                     egui::Layout::top_down(egui::Align::Min),
@@ -647,11 +625,6 @@ impl App {
                         }
                     },
                 );
-                ui.add_space(6.0);
-                let (rect, _) =
-                    ui.allocate_exact_size(Vec2::new(width, galley.size().y), Sense::hover());
-                let galley_x = rect.min.x + ((width - galley.size().x) / 2.0).max(0.0);
-                ui.painter().galley(Pos2::new(galley_x, rect.min.y), galley, rgb(t.text_faint));
             });
         crate::widgets::soft_right_edge(root, panel.response.rect, t);
         if back {
@@ -693,7 +666,7 @@ impl App {
     /// and a call-back icon at the right edge. The new call
     /// action rides the tab's FAB (portrait.rs), the way the
     /// reference carries it, so the header holds no new call
-    /// button and the panel needs no footer hint.
+    /// button.
     ///
     /// The shortcuts are wired only to actions the app really
     /// has: the phone circle opens the new call contact picker

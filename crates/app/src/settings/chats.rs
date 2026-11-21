@@ -4,7 +4,7 @@ use super::*;
 
 impl App {
     pub(crate) fn page_chats(&mut self, ui: &mut egui::Ui, t: core::theme::Tokens) {
-        page_header(ui, &crate::i18n::t("settings.chats"), &crate::i18n::t("chats_page.subtitle"));
+        page_header(ui, &crate::i18n::t("settings.chats"));
         group_label(ui, t, "Behavior");
         settings_card(ui, t, |ui| {
             let mut v = self.enter_sends;

@@ -7,17 +7,13 @@ impl App {
     /// feature of the app now. The switches are the whole control
     /// surface; each feature's own options sit under its switch.
     pub(crate) fn page_features(&mut self, ui: &mut egui::Ui, t: core::theme::Tokens) {
-        page_header(
-            ui,
-            &crate::i18n::t("settings.features"),
-            "Everything here ships inside Zaprust and runs natively. Turn a feature off and it stays off; there is nothing to install.",
-        );
+        page_header(ui, &crate::i18n::t("settings.features"));
         group_label(ui, t, "Feature switches");
         let mut changed = false;
         settings_card(ui, t, |ui| {
-            for (i, (id, name, desc)) in FEATURE_ROWS.iter().enumerate() {
+            for (i, (id, name, _search_desc)) in FEATURE_ROWS.iter().enumerate() {
                 let mut on = self.feature_flags.get(*id).copied().unwrap_or(false);
-                row_hl(ui, &mut self.settings_highlight, self.motion, id, t, name, desc, |ui| {
+                row_hl(ui, &mut self.settings_highlight, self.motion, id, t, name, "", |ui| {
                     switch(ui, &mut on, t)
                 });
                 if on != self.feature_flags.get(*id).copied().unwrap_or(false) {

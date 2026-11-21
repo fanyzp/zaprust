@@ -306,16 +306,6 @@ pub fn community_home(
         {
             intents.open_chat = Some(announcement.id);
         }
-        // The caption sits on the announcement row's text axis,
-        // as its sub-caption.
-        ui.horizontal(|ui| {
-            ui.add_space(crate::chat_list::TEXT_X);
-            ui.label(
-                RichText::new(crate::i18n::t("community.announcements_caption"))
-                    .size(11.0)
-                    .color(rgb(t.text_faint)),
-            );
-        });
         ui.add_space(SP_SECTION);
         // The groups the user is in.
         section_label(ui, t, &crate::i18n::t("community.your_groups"));

@@ -4,7 +4,7 @@ use super::*;
 
 impl App {
     pub(crate) fn page_privacy(&mut self, ui: &mut egui::Ui, t: core::theme::Tokens) {
-        page_header(ui, &crate::i18n::t("settings.privacy"), &crate::i18n::t("privacy.subtitle"));
+        page_header(ui, &crate::i18n::t("settings.privacy"));
         group_label(ui, t, &crate::i18n::t("privacy.receipts_group"));
         settings_card(ui, t, |ui| {
             let mut v = self.read_receipts;
@@ -30,7 +30,7 @@ impl App {
                 "privacy.typing",
                 t,
                 &crate::i18n::t("privacy.typing"),
-                &crate::i18n::t("privacy.typing_caption"),
+                "",
                 |ui| switch(ui, &mut tp, t),
             );
             if tp != self.typing_indicators {
@@ -87,7 +87,7 @@ impl App {
                     ("Group adds", "groupadd"),
                 ] {
                     let current = state.get(key).cloned().unwrap_or_else(|| "-".to_owned());
-                    row_with(ui, t, label, "Tap to cycle the audience", |ui| {
+                    row_with(ui, t, label, "", |ui| {
                         if crate::widgets::button(
                             ui,
                             t,

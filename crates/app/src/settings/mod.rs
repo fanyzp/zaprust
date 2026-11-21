@@ -597,11 +597,6 @@ impl App {
                     _ => self.page_about(ui, t),
                 }
                 ui.add_space(18.0);
-                ui.label(
-                    RichText::new(crate::i18n::t("settings.apply_note"))
-                        .size(11.5)
-                        .color(rgb(t.text_faint)),
-                );
             });
         });
     }
@@ -769,11 +764,11 @@ fn tab_label(item: &str) -> String {
     }
 }
 
-/// Page title + one-line description, the same on every settings page.
-fn page_header(ui: &mut egui::Ui, title: &str, desc: &str) {
+/// Page title, the same on every settings page. No
+/// description line under it: entries in this app read as
+/// title plus control, the native settings pattern.
+fn page_header(ui: &mut egui::Ui, title: &str) {
     ui.label(RichText::new(title).font(crate::theme::semibold(21.0)));
-    ui.add_space(2.0);
-    ui.label(RichText::new(desc).size(12.5).color(ui.visuals().weak_text_color()));
     ui.add_space(16.0);
 }
 
@@ -845,17 +840,11 @@ fn row_with(
     resp.response.rect
 }
 
-fn theme_hint(id: ThemeId) -> &'static str {
-    match id {
-        ThemeId::Dark => "Your dynamic color, dark surfaces",
-        ThemeId::Light => "Your dynamic color, bright surfaces",
-        ThemeId::Auto => "Follows your system",
-    }
-}
-
 /// The native feature switchboard rows: (feature id, display
-/// name, one-line description), in display order. The ids match
-/// `crate::state::FEATURE_IDS`.
+/// name, search description), in display order. The ids match
+/// `crate::state::FEATURE_IDS`. The description is search
+/// index text only (see `search_candidates`); the rows
+/// themselves render name plus switch, no companion text.
 const FEATURE_ROWS: [(&str, &str, &str); 4] = [
     (
         "quick-replies",

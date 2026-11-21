@@ -83,7 +83,6 @@
 "attach.caption_hint" = "Add a caption…"
 "attach.view_once" = "View once: the photo opens one time, then it is gone"
 "attach.recording_cancel" = "Discard the recording"
-"attach.location_caption" = "Sends a place pin with a name and coordinates you can edit."
 "attach.location_name" = "Place name"
 "attach.location_name_hint" = "Home, office, campus…"
 "attach.location_send" = "Send location"
@@ -120,7 +119,6 @@
 "settings.back_chats" = "Back to chats"
 "settings.search" = "Search settings"
 "settings.no_match" = "No settings match your search."
-"settings.apply_note" = "Settings apply instantly and are persisted on this device."
 "settings.sub.enter_sends_on" = "Enter sends the message"
 "settings.sub.enter_sends_off" = "Ctrl+Enter sends"
 "settings.sub.notify_on" = "Message notifications on"
@@ -131,10 +129,8 @@
 "settings.sub.storage" = "Archive, session and caches"
 
 # ---- settings: appearance ----
-"appearance.subtitle" = "Theme, color and interface size."
 "appearance.theme" = "Theme"
 "appearance.dynamic_color" = "Dynamic color"
-"appearance.dynamic_color_caption" = "The whole palette is generated from this one color: surfaces, bubbles, badges and highlights."
 "appearance.motion" = "Motion"
 "appearance.motion_caption" = "Animations for panels, the picker and switching chats. Reduced keeps short fades and drops slides; Off is instant."
 "appearance.motion_full" = "Full"
@@ -146,33 +142,26 @@
 "appearance.contrast" = "Contrast"
 "appearance.saturation" = "Saturation"
 "appearance.glow" = "Glow"
-"appearance.glow_caption" = "Tinted glass surfaces with a lit top edge. Off keeps surfaces flat and neutral."
 "appearance.reset" = "Reset to defaults"
 "appearance.font_size" = "Font size"
-"appearance.font_size_caption" = "How large text and controls are drawn, across the whole app. Small windows also step down a little on their own."
 "appearance.font_small" = "Small"
 "appearance.font_default" = "Default"
 "appearance.font_large" = "Large"
 
 # ---- settings: chats ----
-"chats_page.subtitle" = "Sending, downloads and history behavior."
 "chats_page.enter_sends" = "Enter sends"
 "chats_page.enter_sends_caption" = "Off: Ctrl+Enter sends instead"
 
 # ---- settings: notifications ----
-"notifications.subtitle" = "What reaches your desktop, and how."
 "notifications.messages" = "Message notifications"
 "notifications.groups" = "Group notifications"
 "notifications.sound" = "Notification sound"
 "notifications.preview" = "Show message preview"
-"notifications.caption" = "Desktop notifications fire for new messages in unmuted chats. These switches govern which chats notify and how."
 
 # ---- settings: privacy ----
-"privacy.subtitle" = "Who sees what, and how your account is protected."
 "privacy.read_receipts" = "Read receipts"
 "privacy.read_receipts_caption" = "On: messages are marked read when you read them here, not on opening alone (senders see blue ticks). Off: Zaprust never marks anything read"
 "privacy.typing" = "Typing indicators"
-"privacy.typing_caption" = "Send typing presence while you compose (live mode)"
 "privacy.exceptions_title" = "Replace the exception list?"
 "privacy.exceptions_body" = "{name} is set to \"My contacts except…\", with a list of people chosen on your phone. Changing it here replaces that list with a plain audience, and Zaprust cannot restore the list."
 "privacy.exceptions_confirm" = "Replace"
@@ -188,7 +177,6 @@
 "plugins_page.no_remote" = "Remote catalog: no remote source is configured. Remote sources will appear here once one is set up."
 
 # ---- settings: storage ----
-"storage.subtitle" = "What Zaprust keeps on this device."
 "storage.linked_data" = "Linked account data"
 "storage.archive" = "Chat archive"
 "storage.clear_caches" = "Clear in-memory caches"
@@ -216,7 +204,6 @@
 "profile.remove_member_body" = "Remove {name} from this group?"
 "profile.leave_group_body" = "Leave {name}? You will stop receiving messages from this group."
 "profile.media" = "Media, links and docs"
-"profile.media_caption" = "Counted from the messages loaded in this conversation."
 "profile.group_settings" = "Group settings"
 "profile.invite_link" = "Invite link"
 "profile.show_link" = "Show link"
@@ -266,7 +253,6 @@
 
 # ---- community home ----
 "community.announcements" = "Announcements"
-"community.announcements_caption" = "Only admins can post"
 "community.created" = "Community"
 "community.groups_count" = "{count} groups"
 "community.back" = "Back to community"
@@ -298,7 +284,6 @@
 "calls.new_call" = "New call"
 "calls.shortcut_phone" = "Phone"
 "calls.shortcut_favorites" = "Favorites"
-"calls.footer_hint" = "To start a new call, tap the new call button at the top right."
 "calls.picker_empty" = "No contacts match this search."
 
 # ---- my profile (own profile editing) ----
@@ -326,7 +311,6 @@
 "crash.dismiss" = "Dismiss"
 
 "appearance.interface" = "Interface"
-"appearance.finetuning_caption" = "Saturation and contrast adjust the active theme's colors. They apply to built-in and custom themes alike."
 "privacy.account" = "Account privacy"
 "privacy.default_timer" = "Default message timer"
 "privacy.default_timer_caption" = "New chats start with this disappearing-messages timer. Chats you already have keep their own setting."

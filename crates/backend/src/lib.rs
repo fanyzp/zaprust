@@ -1272,6 +1272,21 @@ pub enum BackendEvent {
         /// Their current emoji; empty means removed.
         emoji: String,
     },
+    /// A [`BackendCommand::React`] never reached the server: the
+    /// target was invalid (a group target without its author) or
+    /// the send itself failed. The app rolls the optimistic
+    /// reaction back to the last state the server confirmed and
+    /// shows `message` as the notice. Deliberately not the generic
+    /// [`BackendEvent::Error`]: that path also fails pending
+    /// message echoes, which a refused reaction must not touch.
+    ReactionFailed {
+        /// Chat JID.
+        chat_jid: String,
+        /// Protocol ID of the target message.
+        message_id: String,
+        /// Why the reaction failed, in user words.
+        message: String,
+    },
     /// A message was edited by its sender.
     MessageEdited {
         /// Chat JID.

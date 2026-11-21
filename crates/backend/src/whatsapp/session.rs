@@ -825,6 +825,18 @@ pub(super) async fn run_async(
                     });
                 }
                 BackendCommand::React { chat_jid, message_id, sender_jid, from_me, emoji } => {
+                    // Failures answer with ReactionFailed, not the
+                    // generic Error: the app must roll the one
+                    // optimistic reaction back, and the generic
+                    // path would also fail pending message echoes
+                    // that have nothing to do with this reaction.
+                    let fail = |message: String| {
+                        events.emit(BackendEvent::ReactionFailed {
+                            chat_jid: chat_jid.clone(),
+                            message_id: message_id.clone(),
+                            message,
+                        });
+                    };
                     match chat_jid.parse::<Jid>() {
                         Ok(jid) => {
                             let sender = sender_jid.and_then(|s| s.parse::<Jid>().ok());
@@ -835,19 +847,13 @@ pub(super) async fn run_async(
                             match target {
                                 Ok(target) => {
                                     if let Err(e) = client.send_reaction(&target, &emoji).await {
-                                        events.emit(BackendEvent::Error {
-                                            message: format!("Reaction failed: {e}"),
-                                        });
+                                        fail(format!("Reaction failed: {e}"));
                                     }
                                 }
-                                Err(e) => events.emit(BackendEvent::Error {
-                                    message: format!("Reaction target invalid: {e}"),
-                                }),
+                                Err(e) => fail(format!("Reaction target invalid: {e}")),
                             }
                         }
-                        Err(e) => events.emit(BackendEvent::Error {
-                            message: format!("Invalid chat address: {e}"),
-                        }),
+                        Err(e) => fail(format!("Invalid chat address: {e}")),
                     }
                 }
                 BackendCommand::MarkAsRead { chat_jid, sender_jid, message_ids } => {

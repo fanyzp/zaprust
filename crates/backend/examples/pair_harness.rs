@@ -28,6 +28,9 @@ fn summarize(event: &BackendEvent) -> String {
         BackendEvent::MessageSent { message_id, .. } => format!("MessageSent id={message_id}"),
         BackendEvent::Receipt { kind, .. } => format!("Receipt {kind:?}"),
         BackendEvent::ReactionUpdate { .. } => "ReactionUpdate".to_owned(),
+        BackendEvent::ReactionFailed { message, .. } => {
+            format!("ReactionFailed {message}")
+        }
         BackendEvent::MessageEdited { .. } => "MessageEdited".to_owned(),
         BackendEvent::MessageRevoked { .. } => "MessageRevoked".to_owned(),
         BackendEvent::DisappearingChanged { .. } => "DisappearingChanged".to_owned(),

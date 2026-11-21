@@ -295,7 +295,7 @@ fn waiting_backend_emits_qr_then_pair_code_in_crockford_set() {
     let ch = spawn(FakeBackend::waiting());
     ch.commands.send(BackendCommand::ConnectQr).unwrap();
     let qr = next(&ch, "QrCode");
-    assert!(matches!(qr, BackendEvent::QrCode { ref payload } if !payload.is_empty()));
+    assert!(matches!(qr, BackendEvent::QrCode { ref payload, .. } if !payload.is_empty()));
     ch.commands.send(BackendCommand::ConnectPairCode { phone: "12025550123".to_owned() }).unwrap();
     let code = next(&ch, "PairCode");
     let BackendEvent::PairCode { code } = code else {

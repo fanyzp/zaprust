@@ -262,10 +262,10 @@ pub(super) async fn run_async(
         // and drops events when its smaller queue fills, so ordered
         // delivery is requested explicitly.
         .with_event_delivery(EventDelivery::Ordered { capacity: EVENT_QUEUE_CAPACITY })
-        .on_qr_code(move |code, _timeout| {
+        .on_qr_code(move |code, timeout| {
             let sink = sink.clone();
             async move {
-                sink.emit(BackendEvent::QrCode { payload: code });
+                sink.emit(BackendEvent::QrCode { payload: code, valid_for: timeout });
             }
         })
         .on_pair_code(move |code, _timeout| {

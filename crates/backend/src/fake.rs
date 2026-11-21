@@ -658,7 +658,12 @@ impl Backend for FakeBackend {
         while let Ok(cmd) = commands.recv() {
             match cmd {
                 BackendCommand::ConnectQr => {
-                    events.emit(BackendEvent::QrCode { payload: FAKE_QR_PAYLOAD.to_owned() });
+                    events.emit(BackendEvent::QrCode {
+                        payload: FAKE_QR_PAYLOAD.to_owned(),
+                        // A test double: its one scripted code does
+                        // not rotate, so the window is nominal.
+                        valid_for: std::time::Duration::from_secs(3600),
+                    });
                     if self.auto_connect {
                         emit_linked_script(&events, &call_state, &privacy_state);
                         if self.demo_script && !script_started {
@@ -1660,7 +1665,13 @@ mod tests {
     fn qr_flow_emits_payload_then_linked_script() {
         let ch = start(FakeBackend::auto());
         ch.commands.send(BackendCommand::ConnectQr).unwrap();
-        assert_eq!(next(&ch), BackendEvent::QrCode { payload: FAKE_QR_PAYLOAD.to_owned() });
+        assert_eq!(
+            next(&ch),
+            BackendEvent::QrCode {
+                payload: FAKE_QR_PAYLOAD.to_owned(),
+                valid_for: Duration::from_secs(3600),
+            }
+        );
         assert!(matches!(next(&ch), BackendEvent::Connected { .. }));
         for _ in 0..6 {
             let _ = next(&ch);

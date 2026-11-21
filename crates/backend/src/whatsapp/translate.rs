@@ -305,6 +305,13 @@ pub(super) fn translate_event(event: &Event, sink: &EventSink, own_jids: &[Strin
                 message: format!("Pairing code error: {err:?}").chars().take(160).collect(),
             });
         }
+        Event::PairingQrCodesExhausted(_) => {
+            // The library issues no further codes for this session
+            // and (unless a pair-code flow is outstanding) closes
+            // the connection: a QR still on screen is dead, and the
+            // app must stop presenting it as scannable.
+            sink.emit(BackendEvent::QrExpired);
+        }
         _ => {}
     }
 }
@@ -968,5 +975,27 @@ mod embedded_link_preview_tests {
         assert_eq!(map.get("defense").map(String::as_str), Some("on_standard"));
         assert_eq!(map.get("futurecat").map(String::as_str), Some("futureval"));
         assert_eq!(map.len(), 5, "nothing the server sent is dropped");
+    }
+}
+
+#[cfg(test)]
+mod qr_expiry_translate_tests {
+    use super::translate_event;
+    use crate::{BackendEvent, EventSink};
+    use whatsapp_rust::wacore::types::events::{Event, PairingQrCodesExhausted};
+
+    /// Item 107: the library's rotation budget ending used to
+    /// fall into the catch-all arm and vanish, leaving the last
+    /// expired code on screen forever. It must surface as
+    /// `BackendEvent::QrExpired` so the app can retire the code.
+    #[test]
+    fn qr_codes_exhausted_maps_to_qr_expired() {
+        let (tx, rx) = std::sync::mpsc::sync_channel(4);
+        let sink = EventSink { tx, wake: std::sync::Arc::new(|| {}) };
+        let event = Event::PairingQrCodesExhausted(
+            PairingQrCodesExhausted::builder().disconnected(true).build(),
+        );
+        translate_event(&event, &sink, &[]);
+        assert!(matches!(rx.try_recv(), Ok(BackendEvent::QrExpired)));
     }
 }

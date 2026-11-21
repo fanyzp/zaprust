@@ -18,6 +18,7 @@ use backend::{
 fn summarize(event: &BackendEvent) -> String {
     match event {
         BackendEvent::QrCode { .. } => "QrCode".to_owned(),
+        BackendEvent::QrExpired => "QrExpired".to_owned(),
         BackendEvent::PairCode { code } => format!("PairCode {code}"),
         BackendEvent::Connected { account } => format!("Connected account={account}"),
         BackendEvent::LoggedOut => "LoggedOut".to_owned(),

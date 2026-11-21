@@ -966,7 +966,17 @@ pub enum BackendEvent {
     QrCode {
         /// The raw QR payload string.
         payload: String,
+        /// How long this payload stays valid, as reported by the
+        /// protocol library when it issued the code. A payload past
+        /// its window is dead even if it is still on screen, so
+        /// consumers must stop presenting it as scannable.
+        valid_for: std::time::Duration,
     },
+    /// Every QR payload for this session has expired unscanned.
+    /// The protocol library stops issuing codes at this point (and
+    /// closes the connection unless a pairing-code flow is still
+    /// outstanding), so any code still held is dead.
+    QrExpired,
     /// A pairing code to show the user (8 characters).
     PairCode {
         /// The pairing code.

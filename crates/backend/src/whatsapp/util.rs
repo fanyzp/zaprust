@@ -20,13 +20,18 @@ pub(super) type ProtoCache = std::sync::Arc<
 >;
 
 /// Session-scoped poll secrets, keyed by (chat JID, message ID):
-/// voting needs the creation secret. The backend caches it when
-/// this session creates a poll AND when a poll creation message
-/// arrives, because the secret travels inside the creation
-/// message's context info (that is how every WhatsApp client
-/// learns it). Polls from before the session have no cached
-/// secret and answer with an honest error. Secrets are never
-/// logged or persisted.
+/// voting needs the creation secret, and so does decrypting
+/// other people's votes. The backend caches it when this session
+/// creates a poll AND when a poll creation message arrives,
+/// because the secret travels inside the creation message's
+/// context info (that is how every WhatsApp client learns it).
+/// The app additionally archives the secret with the poll in its
+/// encrypted archive and hands it back at the start of later
+/// sessions ([`crate::BackendCommand::RegisterPollSecret`]),
+/// which is what keeps polls from before the session votable
+/// and talliable. A poll whose secret none of those paths
+/// supplied answers votes with an honest error and its incoming
+/// votes are dropped undecrypted. Secrets are never logged.
 pub(super) type PollSecrets = std::sync::Arc<
     std::sync::Mutex<std::collections::HashMap<(String, String), (String, Vec<u8>, Vec<String>)>>,
 >;
@@ -69,6 +74,51 @@ pub(super) fn received_poll_secret(
         .filter(|s| !s.is_empty())?;
     let names = poll.options.iter().map(|o| o.option_name.clone().unwrap_or_default()).collect();
     Some((secret, names))
+}
+
+/// Extracts a poll vote's routing and ciphertext from a protocol
+/// message: the poll's message ID (from the vote's creation
+/// message key) and the encrypted payload + IV. Returns `None`
+/// for anything that is not a poll vote carrying both parts.
+/// Decryption itself needs the client (the creator/voter PN/LID
+/// aliases live in its mapping cache), so it happens in the
+/// session's message handler, not here.
+pub(super) fn poll_vote_payload(
+    msg: &whatsapp_rust::prelude::wa::Message,
+) -> Option<(String, Vec<u8>, Vec<u8>)> {
+    let update = msg.poll_update_message.as_option()?;
+    let poll_id = update
+        .poll_creation_message_key
+        .as_option()
+        .and_then(|key| key.id.clone())
+        .filter(|id| !id.is_empty())?;
+    let vote = update.vote.as_option()?;
+    let payload = vote.enc_payload.clone().filter(|p| !p.is_empty())?;
+    let iv = vote.enc_iv.clone().filter(|iv| !iv.is_empty())?;
+    Some((poll_id, payload, iv))
+}
+
+/// Maps decrypted vote option hashes back to option indices.
+/// Votes reference options by the SHA-256 of the option name
+/// (see `wacore::poll::compute_option_hash`); a hash that names
+/// no option of this poll is dropped. The result is sorted and
+/// deduplicated: it is the voter's current selection set.
+pub(super) fn selected_indices(option_names: &[String], hashes: &[Vec<u8>]) -> Vec<usize> {
+    let known: Vec<([u8; 32], usize)> = option_names
+        .iter()
+        .enumerate()
+        .map(|(idx, name)| (whatsapp_rust::wacore::poll::compute_option_hash(name), idx))
+        .collect();
+    let mut out: Vec<usize> = hashes
+        .iter()
+        .filter_map(|hash| {
+            let hash: &[u8; 32] = hash.as_slice().try_into().ok()?;
+            known.iter().find(|(known, _)| known == hash).map(|(_, idx)| *idx)
+        })
+        .collect();
+    out.sort_unstable();
+    out.dedup();
+    out
 }
 
 /// Locks a session cache, recovering from poisoning instead of
@@ -1065,6 +1115,97 @@ mod tests {
         // Not a video at all.
         assert!(video_thumbnail_of(&voice_proto_complete()).is_none());
         assert!(video_thumbnail_of(&wa::Message::default()).is_none());
+    }
+
+    /// Builds a wire poll-vote message the way a voter's client
+    /// does: the selection's option hashes encrypted under the
+    /// poll's creation secret with the library's own crypto.
+    fn vote_message(
+        poll_id: &str,
+        secret: &[u8],
+        creator: &str,
+        voter: &str,
+        selected_names: &[&str],
+    ) -> wa::Message {
+        use whatsapp_rust::wacore::poll::{compute_option_hash, encrypt_poll_vote_with_secret};
+        let hashes: Vec<Vec<u8>> =
+            selected_names.iter().map(|name| compute_option_hash(name).to_vec()).collect();
+        let (payload, iv) =
+            encrypt_poll_vote_with_secret(&hashes, secret, poll_id, creator, voter).unwrap();
+        let mut key = wa::MessageKey::default();
+        key.id = Some(poll_id.to_owned());
+        let mut vote = wa::message::PollEncValue::default();
+        vote.enc_payload = Some(payload);
+        vote.enc_iv = Some(iv.to_vec());
+        let mut update = wa::message::PollUpdateMessage::default();
+        update.poll_creation_message_key = MessageField::some(key);
+        update.vote = MessageField::some(vote);
+        let mut msg = wa::Message::default();
+        msg.poll_update_message = MessageField::some(update);
+        msg
+    }
+
+    /// A real encrypted vote payload extracts, decrypts and maps
+    /// back to the selected option indices; a changed vote is a
+    /// new payload whose selection replaces the old one wholesale.
+    #[test]
+    fn poll_vote_payload_round_trips_through_the_library_crypto() {
+        use whatsapp_rust::wacore::poll::decrypt_poll_vote_with_secret;
+        let secret = [7u8; 32];
+        let creator = "10000000001@s.whatsapp.net";
+        let voter = "10000000007@s.whatsapp.net";
+        let names: Vec<String> = vec!["Alpha".into(), "Beta".into(), "Gamma".into()];
+
+        let msg = vote_message("poll-1", &secret, creator, voter, &["Gamma", "Alpha"]);
+        let (poll_id, payload, iv) = poll_vote_payload(&msg).expect("a vote extracts");
+        assert_eq!(poll_id, "poll-1");
+        let hashes = decrypt_poll_vote_with_secret(
+            whatsapp_rust::PollVoteCiphertext { enc_payload: &payload, enc_iv: &iv },
+            &secret,
+            &poll_id,
+            creator,
+            voter,
+        )
+        .expect("the vote decrypts under the creation secret");
+        assert_eq!(selected_indices(&names, &hashes), vec![0, 2]);
+
+        // The voter's changed vote: a fresh payload selecting only
+        // Beta. Decrypted the same way, it is the replacement set.
+        let msg = vote_message("poll-1", &secret, creator, voter, &["Beta"]);
+        let (poll_id, payload, iv) = poll_vote_payload(&msg).expect("a vote extracts");
+        let hashes = decrypt_poll_vote_with_secret(
+            whatsapp_rust::PollVoteCiphertext { enc_payload: &payload, enc_iv: &iv },
+            &secret,
+            &poll_id,
+            creator,
+            voter,
+        )
+        .unwrap();
+        assert_eq!(selected_indices(&names, &hashes), vec![1]);
+
+        // Under a different secret the same payload does not open.
+        let wrong = [9u8; 32];
+        assert!(decrypt_poll_vote_with_secret(
+            whatsapp_rust::PollVoteCiphertext { enc_payload: &payload, enc_iv: &iv },
+            &wrong,
+            &poll_id,
+            creator,
+            voter,
+        )
+        .is_err());
+    }
+
+    /// Non-votes and incomplete votes extract as nothing.
+    #[test]
+    fn poll_vote_payload_rejects_non_votes() {
+        assert!(poll_vote_payload(&wa::Message::default()).is_none());
+        let mut update = wa::message::PollUpdateMessage::default();
+        let mut key = wa::MessageKey::default();
+        key.id = Some("poll-1".to_owned());
+        update.poll_creation_message_key = MessageField::some(key);
+        let mut msg = wa::Message::default();
+        msg.poll_update_message = MessageField::some(update);
+        assert!(poll_vote_payload(&msg).is_none(), "a vote without ciphertext is nothing");
     }
 
     /// An archived video reference rebuilds validated download

@@ -36,6 +36,8 @@ pub const FAKE_QR_PAYLOAD: &str = "2@FAKE0PAYLOAD,AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
      BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=,\
      CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC=,1";
 
+/// JID of the fake account itself (the "me" of the script).
+pub const FAKE_OWN_JID: &str = "10000000000@s.whatsapp.net";
 /// JID of the scripted DM chat.
 pub const FAKE_DM_JID: &str = "10000000001@s.whatsapp.net";
 /// JID of the scripted group chat.
@@ -197,6 +199,12 @@ pub fn scripted_messages() -> Vec<LiveMessage> {
         my_votes: Vec::new(),
         correct: None,
     };
+    // The scripted poll carries a (placeholder) creation secret
+    // and its creator, like a real creation message does, so the
+    // app archives them and re-registers the secret next session.
+    // The fake does no poll crypto; the bytes are a stand-in.
+    poll.poll_secret = Some(vec![0xFA; 32]);
+    poll.poll_creator = Some(FAKE_DM_JID.to_owned());
     let mut link = LiveMessage::text(
         "fake-link-1",
         FAKE_DM_JID,
@@ -394,15 +402,16 @@ pub struct DemoStep {
 pub fn demo_script() -> Vec<DemoStep> {
     const BASE: i64 = 1_700_000_300;
     let step = |secs: u64, event: BackendEvent| DemoStep { at: Duration::from_secs(secs), event };
-    // The linked lunch poll, re-upserted with two more votes.
-    let mut poll = scripted_messages()
-        .into_iter()
-        .find(|m| matches!(m.kind, crate::LiveMessageKind::Poll { .. }))
-        .expect("the linked script carries a poll");
-    if let crate::LiveMessageKind::Poll { options, .. } = &mut poll.kind {
-        options[0].1 += 1;
-        options[2].1 += 1;
-    }
+    // The linked lunch poll collects two votes, reported as vote
+    // events the way the real backend reports decrypted votes
+    // (tallies are the app's aggregation job, never an upsert).
+    let poll_vote = |voter: &str, selected: Vec<usize>| BackendEvent::PollVote {
+        chat_jid: FAKE_DM_JID.to_owned(),
+        message_id: "fake-poll-1".to_owned(),
+        voter_jid: voter.to_owned(),
+        from_me: false,
+        selected,
+    };
     let mut voice = LiveMessage::text(
         "fake-live-4",
         FAKE_GROUP_JID,
@@ -466,7 +475,8 @@ pub fn demo_script() -> Vec<DemoStep> {
                 false,
             )),
         ),
-        step(19, BackendEvent::MessageUpsert(poll)),
+        step(19, poll_vote(FAKE_DM_JID, vec![0])),
+        step(21, poll_vote("10000000007@s.whatsapp.net", vec![2])),
         step(
             25,
             BackendEvent::ReactionUpdate {
@@ -1025,35 +1035,41 @@ impl Backend for FakeBackend {
                         my_votes: Vec::new(),
                         correct: None,
                     };
+                    // A created poll carries its (placeholder)
+                    // secret and creator, like the real backend's
+                    // creation upsert does.
+                    msg.poll_secret = Some(vec![0xFA; 32]);
+                    msg.poll_creator = Some(FAKE_OWN_JID.to_owned());
                     polls.insert(msg.id.clone(), msg.clone());
                     events.emit(BackendEvent::MessageUpsert(msg));
                 }
-                BackendCommand::VotePoll { chat_jid: _, message_id, options } => {
+                BackendCommand::RegisterPollSecret { chat_jid, message_id, .. } => {
+                    if let Some(log) = &command_log {
+                        log.lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .push(format!("poll_secret:{chat_jid}:{message_id}"));
+                    }
+                }
+                BackendCommand::VotePoll { chat_jid, message_id, options } => {
+                    // The contract matches the real backend: a
+                    // vote is answered by a PollVote event carrying
+                    // my new full selection (replace-set semantics:
+                    // the payload is my whole current vote set, not
+                    // a sequence of toggle clicks, and an empty set
+                    // retracts). Tallies are the app's aggregation
+                    // job; the fake only keeps its own record of my
+                    // votes so its model of the poll stays coherent.
                     if let Some(msg) = polls.get_mut(&message_id) {
-                        if let crate::LiveMessageKind::Poll { options: opts, my_votes, .. } =
-                            &mut msg.kind
-                        {
-                            // Replace-set semantics (the contract on
-                            // BackendCommand::VotePoll): the payload
-                            // is my new full vote set, not a sequence
-                            // of toggle clicks. Recompute the counts
-                            // as old counts minus my old votes plus
-                            // my new votes, so an empty set retracts
-                            // and a grown multi-select set keeps the
-                            // votes it already had.
-                            for old in my_votes.iter() {
-                                if let Some(entry) = opts.get_mut(*old) {
-                                    entry.1 = entry.1.saturating_sub(1);
-                                }
-                            }
-                            for idx in &options {
-                                if let Some(entry) = opts.get_mut(*idx) {
-                                    entry.1 = entry.1.saturating_add(1);
-                                }
-                            }
-                            *my_votes = options;
+                        if let crate::LiveMessageKind::Poll { my_votes, .. } = &mut msg.kind {
+                            *my_votes = options.clone();
                         }
-                        events.emit(BackendEvent::MessageUpsert(msg.clone()));
+                        events.emit(BackendEvent::PollVote {
+                            chat_jid,
+                            message_id,
+                            voter_jid: FAKE_OWN_JID.to_owned(),
+                            from_me: true,
+                            selected: options,
+                        });
                     }
                 }
                 BackendCommand::React { chat_jid, message_id, emoji, .. } => {
@@ -1847,10 +1863,8 @@ mod tests {
         // post and the delivered-to-read receipt progression.
         assert!(has(&|e| matches!(e, BackendEvent::ReactionUpdate { .. })), "reactions land");
         assert!(
-            has(
-                &|e| matches!(e, BackendEvent::MessageUpsert(m) if matches!(m.kind, crate::LiveMessageKind::Poll { .. }))
-            ),
-            "poll votes arrive as an upsert"
+            has(&|e| matches!(e, BackendEvent::PollVote { .. })),
+            "poll votes arrive as vote events"
         );
         assert!(
             has(

@@ -33,6 +33,9 @@ fn summarize(event: &BackendEvent) -> String {
         }
         BackendEvent::StarFailed { message, .. } => format!("StarFailed {message}"),
         BackendEvent::PinFailed { message, .. } => format!("PinFailed {message}"),
+        BackendEvent::PollVote { selected, .. } => {
+            format!("PollVote {} option(s)", selected.len())
+        }
         BackendEvent::MessageEdited { .. } => "MessageEdited".to_owned(),
         BackendEvent::MessageRevoked { .. } => "MessageRevoked".to_owned(),
         BackendEvent::DisappearingChanged { .. } => "DisappearingChanged".to_owned(),

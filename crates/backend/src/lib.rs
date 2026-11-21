@@ -438,6 +438,26 @@ pub enum BackendCommand {
         /// Selected option indices.
         options: Vec<usize>,
     },
+    /// Hand the backend a poll creation secret the app kept in
+    /// its archive, so a poll created or received in an earlier
+    /// session stays votable and its incoming votes stay
+    /// decryptable in this one. The backend's own secret cache is
+    /// session-scoped (it learns secrets from creations it makes
+    /// or receives); this command is how the archived copy gets
+    /// back in. Registering is silent: no event answers it.
+    RegisterPollSecret {
+        /// Chat JID.
+        chat_jid: String,
+        /// Protocol ID of the poll message.
+        message_id: String,
+        /// JID of the poll's creator.
+        creator_jid: String,
+        /// The creation secret bytes.
+        secret: Vec<u8>,
+        /// Option labels, in poll order (votes refer to options
+        /// by index into this list).
+        options: Vec<String>,
+    },
     /// Set (or clear, with an empty string) my reaction to a message.
     React {
         /// Chat JID.
@@ -1151,6 +1171,34 @@ pub struct LiveMessage {
     /// locally. `None` for every other kind, and for videos
     /// whose payload carried no thumbnail.
     pub video_thumbnail: Option<Vec<u8>>,
+    /// For a poll message: the poll's creation secret, carried in
+    /// the creation message's context info. Votes on the poll are
+    /// encrypted under a key derived from this secret, so the
+    /// backend needs it both to vote and to decrypt other people's
+    /// votes. It travels on the message so the app can archive it
+    /// with the poll (in its encrypted archive) and hand it back
+    /// with [`BackendCommand::RegisterPollSecret`] in later
+    /// sessions; without that, a poll from before the current
+    /// session could neither be voted on nor tallied. `None` for
+    /// every other kind, and for polls whose creation payload
+    /// carried no secret.
+    pub poll_secret: Option<Vec<u8>>,
+    /// For a poll message: the JID of the poll's creator (the
+    /// creation message's author). The vote encryption key is
+    /// derived over the creator and voter JIDs, so the creator is
+    /// part of the poll's crypto identity and is archived and
+    /// re-registered together with [`LiveMessage::poll_secret`].
+    /// `None` for every other kind.
+    pub poll_creator: Option<String>,
+    /// For a poll message: the latest known ballot per voter,
+    /// `(voter JID, selected option indices)`, as aggregated by
+    /// the app from [`BackendEvent::PollVote`] events. The
+    /// backend never fills this in (it reports votes, it does not
+    /// keep tally state); the archive carries it on the message
+    /// so the app can reload it after a restart and keep applying
+    /// last-vote-wins replacements instead of double-counting a
+    /// voter whose earlier ballot it has forgotten.
+    pub poll_ballots: Vec<(String, Vec<usize>)>,
 }
 
 impl LiveMessage {
@@ -1188,6 +1236,9 @@ impl LiveMessage {
             voice_ref: None,
             video_ref: None,
             video_thumbnail: None,
+            poll_secret: None,
+            poll_creator: None,
+            poll_ballots: Vec::new(),
         }
     }
 }
@@ -1317,6 +1368,28 @@ pub enum BackendEvent {
         message_id: String,
         /// Why the pin failed, in user words.
         message: String,
+    },
+    /// A vote landed on a poll. Votes arrive on the wire as
+    /// separate encrypted messages; the backend decrypts them
+    /// with the poll's creation secret and reports the voter's
+    /// full current selection (last-vote-wins: a later event for
+    /// the same voter replaces the earlier one wholesale, and an
+    /// empty selection means the voter cleared their vote).
+    /// Aggregating the selections into tallies is the app's job.
+    /// A vote whose poll secret the backend does not know cannot
+    /// be decrypted and is never reported.
+    PollVote {
+        /// Chat JID.
+        chat_jid: String,
+        /// Protocol ID of the poll message.
+        message_id: String,
+        /// JID of the voter.
+        voter_jid: String,
+        /// True when the vote is the account's own (cast from
+        /// this or another of the account's devices).
+        from_me: bool,
+        /// Option indices the voter currently selects.
+        selected: Vec<usize>,
     },
     /// A message was edited by its sender.
     MessageEdited {

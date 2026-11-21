@@ -31,8 +31,8 @@ use super::util::{
     abort_latest, build_message_target, cap_poll_secrets, download_proto, fetch_photo_by_ref,
     fetch_photo_bytes, fetch_video_by_ref, fetch_video_bytes, fetch_video_file_by_ref,
     fetch_video_to_file, fetch_voice_by_ref, fetch_voice_bytes, lock_cache, parse_address,
-    proto_is_view_once, received_poll_secret, spawn_latest, unix_now, LatestTask, PollSecrets,
-    ProtoCache,
+    poll_vote_payload, proto_is_view_once, received_poll_secret, selected_indices, spawn_latest,
+    unix_now, LatestTask, PollSecrets, ProtoCache,
 };
 
 /// How many session events may wait for the event callbacks.
@@ -352,6 +352,53 @@ pub(super) async fn run_async(
                         (ctx.info.source.sender.to_string(), secret, names),
                     );
                     cap_poll_secrets(&secrets);
+                }
+                // A poll vote is a standalone encrypted message,
+                // never a chat message: decrypt it against the
+                // poll's creation secret and report the voter's
+                // current selection. The decryption runs inline:
+                // it is local work (the client's alias cache plus
+                // the vote crypto, no network), and inline keeps
+                // votes in arrival order behind the poll creation
+                // they belong to, which last-vote-wins relies on.
+                // A vote whose secret this session does not know
+                // (and the app has not registered from its
+                // archive) cannot be read and is dropped, never
+                // guessed at.
+                if let Some((poll_id, payload, iv)) = poll_vote_payload(&ctx.message) {
+                    let chat_jid = ctx.info.source.chat.to_string();
+                    let cached =
+                        lock_cache(&secrets).get(&(chat_jid.clone(), poll_id.clone())).cloned();
+                    if let Some((creator, secret, names)) = cached {
+                        let voter = ctx.info.source.sender.clone();
+                        if let Ok(creator_jid) = creator.parse::<Jid>() {
+                            let ciphertext = whatsapp_rust::PollVoteCiphertext {
+                                enc_payload: &payload,
+                                enc_iv: &iv,
+                            };
+                            if let Ok(hashes) = ctx
+                                .client
+                                .polls()
+                                .decrypt_vote_raw(
+                                    ciphertext,
+                                    &secret,
+                                    &poll_id,
+                                    &creator_jid,
+                                    &voter,
+                                )
+                                .await
+                            {
+                                sink.emit(BackendEvent::PollVote {
+                                    chat_jid,
+                                    message_id: poll_id,
+                                    voter_jid: voter.to_non_ad().to_string(),
+                                    from_me: ctx.info.source.is_from_me,
+                                    selected: selected_indices(&names, &hashes),
+                                });
+                            }
+                        }
+                    }
+                    return;
                 }
                 {
                     let key = (ctx.info.source.chat.to_string(), ctx.info.id.to_string());
@@ -676,13 +723,31 @@ pub(super) async fn run_async(
                         }),
                     }
                 }
+                BackendCommand::RegisterPollSecret {
+                    chat_jid,
+                    message_id,
+                    creator_jid,
+                    secret,
+                    options,
+                } => {
+                    // The app kept this poll's creation secret in
+                    // its archive from an earlier session; putting
+                    // it in the session cache makes the poll
+                    // votable and its incoming votes decryptable
+                    // again. Silent by contract: nothing answers.
+                    lock_cache(&poll_secrets)
+                        .insert((chat_jid, message_id), (creator_jid, secret, options));
+                    cap_poll_secrets(&poll_secrets);
+                }
                 BackendCommand::VotePoll { chat_jid, message_id, options } => {
                     // Voting needs the poll's creation secret.
                     // It is cached at creation for own polls and
                     // on receipt for other people's polls (the
                     // secret travels inside the creation message,
-                    // see docs/research/poll-voting.md). A poll
-                    // whose secret this session never saw gets an
+                    // see docs/research/poll-voting.md), and the
+                    // app re-registers the secrets it archived for
+                    // polls from earlier sessions. A poll whose
+                    // secret none of those paths supplied gets an
                     // honest error, never a fake vote.
                     let cached = lock_cache(&poll_secrets)
                         .get(&(chat_jid.clone(), message_id.clone()))
@@ -710,10 +775,12 @@ pub(super) async fn run_async(
                         }
                         (None, _) => events.emit(BackendEvent::Error {
                             message: "This poll cannot be voted on from Zaprust: its \
-                                          creation secret was not in the message data this \
-                                          session received, so the poll predates this session \
-                                          or the sender's client did not include it. Secrets \
-                                          are not kept across restarts."
+                                          creation secret is not available. The secret \
+                                          travels with the poll when it is created or \
+                                          received, and Zaprust keeps it with the archived \
+                                          poll; this poll's secret never reached this \
+                                          device, so the poll predates the archive or the \
+                                          sender's client did not include it."
                                 .to_owned(),
                         }),
                         (_, Err(e)) => events.emit(BackendEvent::Error {

@@ -430,13 +430,24 @@ pub(super) fn translate_message(ctx: &MessageContext) -> Option<(LiveChat, LiveM
     // The author JID travels with every message: replies quote it
     // as the context participant, group reactions target it.
     msg.sender_jid = Some(source.sender.to_string());
+    // A poll creation's secret travels with the message so the
+    // app can archive it with the poll and hand it back in later
+    // sessions; without it the poll could neither be voted on nor
+    // tallied after a restart. The creator is the message author.
+    if matches!(msg.kind, LiveMessageKind::Poll { .. }) {
+        if let Some((secret, _names)) = super::util::received_poll_secret(&ctx.message) {
+            msg.poll_secret = Some(secret);
+            msg.poll_creator = Some(source.sender.to_string());
+        }
+    }
     Some((chat, msg))
 }
 
 /// Classifies a message's rich kind from its protocol payload.
-/// Poll *votes* arrive encrypted as separate protocol messages and
-/// are not aggregated here (documented limitation); poll creations
-/// map fully.
+/// Poll *votes* arrive encrypted as separate protocol messages;
+/// they never reach this classifier (the session decrypts them
+/// and reports them as `BackendEvent::PollVote`), so only poll
+/// creations map here.
 pub(super) fn classify_kind(ctx: &MessageContext) -> (LiveMessageKind, bool) {
     classify_message(&ctx.message)
 }

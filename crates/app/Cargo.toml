@@ -58,6 +58,11 @@ opus = "0.4.0"
 # sources, so no platform needs a system codec package. Paired
 # with the in-house MP4 demuxer in video.rs.
 openh264 = "0.9"
+# AAC decode for received videos' sound tracks: the codec half
+# of Symphonia, fed by the in-house MP4 demuxer in video.rs.
+# Pure Rust, so no platform needs a system codec package.
+symphonia-core = "0.5"
+symphonia-codec-aac = "0.5"
 # Bundled libopus: the voice-note encoder builds its own C sources so
 # no platform needs a system opus package.
 opusic-sys = { version = "0.7", features = ["bundled"] }

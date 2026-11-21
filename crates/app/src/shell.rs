@@ -624,6 +624,7 @@ impl App {
         let mut position = 0.0;
         let mut duration = f64::from(secs);
         let mut player_failed: Option<String> = None;
+        let mut audio_note: Option<String> = None;
         let mut has_player = false;
         if let Some(player) = self.media.video_player.as_mut().filter(|p| p.key == id) {
             has_player = true;
@@ -652,6 +653,7 @@ impl App {
             position = player.position();
             duration = player.info.duration_secs;
             player_failed = player.failed.clone();
+            audio_note = player.audio_note.clone();
             if player.current.is_some() && view_once {
                 self.media.video_presented = Some(id);
             }
@@ -790,6 +792,19 @@ impl App {
                 egui::FontId::proportional(11.5),
                 note_color,
             );
+            if let Some(note) = &audio_note {
+                // The sound situation, stated plainly under the
+                // transport: a sound track that exists but is
+                // not playing is never left as unexplained
+                // silence.
+                painter.text(
+                    egui::Pos2::new(bar.left(), bar.bottom() + 26.0),
+                    egui::Align2::LEFT_TOP,
+                    note,
+                    egui::FontId::proportional(11.5),
+                    note_color,
+                );
+            }
         } else {
             match route {
                 crate::media::VideoPlayRoute::DemoUnavailable => {

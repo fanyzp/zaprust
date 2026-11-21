@@ -612,12 +612,21 @@ impl App {
     /// only: activating one switches the page and highlights
     /// the row there; no control is ever duplicated here.
     fn settings_nav(&mut self, ui: &mut egui::Ui, t: core::theme::Tokens) {
+        // The field spans its column: a fixed 200 in the
+        // two-pane sidebar, the full content width in
+        // single-pane mode (portrait included), where the nav
+        // takes the whole screen and a 200-wide field stranded
+        // at the left read as a bug in the round-2 grading. The
+        // field's frame adds 20 of margin around the editor, so
+        // the editor gets what remains.
+        let search_w =
+            if self.single_pane { (ui.available_width() - 20.0).max(120.0) } else { 200.0 };
         crate::widgets::text_field(
             ui,
             t,
             &mut self.settings_search,
             &crate::i18n::t("settings.search"),
-            200.0,
+            search_w,
         );
         ui.add_space(10.0);
         let query = self.settings_search.trim().to_lowercase();

@@ -194,17 +194,20 @@ impl App {
             .frame(egui::Frame::new().fill(rgb(t.bg_panel)).inner_margin(Margin::symmetric(10, 8)))
             .show(root, |ui| {
                 // Header: back to the chat list, the title, and
-                // the new call button at the right edge.
+                // the new call button at the right edge. In
+                // portrait mode the back chevron goes away: the
+                // bottom navigation bar is the way between tabs.
                 ui.horizontal(|ui| {
-                    if crate::widgets::icon_button(
-                        ui,
-                        t,
-                        crate::icons::Icon::ChevronLeft,
-                        28.0,
-                        &crate::i18n::t("common.back"),
-                        None,
-                    )
-                    .clicked()
+                    if !self.portrait
+                        && crate::widgets::icon_button(
+                            ui,
+                            t,
+                            crate::icons::Icon::ChevronLeft,
+                            28.0,
+                            &crate::i18n::t("common.back"),
+                            None,
+                        )
+                        .clicked()
                     {
                         back = true;
                     }

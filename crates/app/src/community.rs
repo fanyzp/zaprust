@@ -535,15 +535,19 @@ impl App {
             )
             .show(root, |ui| {
                 ui.horizontal(|ui| {
-                    if icon_button(
-                        ui,
-                        t,
-                        crate::icons::Icon::ChevronLeft,
-                        28.0,
-                        &crate::i18n::t("common.back"),
-                        None,
-                    )
-                    .clicked()
+                    // In portrait mode the back chevron goes
+                    // away: the bottom navigation bar is the way
+                    // between tabs.
+                    if !self.portrait
+                        && icon_button(
+                            ui,
+                            t,
+                            crate::icons::Icon::ChevronLeft,
+                            28.0,
+                            &crate::i18n::t("common.back"),
+                            None,
+                        )
+                        .clicked()
                     {
                         back = true;
                     }

@@ -30,6 +30,10 @@
 "nav.plugins" = "Plugins"
 "nav.calls" = "Calls"
 "nav.status" = "Status"
+"nav.updates" = "Updates"
+
+# ---- updates (status) ----
+"updates.empty" = "No status updates yet"
 
 # ---- chat list ----
 "chats.search_hint" = "Search"

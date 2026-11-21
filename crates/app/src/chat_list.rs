@@ -59,51 +59,58 @@ impl App {
                 // bottom avatar is the single profile entry and
                 // the account menu's only anchor (owner's ruling:
                 // a second one above the search was redundant).
-                ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new(crate::i18n::t("nav.chats"))
-                            .font(crate::theme::semibold(17.0))
-                            .color(rgb(t.text_primary)),
-                    );
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if crate::widgets::icon_button(
-                            ui,
-                            t,
-                            crate::icons::Icon::Sliders,
-                            28.0,
-                            &crate::i18n::t("nav.settings"),
-                            None,
-                        )
-                        .clicked()
-                        {
-                            self.screen = crate::state::Screen::Settings;
-                        }
-                        if crate::widgets::icon_button(
-                            ui,
-                            t,
-                            crate::icons::Icon::Edit,
-                            28.0,
-                            &crate::i18n::t("chats.new_group"),
-                            None,
-                        )
-                        .clicked()
-                        {
-                            self.groups.create_open = true;
-                        }
-                        if crate::widgets::icon_button(
-                            ui,
-                            t,
-                            crate::icons::Icon::ChevronLeft,
-                            28.0,
-                            &crate::i18n::t("chats.collapse"),
-                            None,
-                        )
-                        .clicked()
-                        {
-                            self.sidebar_collapsed = true;
-                        }
+                // Portrait mode swaps the whole row for the phone
+                // header (app name + kebab, or the archived
+                // page's back header); see the helper below.
+                if self.portrait {
+                    self.draw_chat_list_header_portrait(ui, t);
+                } else {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new(crate::i18n::t("nav.chats"))
+                                .font(crate::theme::semibold(17.0))
+                                .color(rgb(t.text_primary)),
+                        );
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if crate::widgets::icon_button(
+                                ui,
+                                t,
+                                crate::icons::Icon::Sliders,
+                                28.0,
+                                &crate::i18n::t("nav.settings"),
+                                None,
+                            )
+                            .clicked()
+                            {
+                                self.screen = crate::state::Screen::Settings;
+                            }
+                            if crate::widgets::icon_button(
+                                ui,
+                                t,
+                                crate::icons::Icon::Edit,
+                                28.0,
+                                &crate::i18n::t("chats.new_group"),
+                                None,
+                            )
+                            .clicked()
+                            {
+                                self.groups.create_open = true;
+                            }
+                            if crate::widgets::icon_button(
+                                ui,
+                                t,
+                                crate::icons::Icon::ChevronLeft,
+                                28.0,
+                                &crate::i18n::t("chats.collapse"),
+                                None,
+                            )
+                            .clicked()
+                            {
+                                self.sidebar_collapsed = true;
+                            }
+                        });
                     });
-                });
+                }
                 ui.add_space(10.0);
                 // Search owns its own row below the title: the
                 // field sizes from the full row width now that the
@@ -184,6 +191,62 @@ impl App {
                             }
                         });
                     });
+                // Portrait: the archived entry row under the
+                // chips (the phone pattern), shown on the
+                // unfiltered, unsearched list while archived
+                // chats exist. The rail and the filter chip
+                // carry the entry in the other modes; here the
+                // row is the way into the full-screen archived
+                // page, and it carries the archived count.
+                if self.portrait
+                    && self.screen != crate::state::Screen::Archived
+                    && self.filter == ChatFilter::All
+                    && self.search.trim().is_empty()
+                {
+                    let archived_count = self.chats.iter().filter(|c| c.archived).count();
+                    if archived_count > 0 {
+                        ui.add_space(4.0);
+                        let (rect, resp) = ui.allocate_exact_size(
+                            Vec2::new(ui.available_width(), 48.0),
+                            Sense::click(),
+                        );
+                        let hov =
+                            crate::anim::hover_factor(ui, "portrait_archived_row", resp.hovered());
+                        if hov > 0.001 {
+                            ui.painter().rect_filled(
+                                rect,
+                                CornerRadius::same(10),
+                                crate::theme::glass_wash(t, t.bg_panel_alt, (hov * 115.0) as u8),
+                            );
+                        }
+                        crate::icons::draw(
+                            ui.painter(),
+                            crate::icons::Icon::Archive,
+                            Pos2::new(rect.left() + AVATAR_CX, rect.center().y),
+                            22.0,
+                            rgb(t.text_secondary),
+                            rgb(t.bg_panel),
+                        );
+                        ui.painter().text(
+                            Pos2::new(rect.left() + TEXT_X, rect.center().y),
+                            egui::Align2::LEFT_CENTER,
+                            crate::i18n::t("nav.archived"),
+                            crate::theme::medium(15.0),
+                            rgb(t.text_primary),
+                        );
+                        ui.painter().text(
+                            Pos2::new(rect.right() - 6.0, rect.center().y),
+                            egui::Align2::RIGHT_CENTER,
+                            archived_count.to_string(),
+                            FontId::proportional(12.5),
+                            rgb(t.text_faint),
+                        );
+                        if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                            self.screen = crate::state::Screen::Archived;
+                            self.filter = ChatFilter::Archived;
+                        }
+                    }
+                }
                 let photos = self.demo_photos(ui.ctx());
                 let visible = filter_chats(&self.chats, self.filter, &self.search);
                 let mut clicked: Option<u64> = None;
@@ -317,6 +380,110 @@ impl App {
                 }
             });
         crate::widgets::soft_right_edge(root, panel.response.rect, t);
+    }
+}
+
+impl App {
+    /// The portrait chat list header: the app name on the left
+    /// and a kebab menu on the right carrying the destinations
+    /// the rail holds in the other modes (New group, Starred,
+    /// Settings), the phone pattern of one title and one menu.
+    /// On the archived page the header is instead a back
+    /// chevron and the page title: that page is full-screen,
+    /// entered from the archived row, and the chevron is the
+    /// way back to the chat list.
+    fn draw_chat_list_header_portrait(&mut self, ui: &mut egui::Ui, t: Tokens) {
+        let mut go: Option<crate::state::Screen> = None;
+        let mut new_group = false;
+        ui.horizontal(|ui| {
+            if self.screen == crate::state::Screen::Archived {
+                if crate::widgets::icon_button(
+                    ui,
+                    t,
+                    crate::icons::Icon::ChevronLeft,
+                    32.0,
+                    &crate::i18n::t("common.back"),
+                    None,
+                )
+                .clicked()
+                {
+                    go = Some(crate::state::Screen::Chats);
+                }
+                ui.label(
+                    RichText::new(crate::i18n::t("nav.archived"))
+                        .font(crate::theme::semibold(17.0))
+                        .color(rgb(t.text_primary)),
+                );
+                return;
+            }
+            // The app name is the title, like the phone client:
+            // the brand is a name, not a localized string.
+            ui.label(
+                RichText::new("Zaprust")
+                    .font(crate::theme::semibold(20.0))
+                    .color(rgb(t.text_primary)),
+            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let kebab = crate::widgets::icon_button(
+                    ui,
+                    t,
+                    crate::icons::Icon::MoreVert,
+                    32.0,
+                    &crate::i18n::t("conversation.more_options"),
+                    None,
+                );
+                egui::Popup::menu(&kebab)
+                    .frame(crate::theme::glass_panel_frame(t, 12))
+                    .width(220.0)
+                    .show(|ui| {
+                        if crate::widgets::menu_item_icon(
+                            ui,
+                            t,
+                            Some(crate::icons::Icon::Edit),
+                            &crate::i18n::t("chats.new_group"),
+                            None,
+                        )
+                        .clicked()
+                        {
+                            new_group = true;
+                            ui.close();
+                        }
+                        if crate::widgets::menu_item_icon(
+                            ui,
+                            t,
+                            Some(crate::icons::Icon::Star),
+                            &crate::i18n::t("nav.starred"),
+                            None,
+                        )
+                        .clicked()
+                        {
+                            go = Some(crate::state::Screen::Starred);
+                            ui.close();
+                        }
+                        if crate::widgets::menu_item_icon(
+                            ui,
+                            t,
+                            Some(crate::icons::Icon::Sliders),
+                            &crate::i18n::t("nav.settings"),
+                            None,
+                        )
+                        .clicked()
+                        {
+                            go = Some(crate::state::Screen::Settings);
+                            ui.close();
+                        }
+                    });
+            });
+        });
+        if new_group {
+            self.groups.create_open = true;
+        }
+        if let Some(screen) = go {
+            self.screen = screen;
+            if screen == crate::state::Screen::Chats {
+                self.filter = ChatFilter::All;
+            }
+        }
     }
 }
 

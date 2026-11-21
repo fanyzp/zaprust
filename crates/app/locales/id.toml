@@ -30,6 +30,10 @@
 "nav.plugins" = "Plugin"
 "nav.calls" = "Panggilan"
 "nav.status" = "Status"
+"nav.updates" = "Pembaruan"
+
+# ---- updates (status) ----
+"updates.empty" = "Belum ada pembaruan status"
 
 # ---- chat list ----
 "chats.search_hint" = "Cari"

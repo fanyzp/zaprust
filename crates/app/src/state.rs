@@ -238,6 +238,7 @@ pub(crate) enum Screen {
     Communities,
     Starred,
     Archived,
+    Updates,
     Settings,
     Connect,
     Debug,
@@ -253,6 +254,7 @@ impl Screen {
             "communities" => Some(Self::Communities),
             "starred" => Some(Self::Starred),
             "archived" => Some(Self::Archived),
+            "updates" | "status" => Some(Self::Updates),
             "settings" => Some(Self::Settings),
             "connect" | "link" => Some(Self::Connect),
             "debug" => Some(Self::Debug),
@@ -288,16 +290,21 @@ impl Screen {
     }
 }
 
-/// How the shell arranges its panes at a given window width.
+/// How the shell arranges its panes at a given window size.
 /// Two-pane is the desktop arrangement: the rail, the list
 /// panel and the conversation side by side. Below the
 /// breakpoint there is no honest room for both content panes,
 /// so the shell goes single-pane: the list and the conversation
-/// take turns full-width, like a phone app.
+/// take turns full-width, like a phone app. A single-pane
+/// window that is also portrait-shaped (taller than wide) goes
+/// one step further, to the native phone arrangement: no rail,
+/// a bottom navigation bar, and full-screen pages (see
+/// portrait.rs).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum LayoutMode {
     TwoPane,
     SinglePane,
+    Portrait,
 }
 
 /// The window width where the two-pane shell stops working,
@@ -309,11 +316,17 @@ pub(crate) enum LayoutMode {
 /// switches to single-pane instead.
 pub(crate) const SINGLE_PANE_BREAKPOINT: f32 = 60.0 + 350.0 + 550.0;
 
-pub(crate) fn layout_mode_for_width(width: f32) -> LayoutMode {
-    if width < SINGLE_PANE_BREAKPOINT {
-        LayoutMode::SinglePane
-    } else {
+/// The layout mode for a window of `width` by `height`: the
+/// pure decision the shell re-evaluates every frame. Portrait
+/// is strictly taller-than-wide; a square window is not
+/// portrait and keeps the single-pane shell.
+pub(crate) fn layout_mode_for_size(width: f32, height: f32) -> LayoutMode {
+    if width >= SINGLE_PANE_BREAKPOINT {
         LayoutMode::TwoPane
+    } else if height > width {
+        LayoutMode::Portrait
+    } else {
+        LayoutMode::SinglePane
     }
 }
 
@@ -660,6 +673,15 @@ pub(crate) struct App {
     /// [`SINGLE_PANE_BREAKPOINT`], where the list and the
     /// conversation take turns instead of sharing the width.
     pub(crate) single_pane: bool,
+    /// The current frame's layout mode is the portrait one
+    /// (single-pane territory and taller than wide): the rail
+    /// gives way to the bottom navigation bar and the screens
+    /// follow the native phone arrangement (see portrait.rs).
+    /// Refreshed by the shell alongside `single_pane`, which
+    /// stays true in portrait mode: every "not two-pane"
+    /// behavior (pane swapping, the back chevron, the full-width
+    /// profile dock) applies there too.
+    pub(crate) portrait: bool,
     /// Single-pane navigation: a conversation is open over the
     /// list. Set whenever a chat is selected, cleared by the
     /// conversation's back affordance and by rail navigation.
@@ -1177,6 +1199,7 @@ impl App {
             custom_title_bar: true,
             sidebar_collapsed: args.sidebar_collapsed,
             single_pane: false,
+            portrait: false,
             conversation_open: false,
             settings_page_open: false,
             settings_tab: match std::env::args()
@@ -2449,24 +2472,65 @@ mod tests {
         );
     }
 
-    /// The layout-mode decision: every phone-like and small
-    /// width from the owner's grading set lands in single-pane,
-    /// the passing desktop widths stay two-pane, and the switch
-    /// happens exactly at the breakpoint, which is the layout's
-    /// own constants added up (rail + list panel + the
-    /// narrowest honest conversation column).
+    /// The layout-mode decision over the owner's grading set:
+    /// the portrait phone sizes land in the native portrait
+    /// mode, the square and landscape small sizes keep the
+    /// single-pane shell, the passing desktop sizes stay
+    /// two-pane, and the two-pane switch happens exactly at the
+    /// breakpoint, which is the layout's own constants added up
+    /// (rail + list panel + the narrowest honest conversation
+    /// column). Portrait is strictly taller-than-wide: a square
+    /// window is not portrait.
     #[test]
     fn layout_mode_switches_at_the_breakpoint() {
-        use super::{layout_mode_for_width, LayoutMode, SINGLE_PANE_BREAKPOINT};
+        use super::{layout_mode_for_size, LayoutMode, SINGLE_PANE_BREAKPOINT};
         assert_eq!(SINGLE_PANE_BREAKPOINT, 60.0 + 350.0 + 550.0);
-        for w in [360.0, 390.0, 600.0, 800.0, 844.0] {
-            assert_eq!(layout_mode_for_width(w), LayoutMode::SinglePane, "width {w}");
+        // The graded set, as (width, height) pairs.
+        for (w, h) in [(360.0, 800.0), (390.0, 844.0)] {
+            assert_eq!(layout_mode_for_size(w, h), LayoutMode::Portrait, "{w}x{h}");
         }
-        for w in [1180.0, 1440.0] {
-            assert_eq!(layout_mode_for_width(w), LayoutMode::TwoPane, "width {w}");
+        for (w, h) in [(600.0, 600.0), (800.0, 800.0), (844.0, 390.0)] {
+            assert_eq!(layout_mode_for_size(w, h), LayoutMode::SinglePane, "{w}x{h}");
         }
-        assert_eq!(layout_mode_for_width(SINGLE_PANE_BREAKPOINT - 1.0), LayoutMode::SinglePane);
-        assert_eq!(layout_mode_for_width(SINGLE_PANE_BREAKPOINT), LayoutMode::TwoPane);
+        for (w, h) in [(1180.0, 820.0), (1440.0, 900.0)] {
+            assert_eq!(layout_mode_for_size(w, h), LayoutMode::TwoPane, "{w}x{h}");
+        }
+        // The portrait boundary: equal sides are not portrait,
+        // one point taller is.
+        assert_eq!(layout_mode_for_size(500.0, 500.0), LayoutMode::SinglePane);
+        assert_eq!(layout_mode_for_size(500.0, 501.0), LayoutMode::Portrait);
+        // The two-pane switch happens exactly at the breakpoint
+        // (a landscape height, so only the width decides).
+        assert_eq!(
+            layout_mode_for_size(SINGLE_PANE_BREAKPOINT - 1.0, 600.0),
+            LayoutMode::SinglePane
+        );
+        assert_eq!(layout_mode_for_size(SINGLE_PANE_BREAKPOINT, 600.0), LayoutMode::TwoPane);
+    }
+
+    /// Portrait chrome: the bottom navigation bar shows on the
+    /// tab screens and hides under full-screen content and on
+    /// the non-tab pages (Settings here); the FAB floats only
+    /// over the chat list. The Updates screen parses from both
+    /// of its QA flag names.
+    #[test]
+    fn portrait_chrome_follows_the_screen() {
+        let mut app = demo_app();
+        app.portrait = true;
+        app.screen = Screen::Chats;
+        assert!(app.bottom_nav_visible());
+        assert!(app.portrait_fab_visible());
+        app.screen = Screen::Updates;
+        assert!(app.bottom_nav_visible());
+        assert!(!app.portrait_fab_visible());
+        app.screen = Screen::Settings;
+        assert!(!app.bottom_nav_visible());
+        app.screen = Screen::Chats;
+        app.conversation_open = true;
+        assert!(!app.bottom_nav_visible(), "an open conversation hides the bar");
+        assert!(!app.portrait_fab_visible());
+        assert_eq!(Screen::parse("updates"), Some(Screen::Updates));
+        assert_eq!(Screen::parse("status"), Some(Screen::Updates));
     }
 
     /// Single-pane pane selection: a fresh app shows the list

@@ -89,6 +89,7 @@ WANTED = [
     ("LooksOne", ["looks_one"]),
     ("BellOff", ["notifications_off"]),
     ("Keyboard", ["keyboard"]),
+    ("Status", ["donut_large", "trip_origin", "radio_button_checked"]),
     ("AddCall", ["add_call"]),
     ("CallMade", ["call_made"]),
     ("CallReceived", ["call_received"]),

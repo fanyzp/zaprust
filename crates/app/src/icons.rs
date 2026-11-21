@@ -59,6 +59,7 @@ pub(crate) enum Icon {
     Stop,
     LooksOne,
     BellOff,
+    Status,
     AddCall,
     CallMade,
     CallReceived,
@@ -114,6 +115,7 @@ pub(crate) fn glyph(icon: Icon) -> char {
         Icon::Stop => '\u{e047}',         // stop
         Icon::LooksOne => '\u{e400}',     // looks_one
         Icon::BellOff => '\u{e7f6}',      // notifications_off
+        Icon::Status => '\u{e917}',       // donut_large
         Icon::AddCall => '\u{f0b7}',      // add_call
         Icon::CallMade => '\u{e0b2}',     // call_made
         Icon::CallReceived => '\u{e0b5}', // call_received

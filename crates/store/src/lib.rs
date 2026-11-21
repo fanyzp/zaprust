@@ -148,7 +148,7 @@ impl From<std::io::Error> for StoreError {
 }
 
 /// The newest schema version this build migrates to.
-pub const SCHEMA_VERSION: i64 = 9;
+pub const SCHEMA_VERSION: i64 = 10;
 
 /// `store_meta` key recording that the one-time freelist purge
 /// (see [`Store::open`]) has run for this archive. The purge
@@ -678,6 +678,25 @@ impl Store {
                     )?;
                     tx.execute_batch("PRAGMA user_version = 9;")?;
                 }
+                9 => {
+                    // v10: per-chat favorites. A favorite is a
+                    // purely local app concept (WhatsApp has no
+                    // such property), so the flag gets its own
+                    // column with dedicated accessors
+                    // (`set_chat_favorite` / `chat_favorites`)
+                    // and deliberately stays out of the column
+                    // lists `upsert_chat` and `chats` use: no
+                    // chat-list sync write can ever carry, and
+                    // therefore can never wipe, a favorite the
+                    // user set on this device.
+                    add_column_if_missing(
+                        &tx,
+                        "chats",
+                        "favorite",
+                        "ALTER TABLE chats ADD COLUMN favorite INTEGER NOT NULL DEFAULT 0",
+                    )?;
+                    tx.execute_batch("PRAGMA user_version = 10;")?;
+                }
                 _ => return Err(StoreError::BadSchemaVersion(version)),
             }
             tx.commit()?;
@@ -1061,6 +1080,41 @@ impl Store {
         Ok(out)
     }
 
+    /// The JIDs of the chats the user marked as favorites on
+    /// this device, in JID order. Favorites are a local app
+    /// concept with no server counterpart; the flags live in
+    /// their own column (schema v10) that the chat sync paths
+    /// never read or write, so this set changes only through
+    /// [`Store::set_chat_favorite`].
+    ///
+    /// # Errors
+    /// [`StoreError`] on SQLite failures.
+    pub fn chat_favorites(&self) -> Result<Vec<String>, StoreError> {
+        let mut stmt =
+            self.conn.prepare("SELECT jid FROM chats WHERE favorite != 0 ORDER BY jid")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
+    /// Sets or clears one chat's favorite flag. A JID with no
+    /// archived chat row is a quiet no-op: the flag belongs to
+    /// the row, so a chat the archive does not hold cannot be a
+    /// favorite (and deleting the chat takes its flag with it).
+    ///
+    /// # Errors
+    /// [`StoreError`] on SQLite failures.
+    pub fn set_chat_favorite(&self, chat_jid: &str, favorite: bool) -> Result<(), StoreError> {
+        self.conn.execute(
+            "UPDATE chats SET favorite = ?2 WHERE jid = ?1",
+            params![chat_jid, i64::from(favorite)],
+        )?;
+        Ok(())
+    }
+
     /// Records one completed call in the call history. The
     /// protocol call ID is unique: recording the same call twice
     /// (its end event and a missed-call event can both report it)
@@ -1350,6 +1404,127 @@ mod tests {
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].call_id, "call-1");
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// Item 116: favorites round-trip through their dedicated
+    /// accessors, and a chat-list sync (which writes rows
+    /// through `upsert_chat`, the only chat write the sync
+    /// paths have) cannot wipe a flag: the favorite column is
+    /// not part of that write, by construction.
+    #[test]
+    fn chat_favorites_round_trip_and_survive_chat_upserts() {
+        let store = Store::open_in_memory().unwrap();
+        let chats = scripted_chats();
+        for chat in &chats {
+            store.upsert_chat(chat).unwrap();
+        }
+        assert!(store.chat_favorites().unwrap().is_empty(), "nothing is a favorite by default");
+
+        store.set_chat_favorite(&chats[0].jid, true).unwrap();
+        store.set_chat_favorite(&chats[2].jid, true).unwrap();
+        // JID order, not insertion order.
+        let mut expected = vec![chats[0].jid.clone(), chats[2].jid.clone()];
+        expected.sort();
+        assert_eq!(store.chat_favorites().unwrap(), expected);
+
+        // A re-sync rewrites every chat row (new previews, new
+        // timestamps); the favorites must come through intact.
+        for chat in &chats {
+            let mut resynced = chat.clone();
+            resynced.preview = "a newer preview".to_owned();
+            resynced.timestamp += 60;
+            store.upsert_chat(&resynced).unwrap();
+        }
+        assert_eq!(store.chat_favorites().unwrap(), expected, "a sync must not wipe favorites");
+
+        store.set_chat_favorite(&chats[0].jid, false).unwrap();
+        assert_eq!(store.chat_favorites().unwrap(), vec![chats[2].jid.clone()]);
+
+        // A JID the archive does not hold cannot become a
+        // favorite, and setting one is not an error.
+        store.set_chat_favorite("0@s.whatsapp.net", true).unwrap();
+        assert_eq!(store.chat_favorites().unwrap(), vec![chats[2].jid.clone()]);
+    }
+
+    /// Item 116: the flags are durable state, not session
+    /// state: they read back after the archive is closed and
+    /// reopened.
+    #[test]
+    fn chat_favorites_survive_a_reopen() {
+        let path = temp_db_path("favorites");
+        let _ = std::fs::remove_file(&path);
+        let key = [7u8; 32];
+        let jid = scripted_chats()[1].jid.clone();
+        {
+            let store = Store::open(&path, &key).unwrap();
+            store.upsert_chat(&scripted_chats()[1]).unwrap();
+            store.set_chat_favorite(&jid, true).unwrap();
+        }
+        let store = Store::open(&path, &key).unwrap();
+        assert_eq!(store.chat_favorites().unwrap(), vec![jid]);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Item 116: an archive written by the previous build
+    /// (schema v9: every current table, no favorite column)
+    /// migrates to v10 with its rows intact and no favorites,
+    /// and the migrated archive takes flags.
+    #[test]
+    fn migration_from_v9_adds_an_unset_favorite_column() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE chats (
+                jid TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                preview TEXT NOT NULL DEFAULT '',
+                preview_sender TEXT,
+                timestamp INTEGER NOT NULL DEFAULT 0,
+                unread INTEGER NOT NULL DEFAULT 0,
+                archived INTEGER NOT NULL DEFAULT 0,
+                pinned INTEGER NOT NULL DEFAULT 0,
+                ephemeral_secs INTEGER NOT NULL DEFAULT 0,
+                muted INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE messages (
+                chat_jid TEXT NOT NULL,
+                id TEXT NOT NULL,
+                sender TEXT,
+                body TEXT NOT NULL,
+                timestamp INTEGER NOT NULL,
+                from_me INTEGER NOT NULL DEFAULT 0,
+                data TEXT,
+                flags INTEGER NOT NULL DEFAULT 0,
+                expires_at INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (chat_jid, id)
+            );
+            CREATE TABLE store_meta (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+            CREATE TABLE calls (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                call_id TEXT NOT NULL UNIQUE,
+                chat_jid TEXT NOT NULL,
+                video INTEGER NOT NULL DEFAULT 0,
+                outgoing INTEGER NOT NULL DEFAULT 0,
+                missed INTEGER NOT NULL DEFAULT 0,
+                duration_secs INTEGER NOT NULL DEFAULT 0,
+                started_at INTEGER NOT NULL DEFAULT 0
+            );
+            INSERT INTO chats (jid, title, kind) VALUES ('123@s.whatsapp.net', 'Ana', 'dm');
+            PRAGMA user_version = 9;",
+        )
+        .unwrap();
+        let store = Store { conn };
+        store.migrate().unwrap();
+        assert_eq!(store.schema_version().unwrap(), SCHEMA_VERSION);
+        assert!(store.chat_favorites().unwrap().is_empty(), "existing chats start unfavorited");
+        let chats = store.chats().unwrap();
+        assert_eq!(chats.len(), 1, "the v9 row survived the migration");
+        assert_eq!(chats[0].title, "Ana");
+        store.set_chat_favorite("123@s.whatsapp.net", true).unwrap();
+        assert_eq!(store.chat_favorites().unwrap(), vec!["123@s.whatsapp.net".to_owned()]);
     }
 
     #[test]

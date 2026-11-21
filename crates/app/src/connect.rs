@@ -416,19 +416,34 @@ impl App {
     }
 
     /// The failed-live-start panel shared by the QR slot and the
-    /// pairing-code panel: the plain-language reason and the way
-    /// out (retry the start). The full technical text also rides
-    /// the notice banner; this panel is what stays on the connect
-    /// screen itself for as long as no session exists.
+    /// pairing-code panel: the plain-language reason, wrapped in
+    /// the card (never a clipped strip), and the two ways out:
+    /// retry the start, or start fresh (the stranded data is set
+    /// aside; that path is destructive, so its button only parks
+    /// the house confirmation). This panel is what stays on the
+    /// connect screen itself for as long as no session exists;
+    /// the same text is not repeated as a banner over it.
     fn connect_start_failed_panel(&mut self, ui: &mut egui::Ui, t: Tokens, message: &str) {
         ui.label(RichText::new("Could not connect").size(14.0).strong());
         ui.add_space(8.0);
         ui.label(RichText::new(message).size(12.0).color(rgb(t.text_secondary)));
         ui.add_space(12.0);
-        if crate::widgets::button(ui, t, "Try again", crate::widgets::Btn::Primary).clicked() {
-            let ctx = ui.ctx().clone();
-            self.start_live(&ctx, false, false);
-        }
+        ui.horizontal(|ui| {
+            if crate::widgets::button(ui, t, "Try again", crate::widgets::Btn::Primary).clicked() {
+                let ctx = ui.ctx().clone();
+                self.start_live(&ctx, false, false);
+            }
+            if crate::widgets::button(
+                ui,
+                t,
+                &crate::i18n::t("connect.start_fresh"),
+                crate::widgets::Btn::Secondary,
+            )
+            .clicked()
+            {
+                self.ui_confirm = Some(crate::state::UiConfirm::StartFresh);
+            }
+        });
     }
 
     /// The pairing entry inside the connect card: first the

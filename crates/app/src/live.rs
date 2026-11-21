@@ -605,7 +605,98 @@ fn key_decision(key_result: &Result<[u8; 32], store::StoreError>, fake: bool) ->
     }
 }
 
+/// The files a start-fresh move sets aside, of those present in
+/// `data_dir`: the chat archive and its SQLCipher sidecars, the
+/// key file, and every account's session store with its
+/// sidecars. These are exactly the files whose presence makes
+/// the key loader fail closed (see `store::dbkey`), so setting
+/// them aside is what lets a fresh key be minted afterwards.
+/// Anything else in the data dir (settings, crash reports,
+/// downloads) is not stranded and stays where it is.
+fn stranded_files(data_dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    fn push_with_sidecars(files: &mut Vec<std::path::PathBuf>, base: std::path::PathBuf) {
+        for suffix in ["", "-wal", "-shm"] {
+            files.push(std::path::PathBuf::from(format!("{}{suffix}", base.display())));
+        }
+    }
+    let mut files = Vec::new();
+    push_with_sidecars(&mut files, data_dir.join("archive.db"));
+    files.push(data_dir.join("db.key"));
+    if let Ok(entries) = std::fs::read_dir(data_dir.join("accounts")) {
+        for entry in entries.flatten() {
+            if entry.file_type().is_ok_and(|f| f.is_dir()) {
+                push_with_sidecars(&mut files, entry.path().join("session.db"));
+            }
+        }
+    }
+    files.retain(|p| p.exists());
+    files
+}
+
+/// Moves the stranded data in `data_dir` into a fresh
+/// `stranded-<unix seconds>` backup folder inside it, keeping
+/// the relative layout, and returns the backup folder. Files
+/// are moved, never deleted: the data stays on the device,
+/// unreadable without its missing key, until the user removes
+/// the folder by hand.
+///
+/// # Errors
+/// The first I/O failure (creating the folder, moving a file);
+/// files already moved stay moved, and the caller reports the
+/// failure instead of starting over a half-moved data dir.
+fn move_stranded_data_aside(
+    data_dir: &std::path::Path,
+) -> std::io::Result<std::path::PathBuf> {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let mut backup = data_dir.join(format!("stranded-{stamp}"));
+    let mut n = 1;
+    while backup.exists() {
+        n += 1;
+        backup = data_dir.join(format!("stranded-{stamp}-{n}"));
+    }
+    std::fs::create_dir_all(&backup)?;
+    for file in stranded_files(data_dir) {
+        let rel = file
+            .strip_prefix(data_dir)
+            .expect("stranded files are collected from under the data dir");
+        let dest = backup.join(rel);
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::rename(&file, &dest)?;
+    }
+    Ok(backup)
+}
+
 impl crate::state::App {
+    /// Start fresh after an unlock failure: the recovery the
+    /// connect screen's failed-start panel offers once the user
+    /// confirms (see `UiConfirm::StartFresh`). The stranded
+    /// databases and key file are set aside into a backup
+    /// folder, then a normal live start runs: with nothing left
+    /// that a key must unlock, it mints a fresh key and links
+    /// from zero. When the move itself fails, the failure is
+    /// reported as a notice and the start error stays, so the
+    /// panel keeps telling the truth about where things stand.
+    pub(crate) fn start_fresh(&mut self, ctx: &egui::Context) {
+        let data_dir = backend::data_dir();
+        match move_stranded_data_aside(&data_dir) {
+            Ok(_) => {
+                self.live_start_error = None;
+                self.notice = None;
+                self.start_live(ctx, false, false);
+            }
+            Err(e) => {
+                self.notice = Some(format!(
+                    "Zaprust could not set the old data aside, so nothing was changed. {e}"
+                ));
+            }
+        }
+    }
+
     /// Starts live mode: opens the archive, spawns the supervised
     /// backend, loads archived chats, and kicks off the link flow.
     /// Called from `App::new` for `--live`, and from the account
@@ -9151,5 +9242,72 @@ mod star_pin_tests {
         drain_all(&mut app, &ctx);
         assert!(mirror_flag(&app, chat_id, mid, true), "the pin stands");
         assert!(!app.pending_pins.contains_key(&mid), "the upsert confirms the change");
+    }
+}
+
+#[cfg(test)]
+mod start_fresh_tests {
+    use super::{move_stranded_data_aside, stranded_files};
+
+    fn temp_data_dir(tag: &str) -> std::path::PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("zaprust-start-fresh-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("data dir");
+        dir
+    }
+
+    /// The inventory is exactly the fail-closed set: both
+    /// databases (with sidecars) and the key file. Settings and
+    /// other artifacts are not stranded and must not be listed.
+    #[test]
+    fn stranded_files_cover_both_databases_and_the_key_file() {
+        let dir = temp_data_dir("inventory");
+        std::fs::write(dir.join("archive.db"), b"a").unwrap();
+        std::fs::write(dir.join("archive.db-wal"), b"a").unwrap();
+        std::fs::write(dir.join("db.key"), b"k").unwrap();
+        let account = dir.join("accounts").join("default");
+        std::fs::create_dir_all(&account).unwrap();
+        std::fs::write(account.join("session.db"), b"s").unwrap();
+        std::fs::write(dir.join("settings.json"), b"{}").unwrap();
+        let names: Vec<String> = stranded_files(&dir)
+            .iter()
+            .map(|p| p.strip_prefix(&dir).unwrap().display().to_string())
+            .collect();
+        assert!(names.contains(&"archive.db".to_owned()), "{names:?}");
+        assert!(names.contains(&"archive.db-wal".to_owned()), "{names:?}");
+        assert!(names.contains(&"db.key".to_owned()), "{names:?}");
+        assert!(names.contains(&"accounts/default/session.db".to_owned()), "{names:?}");
+        assert!(!names.contains(&"settings.json".to_owned()), "settings stay: {names:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The move preserves the data (bytes and layout) inside the
+    /// backup folder, leaves unrelated files in place, and
+    /// leaves nothing stranded behind, which is what lets the
+    /// next key load mint a fresh key.
+    #[test]
+    fn start_fresh_move_keeps_the_data_and_clears_the_way() {
+        let dir = temp_data_dir("move");
+        std::fs::write(dir.join("archive.db"), b"archive").unwrap();
+        std::fs::write(dir.join("db.key"), b"malformed").unwrap();
+        let account = dir.join("accounts").join("default");
+        std::fs::create_dir_all(&account).unwrap();
+        std::fs::write(account.join("session.db"), b"session").unwrap();
+        std::fs::write(dir.join("settings.json"), b"{}").unwrap();
+        let backup = move_stranded_data_aside(&dir).expect("move");
+        assert!(backup.starts_with(&dir));
+        assert_eq!(std::fs::read(backup.join("archive.db")).unwrap(), b"archive");
+        assert_eq!(std::fs::read(backup.join("db.key")).unwrap(), b"malformed");
+        assert_eq!(
+            std::fs::read(backup.join("accounts/default/session.db")).unwrap(),
+            b"session"
+        );
+        assert!(!dir.join("archive.db").exists());
+        assert!(!dir.join("db.key").exists());
+        assert!(!account.join("session.db").exists());
+        assert!(dir.join("settings.json").exists(), "unrelated files stay put");
+        assert!(stranded_files(&dir).is_empty(), "nothing stranded remains");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

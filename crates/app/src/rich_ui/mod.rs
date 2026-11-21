@@ -374,7 +374,7 @@ impl App {
     /// cancels; only the confirm button performs the action, so
     /// the click that asked (a dock row, a kebab menu item) can
     /// never be the click that fires it.
-    fn draw_ui_confirm(&mut self, ctx: &egui::Context) {
+    pub(crate) fn draw_ui_confirm(&mut self, ctx: &egui::Context) {
         let t = self.tokens;
         // Snapshot the parked action while it exists, like the
         // other popups: the phase machine keeps drawing through
@@ -413,6 +413,11 @@ impl App {
                 crate::i18n::t("account.log_out_title"),
                 crate::i18n::t("account.log_out_body"),
                 crate::i18n::t("account.log_out"),
+            ),
+            UiConfirm::StartFresh => (
+                crate::i18n::t("connect.start_fresh_title"),
+                crate::i18n::t("connect.start_fresh_body"),
+                crate::i18n::t("connect.start_fresh"),
             ),
         };
         let mut decision: Option<bool> = None;
@@ -510,6 +515,9 @@ impl App {
                 }
                 Some(UiConfirm::LogOut) => {
                     self.log_out();
+                }
+                Some(UiConfirm::StartFresh) => {
+                    self.start_fresh(ctx);
                 }
                 None => {}
             },

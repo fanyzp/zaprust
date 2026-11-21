@@ -396,6 +396,13 @@ pub(crate) enum UiConfirm {
     /// sends the backend's disconnect command; the local chats
     /// stay in the archive on this computer.
     LogOut,
+    /// Start fresh after an unlock failure: the databases and
+    /// the key file are set aside into a backup folder and a
+    /// normal live start runs from zero. Destructive in effect
+    /// (the set-aside data cannot be opened without its missing
+    /// key), so it is confirmed like the other destructive
+    /// actions, never run from the panel button directly.
+    StartFresh,
 }
 
 /// Debug mode state (see debug_ui.rs): the trace ring, its clock and the inspector toggles.

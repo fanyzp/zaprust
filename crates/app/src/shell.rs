@@ -46,6 +46,10 @@ impl eframe::App for App {
         if self.screen == Screen::Connect {
             self.draw_connect(ui);
             self.draw_banners_on_connect(ui);
+            // The house confirmation modal must be reachable
+            // here too: the connect screen's start-fresh action
+            // parks its confirmation in it.
+            self.draw_ui_confirm(&ctx);
             return;
         }
         if self.portrait {

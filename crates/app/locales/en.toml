@@ -333,6 +333,9 @@
 # ---- crash banner ----
 "crash.title" = "Zaprust crashed last time"
 "crash.body" = "It ran into a problem and closed. You can send the report to help fix it, or view what was recorded."
+"connect.start_fresh" = "Start fresh"
+"connect.start_fresh_title" = "Start fresh?"
+"connect.start_fresh_body" = "The key that unlocks your saved chats cannot be read, so the chats and the linked account on this computer cannot be opened. Starting fresh sets them aside in a backup folder inside Zaprust's data folder and starts over like a first run. You will need to link your phone again."
 "crash.report" = "Report on GitHub"
 "crash.details" = "View details"
 "crash.dismiss" = "Dismiss"

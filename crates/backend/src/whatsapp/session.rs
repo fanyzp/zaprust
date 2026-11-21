@@ -1488,10 +1488,12 @@ pub(super) async fn run_async(
                         let fetched = match (&proto, &voice_ref) {
                             (Some(proto), _) => fetch_voice_bytes(&client, proto).await,
                             (None, Some(reference)) => fetch_voice_by_ref(&client, reference).await,
-                            (None, None) => Err("That voice note is not available: it was received \
+                            (None, None) => {
+                                Err("That voice note is not available: it was received \
                                                  before this session and has no stored \
                                                  download reference."
-                                .to_owned()),
+                                    .to_owned())
+                            }
                         };
                         match fetched {
                             Ok(bytes) => events.emit(BackendEvent::VoiceBytes {

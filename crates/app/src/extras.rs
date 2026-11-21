@@ -300,8 +300,14 @@ impl App {
                 }
                 self.update.auto_check = v["update_auto_check"].as_bool().unwrap_or(true);
                 // "My profile" identity: seed the editor state
-                // once from the persisted keys. Absent keys leave
-                // the defaults (empty name/about, no photo).
+                // once from the persisted keys. In live mode these
+                // are only a cache of the last account read-back
+                // (the editor shows its loading state until the
+                // fresh read-back lands, so the cache is never
+                // presented as the account's current values); in
+                // demo mode they are the values themselves. Absent
+                // keys leave the defaults (empty name/about, no
+                // photo).
                 if let Some(n) = v["my_name"].as_str() {
                     self.my_profile.name = n.to_owned();
                 }
@@ -311,7 +317,6 @@ impl App {
                 if let Some(p) = v["my_photo_path"].as_str() {
                     if !p.is_empty() {
                         self.my_profile.photo_path = Some(p.to_owned());
-                        self.my_profile.photo_input = p.to_owned();
                     }
                 }
                 if let Some(f) = v["features"].as_object() {

@@ -555,27 +555,57 @@ impl App {
                             .show(ui, |ui| {
                                 ui.set_width(size.x - 48.0);
                                 ui.horizontal(|ui| {
-                                    paint_avatar(
-                                        ui.painter(),
-                                        ui.cursor().min + Vec2::new(17.0, 17.0),
-                                        17.0,
-                                        false,
-                                        0,
-                                    );
+                                    // The account's own photo when
+                                    // one is loaded (the same state
+                                    // the profile editor edits),
+                                    // the generic avatar otherwise.
+                                    if self.my_profile.photo_texture.is_some() {
+                                        crate::profile::paint_my_avatar_disc(
+                                            ui.painter(),
+                                            ui.cursor().min + Vec2::new(17.0, 17.0),
+                                            17.0,
+                                            &self.my_profile,
+                                            t,
+                                        );
+                                    } else {
+                                        paint_avatar(
+                                            ui.painter(),
+                                            ui.cursor().min + Vec2::new(17.0, 17.0),
+                                            17.0,
+                                            false,
+                                            0,
+                                        );
+                                    }
                                     ui.add_space(42.0);
                                     ui.vertical(|ui| {
                                         let (name, sub) = if self.live_mode {
                                             let session = self.live.as_ref();
-                                            let name = session.map_or_else(
-                                                || "Live account".to_owned(),
-                                                |s| {
-                                                    if s.account.is_empty() {
-                                                        "Live account".to_owned()
-                                                    } else {
-                                                        s.account.clone()
-                                                    }
-                                                },
-                                            );
+                                            // The header names the
+                                            // account by its real
+                                            // push name once the
+                                            // profile read-back has
+                                            // landed; the session's
+                                            // generic label is only
+                                            // the pre-read-back
+                                            // placeholder.
+                                            let profile_name = self
+                                                .my_profile
+                                                .account
+                                                .as_ref()
+                                                .map(|a| a.name.clone())
+                                                .filter(|n| !n.trim().is_empty());
+                                            let name = profile_name.unwrap_or_else(|| {
+                                                session.map_or_else(
+                                                    || "Live account".to_owned(),
+                                                    |s| {
+                                                        if s.account.is_empty() {
+                                                            "Live account".to_owned()
+                                                        } else {
+                                                            s.account.clone()
+                                                        }
+                                                    },
+                                                )
+                                            });
                                             let sub = session
                                                 .map(|s| {
                                                     if s.fake {
@@ -646,7 +676,7 @@ impl App {
                         );
                         if mresp.clicked() && !exiting {
                             self.account_menu_open = false;
-                            self.my_profile_open = true;
+                            self.open_my_profile();
                         }
                         ui.add_space(6.0);
                         let (rrect, rresp) =

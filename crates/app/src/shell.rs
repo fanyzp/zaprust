@@ -104,6 +104,12 @@ impl eframe::App for App {
             self.draw_simple_list_panel(ui, "Debug");
             self.draw_debug_screen(ui);
         }
+        // The account surfaces (menu header, rail button) paint
+        // the signed-in user's photo from the same state the
+        // profile editor maintains; keep its texture current
+        // even while the editor is closed.
+        let profile_mode = self.my_profile_mode();
+        crate::profile::my_profile_sync_photo(&ctx, &mut self.my_profile, profile_mode);
         self.draw_account_menu(ui);
         self.draw_my_profile(&ctx);
         self.draw_photo_viewer(ui);
@@ -148,25 +154,27 @@ impl App {
     }
 
     /// The "My profile" editor (account menu entry): drawn while
-    /// open, its intents applied here. Save persists the identity
-    /// keys through the settings write path (extras.rs) and
-    /// confirms with the saved notice. `pick_photo` is a no-op
-    /// for now: there is no file-dialog dependency in the
-    /// workspace, so the panel's photo-path field is the picker.
-    /// `remove_photo` needs nothing here either: the state is
-    /// already cleared and is written on the next save.
+    /// open, its intents applied here. What Save and the photo
+    /// picker do depends on the editor's mode (demo, live,
+    /// not-linked); see `App::save_my_profile` and
+    /// `App::pick_my_profile_photo` in live.rs. `remove_photo`
+    /// needs nothing here: the state already reflects the
+    /// removal, and it takes effect with the next save.
     fn draw_my_profile(&mut self, ctx: &egui::Context) {
+        let mode = self.my_profile_mode();
         let intents = crate::profile::draw_my_profile_panel(
             ctx,
             self.tokens(),
             &mut self.my_profile,
             self.my_profile_open,
             self.motion,
+            mode,
         );
+        if intents.pick_photo {
+            self.pick_my_profile_photo();
+        }
         if intents.save {
-            self.persist_settings();
-            self.notice = Some(crate::i18n::t("profile.my_saved"));
-            self.my_profile_open = false;
+            self.save_my_profile();
         }
         if intents.close {
             self.my_profile_open = false;
@@ -240,12 +248,12 @@ impl App {
                             let (rect, resp) =
                                 ui.allocate_exact_size(Vec2::splat(38.0), Sense::click());
                             self.profile_anchor = Some(rect.center());
-                            crate::widgets::paint_avatar_disc(
+                            crate::profile::paint_my_avatar_disc(
                                 ui.painter(),
                                 rect.center(),
                                 19.0,
-                                false,
-                                rgb(t.accent),
+                                &self.my_profile,
+                                t,
                             );
                             if resp.clicked() {
                                 self.account_menu_open = !self.account_menu_open;

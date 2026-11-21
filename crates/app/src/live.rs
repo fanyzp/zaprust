@@ -1355,6 +1355,12 @@ impl crate::state::App {
             BackendEvent::PrivacyState(map) => {
                 self.apply_privacy_state(map);
             }
+            BackendEvent::OwnProfile(profile) => {
+                self.apply_own_profile(profile);
+            }
+            BackendEvent::OwnProfileSaveFailed { message } => {
+                self.apply_own_profile_save_failed(message);
+            }
             BackendEvent::Blocklist(jids) => {
                 // The server's list is the source of truth for
                 // blocks: adopt it wholesale, replacing the
@@ -2938,6 +2944,148 @@ impl crate::state::App {
             }
         }
         self.privacy_state = map;
+    }
+
+    /// Which world the My Profile editor runs in, from the
+    /// session state: no session is demo mode; a linked session
+    /// (real or test mode, both honor the profile commands) edits
+    /// the account; a session that is not linked yet has no
+    /// account profile to edit.
+    pub(crate) fn my_profile_mode(&self) -> crate::profile::MyProfileMode {
+        match &self.live {
+            None => crate::profile::MyProfileMode::Demo,
+            Some(session) if session.status.is_linked() => crate::profile::MyProfileMode::Live,
+            Some(_) => crate::profile::MyProfileMode::NotLinked,
+        }
+    }
+
+    /// Opens the My Profile editor. In live mode it also asks the
+    /// backend for a fresh read-back, so the editor opens on the
+    /// account's current values rather than the connect-time
+    /// ones. A failure left over from a previous save is cleared:
+    /// it described that attempt, not this one.
+    pub(crate) fn open_my_profile(&mut self) {
+        self.my_profile_open = true;
+        if self.my_profile.save_phase != crate::profile::SavePhase::Saving {
+            self.my_profile.save_phase = crate::profile::SavePhase::Idle;
+        }
+        if self.my_profile_mode() == crate::profile::MyProfileMode::Live {
+            self.send_backend(BackendCommand::FetchOwnProfile);
+        }
+    }
+
+    /// Applies a Save click in the My Profile editor. Demo mode
+    /// persists the buffers locally, as it always has. Live mode
+    /// builds the pending update (exactly the fields that differ
+    /// from the account read-back), marks the save in flight, and
+    /// sends it; the outcome arrives as the backend's re-read or
+    /// its failure event, applied by [`App::apply_own_profile`]
+    /// and [`App::apply_own_profile_save_failed`]. A save with no
+    /// changes just closes the panel.
+    pub(crate) fn save_my_profile(&mut self) {
+        match self.my_profile_mode() {
+            crate::profile::MyProfileMode::Demo => {
+                self.persist_settings();
+                self.notice = Some(crate::i18n::t("profile.my_saved"));
+                self.my_profile_open = false;
+            }
+            crate::profile::MyProfileMode::Live => match self.my_profile.pending_update() {
+                Ok(Some(update)) => {
+                    self.my_profile.save_phase = crate::profile::SavePhase::Saving;
+                    self.send_backend(BackendCommand::UpdateOwnProfile {
+                        name: update.name,
+                        about: update.about,
+                        photo: update.photo,
+                    });
+                }
+                Ok(None) => {
+                    self.my_profile_open = false;
+                }
+                Err(message) => {
+                    self.notice = Some(message);
+                }
+            },
+            crate::profile::MyProfileMode::NotLinked => {}
+        }
+    }
+
+    /// Opens the photo picker for the My Profile editor and loads
+    /// the chosen file. Live mode keeps the file's bytes as the
+    /// pending picture, validated as a decodable image here so a
+    /// bad pick is refused at pick time rather than at save time;
+    /// demo mode keeps the file's path, as it always has.
+    pub(crate) fn pick_my_profile_photo(&mut self) {
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("Images", &["png", "jpg", "jpeg", "gif", "webp"])
+            .set_title(crate::i18n::t("profile.my_change_photo"))
+            .pick_file()
+        else {
+            return;
+        };
+        match self.my_profile_mode() {
+            crate::profile::MyProfileMode::Live => match std::fs::read(&path) {
+                Ok(bytes) if image::load_from_memory(&bytes).is_ok() => {
+                    self.my_profile.picked_photo = Some(bytes);
+                    self.my_profile.photo_removed = false;
+                    self.my_profile.photo_error = false;
+                }
+                _ => {
+                    self.my_profile.photo_error = true;
+                }
+            },
+            _ => {
+                self.my_profile.photo_path = Some(path.to_string_lossy().into_owned());
+            }
+        }
+    }
+
+    /// Adopts the account's own profile as read back from the
+    /// server: the editor's account truth, and the values the
+    /// account surfaces show. A save in flight is resolved by the
+    /// read-back (the backend re-reads after every save), so it
+    /// completes with the saved notice. A read-back landing while
+    /// the user is mid-edit updates the account truth but never
+    /// the buffers: what they typed stays theirs until they save
+    /// or the panel closes. The settings cache follows the
+    /// adopted values only for a real session: a test-mode
+    /// session's scripted profile is not the user's account and
+    /// must not rewrite it (the same rule as
+    /// [`App::apply_privacy_state`]).
+    fn apply_own_profile(&mut self, profile: backend::OwnProfile) {
+        let account = crate::profile::AccountProfile {
+            name: profile.name,
+            about: profile.about,
+            photo: profile.photo,
+        };
+        let was_saving = self.my_profile.save_phase == crate::profile::SavePhase::Saving;
+        let dirty = self.my_profile.live_dirty();
+        let changed = self.my_profile.account.as_ref() != Some(&account);
+        if was_saving {
+            self.my_profile.save_phase = crate::profile::SavePhase::Idle;
+            self.my_profile.adopt_account(account);
+            self.notice = Some(crate::i18n::t("profile.my_saved"));
+        } else if !dirty {
+            self.my_profile.adopt_account(account);
+        } else {
+            self.my_profile.account = Some(account);
+        }
+        if changed && !self.my_profile.live_dirty() && self.live.as_ref().is_some_and(|s| !s.fake) {
+            self.persist_settings();
+        }
+    }
+
+    /// A profile save failed on the server: the panel shows the
+    /// reason and the buffers revert to the account values the
+    /// server kept. The reconciling read-back that follows lands
+    /// on a clean editor and changes nothing.
+    fn apply_own_profile_save_failed(&mut self, message: String) {
+        if self.my_profile.save_phase != crate::profile::SavePhase::Saving {
+            return;
+        }
+        self.my_profile.save_phase = crate::profile::SavePhase::Failed(message);
+        if let Some(account) = self.my_profile.account.clone() {
+            self.my_profile.adopt_account(account);
+        }
     }
 
     /// Adopts the account-wide default disappearing timer the
@@ -5088,6 +5236,139 @@ mod chat_state_routing_tests {
         tx.send(BackendEvent::Blocklist(Vec::new())).unwrap();
         drain_all(&mut app, &ctx);
         assert!(app.blocked_chats.is_empty(), "an empty server list clears the set");
+    }
+
+    fn own_profile(name: &str, about: &str) -> BackendEvent {
+        BackendEvent::OwnProfile(backend::OwnProfile {
+            name: name.to_owned(),
+            about: about.to_owned(),
+            photo: None,
+        })
+    }
+
+    /// The connect-time profile read-back populates the editor:
+    /// the account becomes the editor's truth and the buffers
+    /// take its values, so the panel opens on the account's real
+    /// name and About, not on the settings cache.
+    #[test]
+    fn own_profile_read_back_populates_the_editor() {
+        let (mut app, tx, ctx, cmd_rx) = live_app();
+        tx.send(own_profile("Real Name", "Real about")).unwrap();
+        drain_all(&mut app, &ctx);
+        let account = app.my_profile.account.as_ref().expect("the account is adopted");
+        assert_eq!(account.name, "Real Name");
+        assert_eq!(app.my_profile.name, "Real Name");
+        assert_eq!(app.my_profile.about, "Real about");
+        assert!(!app.my_profile.live_dirty());
+        assert!(cmd_rx.try_recv().is_err(), "adopting a read-back sends nothing back");
+    }
+
+    /// A read-back landing mid-edit updates the account truth
+    /// but never the buffers: what the user typed stays theirs.
+    #[test]
+    fn own_profile_read_back_does_not_clobber_a_dirty_editor() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        tx.send(own_profile("Account Name", "Account about")).unwrap();
+        drain_all(&mut app, &ctx);
+        app.my_profile.name = "Typed Name".to_owned();
+        tx.send(own_profile("Changed Elsewhere", "Account about")).unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(app.my_profile.name, "Typed Name", "the edit buffer is untouched");
+        assert_eq!(
+            app.my_profile.account.as_ref().unwrap().name,
+            "Changed Elsewhere",
+            "the account truth still advances"
+        );
+        assert!(app.my_profile.live_dirty(), "the buffer now differs from the account");
+    }
+
+    /// Opening the editor asks the backend for a fresh read-back.
+    #[test]
+    fn open_my_profile_requests_a_fresh_read_back() {
+        let (mut app, _tx, _ctx, cmd_rx) = live_app();
+        app.open_my_profile();
+        assert!(app.my_profile_open);
+        assert_eq!(cmd_rx.try_recv().unwrap(), BackendCommand::FetchOwnProfile);
+    }
+
+    /// A save sends exactly the changed fields, marks the save
+    /// in flight, and resolves when the backend's re-read lands:
+    /// the phase clears, the saved notice shows, and the buffers
+    /// adopt the re-read values.
+    #[test]
+    fn own_profile_save_sends_changed_fields_and_resolves_on_the_read_back() {
+        let (mut app, tx, ctx, cmd_rx) = live_app();
+        tx.send(own_profile("Account Name", "Account about")).unwrap();
+        drain_all(&mut app, &ctx);
+
+        app.my_profile.name = "New Name".to_owned();
+        app.save_my_profile();
+        assert_eq!(app.my_profile.save_phase, crate::profile::SavePhase::Saving);
+        assert_eq!(
+            cmd_rx.try_recv().unwrap(),
+            BackendCommand::UpdateOwnProfile {
+                name: Some("New Name".to_owned()),
+                about: None,
+                photo: None,
+            },
+            "only the changed field is sent"
+        );
+
+        tx.send(own_profile("New Name", "Account about")).unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(app.my_profile.save_phase, crate::profile::SavePhase::Idle);
+        assert_eq!(app.my_profile.name, "New Name");
+        assert_eq!(app.notice.as_deref(), Some(crate::i18n::t("profile.my_saved").as_str()));
+    }
+
+    /// A failed save reports the server's reason in the panel
+    /// state and reverts the buffers to the account values the
+    /// server kept; the reconciling re-read that follows the
+    /// failure changes nothing.
+    #[test]
+    fn own_profile_save_failure_reverts_and_reports() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        tx.send(own_profile("Account Name", "Account about")).unwrap();
+        drain_all(&mut app, &ctx);
+
+        app.my_profile.name = "Rejected Name".to_owned();
+        app.save_my_profile();
+        tx.send(BackendEvent::OwnProfileSaveFailed {
+            message: "Profile change failed: the name cannot be empty.".to_owned(),
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(
+            app.my_profile.save_phase,
+            crate::profile::SavePhase::Failed(
+                "Profile change failed: the name cannot be empty.".to_owned()
+            )
+        );
+        assert_eq!(app.my_profile.name, "Account Name", "buffers revert to the account");
+
+        tx.send(own_profile("Account Name", "Account about")).unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(app.my_profile.name, "Account Name");
+        assert!(
+            matches!(app.my_profile.save_phase, crate::profile::SavePhase::Failed(_)),
+            "the failure stays visible until the next attempt"
+        );
+    }
+
+    /// Before the device is linked there is no account to save
+    /// to: the editor reports the not-linked mode and a save
+    /// sends nothing.
+    #[test]
+    fn own_profile_save_is_refused_until_linked() {
+        let (mut app, tx, ctx, cmd_rx) = live_app();
+        tx.send(own_profile("Account Name", "Account about")).unwrap();
+        drain_all(&mut app, &ctx);
+        app.live.as_mut().unwrap().status = LinkStatus::WaitingQr;
+        assert_eq!(app.my_profile_mode(), crate::profile::MyProfileMode::NotLinked);
+        app.my_profile.name = "New Name".to_owned();
+        app.save_my_profile();
+        assert!(cmd_rx.try_recv().is_err(), "no command leaves while unlinked");
+        assert_eq!(app.my_profile.save_phase, crate::profile::SavePhase::Idle);
     }
 
     /// The blocked set no longer persists in the plaintext

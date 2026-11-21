@@ -21,7 +21,10 @@ mod dock;
 mod my_profile;
 mod panel;
 
-pub use my_profile::{draw_my_profile_panel, MyProfileState};
+pub use my_profile::{
+    draw_my_profile_panel, my_profile_sync_photo, paint_my_avatar_disc, AccountProfile,
+    MyProfileMode, MyProfileState, SavePhase,
+};
 
 /// Which profile layout a chat gets. The signed-in user's own
 /// profile is not a variant here: it has no chat to classify, and

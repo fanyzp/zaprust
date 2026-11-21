@@ -799,7 +799,6 @@ impl VideoPlayer {
         self.anchor_pts = target;
         self.anchor_at = Instant::now();
     }
-
 }
 
 impl Drop for VideoPlayer {

@@ -310,9 +310,10 @@
 "profile.my_saved" = "Profile saved."
 "profile.my_change_photo" = "Change photo"
 "profile.my_remove_photo" = "Remove photo"
-"profile.my_photo_path" = "Photo file"
-"profile.my_photo_path_hint" = "Path to a PNG or JPEG image. It is previewed here and used as your avatar after saving."
-"profile.my_photo_placeholder" = "/path/to/photo.png"
+"profile.my_photo" = "Photo"
+"profile.my_saving" = "Saving to your account…"
+"profile.my_loading" = "Loading your profile from your account…"
+"profile.my_not_linked" = "Link your WhatsApp account first. Your name, About and photo live on the account, so there is nothing to edit until this device is linked."
 "profile.my_photo_error" = "That file could not be read as an image."
 "profile.my_default_name" = "You"
 

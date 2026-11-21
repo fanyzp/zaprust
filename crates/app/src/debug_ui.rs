@@ -44,6 +44,12 @@ impl App {
                 ("backend", "PairCode ready (code redacted)".to_owned(), None)
             }
             BackendEvent::Connected { .. } => ("backend", "Connected".to_owned(), None),
+            BackendEvent::OwnProfile(_) => {
+                ("backend", "OwnProfile received (values redacted)".to_owned(), None)
+            }
+            BackendEvent::OwnProfileSaveFailed { .. } => {
+                ("backend", "OwnProfileSaveFailed".to_owned(), None)
+            }
             BackendEvent::LoggedOut => ("backend", "LoggedOut".to_owned(), None),
             BackendEvent::TemporaryBan { code } => {
                 ("backend", format!("TemporaryBan {code}"), None)

@@ -1,7 +1,7 @@
 //! App shell: the root frame dispatch, the navigation rail, and the
 //! collapsed-sidebar strip.
 
-use crate::state::{layout_mode_for_width, App, LayoutMode, Screen};
+use crate::state::{effective_pixels_per_point, layout_mode_for_content, App, LayoutMode, Screen};
 use crate::theme::{apply_visuals, rgb};
 use crate::widgets::rail_button;
 use core::filter::total_unread;
@@ -14,19 +14,32 @@ impl eframe::App for App {
             self.sidebar_collapsed = !self.sidebar_collapsed;
         }
         apply_visuals(&ctx, self.tokens);
-        ctx.set_pixels_per_point(self.zoom_percent as f32 / 100.0);
+        // The layout mode follows the window's PHYSICAL size:
+        // below the breakpoint the panes take turns
+        // (single-pane), above it they share the width
+        // (two-pane), and a portrait single-pane window takes
+        // the native phone arrangement (portrait). The content
+        // rect is in points at the pixels-per-point currently
+        // in effect, so the mode helper scales it back to
+        // physical pixels first: the density applied below can
+        // then never move the breakpoint. Refreshed every frame
+        // so a resize switches behavior immediately.
+        // `single_pane` stays true in portrait mode: every "not
+        // two-pane" behavior (pane swapping, the back chevron,
+        // the full-width profile dock) applies there too.
+        let mode = layout_mode_for_content(ctx.content_rect().size(), ctx.pixels_per_point());
+        self.single_pane = mode != LayoutMode::TwoPane;
+        self.portrait = mode == LayoutMode::Portrait;
+        // The render scale: the user's font-size preference
+        // composed with the mode's automatic density factor
+        // (the small modes step down a touch; see state.rs).
+        ctx.set_pixels_per_point(effective_pixels_per_point(self.zoom_percent, mode));
         self.poll_backend(&ctx);
         self.poll_workers(&ctx);
         self.poll_update(&ctx);
         self.drain_os_notifications(&ctx);
         self.tick_expiry();
 
-        // The layout mode follows the window width: below the
-        // breakpoint the panes take turns (single-pane), above
-        // it they share the width (two-pane). Refreshed every
-        // frame so a resize switches behavior immediately.
-        self.single_pane =
-            layout_mode_for_width(ctx.content_rect().width()) == LayoutMode::SinglePane;
         if self.debug.mode {
             self.draw_debug_banner(ui);
         }
@@ -35,11 +48,23 @@ impl eframe::App for App {
             self.draw_banners(ui);
             return;
         }
-        self.draw_rail(ui);
-        if self.sidebar_collapsed && self.screen.is_list_screen() {
-            self.draw_collapsed_strip(ui);
-            self.draw_content(ui);
-            return;
+        if self.portrait {
+            // No rail in portrait mode: the bottom navigation
+            // bar takes its place. It is drawn before the
+            // screens so its panel reserves the bottom strip;
+            // while full-screen content or a non-tab page is up
+            // it is not drawn at all and the screen takes the
+            // whole height.
+            if self.bottom_nav_visible() {
+                self.draw_bottom_nav(ui);
+            }
+        } else {
+            self.draw_rail(ui);
+            if self.sidebar_collapsed && self.screen.is_list_screen() {
+                self.draw_collapsed_strip(ui);
+                self.draw_content(ui);
+                return;
+            }
         }
         if self.screen.is_list_screen() {
             // The secondary screens swap the chat list for their
@@ -62,6 +87,14 @@ impl eframe::App for App {
             if show_content {
                 self.draw_content(ui);
             }
+            if self.portrait_fab_visible() {
+                self.draw_new_chat_fab(ui);
+            }
+            if self.portrait_calls_fab_visible() {
+                self.draw_calls_fab(ui);
+            }
+        } else if self.screen == Screen::Updates {
+            self.draw_updates(ui);
         } else if self.screen == Screen::Settings {
             // Settings fills the content area: nav and page side
             // by side in two-pane mode, one at a time in
@@ -89,8 +122,9 @@ impl App {
 
     /// The left list panel in the shape the layout mode needs:
     /// the resizable 350-wide panel of the two-pane shell, or,
-    /// in single-pane mode, a panel spanning everything right
-    /// of the rail, since the list is then the only pane.
+    /// in single-pane mode, a panel spanning the full available
+    /// width (everything right of the rail, or the whole window
+    /// in portrait mode), since the list is then the only pane.
     pub(crate) fn list_panel(&self, root: &egui::Ui) -> egui::Panel {
         if self.single_pane {
             egui::Panel::left("chat_list").exact_size(root.available_width())

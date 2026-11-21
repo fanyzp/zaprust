@@ -4,25 +4,14 @@ use super::*;
 
 impl App {
     pub(crate) fn page_appearance(&mut self, ui: &mut egui::Ui, t: core::theme::Tokens) {
-        page_header(
-            ui,
-            &crate::i18n::t("settings.appearance"),
-            &crate::i18n::t("appearance.subtitle"),
-        );
+        page_header(ui, &crate::i18n::t("settings.appearance"));
         group_label(ui, t, &crate::i18n::t("appearance.theme"));
         let scoped = ui.scope(|ui| {
             settings_card(ui, t, |ui| {
                 for (i, id) in ThemeId::ALL.iter().enumerate() {
                     let tokens = core::theme::Tokens::dynamic(self.seed, *id != ThemeId::Light);
                     let selected = self.theme_choice == *id;
-                    if radio_row(
-                        ui,
-                        t,
-                        selected,
-                        Some(rgb(tokens.bg_app)),
-                        id.label(),
-                        theme_hint(*id),
-                    ) {
+                    if radio_row(ui, t, selected, Some(rgb(tokens.bg_app)), id.label(), "") {
                         self.theme_choice = *id;
                         self.apply_theme_choice(ui.ctx());
                     }
@@ -45,12 +34,6 @@ impl App {
         let mut picked_seed: Option<core::theme::Rgb> = None;
         let scoped = ui.scope(|ui| {
             settings_card(ui, t, |ui| {
-                ui.label(
-                    RichText::new(crate::i18n::t("appearance.dynamic_color_caption"))
-                        .size(12.0)
-                        .color(rgb(t.text_secondary)),
-                );
-                ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     for (name, seed) in core::theme::SEED_PRESETS {
                         let (rect, resp) =
@@ -105,12 +88,6 @@ impl App {
         group_label(ui, t, &crate::i18n::t("appearance.color_finetuning"));
         let scoped = ui.scope(|ui| {
             settings_card(ui, t, |ui| {
-                ui.label(
-                    RichText::new(crate::i18n::t("appearance.finetuning_caption"))
-                        .size(12.0)
-                        .color(rgb(t.text_secondary)),
-                );
-                ui.add_space(6.0);
                 let mut changed = false;
                 ui.horizontal(|ui| {
                     ui.label(RichText::new(crate::i18n::t("appearance.saturation")).size(13.0));
@@ -165,41 +142,40 @@ impl App {
             t,
         );
         ui.add_space(16.0);
+        group_label(ui, t, &crate::i18n::t("appearance.font_size"));
+        let scoped = ui.scope(|ui| {
+            settings_card(ui, t, |ui| {
+                ui.horizontal(|ui| {
+                    for (percent, key) in [
+                        (85_u32, "appearance.font_small"),
+                        (100, "appearance.font_default"),
+                        (115, "appearance.font_large"),
+                    ] {
+                        if chip(ui, &crate::i18n::t(key), self.zoom_percent == percent, t).clicked()
+                        {
+                            // Applies from the next frame (the
+                            // shell composes the preference with
+                            // the layout mode's density factor)
+                            // and persists like every other
+                            // Appearance choice.
+                            self.zoom_percent = percent;
+                            self.persist_settings();
+                        }
+                    }
+                });
+            })
+        });
+        paint_highlight(
+            ui,
+            &mut self.settings_highlight,
+            self.motion,
+            "appearance.font_size",
+            scoped.response.rect,
+            t,
+        );
+        ui.add_space(16.0);
         group_label(ui, t, &crate::i18n::t("appearance.interface"));
         settings_card(ui, t, |ui| {
-            // (the control slot is right-to-left, so + is added first)
-            let mut delta = 0_i32;
-            row_hl(
-                ui,
-                &mut self.settings_highlight,
-                self.motion,
-                "appearance.zoom",
-                t,
-                "Zoom",
-                "Interface size",
-                |ui| {
-                    if stepper(ui, t, "+") {
-                        delta = 10;
-                    }
-                    ui.add_space(4.0);
-                    let (vrect, _) = ui.allocate_exact_size(Vec2::new(46.0, 22.0), Sense::hover());
-                    ui.painter().text(
-                        vrect.center(),
-                        egui::Align2::CENTER_CENTER,
-                        format!("{}%", self.zoom_percent),
-                        FontId::proportional(13.5),
-                        rgb(t.text_primary),
-                    );
-                    ui.add_space(4.0);
-                    if stepper(ui, t, "−") {
-                        delta = -10;
-                    }
-                },
-            );
-            if delta != 0 {
-                self.zoom_percent = (self.zoom_percent as i32 + delta).clamp(80, 120) as u32;
-            }
-            divider(ui, t);
             let mut v = self.custom_title_bar;
             row_hl(
                 ui,
@@ -208,7 +184,7 @@ impl App {
                 "appearance.title_bar",
                 t,
                 "Custom title bar",
-                "Draw window controls inside the app",
+                "",
                 |ui| {
                     switch(ui, &mut v, t);
                 },
@@ -223,7 +199,7 @@ impl App {
                 "appearance.glow",
                 t,
                 &crate::i18n::t("appearance.glow"),
-                &crate::i18n::t("appearance.glow_caption"),
+                "",
                 |ui| {
                     switch(ui, &mut glow, t);
                 },

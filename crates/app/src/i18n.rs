@@ -147,6 +147,7 @@ mod tests {
             "nav.starred",
             "nav.archived",
             "nav.settings",
+            "nav.updates",
         ];
         for key in NAV_TITLE_KEYS {
             let value = en_map().get(*key).unwrap_or_else(|| panic!("{key} missing from en"));

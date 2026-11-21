@@ -1,5 +1,5 @@
 //! Buttons and button-like controls: the app button, rail buttons,
-//! icon buttons, chips, the segmented control and the stepper.
+//! icon buttons, chips and the segmented control.
 
 use crate::theme::rgb;
 use core::theme::{Rgb, Tokens};
@@ -362,26 +362,4 @@ pub(crate) fn icon_button_on(
     };
     crate::icons::draw(ui.painter(), icon, rect.center(), size * 0.58, color, rgb(t.bg_panel));
     resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(tooltip)
-}
-
-/// A small square stepper button (− / +) matching the settings
-/// style, instead of a stock egui button. Moved from settings.rs.
-pub(crate) fn stepper(ui: &mut egui::Ui, t: Tokens, glyph: &str) -> bool {
-    let (rect, response) = ui.allocate_exact_size(Vec2::splat(26.0), Sense::click());
-    let bg = if response.is_pointer_button_down_on() {
-        rgb(core::theme::pressed_step(t.bg_panel_alt))
-    } else if response.hovered() {
-        rgb(t.border)
-    } else {
-        rgb(t.bg_panel_alt)
-    };
-    ui.painter().rect_filled(rect, CornerRadius::same(8), bg);
-    ui.painter().text(
-        rect.center(),
-        egui::Align2::CENTER_CENTER,
-        glyph,
-        FontId::proportional(15.0),
-        rgb(t.text_primary),
-    );
-    response.on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
 }

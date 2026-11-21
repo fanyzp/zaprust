@@ -6,8 +6,7 @@ use crate::widgets::sender_color;
 use core::model::{Chat, ChatKind, Delivery, Message, MessageKind};
 use core::theme::Tokens;
 use eframe::egui::{
-    self, Align, Color32, CornerRadius, FontId, Layout, Margin, Pos2, Rect, RichText, Sense,
-    Stroke, Vec2,
+    self, Align, Color32, CornerRadius, FontId, Layout, Pos2, Rect, Sense, Stroke, Vec2,
 };
 
 fn layout_text(
@@ -476,16 +475,10 @@ pub(crate) fn message_bubble(
     layout: BubbleLayout,
 ) -> Option<BubbleAction> {
     if msg.kind == MessageKind::System {
-        ui.vertical_centered(|ui| {
-            egui::Frame::new()
-                .fill(rgb(t.system_chip))
-                .corner_radius(CornerRadius::same(8))
-                .stroke(Stroke::new(1.0_f32, rgb(t.border)))
-                .inner_margin(Margin::symmetric(10, 5))
-                .show(ui, |ui| {
-                    ui.label(RichText::new(&msg.body).size(12.0).color(rgb(t.system_text)));
-                });
-        });
+        // The stream intercepts system messages before this
+        // renderer, but any other caller gets the same
+        // centered system pill, never a bubble-shaped frame.
+        crate::conversation::system_pill(ui, t, &msg.body, rgb(t.system_text), false);
         return None;
     }
 

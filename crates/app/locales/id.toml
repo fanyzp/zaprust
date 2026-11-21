@@ -30,6 +30,10 @@
 "nav.plugins" = "Plugin"
 "nav.calls" = "Panggilan"
 "nav.status" = "Status"
+"nav.updates" = "Pembaruan"
+
+# ---- updates (status) ----
+"updates.empty" = "Belum ada pembaruan status"
 
 # ---- chat list ----
 "chats.search_hint" = "Cari"
@@ -71,7 +75,6 @@
 "attach.caption_hint" = "Tambahkan keterangan…"
 "attach.view_once" = "Sekali lihat: foto hanya bisa dibuka satu kali"
 "attach.recording_cancel" = "Buang rekaman"
-"attach.location_caption" = "Mengirim pin lokasi dengan nama dan koordinat yang bisa diedit."
 "attach.location_name" = "Nama tempat"
 "attach.location_name_hint" = "Rumah, kantor, kampus…"
 "attach.location_send" = "Kirim lokasi"
@@ -108,7 +111,6 @@
 "settings.back_chats" = "Kembali ke obrolan"
 "settings.search" = "Cari pengaturan"
 "settings.no_match" = "Tidak ada pengaturan yang cocok dengan pencarian."
-"settings.apply_note" = "Pengaturan langsung berlaku dan tersimpan di perangkat ini."
 "settings.sub.enter_sends_on" = "Enter mengirim pesan"
 "settings.sub.enter_sends_off" = "Ctrl+Enter mengirim"
 "settings.sub.notify_on" = "Notifikasi pesan aktif"
@@ -174,7 +176,6 @@
 "profile.unblock" = "Buka blokir"
 "profile.report" = "Laporkan"
 "community.announcements" = "Pengumuman"
-"community.announcements_caption" = "Hanya admin yang bisa posting"
 "community.groups_count" = "{count} grup"
 "community.back" = "Kembali ke komunitas"
 "community.your_groups" = "Grup yang Anda ikuti"
@@ -199,7 +200,8 @@
 "calls.no_match" = "Tidak ada panggilan yang cocok dengan filter ini."
 "calls.recent" = "Terbaru"
 "calls.new_call" = "Panggilan baru"
-"calls.footer_hint" = "Untuk memulai panggilan baru, ketuk tombol panggilan baru di kanan atas."
+"calls.shortcut_phone" = "Telepon"
+"calls.shortcut_favorites" = "Favorit"
 "calls.picker_empty" = "Tidak ada kontak yang cocok dengan pencarian ini."
 "profile.my_title" = "Profil saya"
 "profile.my_name" = "Nama"
@@ -220,12 +222,9 @@
 "conversation.unmute_notifications" = "Bunyikan notifikasi"
 
 # ---- settings: appearance ----
-"appearance.subtitle" = "Tema, warna dan ukuran antarmuka."
 "appearance.theme" = "Tema"
 "appearance.dynamic_color" = "Warna dinamis"
-"appearance.dynamic_color_caption" = "Seluruh palet digenerate dari satu warna ini: permukaan, bubble, badge, dan sorotan."
 "appearance.glow" = "Glow"
-"appearance.glow_caption" = "Permukaan kaca berwarna dengan tepi atas bercahaya. Mati membuat permukaan datar dan netral."
 "appearance.motion" = "Gerakan"
 "appearance.motion_caption" = "Animasi untuk panel, pemilih media dan berpindah obrolan."
 "appearance.motion_full" = "Penuh"
@@ -237,3 +236,7 @@
 "appearance.contrast" = "Kontras"
 "appearance.saturation" = "Saturasi"
 "appearance.reset" = "Atur ulang"
+"appearance.font_size" = "Ukuran font"
+"appearance.font_small" = "Kecil"
+"appearance.font_default" = "Bawaan"
+"appearance.font_large" = "Besar"

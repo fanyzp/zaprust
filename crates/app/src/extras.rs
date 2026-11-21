@@ -242,6 +242,12 @@ impl App {
                 if let Some(g) = v["glow"].as_bool() {
                     self.glow = g;
                 }
+                if let Some(z) = v["zoom_percent"].as_u64() {
+                    // The same clamp the Appearance control
+                    // applies, so a hand-edited file cannot push
+                    // the render scale outside the offered range.
+                    self.zoom_percent = (z as u32).clamp(80, 120);
+                }
                 if let Some(a) = v["seed"].as_array() {
                     if a.len() == 3 {
                         self.seed = core::theme::Rgb(
@@ -386,6 +392,7 @@ impl App {
             "saturation": self.saturation,
             "contrast": self.contrast,
             "glow": self.glow,
+            "zoom_percent": self.zoom_percent,
             "seed": [self.seed.0, self.seed.1, self.seed.2],
             "notify_messages": self.notify_messages,
             "notify_groups": self.notify_groups,

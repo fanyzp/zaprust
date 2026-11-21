@@ -5,6 +5,10 @@
 mod composer;
 mod stream;
 
+/// The stream's centered system pill, shared with the bubble
+/// renderer (its system-message fallback draws the same pill).
+pub(crate) use stream::system_pill;
+
 use crate::bubble::{message_bubble, BubbleAction, MediaCtx};
 use crate::state::App;
 use crate::state::VoicePlayback;

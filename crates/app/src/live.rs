@@ -3628,6 +3628,24 @@ mod chat_state_routing_tests {
         );
     }
 
+    /// The font-size preference persists in the settings
+    /// document: what the Appearance chips set is what
+    /// persist_settings writes, at every offered step, so a
+    /// restart reopens at the chosen size (the loader reads
+    /// the same key back, clamped to the offered range).
+    #[test]
+    fn settings_json_carries_the_font_size_preference() {
+        let (mut app, _tx, _ctx, _cmd_rx) = live_app();
+        for percent in [85_u32, 100, 115] {
+            app.zoom_percent = percent;
+            assert_eq!(
+                app.settings_json()["zoom_percent"],
+                serde_json::json!(percent),
+                "the {percent}% step must reach the settings document"
+            );
+        }
+    }
+
     /// The connect-time privacy fetch reconciles the local
     /// read-receipts toggle with the account's setting (audit
     /// finding D3): the server value is adopted into the flag

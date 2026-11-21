@@ -54,6 +54,7 @@ mod markdown;
 mod media;
 mod motion;
 mod notify;
+mod portrait;
 mod profile;
 mod recorder;
 mod rich_ui;

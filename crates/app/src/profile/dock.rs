@@ -430,18 +430,12 @@ pub(super) fn profile_counts_section(
     links: usize,
     docs: usize,
 ) {
-    dock_card_section(
-        ui,
-        t,
-        &crate::i18n::t("profile.media"),
-        Some(&crate::i18n::t("profile.media_caption")),
-        |ui| {
-            let rows = [("Media", media), ("Links", links), ("Docs", docs)];
-            for (i, (label, count)) in rows.iter().enumerate() {
-                dock_stat_row(ui, t, label, &count.to_string(), i + 1 < rows.len());
-            }
-        },
-    );
+    dock_card_section(ui, t, &crate::i18n::t("profile.media"), None, |ui| {
+        let rows = [("Media", media), ("Links", links), ("Docs", docs)];
+        for (i, (label, count)) in rows.iter().enumerate() {
+            dock_stat_row(ui, t, label, &count.to_string(), i + 1 < rows.len());
+        }
+    });
 }
 
 /// One radio row on the dock grid: the shared row geometry

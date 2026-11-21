@@ -220,6 +220,19 @@ fn main() -> eframe::Result {
 /// titles). No production panic site does so today (every
 /// interpolating `panic!`/`expect`/`assert!` in the workspace is
 /// in test code); keep it that way.
+/// Builds the crash report for a panic, stamped with THIS
+/// crate's version: the report must name the application that
+/// crashed (the app binary), not the core crate's package
+/// version, which only coincides with it while the workspace
+/// version stays unified.
+fn capture_report(
+    message: String,
+    location: Option<String>,
+    backtrace: String,
+) -> core::crash::CrashReport {
+    core::crash::CrashReport::capture(env!("CARGO_PKG_VERSION"), message, location, backtrace)
+}
+
 fn install_panic_hook() {
     let crash_dir = backend::data_dir().join("crashes");
     std::panic::set_hook(Box::new(move |info| {
@@ -232,7 +245,7 @@ fn install_panic_hook() {
         };
         let location = info.location().map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()));
         let backtrace = std::backtrace::Backtrace::force_capture().to_string();
-        let report = core::crash::CrashReport::capture(message, location, backtrace);
+        let report = capture_report(message, location, backtrace);
         let home = directories::BaseDirs::new().map(|b| b.home_dir().to_path_buf());
         match report.clone().write_to(&crash_dir, home.as_deref()) {
             Ok(path) => {
@@ -244,6 +257,18 @@ fn install_panic_hook() {
         }
         eprintln!("zaprust: panic: {}", report.summary());
     }));
+}
+
+#[cfg(test)]
+mod version_tests {
+    /// The panic hook's reports carry the app binary's own
+    /// version (this crate's), pinned so a future refactor
+    /// cannot quietly restamp them with another crate's.
+    #[test]
+    fn crash_reports_carry_the_app_version() {
+        let report = super::capture_report("boom".to_owned(), None, "bt".to_owned());
+        assert_eq!(report.app_version, env!("CARGO_PKG_VERSION"));
+    }
 }
 
 #[cfg(all(test, unix))]

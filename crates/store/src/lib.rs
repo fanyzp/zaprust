@@ -227,6 +227,11 @@ struct MessageData {
     /// [`Store::clear_photo_ref`]).
     #[serde(default)]
     photo_ref: Option<backend::PhotoRef>,
+    /// A voice message's re-download reference, archived with the
+    /// message so the note stays fetchable for playback in later
+    /// sessions.
+    #[serde(default)]
+    voice_ref: Option<backend::VoiceRef>,
 }
 
 /// The archive store: one SQLite file, versioned schema.
@@ -745,6 +750,7 @@ impl Store {
             forwarded: msg.forwarded,
             view_once: msg.view_once,
             photo_ref: msg.photo_ref.clone(),
+            voice_ref: msg.voice_ref.clone(),
         };
         let data_json = serde_json::to_string(&data).map_err(|e| {
             StoreError::Sqlite(rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
@@ -1009,6 +1015,7 @@ impl Store {
             msg.forwarded = data.forwarded;
             msg.view_once = data.view_once;
             msg.photo_ref = data.photo_ref;
+            msg.voice_ref = data.voice_ref;
             msg.expires_at = row.get(8)?;
             let flags: i64 = row.get(7)?;
             Ok((msg, flags))
@@ -1380,6 +1387,32 @@ mod tests {
         // A message archived without a reference stays without one.
         let plain = scripted_messages()[0].clone();
         assert_eq!(plain.photo_ref, None);
+    }
+
+    fn voice_reference() -> backend::VoiceRef {
+        backend::VoiceRef {
+            direct_path: "/v/t62.7118-24/voice.enc".to_owned(),
+            media_key: vec![7u8; 32],
+            file_sha256: vec![8u8; 32],
+            file_enc_sha256: vec![9u8; 32],
+            file_length: 45_678,
+        }
+    }
+
+    /// A voice note's re-download reference round-trips with the
+    /// message exactly like a photo's: that is what keeps a note
+    /// received in an earlier session playable after a restart.
+    #[test]
+    fn voice_ref_round_trips_with_the_message() {
+        let store = Store::open_in_memory().unwrap();
+        let mut msg = scripted_messages()[0].clone();
+        msg.voice_ref = Some(voice_reference());
+        store.upsert_message(&msg, 0).unwrap();
+        let rows = store.messages(&msg.chat_jid).unwrap();
+        assert_eq!(rows[0].0.voice_ref, Some(voice_reference()));
+        // A message archived without a reference stays without one.
+        let plain = scripted_messages()[0].clone();
+        assert_eq!(plain.voice_ref, None);
     }
 
     /// Clearing a photo reference (the view-once spend) removes

@@ -90,6 +90,9 @@ impl eframe::App for App {
             if self.portrait_fab_visible() {
                 self.draw_new_chat_fab(ui);
             }
+            if self.portrait_calls_fab_visible() {
+                self.draw_calls_fab(ui);
+            }
         } else if self.screen == Screen::Updates {
             self.draw_updates(ui);
         } else if self.screen == Screen::Settings {

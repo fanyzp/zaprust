@@ -113,7 +113,8 @@ impl App {
                 let content_h = match self.pair_mode {
                     PairMode::Qr => 560.0,
                     PairMode::Code => 540.0,
-                } + if self.crash_report.is_some() { 128.0 } else { 0.0 };
+                } + if self.crash_report.is_some() { 128.0 } else { 0.0 }
+                    + if self.live_start_error.is_some() { 96.0 } else { 0.0 };
                 let top_pad = ((body.height() - content_h) * 0.5).clamp(0.0, 200.0);
                 let col_w = COL_W;
                 let col_rect = egui::Rect::from_min_size(
@@ -163,32 +164,49 @@ impl App {
                             egui::Layout::top_down(egui::Align::Center),
                             |ui| match self.pair_mode {
                                 PairMode::Qr => {
-                                    let (rect, _) = ui
-                                        .allocate_exact_size(Vec2::splat(QR_SLOT), Sense::hover());
-                                    // The pairing gate (live.rs): a
-                                    // matrix is painted only for the
-                                    // Live state, which requires a
-                                    // pairable session holding a
-                                    // current server-issued payload.
-                                    // Every other state renders
-                                    // words in this slot, never a
-                                    // code-shaped graphic.
-                                    match self.connect_qr() {
-                                        crate::live::ConnectQr::Live(matrix) => {
-                                            draw_qr_matrix(ui.painter(), rect, matrix);
-                                            ui.add_space(12.0);
-                                            let fake = self.live.as_ref().is_some_and(|s| s.fake);
-                                            ui.label(
-                                                RichText::new(if fake {
-                                                    "Test mode code. WhatsApp cannot scan it."
-                                                } else {
-                                                    "Live QR. Scan it with your phone."
-                                                })
-                                                .size(11.0)
-                                                .color(rgb(t.text_faint)),
-                                            );
+                                    // The failed-start panel sizes
+                                    // by its content (the wrapped
+                                    // reason runs long), so it
+                                    // flows in the card instead of
+                                    // the fixed square slot: inside
+                                    // the slot its buttons spilled
+                                    // over the stepper below.
+                                    if let crate::live::ConnectQr::StartFailed(message) =
+                                        self.connect_qr()
+                                    {
+                                        let message = message.to_owned();
+                                        self.connect_start_failed_panel(ui, t, &message);
+                                    } else {
+                                        let (rect, _) = ui.allocate_exact_size(
+                                            Vec2::splat(QR_SLOT),
+                                            Sense::hover(),
+                                        );
+                                        // The pairing gate (live.rs): a
+                                        // matrix is painted only for the
+                                        // Live state, which requires a
+                                        // pairable session holding a
+                                        // current server-issued payload.
+                                        // Every other state renders
+                                        // words in this slot, never a
+                                        // code-shaped graphic.
+                                        match self.connect_qr() {
+                                            crate::live::ConnectQr::Live(matrix) => {
+                                                draw_qr_matrix(ui.painter(), rect, matrix);
+                                                ui.add_space(12.0);
+                                                let fake =
+                                                    self.live.as_ref().is_some_and(|s| s.fake);
+                                                ui.label(
+                                                    RichText::new(if fake {
+                                                        "Test mode code. WhatsApp cannot scan it."
+                                                    } else {
+                                                        "Live QR. Scan it with your phone."
+                                                    })
+                                                    .size(11.0)
+                                                    .color(rgb(t.text_faint)),
+                                                );
+                                            }
+                                            _ => self.connect_qr_placeholder(ui, rect, t),
                                         }
-                                        _ => self.connect_qr_placeholder(ui, rect, t),
                                     }
                                 }
                                 PairMode::Code => self.connect_code_panel(ui, t),
@@ -337,19 +355,16 @@ impl App {
     /// in the slot, so the eye lands on the state, not on a
     /// graphic that looks scannable but is not.
     fn connect_qr_placeholder(&mut self, ui: &mut egui::Ui, rect: egui::Rect, t: Tokens) {
-        // Classify into owned data first: the gate value borrows
-        // the session, and the failed-start arm below needs
-        // `&mut self` for its retry button.
+        // The StartFailed state never reaches this slot: the
+        // caller renders its panel in flow (see draw_connect).
         enum Slot {
-            StartFailed(String),
             Connecting,
             Unavailable(String),
             Demo,
             LoggedOut,
         }
         let state = match self.connect_qr() {
-            crate::live::ConnectQr::Live(_) => return,
-            crate::live::ConnectQr::StartFailed(message) => Slot::StartFailed(message.to_owned()),
+            crate::live::ConnectQr::Live(_) | crate::live::ConnectQr::StartFailed(_) => return,
             crate::live::ConnectQr::Connecting => Slot::Connecting,
             crate::live::ConnectQr::Unavailable(status) => Slot::Unavailable(status.label()),
             crate::live::ConnectQr::Demo => Slot::Demo,
@@ -361,10 +376,6 @@ impl App {
                 .layout(egui::Layout::top_down(egui::Align::Center)),
         );
         match state {
-            Slot::StartFailed(message) => {
-                slot.add_space(28.0);
-                self.connect_start_failed_panel(&mut slot, t, &message);
-            }
             Slot::Connecting => {
                 slot.add_space(96.0);
                 crate::widgets::loading_row(
@@ -419,9 +430,9 @@ impl App {
         }
     }
 
-    /// The failed-live-start panel shared by the QR slot and the
-    /// pairing-code panel: the plain-language reason, wrapped in
-    /// the card (never a clipped strip), and the two ways out:
+    /// The failed-live-start panel shared by both pair modes:
+    /// the plain-language reason, wrapped in the card (never a
+    /// clipped strip), and the two ways out:
     /// retry the start, or start fresh (the stranded data is set
     /// aside; that path is destructive, so its button only parks
     /// the house confirmation). This panel is what stays on the

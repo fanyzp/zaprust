@@ -894,6 +894,39 @@ pub enum LiveChatKind {
     Channel,
 }
 
+/// One completed call, as recorded in the call history. The app
+/// builds a record when a call ends (or when a
+/// [`BackendEvent::CallMissed`] arrives) and the archive store
+/// persists it, so the Calls panel renders the same history
+/// after a restart.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallRecord {
+    /// Archive row ID, assigned by the store when the record is
+    /// read back; 0 on a record that has not been persisted yet.
+    pub id: u64,
+    /// Protocol call identifier. Unique per call: the archive
+    /// keeps the first record stored under an ID and ignores
+    /// later duplicates, so a call reported through two paths
+    /// (its end event and a missed-call event) is recorded once.
+    pub call_id: String,
+    /// Chat JID of the other party (the 1:1 chat with them).
+    pub chat_jid: String,
+    /// Whether the call asked for video.
+    pub video: bool,
+    /// True when this device placed the call.
+    pub outgoing: bool,
+    /// The call rang this account and was never answered here:
+    /// it rang out, or the caller gave up. A call the user
+    /// declined is recorded with this false: declining is an
+    /// answer, and the entry renders as a normal incoming call
+    /// with no duration.
+    pub missed: bool,
+    /// Talk time in seconds; 0 for calls that never connected.
+    pub duration_secs: u32,
+    /// When the call started (rang or was placed), unix seconds.
+    pub started_at: i64,
+}
+
 /// A chat as the backend reports it (protocol-neutral).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LiveChat {
@@ -1427,6 +1460,26 @@ pub enum BackendEvent {
         /// For `Ended`: how it ended, in user words. None while
         /// the call is live.
         reason: Option<String>,
+    },
+    /// A call rang this account and ended unanswered, and it was
+    /// never announced with [`BackendEvent::IncomingCall`]: its
+    /// offer could not be shown (another call was already in
+    /// progress), or it was replayed from the offline queue on
+    /// reconnect for a call that rang while this device was
+    /// away. Emitted once per such call, for the call history;
+    /// the signal carries no media kind, so the history records
+    /// these as voice calls. A missed call whose offer WAS shown
+    /// does not produce this event: it ends through
+    /// [`BackendEvent::CallChanged`] like any other call.
+    CallMissed {
+        /// Call identifier (protocol call id).
+        call_id: String,
+        /// Chat JID of the caller (the 1:1 chat with them).
+        chat_jid: String,
+        /// When the call rang, unix seconds (the protocol
+        /// event's own timestamp; in the past for offline
+        /// replays).
+        at: i64,
     },
     /// A media download finished; the file is on disk.
     MediaSaved {

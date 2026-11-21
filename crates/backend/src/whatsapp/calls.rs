@@ -118,6 +118,18 @@ pub(super) fn handle_call_event(
                     seconds: 0,
                     reason: Some("Missed call".to_owned()),
                 });
+            } else {
+                // The offer was never this slot's, so the app was
+                // never told the call was ringing (another call
+                // held the slot, or the library replayed the call
+                // from the offline queue). The call still belongs
+                // in the history: report it as missed, with the
+                // protocol event's own ring timestamp.
+                sink.emit(BackendEvent::CallMissed {
+                    call_id: missed.call_id.clone(),
+                    chat_jid: missed.from.to_string(),
+                    at: missed.timestamp.timestamp(),
+                });
             }
         }
         _ => {}
@@ -544,8 +556,14 @@ mod tests {
         ));
     }
 
-    /// A MissedCall follows the same rule: only the ringing
-    /// call's own missed event clears its offer.
+    /// A MissedCall follows the same slot rule: only the ringing
+    /// call's own missed event clears its offer. A missed event
+    /// for a call whose offer is not the slot's (it rang while
+    /// another call held the slot) leaves the offer untouched and
+    /// is reported as a history-only CallMissed instead of a
+    /// CallChanged: the app never showed that call ringing, so it
+    /// must not see a phase change for it, but the call still
+    /// belongs in the history.
     #[test]
     fn missed_call_clears_only_its_own_offer() {
         use whatsapp_rust::wacore::chrono::Utc;
@@ -559,7 +577,14 @@ mod tests {
         )));
         handle_call_event(&other, &slot, &sink);
         assert!(lock_cache(&slot).is_some(), "another call's missed event keeps the offer");
-        assert!(rx.try_recv().is_err(), "nothing is announced");
+        let announced = rx.try_recv().expect("the unshown missed call is reported");
+        assert!(
+            matches!(
+                announced,
+                crate::BackendEvent::CallMissed { ref call_id, .. } if call_id == "call-b"
+            ),
+            "an unshown missed call is a CallMissed, not a phase change: {announced:?}"
+        );
 
         let own = std::sync::Arc::new(Event::MissedCall(MissedCall::new(
             caller(),
@@ -574,6 +599,33 @@ mod tests {
             announced,
             crate::BackendEvent::CallChanged { ref call_id, phase: crate::CallPhase::Ended, .. }
             if call_id == "call-a"
+        ));
+        assert!(rx.try_recv().is_err(), "a shown call's missed event is not reported twice");
+    }
+
+    /// A missed call replayed from the offline queue never had an
+    /// offer in the slot at all: it is reported as a CallMissed
+    /// carrying the protocol event's own ring timestamp, so the
+    /// history entry is stamped when the call actually rang, not
+    /// when the device reconnected.
+    #[test]
+    fn missed_call_without_an_offer_reports_its_ring_time() {
+        use whatsapp_rust::wacore::chrono::DateTime;
+        let slot: CallIncoming = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let (sink, rx) = test_sink();
+        let at = DateTime::from_timestamp(1_700_000_000, 0).expect("valid timestamp");
+        let missed = std::sync::Arc::new(Event::MissedCall(MissedCall::new(
+            caller(),
+            "call-offline".to_owned(),
+            at,
+            MissedReason::Offline,
+        )));
+        handle_call_event(&missed, &slot, &sink);
+        let announced = rx.try_recv().expect("the replayed missed call is reported");
+        assert!(matches!(
+            announced,
+            crate::BackendEvent::CallMissed { ref call_id, ref chat_jid, at: 1_700_000_000 }
+            if call_id == "call-offline" && chat_jid == "12025550111@s.whatsapp.net"
         ));
     }
 }

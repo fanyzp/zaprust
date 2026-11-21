@@ -322,6 +322,25 @@ fn search_candidates() -> Vec<(&'static str, &'static str, String, String)> {
     out
 }
 
+/// The settings rows a search query matches, as (tab, id,
+/// title in the active language), in registry order. A row
+/// matches when every whitespace-separated token of the
+/// query appears in its haystack: both languages' titles
+/// plus keywords for registry rows, name plus description
+/// for the feature switchboard rows.
+fn settings_search_results(query: &str) -> Vec<(&'static str, &'static str, String)> {
+    let query = query.trim().to_lowercase();
+    if query.is_empty() {
+        return Vec::new();
+    }
+    let tokens: Vec<&str> = query.split_whitespace().collect();
+    search_candidates()
+        .into_iter()
+        .filter(|c| tokens.iter().all(|tok| c.3.contains(tok)))
+        .map(|(tab, id, title, _)| (tab, id, title))
+        .collect()
+}
+
 /// Paints the search-jump highlight over `rect` while the
 /// active highlight targets `id`: a faint accent wash plus a
 /// 3 px accent bar on the row's left edge, fading out over the
@@ -638,21 +657,18 @@ impl App {
             }
             return;
         }
-        let tokens: Vec<&str> = query.split_whitespace().collect();
-        let candidates = search_candidates();
+        let results = settings_search_results(&query);
         let mut activate: Option<(&'static str, &'static str)> = None;
         let mut any = false;
         for tab in panel_items("Settings") {
-            let matches: Vec<&(&'static str, &'static str, String, String)> = candidates
-                .iter()
-                .filter(|c| c.0 == tab && tokens.iter().all(|tok| c.3.contains(tok)))
-                .collect();
+            let matches: Vec<&(&'static str, &'static str, String)> =
+                results.iter().filter(|c| c.0 == tab).collect();
             if matches.is_empty() {
                 continue;
             }
             any = true;
             group_label(ui, t, &tab_label(tab));
-            for (_, id, title, _) in &matches {
+            for (_, id, title) in &matches {
                 let (rect, response) =
                     ui.allocate_exact_size(Vec2::new(ui.available_width(), 30.0), Sense::click());
                 if response.hovered() {
@@ -679,12 +695,19 @@ impl App {
             );
         }
         if let Some((tab, id)) = activate {
-            self.settings_tab = tab;
-            self.settings_page_open = true;
-            self.settings_highlight =
-                Some(SettingHighlight { id, started: ui.ctx().input(|i| i.time), scroll: true });
-            self.settings_search.clear();
+            self.open_setting(tab, id, ui.ctx().input(|i| i.time));
         }
+    }
+
+    /// Jumps to one settings row, the search field's
+    /// activation: switch to the row's page, open it (in
+    /// single-pane mode the page replaces the category list),
+    /// arm the row highlight, and clear the search field.
+    pub(crate) fn open_setting(&mut self, tab: &'static str, id: &'static str, now: f64) {
+        self.settings_tab = tab;
+        self.settings_page_open = true;
+        self.settings_highlight = Some(SettingHighlight { id, started: now, scroll: true });
+        self.settings_search.clear();
     }
 }
 
@@ -871,6 +894,17 @@ pub(crate) fn panel_items(title: &str) -> Vec<&'static str> {
     }
 }
 
+/// The storage page's three measurements over a data dir:
+/// the archive database file, the linked-accounts tree, and
+/// the whole tree.
+fn measure_storage(data_dir: &std::path::Path) -> (u64, u64, u64) {
+    (
+        std::fs::metadata(data_dir.join("archive.db")).map_or(0, |m| m.len()),
+        dir_size(&data_dir.join("accounts")),
+        dir_size(data_dir),
+    )
+}
+
 /// Total size of a directory tree (0 when missing/unreadable).
 fn dir_size(path: &std::path::Path) -> u64 {
     let mut total = 0u64;
@@ -895,5 +929,141 @@ fn fmt_bytes(n: u64) -> String {
         format!("{:.1} KB", n as f64 / 1024.0)
     } else {
         format!("{:.1} MB", n as f64 / (1024.0 * 1024.0))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::Args;
+
+    /// A scratch directory tree under the system temp dir,
+    /// removed again when the test ends.
+    struct TempTree(std::path::PathBuf);
+
+    impl TempTree {
+        fn new(name: &str) -> Self {
+            let dir = std::env::temp_dir()
+                .join(format!("zaprust-settings-test-{}-{name}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            Self(dir)
+        }
+
+        fn write(&self, rel: &str, bytes: usize) {
+            let path = self.0.join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, vec![0u8; bytes]).unwrap();
+        }
+    }
+
+    impl Drop for TempTree {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn dir_size_sums_files_across_nested_dirs() {
+        let tree = TempTree::new("dir-size");
+        tree.write("a.bin", 10);
+        tree.write("sub/b.bin", 20);
+        tree.write("sub/deep/c.bin", 30);
+        assert_eq!(dir_size(&tree.0), 60);
+        assert_eq!(dir_size(&tree.0.join("sub")), 50);
+    }
+
+    #[test]
+    fn dir_size_of_an_empty_or_missing_dir_is_zero() {
+        let tree = TempTree::new("dir-size-empty");
+        assert_eq!(dir_size(&tree.0), 0);
+        assert_eq!(dir_size(&tree.0.join("not-there")), 0);
+    }
+
+    #[test]
+    fn measure_storage_splits_archive_accounts_and_the_whole_tree() {
+        let tree = TempTree::new("measure");
+        tree.write("archive.db", 100);
+        tree.write("accounts/one/session.bin", 40);
+        tree.write("accounts/two.bin", 2);
+        tree.write("logs.txt", 7);
+        let (archive, accounts, total) = measure_storage(&tree.0);
+        assert_eq!(archive, 100, "the archive database file alone");
+        assert_eq!(accounts, 42, "the linked-accounts tree");
+        assert_eq!(total, 149, "everything under the data dir");
+        assert_eq!(total - archive - accounts, 7, "what the page reports as other data");
+    }
+
+    #[test]
+    fn measure_storage_of_a_missing_dir_is_all_zero() {
+        let missing = std::env::temp_dir().join("zaprust-settings-test-not-a-dir");
+        assert_eq!(measure_storage(&missing), (0, 0, 0));
+    }
+
+    fn result_ids(query: &str) -> Vec<(&'static str, &'static str)> {
+        settings_search_results(query).into_iter().map(|(tab, id, _)| (tab, id)).collect()
+    }
+
+    #[test]
+    fn search_matches_by_title_and_by_haystack_only_keywords() {
+        assert!(result_ids("theme").contains(&("Appearance", "appearance.theme")));
+        // "gelap" is in no title in either language; it only
+        // exists in the Theme row's keyword haystack.
+        assert!(result_ids("gelap").contains(&("Appearance", "appearance.theme")));
+        // Matching trims the query and ignores case.
+        assert!(result_ids("  GeLaP ").contains(&("Appearance", "appearance.theme")));
+    }
+
+    #[test]
+    fn search_matches_feature_rows_by_their_description() {
+        // "markdown" appears only in the Chat Export row's
+        // search description, never in its display name.
+        assert!(result_ids("markdown").contains(&("Features", "export-chat")));
+        assert!(result_ids("stickers").contains(&("Features", "stickers")));
+    }
+
+    #[test]
+    fn search_requires_every_token_to_match() {
+        assert!(result_ids("dark light").contains(&("Appearance", "appearance.theme")));
+        assert!(result_ids("dark zzznomatch").is_empty());
+        assert!(result_ids("zzznomatch").is_empty());
+        assert!(result_ids("").is_empty());
+        assert!(result_ids("   ").is_empty());
+    }
+
+    #[test]
+    fn open_setting_switches_the_page_and_arms_the_highlight() {
+        let ctx = egui::Context::default();
+        crate::theme::install_fonts(&ctx);
+        let mut app = App::new(Args::parse(), &ctx);
+        // App::new may have attempted a real live start against
+        // this machine's data dir; the test owns the state from
+        // here and wants the plain demo shell.
+        app.live = None;
+        app.live_mode = false;
+        app.settings_search = "gelap".to_owned();
+        app.open_setting("Appearance", "appearance.theme", 2.5);
+        assert_eq!(app.settings_tab, "Appearance");
+        assert!(app.settings_page_open);
+        let hl = app.settings_highlight.expect("the jump arms a highlight");
+        assert_eq!(hl.id, "appearance.theme");
+        assert_eq!(hl.started, 2.5);
+        assert!(hl.scroll);
+        assert!(app.settings_search.is_empty(), "the search field clears after a jump");
+    }
+
+    #[test]
+    fn version_label_combines_version_and_build_code() {
+        assert_eq!(format_version_label("1.5.0", "d3c2dd0"), "1.5.d3c2dd0");
+        assert_eq!(format_version_label("1.5.0", ""), "1.5.0");
+        assert_eq!(format_version_label("1.5.0", "unknown"), "1.5.0");
+        // The page's own label: the crate version, with the
+        // build code folded into the patch slot when the
+        // build stamped one.
+        let version = env!("CARGO_PKG_VERSION");
+        let label = version_label();
+        let mut parts = version.split('.');
+        let prefix = format!("{}.{}.", parts.next().unwrap(), parts.next().unwrap());
+        assert!(label == version || label.starts_with(&prefix), "label {label} for {version}");
     }
 }

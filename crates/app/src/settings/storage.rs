@@ -15,12 +15,7 @@ impl App {
         let (archive, session, total) = match self.storage_sizes {
             Some(sizes) => sizes,
             None => {
-                let data_dir = backend::data_dir();
-                let sizes = (
-                    std::fs::metadata(data_dir.join("archive.db")).map_or(0, |m| m.len()),
-                    dir_size(&data_dir.join("accounts")),
-                    dir_size(&data_dir),
-                );
+                let sizes = measure_storage(&backend::data_dir());
                 self.storage_sizes = Some(sizes);
                 sizes
             }

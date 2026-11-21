@@ -332,6 +332,7 @@
 
 # ---- crash banner ----
 "crash.title" = "Zaprust crashed last time"
+"crash.body" = "It ran into a problem and closed. You can send the report to help fix it, or view what was recorded."
 "crash.report" = "Report on GitHub"
 "crash.details" = "View details"
 "crash.dismiss" = "Dismiss"

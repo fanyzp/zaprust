@@ -15,6 +15,18 @@ use eframe::egui::{
     self, Align2, Color32, CornerRadius, FontId, Margin, Pos2, RichText, Sense, Stroke, Vec2,
 };
 
+/// Connect layout constants (layout C, centered minimal): the
+/// screen is one centered column, and its widths come from this
+/// table, not from per-call literals, so the card, the stepper,
+/// the status slot, and the pairing fields can never drift out
+/// of alignment with each other.
+/// The centered column's width; the card, stepper, and status
+/// slot all span exactly it.
+const COL_W: f32 = 360.0;
+/// The QR slot's edge: a square that holds the plate, its 10pt
+/// margin, the quiet zone, and the code (see `qr_layout`).
+const QR_SLOT: f32 = 248.0;
+
 impl App {
     /// Full-window connect screen (layout "C, centered minimal",
     /// chosen 2026-11-15): a slim topbar with Cancel, then ONE
@@ -98,9 +110,9 @@ impl App {
                 let content_h = match self.pair_mode {
                     PairMode::Qr => 560.0,
                     PairMode::Code => 540.0,
-                };
+                } + if self.crash_report.is_some() { 128.0 } else { 0.0 };
                 let top_pad = ((body.height() - content_h) * 0.5).clamp(0.0, 200.0);
-                let col_w = 360.0;
+                let col_w = COL_W;
                 let col_rect = egui::Rect::from_min_size(
                     Pos2::new(area.center().x - col_w / 2.0, body.top() + top_pad),
                     Vec2::new(col_w, body.height() - top_pad),
@@ -126,6 +138,17 @@ impl App {
                     ui.label(RichText::new("Zaprust").font(crate::theme::semibold(20.0)));
                 });
                 col.add_space(20.0);
+                // The crash banner renders IN FLOW at the top of
+                // the column on this screen: as a fixed overlay it
+                // painted over the connect header and collided
+                // with the unlock notice (the owner's v1.1.0
+                // report). On the main screens it stays an
+                // overlay; the banner content is shared
+                // (crash_ui::draw_crash_banner).
+                if self.crash_report.is_some() {
+                    self.draw_crash_banner(&mut col, col_w);
+                    col.add_space(16.0);
+                }
                 // The glass card: the one elevated surface on
                 // this screen, holding the QR or the pairing
                 // entry, so the code is what the eye lands on.
@@ -138,7 +161,7 @@ impl App {
                             |ui| match self.pair_mode {
                                 PairMode::Qr => {
                                     let (rect, _) =
-                                        ui.allocate_exact_size(Vec2::splat(248.0), Sense::hover());
+                                        ui.allocate_exact_size(Vec2::splat(QR_SLOT), Sense::hover());
                                     // The pairing gate (live.rs): a
                                     // matrix is painted only for the
                                     // Live state, which requires a
@@ -215,7 +238,7 @@ impl App {
     /// so waiting, confirming, linked and error states swap in
     /// place without moving anything around them.
     fn connect_status_line(&mut self, ui: &mut egui::Ui, t: Tokens) {
-        let (rect, _) = ui.allocate_exact_size(Vec2::new(360.0, 24.0), Sense::hover());
+        let (rect, _) = ui.allocate_exact_size(Vec2::new(COL_W, 24.0), Sense::hover());
         let mut slot = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(
             egui::Layout::left_to_right(egui::Align::Center).with_main_align(egui::Align::Center),
         ));
@@ -820,7 +843,7 @@ impl App {
 /// at disc height. Steps before `done` wear a check, step
 /// `done` is the current one, the rest wait in the border tone.
 fn steps_stepper(ui: &mut egui::Ui, t: Tokens, items: &[&str], done: usize) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(360.0, 46.0), Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(COL_W, 46.0), Sense::hover());
     let painter = ui.painter();
     let cell_w = rect.width() / items.len() as f32;
     let cy = rect.top() + 11.0;

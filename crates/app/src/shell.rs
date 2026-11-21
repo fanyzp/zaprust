@@ -45,7 +45,7 @@ impl eframe::App for App {
         }
         if self.screen == Screen::Connect {
             self.draw_connect(ui);
-            self.draw_banners(ui);
+            self.draw_banners_on_connect(ui);
             return;
         }
         if self.portrait {

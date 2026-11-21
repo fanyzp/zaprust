@@ -236,6 +236,7 @@
 "account.log_out" = "Keluar"
 "account.log_out_title" = "Keluar?"
 "account.log_out_body" = "Komputer ini akan dilepas dari akun WhatsApp Anda dan data masuknya akan dihapus. Obrolan yang tersimpan di komputer ini tetap ada di arsip lokal, dan Anda dapat menautkan lagi kapan saja."
+"crash.body" = "Zaprust mengalami masalah lalu tertutup. Anda dapat mengirim laporannya untuk membantu perbaikan, atau melihat isinya."
 "conversation.chat_actions" = "Aksi obrolan"
 "conversation.this_chat" = "Obrolan ini"
 "conversation.archive" = "Arsipkan obrolan"

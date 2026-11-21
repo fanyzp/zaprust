@@ -4,7 +4,7 @@
 
 use crate::state::App;
 use crate::theme::rgb;
-use eframe::egui::{self, Align2, CornerRadius, Margin, Pos2, RichText, Stroke, Vec2};
+use eframe::egui::{self, CornerRadius, Margin, Pos2, RichText, Stroke, Vec2};
 
 /// Opens `url` in the system browser. On failure, copies the URL to
 /// the clipboard and sets a notice telling the user what happened.
@@ -28,88 +28,52 @@ fn open_or_copy_with(
 }
 
 impl App {
-    /// Top-centre banners: crash report first, then the generic
-    /// notice. Drawn as overlays above every screen.
+    /// Top-centre banners on the main screens: crash report first,
+    /// then the generic notice. Drawn as overlays above the screen.
     pub(crate) fn draw_banners(&mut self, root: &mut egui::Ui) {
+        self.draw_banners_impl(root, false);
+    }
+
+    /// The connect screen's banner pass. Two differences from the
+    /// main screens, both from the owner's v1.1.0 report: the crash
+    /// banner is NOT an overlay here (the connect column renders it
+    /// in flow, so it can never paint over the screen's header),
+    /// and a notice that only repeats the failed start's reason is
+    /// not painted either, because the failed-start panel inside
+    /// the card already shows that text in flow. The crash details
+    /// modal still draws: it is a real modal, dimmed and centred,
+    /// on every screen.
+    pub(crate) fn draw_banners_on_connect(&mut self, root: &mut egui::Ui) {
+        self.draw_banners_impl(root, true);
+    }
+
+    fn draw_banners_impl(&mut self, root: &mut egui::Ui, on_connect: bool) {
         let t = self.tokens();
         let area = root.max_rect();
         let mut y = area.top() + 12.0;
 
-        if let Some(report) = self.crash_report.clone() {
+        if !on_connect && self.crash_report.is_some() {
             let size = Vec2::new(560.0, 86.0);
             let rect =
                 egui::Rect::from_min_size(Pos2::new(area.center().x - size.x / 2.0, y), size);
-            let mut action: Option<&str> = None;
+            let mut height = size.y;
             egui::Area::new(egui::Id::unique("crash_banner"))
                 .fixed_pos(rect.min)
                 .order(egui::Order::Foreground)
                 .show(root.ctx(), |ui| {
-                    // Text-bearing glass with the danger stroke:
-                    // the banner floats over the app and its text
-                    // must stay crisp.
-                    let banner = egui::Frame::new()
-                        .fill(crate::theme::glass_text_tint(t, t.bg_panel))
-                        .corner_radius(CornerRadius::same(12))
-                        .stroke(Stroke::new(1.0_f32, rgb(t.danger)))
-                        .inner_margin(Margin::same(12))
-                        .show(ui, |ui| {
-                            ui.set_width(size.x - 24.0);
-                            ui.label(RichText::new(crate::i18n::t("crash.title")).strong());
-                            ui.label(
-                                RichText::new(report.summary())
-                                    .size(12.0)
-                                    .color(rgb(t.text_secondary)),
-                            );
-                            ui.add_space(6.0);
-                            ui.horizontal(|ui| {
-                                if crate::widgets::button(
-                                    ui,
-                                    t,
-                                    &crate::i18n::t("crash.report"),
-                                    crate::widgets::Btn::Primary,
-                                )
-                                .clicked()
-                                {
-                                    action = Some("report");
-                                }
-                                if crate::widgets::button(
-                                    ui,
-                                    t,
-                                    &crate::i18n::t("crash.details"),
-                                    crate::widgets::Btn::Secondary,
-                                )
-                                .clicked()
-                                {
-                                    action = Some("details");
-                                }
-                                if crate::widgets::button(
-                                    ui,
-                                    t,
-                                    &crate::i18n::t("crash.dismiss"),
-                                    crate::widgets::Btn::Secondary,
-                                )
-                                .clicked()
-                                {
-                                    action = Some("dismiss");
-                                }
-                            });
-                        });
-                    crate::theme::paint_glass_edge(ui.painter(), banner.response.rect, 12.0, t);
+                    height = self.draw_crash_banner(ui, size.x);
                 });
-            match action {
-                Some("report") => {
-                    let url = core::crash::crash_issue_url(&report);
-                    open_or_copy(self, root, &url);
-                    self.dismiss_crash();
-                }
-                Some("details") => self.crash_details_open = true,
-                Some("dismiss") => self.dismiss_crash(),
-                _ => {}
-            }
-            y += size.y + 8.0;
+            y += height + 8.0;
         }
 
-        if let Some(notice) = self.notice.clone() {
+        // A notice never paints while the crash details modal is
+        // open: a toast over the dialog was the second half of the
+        // owner's crash report screenshot.
+        let notice = self.notice.clone().filter(|n| {
+            !self.crash_details_open
+                && !(on_connect && self.live_start_error.as_deref() == Some(n.as_str()))
+        });
+        if let Some(notice) = notice {
             // The banner fades/slides in and out like every popup
             // (popup_phase); while an AI worker runs, a spinner
             // rides in front of the text so a busy action reads as
@@ -173,6 +137,83 @@ impl App {
         }
     }
 
+    /// The crash banner's content, shared by the overlay on the
+    /// main screens and the in-flow slot in the connect column:
+    /// a title, ONE human sentence, and the three actions. The
+    /// raw panic text is never the banner's body; it stays inside
+    /// the report, behind View details, Report, and Copy.
+    /// Returns the height the banner painted at.
+    pub(crate) fn draw_crash_banner(&mut self, ui: &mut egui::Ui, width: f32) -> f32 {
+        let t = self.tokens();
+        let mut action: Option<&str> = None;
+        // Text-bearing glass with the danger stroke: the banner
+        // carries text that must stay crisp on any surface.
+        let banner = egui::Frame::new()
+            .fill(crate::theme::glass_text_tint(t, t.bg_panel))
+            .corner_radius(CornerRadius::same(12))
+            .stroke(Stroke::new(1.0_f32, rgb(t.danger)))
+            .inner_margin(Margin::same(12))
+            .show(ui, |ui| {
+                ui.set_width(width - 24.0);
+                ui.label(RichText::new(crate::i18n::t("crash.title")).strong());
+                ui.label(
+                    RichText::new(crate::i18n::t("crash.body"))
+                        .size(12.0)
+                        .color(rgb(t.text_secondary)),
+                );
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    if crate::widgets::button(
+                        ui,
+                        t,
+                        &crate::i18n::t("crash.report"),
+                        crate::widgets::Btn::Primary,
+                    )
+                    .clicked()
+                    {
+                        action = Some("report");
+                    }
+                    if crate::widgets::button(
+                        ui,
+                        t,
+                        &crate::i18n::t("crash.details"),
+                        crate::widgets::Btn::Secondary,
+                    )
+                    .clicked()
+                    {
+                        action = Some("details");
+                    }
+                    if crate::widgets::button(
+                        ui,
+                        t,
+                        &crate::i18n::t("crash.dismiss"),
+                        crate::widgets::Btn::Secondary,
+                    )
+                    .clicked()
+                    {
+                        action = Some("dismiss");
+                    }
+                });
+            });
+        crate::theme::paint_glass_edge(ui.painter(), banner.response.rect, 12.0, t);
+        match action {
+            Some("report") => {
+                if let Some(report) = self.crash_report.clone() {
+                    let url = core::crash::crash_issue_url(&report);
+                    open_or_copy(self, ui, &url);
+                }
+                self.dismiss_crash();
+            }
+            Some("details") => {
+                self.crash_copied = false;
+                self.crash_details_open = true;
+            }
+            Some("dismiss") => self.dismiss_crash(),
+            _ => {}
+        }
+        banner.response.rect.height()
+    }
+
     fn dismiss_crash(&mut self) {
         if let Some(report) = &self.crash_report {
             let dir = backend::data_dir().join("crashes");
@@ -180,9 +221,16 @@ impl App {
         }
         self.crash_report = None;
         self.crash_details_open = false;
+        self.crash_copied = false;
     }
 
-    /// Modal with the full report text and a Copy button.
+    /// The crash details modal: compact and human. A title, one
+    /// sentence naming the version that crashed, and the actions.
+    /// The full report text (error, location, backtrace) is never
+    /// the dialog body; it leaves only through Copy (clipboard)
+    /// or Report on GitHub (the prefilled issue), by the user's
+    /// choice. Copy confirms inside the dialog ("Copied"), never
+    /// as a toast painted over it.
     fn draw_crash_details(&mut self, root: &mut egui::Ui) {
         let t = self.tokens();
         let Some(report) = self.crash_report.clone() else {
@@ -204,10 +252,11 @@ impl App {
         let exiting = !self.crash_details_open;
         let area = root.max_rect();
         root.painter().rect_filled(area, CornerRadius::ZERO, crate::theme::modal_dim(det_p));
-        let size = Vec2::new(620.0, 430.0);
+        let size = Vec2::new(460.0, 208.0);
         let rect = egui::Rect::from_center_size(area.center(), size);
         let mut close = false;
         let mut copy = false;
+        let mut report_it = false;
         egui::Area::new(egui::Id::unique("crash_details"))
             .fixed_pos(rect.min)
             .order(egui::Order::Foreground)
@@ -224,17 +273,30 @@ impl App {
                         ui.set_width(size.x - 28.0);
                         ui.label(RichText::new("Crash report").size(16.0).strong());
                         ui.add_space(6.0);
-                        egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
-                            ui.label(
-                                RichText::new(report.full_text())
-                                    .size(11.5)
-                                    .family(egui::FontFamily::Monospace)
-                                    .color(rgb(t.text_secondary)),
-                            );
-                        });
-                        ui.add_space(8.0);
+                        ui.label(
+                            RichText::new(format!(
+                                "Zaprust {} ran into a problem and closed. \
+                                 The report holds the error and the technical \
+                                 trace; nothing from your chats is in it.",
+                                report.app_version
+                            ))
+                            .size(12.5)
+                            .color(rgb(t.text_secondary)),
+                        );
+                        ui.add_space(10.0);
                         ui.horizontal(|ui| {
-                            if crate::widgets::button(ui, t, "Copy", crate::widgets::Btn::Secondary)
+                            if crate::widgets::button(
+                                ui,
+                                t,
+                                &crate::i18n::t("crash.report"),
+                                crate::widgets::Btn::Primary,
+                            )
+                            .clicked()
+                            {
+                                report_it = true;
+                            }
+                            let copy_label = if self.crash_copied { "Copied" } else { "Copy" };
+                            if crate::widgets::button(ui, t, copy_label, crate::widgets::Btn::Secondary)
                                 .clicked()
                             {
                                 copy = true;
@@ -261,12 +323,16 @@ impl App {
         );
         if copy && !exiting {
             root.ctx().copy_text(report.full_text());
-            self.notice = Some("Crash report copied to the clipboard.".to_owned());
+            self.crash_copied = true;
+        }
+        if report_it && !exiting {
+            let url = core::crash::crash_issue_url(&report);
+            open_or_copy(self, root, &url);
+            self.dismiss_crash();
         }
         if close {
             self.crash_details_open = false;
         }
-        let _ = Align2::CENTER_CENTER;
     }
 }
 

@@ -933,6 +933,10 @@ pub(crate) struct App {
     pub(crate) crash_report: Option<core::crash::CrashReport>,
     /// Whether the full crash report text is being viewed.
     pub(crate) crash_details_open: bool,
+    /// Whether the open crash dialog's Copy action has run: the
+    /// button confirms in place ("Copied") instead of raising a
+    /// notice over the dialog.
+    pub(crate) crash_copied: bool,
     /// The egui context, kept so the account modal can start live
     /// mode (the backend wake hook needs it) after startup.
     pub(crate) egui_ctx: Option<egui::Context>,
@@ -1489,6 +1493,7 @@ impl App {
             notice: None,
             crash_report: core::crash::unseen_report(&backend::data_dir().join("crashes")),
             crash_details_open: false,
+            crash_copied: false,
             egui_ctx: Some(egui_ctx.clone()),
             saturation: args.saturation,
             contrast: args.contrast,

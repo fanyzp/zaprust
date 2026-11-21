@@ -296,6 +296,8 @@
 "calls.no_match" = "No calls match this filter."
 "calls.recent" = "Recent"
 "calls.new_call" = "New call"
+"calls.shortcut_phone" = "Phone"
+"calls.shortcut_favorites" = "Favorites"
 "calls.footer_hint" = "To start a new call, tap the new call button at the top right."
 "calls.picker_empty" = "No contacts match this search."
 

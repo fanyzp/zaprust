@@ -203,6 +203,8 @@
 "calls.no_match" = "Tidak ada panggilan yang cocok dengan filter ini."
 "calls.recent" = "Terbaru"
 "calls.new_call" = "Panggilan baru"
+"calls.shortcut_phone" = "Telepon"
+"calls.shortcut_favorites" = "Favorit"
 "calls.footer_hint" = "Untuk memulai panggilan baru, ketuk tombol panggilan baru di kanan atas."
 "calls.picker_empty" = "Tidak ada kontak yang cocok dengan pencarian ini."
 "profile.my_title" = "Profil saya"

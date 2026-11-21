@@ -442,6 +442,16 @@ pub(crate) struct CallsState {
     pub(crate) search: String,
     /// The Calls panel's Missed chip state.
     pub(crate) missed_only: bool,
+    /// The portrait Calls screen's favorites filter: only
+    /// entries whose chat is marked favorite. Toggled by the
+    /// shortcut row's favorites circle (portrait only; the
+    /// filter itself applies wherever it is set).
+    pub(crate) favorites_only: bool,
+    /// The portrait Calls screen's search field is expanded
+    /// (its header carries a search icon, the phone pattern,
+    /// instead of the always-open pill the panel shows in the
+    /// other modes).
+    pub(crate) search_open: bool,
     /// The Calls panel's new call contact picker is open.
     pub(crate) picker_open: bool,
     /// The new call picker's own search text.
@@ -1210,6 +1220,8 @@ impl App {
                 },
                 search: String::new(),
                 missed_only: args.calls_missed,
+                favorites_only: false,
+                search_open: false,
                 picker_open: args.calls_picker,
                 picker_search: String::new(),
                 active: None,

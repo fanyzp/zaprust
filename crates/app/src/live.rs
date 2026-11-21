@@ -3633,6 +3633,122 @@ mod burst_drain_tests {
         assert_eq!(archived.len(), 2, "both burst messages reached the archive");
     }
 
+    /// The message-info popover renders exactly what the
+    /// receipt log holds for a message (draw_message_info
+    /// reads `receipt_log` for its rows), so the log's
+    /// population from Receipt events is the feature: kinds
+    /// in arrival order, each stamped with its own event
+    /// time, kept per message.
+    #[test]
+    fn receipt_events_populate_the_message_info_log() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        app.selected_chat = jid_id(CHAT_JID);
+        for (id, body, ts) in [("mine-1", "first", BASE_TS), ("mine-2", "second", BASE_TS + 1)] {
+            tx.send(BackendEvent::MessageUpsert(LiveMessage::text(
+                id, CHAT_JID, None, body, ts, true,
+            )))
+            .unwrap();
+        }
+        tx.send(BackendEvent::Receipt {
+            chat_jid: CHAT_JID.to_owned(),
+            message_ids: vec!["mine-1".to_owned()],
+            kind: ReceiptKind::Sent,
+            at: BASE_TS + 600,
+        })
+        .unwrap();
+        tx.send(BackendEvent::Receipt {
+            chat_jid: CHAT_JID.to_owned(),
+            message_ids: vec!["mine-1".to_owned()],
+            kind: ReceiptKind::Delivered,
+            at: BASE_TS + 1_200,
+        })
+        .unwrap();
+        // One receipt event can cover several messages at once.
+        tx.send(BackendEvent::Receipt {
+            chat_jid: CHAT_JID.to_owned(),
+            message_ids: vec!["mine-1".to_owned(), "mine-2".to_owned()],
+            kind: ReceiptKind::Read,
+            at: BASE_TS + 1_800,
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+
+        let mid1 = message_id(CHAT_JID, "mine-1");
+        assert_eq!(
+            app.receipt_log.get(&mid1),
+            Some(&vec![
+                (ReceiptKind::Sent, fmt_time(BASE_TS + 600)),
+                (ReceiptKind::Delivered, fmt_time(BASE_TS + 1_200)),
+                (ReceiptKind::Read, fmt_time(BASE_TS + 1_800)),
+            ]),
+            "every receipt lands in the log, in order, with its own time"
+        );
+        let mid2 = message_id(CHAT_JID, "mine-2");
+        assert_eq!(
+            app.receipt_log.get(&mid2),
+            Some(&vec![(ReceiptKind::Read, fmt_time(BASE_TS + 1_800))]),
+            "the shared receipt logs once for the other message too"
+        );
+        let mine = stored_messages(&app).iter().find(|(_, m)| m.id == mid1).unwrap();
+        assert_eq!(mine.1.delivery, Some(Delivery::Read), "the log and the ticks agree");
+    }
+
+    /// The log is bounded per message (logic review F21): a
+    /// long receipt history keeps only the newest entries.
+    #[test]
+    fn receipt_log_keeps_only_the_newest_entries() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        app.selected_chat = jid_id(CHAT_JID);
+        tx.send(BackendEvent::MessageUpsert(LiveMessage::text(
+            "mine-1", CHAT_JID, None, "tracked", BASE_TS, true,
+        )))
+        .unwrap();
+        for i in 0..40i64 {
+            tx.send(BackendEvent::Receipt {
+                chat_jid: CHAT_JID.to_owned(),
+                message_ids: vec!["mine-1".to_owned()],
+                kind: ReceiptKind::Delivered,
+                at: BASE_TS + i * 60,
+            })
+            .unwrap();
+        }
+        drain_all(&mut app, &ctx);
+        let log = app.receipt_log.get(&message_id(CHAT_JID, "mine-1")).unwrap();
+        assert_eq!(log.len(), 32, "the log is capped");
+        assert_eq!(
+            log.first(),
+            Some(&(ReceiptKind::Delivered, fmt_time(BASE_TS + 8 * 60))),
+            "the oldest entries drain away"
+        );
+        assert_eq!(log.last(), Some(&(ReceiptKind::Delivered, fmt_time(BASE_TS + 39 * 60))));
+    }
+
+    /// Incoming typing: a TypingReceived event marks the chat
+    /// (the conversation header and the chat list read the
+    /// mark's freshness, under six seconds), and the matching
+    /// stop event clears it, per chat.
+    #[test]
+    fn typing_received_marks_and_clears_per_chat() {
+        const OTHER_JID: &str = "6289999999999@s.whatsapp.net";
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        let chat_id = jid_id(CHAT_JID);
+        let other_id = jid_id(OTHER_JID);
+        tx.send(BackendEvent::TypingReceived { chat_jid: CHAT_JID.to_owned(), typing: true })
+            .unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(
+            app.live_typing.get(&chat_id).is_some_and(|at| at.elapsed().as_secs() < 6),
+            "a fresh mark is what the header's typing label reads"
+        );
+        tx.send(BackendEvent::TypingReceived { chat_jid: OTHER_JID.to_owned(), typing: true })
+            .unwrap();
+        tx.send(BackendEvent::TypingReceived { chat_jid: CHAT_JID.to_owned(), typing: false })
+            .unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(!app.live_typing.contains_key(&chat_id), "the stop event clears the mark");
+        assert!(app.live_typing.contains_key(&other_id), "the other chat keeps its own mark");
+    }
+
     /// The notification flood scenario: on a real (non-fake)
     /// session, a message stamped before the connection came up
     /// is offline catch-up and must not queue an OS notification,

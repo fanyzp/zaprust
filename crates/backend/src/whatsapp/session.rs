@@ -975,6 +975,18 @@ pub(super) async fn run_async(
                     }
                 }
                 BackendCommand::StarMessage { chat_jid, message_id, sender_jid, from_me, star } => {
+                    // Failures answer with StarFailed, not the
+                    // generic Error: the app must roll the one
+                    // optimistic star back, and the generic path
+                    // would also fail pending message echoes that
+                    // have nothing to do with this star.
+                    let fail = |message: String| {
+                        events.emit(BackendEvent::StarFailed {
+                            chat_jid: chat_jid.clone(),
+                            message_id: message_id.clone(),
+                            message,
+                        });
+                    };
                     match build_message_target(&chat_jid, &message_id, sender_jid.as_ref(), from_me)
                     {
                         Ok((jid, sender, mid)) => {
@@ -991,20 +1003,29 @@ pub(super) async fn run_async(
                                         client.chat_actions().unstar_message(&target).await
                                     };
                                     if let Err(e) = result {
-                                        events.emit(BackendEvent::Error {
-                                            message: format!("Starring failed: {e}"),
-                                        });
+                                        fail(format!("Starring failed: {e}"));
                                     }
                                 }
-                                Err(_) => events.emit(BackendEvent::Error {
-                                    message: "That message reference is invalid.".to_owned(),
-                                }),
+                                Err(_) => {
+                                    fail("That message reference is invalid.".to_owned());
+                                }
                             }
                         }
-                        Err(e) => events.emit(BackendEvent::Error { message: e }),
+                        Err(e) => fail(e),
                     }
                 }
                 BackendCommand::PinMessage { chat_jid, message_id, sender_jid, from_me, pin } => {
+                    // PinFailed, not the generic Error, for the
+                    // same reason as StarFailed above: only the
+                    // app can roll the optimistic pin back, and
+                    // only if the failure names its message.
+                    let fail = |message: String| {
+                        events.emit(BackendEvent::PinFailed {
+                            chat_jid: chat_jid.clone(),
+                            message_id: message_id.clone(),
+                            message,
+                        });
+                    };
                     match build_message_target(&chat_jid, &message_id, sender_jid.as_ref(), from_me)
                     {
                         Ok((jid, sender, mid)) => {
@@ -1023,17 +1044,15 @@ pub(super) async fn run_async(
                                         client.unpin_message(&target).await
                                     };
                                     if let Err(e) = result {
-                                        events.emit(BackendEvent::Error {
-                                            message: format!("Pinning the message failed: {e}"),
-                                        });
+                                        fail(format!("Pinning the message failed: {e}"));
                                     }
                                 }
-                                Err(_) => events.emit(BackendEvent::Error {
-                                    message: "That message reference is invalid.".to_owned(),
-                                }),
+                                Err(_) => {
+                                    fail("That message reference is invalid.".to_owned());
+                                }
                             }
                         }
-                        Err(e) => events.emit(BackendEvent::Error { message: e }),
+                        Err(e) => fail(e),
                     }
                 }
                 BackendCommand::ChatAction { chat_jid, action } => match chat_jid.parse::<Jid>() {

@@ -31,6 +31,8 @@ fn summarize(event: &BackendEvent) -> String {
         BackendEvent::ReactionFailed { message, .. } => {
             format!("ReactionFailed {message}")
         }
+        BackendEvent::StarFailed { message, .. } => format!("StarFailed {message}"),
+        BackendEvent::PinFailed { message, .. } => format!("PinFailed {message}"),
         BackendEvent::MessageEdited { .. } => "MessageEdited".to_owned(),
         BackendEvent::MessageRevoked { .. } => "MessageRevoked".to_owned(),
         BackendEvent::DisappearingChanged { .. } => "DisappearingChanged".to_owned(),

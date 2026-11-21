@@ -1287,6 +1287,37 @@ pub enum BackendEvent {
         /// Why the reaction failed, in user words.
         message: String,
     },
+    /// A [`BackendCommand::StarMessage`] never reached the
+    /// server: the target was invalid (a group target without
+    /// its author) or the send itself failed. The app rolls the
+    /// optimistic star back to the last state the server
+    /// confirmed and shows `message` as the notice. Deliberately
+    /// not the generic [`BackendEvent::Error`], for the same
+    /// reason as [`BackendEvent::ReactionFailed`]: that path
+    /// also fails pending message echoes, which a refused star
+    /// must not touch, and it cannot name the message to roll
+    /// back.
+    StarFailed {
+        /// Chat JID.
+        chat_jid: String,
+        /// Protocol ID of the target message.
+        message_id: String,
+        /// Why the star failed, in user words.
+        message: String,
+    },
+    /// A [`BackendCommand::PinMessage`] never reached the
+    /// server: the pin counterpart of
+    /// [`BackendEvent::StarFailed`], with the same contract.
+    /// The app rolls the optimistic pin back and shows
+    /// `message` as the notice.
+    PinFailed {
+        /// Chat JID.
+        chat_jid: String,
+        /// Protocol ID of the target message.
+        message_id: String,
+        /// Why the pin failed, in user words.
+        message: String,
+    },
     /// A message was edited by its sender.
     MessageEdited {
         /// Chat JID.

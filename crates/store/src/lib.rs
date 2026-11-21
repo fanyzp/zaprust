@@ -253,6 +253,23 @@ struct MessageData {
     /// has been spent.
     #[serde(default)]
     video_thumbnail: Option<Vec<u8>>,
+    /// A poll's creation secret, archived with the poll so the
+    /// app can hand it back to the backend in later sessions
+    /// (votes are encrypted under it; without it the poll could
+    /// neither be voted on nor tallied after a restart). It sits
+    /// in this encrypted archive, never in plaintext settings.
+    #[serde(default)]
+    poll_secret: Option<Vec<u8>>,
+    /// A poll's creator JID, archived alongside the secret (the
+    /// vote key derivation needs both).
+    #[serde(default)]
+    poll_creator: Option<String>,
+    /// A poll's latest ballot per voter, `(voter JID, selected
+    /// option indices)`, as aggregated by the app. Kept so a
+    /// voter's changed vote after a restart replaces their old
+    /// ballot instead of counting twice.
+    #[serde(default)]
+    poll_ballots: Vec<(String, Vec<usize>)>,
 }
 
 /// The archive store: one SQLite file, versioned schema.
@@ -775,6 +792,25 @@ impl Store {
         Ok(())
     }
 
+    /// Reads and parses one message row's rich payload, or
+    /// `None` when the row does not exist or carries none.
+    fn read_message_data(
+        conn: &Connection,
+        chat_jid: &str,
+        id: &str,
+    ) -> Result<Option<MessageData>, StoreError> {
+        use rusqlite::OptionalExtension;
+        let data_text: Option<String> = conn
+            .query_row(
+                "SELECT data FROM messages WHERE chat_jid = ?1 AND id = ?2",
+                params![chat_jid, id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()?
+            .flatten();
+        Ok(data_text.map(|text| serde_json::from_str(&text).unwrap_or_default()))
+    }
+
     /// The single-row write behind [`Store::upsert_message`] and
     /// [`Store::upsert_messages`], against any connection handle
     /// (the store's own, or a transaction borrowing it).
@@ -802,6 +838,40 @@ impl Store {
             other => Some(other.clone()),
         };
         let stored_body = if msg.view_once { "" } else { msg.body.as_str() };
+        // A poll's tallies, my votes and per-voter ballots are
+        // aggregated state the app builds from vote events; a
+        // re-delivered creation payload always carries zero
+        // counts and no ballots, so letting it overwrite the row
+        // would erase every vote the poll has collected. When the
+        // stored row already holds this poll, its tally state and
+        // ballots survive the rewrite (the creation's own fields
+        // still refresh), and a secret or creator the rewrite
+        // does not carry falls back to the stored one.
+        let mut stored_kind = stored_kind;
+        let mut poll_ballots: Vec<(String, Vec<usize>)> = msg.poll_ballots.clone();
+        let existing_poll = if matches!(stored_kind, Some(backend::LiveMessageKind::Poll { .. })) {
+            Self::read_message_data(conn, &msg.chat_jid, &msg.id)?
+                .filter(|data| matches!(data.kind, Some(backend::LiveMessageKind::Poll { .. })))
+        } else {
+            None
+        };
+        if let Some(existing) = &existing_poll {
+            if let (
+                Some(backend::LiveMessageKind::Poll {
+                    options: old_options,
+                    my_votes: old_mine,
+                    ..
+                }),
+                Some(backend::LiveMessageKind::Poll { options, my_votes, .. }),
+            ) = (&existing.kind, &mut stored_kind)
+            {
+                if options.len() == old_options.len() {
+                    *options = old_options.clone();
+                }
+                *my_votes = old_mine.clone();
+            }
+            poll_ballots = existing.poll_ballots.clone();
+        }
         let data = MessageData {
             kind: stored_kind,
             sender_jid: msg.sender_jid.clone(),
@@ -817,6 +887,15 @@ impl Store {
             voice_ref: msg.voice_ref.clone(),
             video_ref: msg.video_ref.clone(),
             video_thumbnail: msg.video_thumbnail.clone(),
+            poll_secret: msg
+                .poll_secret
+                .clone()
+                .or_else(|| existing_poll.as_ref().and_then(|data| data.poll_secret.clone())),
+            poll_creator: msg
+                .poll_creator
+                .clone()
+                .or_else(|| existing_poll.as_ref().and_then(|data| data.poll_creator.clone())),
+            poll_ballots,
         };
         let data_json = serde_json::to_string(&data).map_err(|e| {
             StoreError::Sqlite(rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
@@ -1008,6 +1087,51 @@ impl Store {
             return Ok(());
         }
         data.photo_ref = None;
+        let data_json = serde_json::to_string(&data).map_err(|e| {
+            StoreError::Sqlite(rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
+        })?;
+        self.conn.execute(
+            "UPDATE messages SET data = ?3 WHERE chat_jid = ?1 AND id = ?2",
+            params![chat_jid, id, data_json],
+        )?;
+        Ok(())
+    }
+
+    /// Replaces one poll's aggregated tally state: the per-option
+    /// counts and my votes inside its stored kind, plus the
+    /// per-voter ballots beside it. This is how a vote the app
+    /// aggregated (from a backend vote event or a local vote)
+    /// becomes durable without rewriting the whole message row.
+    /// A message that is not an archived poll (or does not exist)
+    /// is a quiet no-op. `counts` is in option order; a count list
+    /// whose length disagrees with the poll's options is refused
+    /// the same quiet way, since it cannot belong to this poll.
+    ///
+    /// # Errors
+    /// [`StoreError`] on SQLite failures.
+    pub fn set_poll_tally(
+        &self,
+        chat_jid: &str,
+        id: &str,
+        counts: &[u32],
+        my_votes: &[usize],
+        ballots: &[(String, Vec<usize>)],
+    ) -> Result<(), StoreError> {
+        let Some(mut data) = Self::read_message_data(&self.conn, chat_jid, id)? else {
+            return Ok(());
+        };
+        let Some(backend::LiveMessageKind::Poll { options, my_votes: mine, .. }) = &mut data.kind
+        else {
+            return Ok(());
+        };
+        if counts.len() != options.len() {
+            return Ok(());
+        }
+        for (entry, count) in options.iter_mut().zip(counts) {
+            entry.1 = *count;
+        }
+        *mine = my_votes.to_vec();
+        data.poll_ballots = ballots.to_vec();
         let data_json = serde_json::to_string(&data).map_err(|e| {
             StoreError::Sqlite(rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
         })?;
@@ -1218,6 +1342,9 @@ impl Store {
             msg.voice_ref = data.voice_ref;
             msg.video_ref = data.video_ref;
             msg.video_thumbnail = data.video_thumbnail;
+            msg.poll_secret = data.poll_secret;
+            msg.poll_creator = data.poll_creator;
+            msg.poll_ballots = data.poll_ballots;
             msg.expires_at = row.get(8)?;
             let flags: i64 = row.get(7)?;
             Ok((msg, flags))
@@ -2340,5 +2467,160 @@ mod tests {
         let store = Store::open(&path, &[1u8; 32]).unwrap();
         assert_eq!(store.chats().unwrap().len(), 1);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A poll message as the backend delivers a creation: zero
+    /// counts, no ballots, and the creation secret plus creator
+    /// the translation layer extracted from the payload.
+    fn poll_creation(chat_jid: &str, id: &str) -> LiveMessage {
+        let mut msg = LiveMessage::text(
+            id,
+            chat_jid,
+            Some("Sarah Miller".to_owned()),
+            "Lunch?",
+            1_700_000_000,
+            false,
+        );
+        msg.kind = backend::LiveMessageKind::Poll {
+            question: "Lunch?".to_owned(),
+            options: vec![
+                ("Deli".to_owned(), 0),
+                ("Sushi".to_owned(), 0),
+                ("Delivery".to_owned(), 0),
+            ],
+            multiple: false,
+            my_votes: Vec::new(),
+            correct: None,
+        };
+        msg.poll_secret = Some(vec![7u8; 32]);
+        msg.poll_creator = Some("10000000001@s.whatsapp.net".to_owned());
+        msg
+    }
+
+    /// Item 123: the creation secret, the creator and the ballots
+    /// ride with the archived poll, so a later session can vote on
+    /// it and tally its votes.
+    #[test]
+    fn poll_secret_creator_and_ballots_round_trip() {
+        let store = Store::open_in_memory().unwrap();
+        let chat = "10000000001@s.whatsapp.net";
+        store.upsert_message(&poll_creation(chat, "poll-1"), 0).unwrap();
+        store
+            .set_poll_tally(
+                chat,
+                "poll-1",
+                &[1, 0, 0],
+                &[],
+                &[("10000000007@s.whatsapp.net".to_owned(), vec![0])],
+            )
+            .unwrap();
+        let rows = store.messages(chat).unwrap();
+        assert_eq!(rows.len(), 1);
+        let (msg, _) = &rows[0];
+        assert_eq!(msg.poll_secret.as_deref(), Some([7u8; 32].as_slice()));
+        assert_eq!(msg.poll_creator.as_deref(), Some("10000000001@s.whatsapp.net"));
+        assert_eq!(msg.poll_ballots, vec![("10000000007@s.whatsapp.net".to_owned(), vec![0])]);
+        let backend::LiveMessageKind::Poll { options, .. } = &msg.kind else {
+            panic!("the row reads back as a poll");
+        };
+        assert_eq!(
+            options.iter().map(|(_, v)| *v).collect::<Vec<_>>(),
+            vec![1, 0, 0],
+            "the tally write lands on the counts"
+        );
+    }
+
+    /// Item 123: tallies written by vote aggregation are durable
+    /// across a restart (a file-backed reopen), together with the
+    /// secret that makes the poll votable in the new session.
+    #[test]
+    fn poll_tally_survives_a_reopen() {
+        let path = temp_db_path("polls");
+        let _ = std::fs::remove_file(&path);
+        let key = [3u8; 32];
+        let chat = "10000000001@s.whatsapp.net";
+        {
+            let store = Store::open(&path, &key).unwrap();
+            store.upsert_message(&poll_creation(chat, "poll-1"), 0).unwrap();
+            store
+                .set_poll_tally(
+                    chat,
+                    "poll-1",
+                    &[2, 1, 0],
+                    &[1],
+                    &[
+                        ("10000000007@s.whatsapp.net".to_owned(), vec![0]),
+                        ("10000000008@s.whatsapp.net".to_owned(), vec![0]),
+                    ],
+                )
+                .unwrap();
+        }
+        let store = Store::open(&path, &key).unwrap();
+        let rows = store.messages(chat).unwrap();
+        let (msg, _) = &rows[0];
+        let backend::LiveMessageKind::Poll { options, my_votes, .. } = &msg.kind else {
+            panic!("the row reads back as a poll");
+        };
+        assert_eq!(options.iter().map(|(_, v)| *v).collect::<Vec<_>>(), vec![2, 1, 0]);
+        assert_eq!(my_votes, &vec![1]);
+        assert_eq!(msg.poll_ballots.len(), 2);
+        assert_eq!(msg.poll_secret.as_deref(), Some([7u8; 32].as_slice()));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Item 123: a creation re-delivered after votes were tallied
+    /// (history sync, a receipt-driven re-upsert) carries zero
+    /// counts and no ballots; the write merge must keep the
+    /// tallied state instead of resetting the poll.
+    #[test]
+    fn poll_creation_reupsert_keeps_the_tallied_state() {
+        let store = Store::open_in_memory().unwrap();
+        let chat = "10000000001@s.whatsapp.net";
+        store.upsert_message(&poll_creation(chat, "poll-1"), 0).unwrap();
+        store
+            .set_poll_tally(
+                chat,
+                "poll-1",
+                &[1, 0, 0],
+                &[0],
+                &[("10000000007@s.whatsapp.net".to_owned(), vec![0])],
+            )
+            .unwrap();
+        // The same creation again, exactly as re-delivered.
+        store.upsert_message(&poll_creation(chat, "poll-1"), 0).unwrap();
+        let rows = store.messages(chat).unwrap();
+        let (msg, _) = &rows[0];
+        let backend::LiveMessageKind::Poll { options, my_votes, .. } = &msg.kind else {
+            panic!("the row reads back as a poll");
+        };
+        assert_eq!(
+            options.iter().map(|(_, v)| *v).collect::<Vec<_>>(),
+            vec![1, 0, 0],
+            "the re-delivered creation does not reset the counts"
+        );
+        assert_eq!(my_votes, &vec![0], "nor my votes");
+        assert_eq!(msg.poll_ballots.len(), 1, "nor the ballots");
+        assert_eq!(msg.poll_secret.as_deref(), Some([7u8; 32].as_slice()));
+    }
+
+    /// A tally write for a missing or non-poll row is a quiet
+    /// no-op, and a count list that does not match the poll's
+    /// options is refused rather than half-applied.
+    #[test]
+    fn set_poll_tally_ignores_missing_rows_and_bad_shapes() {
+        let store = Store::open_in_memory().unwrap();
+        let chat = "10000000001@s.whatsapp.net";
+        store.set_poll_tally(chat, "missing", &[1], &[], &[]).unwrap();
+        let text = LiveMessage::text("t-1", chat, None, "hello", 1_700_000_000, false);
+        store.upsert_message(&text, 0).unwrap();
+        store.set_poll_tally(chat, "t-1", &[1], &[], &[]).unwrap();
+        store.upsert_message(&poll_creation(chat, "poll-1"), 0).unwrap();
+        store.set_poll_tally(chat, "poll-1", &[1, 2], &[], &[]).unwrap();
+        let rows = store.messages(chat).unwrap();
+        let (msg, _) = rows.iter().find(|(m, _)| m.id == "poll-1").unwrap();
+        let backend::LiveMessageKind::Poll { options, .. } = &msg.kind else {
+            panic!("the row reads back as a poll");
+        };
+        assert!(options.iter().all(|(_, v)| *v == 0), "a mismatched count list changes nothing");
     }
 }

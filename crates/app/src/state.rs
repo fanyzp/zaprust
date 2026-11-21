@@ -598,6 +598,18 @@ pub(crate) struct MediaState {
     pub(crate) video_frame_key: Option<(u64, u64)>,
 }
 
+/// One DM contact's presence, as last reported by the backend
+/// for the chat the presence watch is subscribed to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ContactPresence {
+    /// The contact is online now.
+    pub(crate) online: bool,
+    /// When the contact was last seen (unix seconds), when the
+    /// report carried it. `None` while online, and when the
+    /// contact's privacy settings hide their last seen.
+    pub(crate) last_seen: Option<i64>,
+}
+
 /// One resolved group-member row for the profile panel. The
 /// address is the participant JID, used only as the target of
 /// backend commands; it is never rendered. The label is the
@@ -976,6 +988,19 @@ pub(crate) struct App {
     /// the local time the last typing event arrived (the header
     /// shows "typing..." for a few seconds after it).
     pub(crate) live_typing: std::collections::HashMap<u64, std::time::Instant>,
+    /// Live mode: the watched DM contact's presence, as last
+    /// reported by the backend. The presence watch subscribes to
+    /// exactly one contact (the open DM conversation), and an
+    /// entry is dropped the moment its feed stops: the chat is
+    /// left, the connection drops, or the session ends. The
+    /// header therefore never presents presence it is no longer
+    /// receiving as if it were current.
+    pub(crate) live_presence: std::collections::HashMap<u64, ContactPresence>,
+    /// The DM chat the backend is currently asked to watch
+    /// presence for: (chat ID, JID). Kept next to the state it
+    /// feeds so `sync_presence_watch` can move the subscription
+    /// as the open conversation changes.
+    pub(crate) presence_watch: Option<(u64, String)>,
     /// Who is typing in a chat, by name, for the chat list's
     /// typing row state. Demo mode seeds it; the live layer
     /// reports typing through `live_typing` instants instead,
@@ -1463,6 +1488,8 @@ impl App {
             unread_live: std::collections::HashMap::new(),
             receipt_log: std::collections::HashMap::new(),
             live_typing: std::collections::HashMap::new(),
+            live_presence: std::collections::HashMap::new(),
+            presence_watch: None,
             typing_names: std::collections::HashMap::new(),
             groups: GroupsState {
                 live_members: std::collections::HashMap::new(),

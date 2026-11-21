@@ -159,6 +159,13 @@ impl App {
             BackendEvent::TypingReceived { chat_jid, typing } => {
                 ("backend", format!("TypingReceived {chat_jid} typing={typing}"), None)
             }
+            BackendEvent::PresenceReceived { chat_jid, online, last_seen } => {
+                (
+                    "backend",
+                    format!("PresenceReceived {chat_jid} online={online} last_seen={last_seen:?}"),
+                    None,
+                )
+            }
             BackendEvent::GroupMembers { chat_jid, members } => {
                 ("backend", format!("GroupMembers {chat_jid}: {} members", members.len()), None)
             }

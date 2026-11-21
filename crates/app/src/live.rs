@@ -377,6 +377,21 @@ pub(crate) fn fmt_day(timestamp: i64) -> String {
     }
 }
 
+/// The header's last-seen line for a unix timestamp, in the
+/// shape the demo data uses: today and yesterday get their
+/// word, older reports get the full date.
+fn last_seen_label(timestamp: i64) -> String {
+    let day = timestamp.div_euclid(86_400);
+    let today = (crate::state::now_unix() / 86_400) as i64;
+    let time = fmt_time(timestamp);
+    match day - today {
+        0 => crate::i18n::tf("presence.last_seen_today", "time", &time),
+        -1 => crate::i18n::tf("presence.last_seen_yesterday", "time", &time),
+        _ => crate::i18n::tf("presence.last_seen_date", "date", &fmt_day(timestamp))
+            .replace("{time}", &time),
+    }
+}
+
 fn kind_of(kind: LiveChatKind) -> ChatKind {
     match kind {
         LiveChatKind::Dm => ChatKind::Dm,
@@ -390,11 +405,14 @@ fn to_chat(live: &LiveChat) -> Chat {
         id: jid_id(&live.jid),
         kind: kind_of(live.kind),
         title: live.title.clone(),
-        subtitle: match live.kind {
-            LiveChatKind::Dm => "live chat".to_owned(),
-            LiveChatKind::Group => "live group".to_owned(),
-            LiveChatKind::Channel => "live channel".to_owned(),
-        },
+        // No subtitle: a chat row carries nothing truthful for
+        // the header's second line. That line is derived at
+        // render time from live state instead (the watched
+        // contact's presence for a DM, the fetched member list
+        // for a group; see `App::header_subtitle`), and this
+        // field stays empty for live chats so no surface can
+        // present a placeholder as data.
+        subtitle: String::new(),
         preview: live.preview.clone(),
         preview_sender: live.preview_sender.clone(),
         // The backend chat summary carries no last-message
@@ -885,6 +903,12 @@ impl crate::state::App {
         self.logged_out = true;
         self.chats = Vec::new();
         self.conversation = Vec::new();
+        // The presence feed belonged to the ended session: the
+        // watch is dropped without an unsubscribe (the backend
+        // is gone; there is nothing left to answer it) and the
+        // reported state goes with it.
+        self.presence_watch = None;
+        self.live_presence.clear();
         self.sync_conversation();
         // The call history mirror goes with the chats: it is
         // reloaded from the archive when the next session starts.
@@ -893,6 +917,94 @@ impl crate::state::App {
         self.my_profile.forget_account();
         self.my_profile_open = false;
         self.screen = crate::state::Screen::Connect;
+    }
+
+    /// Keeps the presence watch on the open conversation. The
+    /// watch is a single subscription: the DM chat currently
+    /// open, while the session is linked. Moving it unsubscribes
+    /// the chat being left and drops its reported presence, so
+    /// the header only ever shows presence that is still being
+    /// fed. Runs once per frame from `poll_backend`; every
+    /// selection path (chat list, search, calls, notifications)
+    /// is covered without each one having to know.
+    ///
+    /// The same reconciliation asks for the open group's member
+    /// list the first time it is needed: the header's group line
+    /// is the real member count, and the list is shared with the
+    /// profile panel (same request set, same answers).
+    fn sync_presence_watch(&mut self) {
+        let desired: Option<(u64, String)> = self.live.as_ref().and_then(|session| {
+            if !session.status.is_linked() {
+                return None;
+            }
+            let id = self.selected_chat;
+            let chat = self.chats.iter().find(|c| c.id == id)?;
+            if chat.kind != ChatKind::Dm {
+                return None;
+            }
+            session.jids.get(&id).map(|jid| (id, jid.clone()))
+        });
+        if desired != self.presence_watch {
+            if let Some((old_id, old_jid)) = self.presence_watch.take() {
+                self.live_presence.remove(&old_id);
+                self.send_backend(BackendCommand::SetPresenceSubscription {
+                    chat_jid: old_jid,
+                    subscribed: false,
+                });
+            }
+            if let Some((id, jid)) = desired {
+                self.send_backend(BackendCommand::SetPresenceSubscription {
+                    chat_jid: jid.clone(),
+                    subscribed: true,
+                });
+                self.presence_watch = Some((id, jid));
+            }
+        }
+        let group_jid: Option<String> = self.live.as_ref().and_then(|session| {
+            if !session.status.is_linked() {
+                return None;
+            }
+            let id = self.selected_chat;
+            let chat = self.chats.iter().find(|c| c.id == id)?;
+            if chat.kind != ChatKind::Group || self.groups.members_requested.contains(&id) {
+                return None;
+            }
+            session.jids.get(&id).cloned()
+        });
+        if let Some(jid) = group_jid {
+            self.groups.members_requested.insert(self.selected_chat);
+            self.send_backend(BackendCommand::FetchGroupMembers { chat_jid: jid });
+        }
+    }
+
+    /// The conversation header's second line for a chat. Demo
+    /// chats carry their own (presence text for DMs, member
+    /// names for groups). For live chats the line is derived
+    /// from live state only: the watched contact's presence for
+    /// a DM, the fetched member count for a group, and nothing
+    /// for a channel (the backend surfaces no channel counts).
+    /// A live chat whose state has not arrived gets an empty
+    /// line, never a placeholder.
+    pub(crate) fn header_subtitle(&self, chat: &Chat) -> String {
+        if self.live.is_none() {
+            return chat.subtitle.clone();
+        }
+        match chat.kind {
+            ChatKind::Dm => match self.live_presence.get(&chat.id) {
+                Some(presence) if presence.online => crate::i18n::t("presence.online"),
+                Some(presence) => presence.last_seen.map(last_seen_label).unwrap_or_default(),
+                None => String::new(),
+            },
+            ChatKind::Group => self
+                .groups
+                .live_members
+                .get(&chat.id)
+                .map(|rows| {
+                    crate::i18n::tf("conversation.member_count", "count", &rows.len().to_string())
+                })
+                .unwrap_or_default(),
+            ChatKind::Channel => String::new(),
+        }
     }
 
     /// Loads the archive's persisted call history into the Calls
@@ -1217,6 +1329,11 @@ impl crate::state::App {
         // is never presented as scannable (the same discipline as
         // the pairing-code sweep below).
         self.sweep_qr_expiry();
+        // The presence watch follows the open conversation (and
+        // the group member fetch that feeds its header count);
+        // reconciling it here, once per frame, covers every
+        // selection path without each one having to know.
+        self.sync_presence_watch();
         // Pairing codes die after about three minutes. Clear an
         // expired code and return the panel to the request form so a
         // dead code is never presented as live (logic review F13).
@@ -1734,6 +1851,18 @@ impl crate::state::App {
                     self.live_typing.remove(&chat_id);
                 }
             }
+            BackendEvent::PresenceReceived { chat_jid, online, last_seen } => {
+                // Only the watched chat's reports are stored;
+                // the watch (see `sync_presence_watch`) owns the
+                // entry's lifetime, so a report for a chat the
+                // user already left cannot resurrect stale
+                // presence there.
+                let chat_id = jid_id(&chat_jid);
+                if self.presence_watch.as_ref().is_some_and(|(id, _)| *id == chat_id) {
+                    self.live_presence
+                        .insert(chat_id, crate::state::ContactPresence { online, last_seen });
+                }
+            }
             BackendEvent::GroupMembers { chat_jid, members } => {
                 let rows = self.resolve_member_rows(members);
                 self.groups.live_members.insert(jid_id(&chat_jid), rows);
@@ -1761,6 +1890,12 @@ impl crate::state::App {
                     // payload arrives with the reconnect.
                     session.clear_qr();
                 }
+                // Presence is only as good as the connection
+                // feeding it: while the link is down an "online"
+                // kept on screen would be a guess. The reports
+                // resume when the watch re-subscribes after the
+                // reconnect.
+                self.live_presence.clear();
             }
             BackendEvent::Crashed { summary, restarted } => {
                 if let Some(session) = &mut self.live {
@@ -5238,6 +5373,268 @@ mod burst_drain_tests {
         assert!(app.live_typing.contains_key(&other_id), "the other chat keeps its own mark");
     }
 
+    fn dm_upsert(jid: &str) -> BackendEvent {
+        BackendEvent::ChatUpsert(LiveChat {
+            jid: jid.to_owned(),
+            title: "Sender".to_owned(),
+            kind: LiveChatKind::Dm,
+            preview: "hello".to_owned(),
+            preview_sender: None,
+            timestamp: BASE_TS,
+            unread: 0,
+            archived: false,
+            pinned: false,
+            ephemeral_secs: 0,
+            muted: false,
+        })
+    }
+
+    fn chat_of(app: &App, id: u64) -> Chat {
+        app.chats.iter().find(|c| c.id == id).expect("the chat exists").clone()
+    }
+
+    /// Item 111: the live conversion must not invent a header
+    /// line. Every live kind converts with an empty subtitle;
+    /// the header derives its line from live state instead.
+    #[test]
+    fn live_conversion_carries_no_subtitle() {
+        for kind in [LiveChatKind::Dm, LiveChatKind::Group, LiveChatKind::Channel] {
+            let chat = to_chat(&LiveChat {
+                jid: CHAT_JID.to_owned(),
+                title: "Sender".to_owned(),
+                kind,
+                preview: String::new(),
+                preview_sender: None,
+                timestamp: BASE_TS,
+                unread: 0,
+                archived: false,
+                pinned: false,
+                ephemeral_secs: 0,
+                muted: false,
+            });
+            assert!(chat.subtitle.is_empty(), "{kind:?} carries no invented subtitle");
+        }
+    }
+
+    /// Item 111: opening a DM subscribes to the contact's
+    /// presence, and the backend's reports drive the header
+    /// line: online, then a last seen carrying the real
+    /// instant, then nothing when last seen is hidden.
+    #[test]
+    fn presence_watch_subscribes_and_reports_drive_the_header_line() {
+        let (mut app, tx, ctx, cmd_rx) = live_app();
+        tx.send(dm_upsert(CHAT_JID)).unwrap();
+        drain_all(&mut app, &ctx);
+        let chat_id = jid_id(CHAT_JID);
+        app.selected_chat = chat_id;
+        app.poll_backend(&ctx);
+        assert_eq!(
+            cmd_rx.try_recv(),
+            Ok(BackendCommand::SetPresenceSubscription {
+                chat_jid: CHAT_JID.to_owned(),
+                subscribed: true,
+            }),
+            "opening the DM subscribes to the contact's presence"
+        );
+        let chat = chat_of(&app, chat_id);
+        assert_eq!(app.header_subtitle(&chat), "", "nothing shows before the first report");
+
+        tx.send(BackendEvent::PresenceReceived {
+            chat_jid: CHAT_JID.to_owned(),
+            online: true,
+            last_seen: None,
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(app.header_subtitle(&chat), "online");
+
+        // Offline, last seen at 01:00 today (UTC, the grid the
+        // app's clock labels use): the line names that instant.
+        let now = i64::try_from(crate::state::now_unix()).unwrap();
+        let seen = now.div_euclid(86_400) * 86_400 + 3_600;
+        tx.send(BackendEvent::PresenceReceived {
+            chat_jid: CHAT_JID.to_owned(),
+            online: false,
+            last_seen: Some(seen),
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(
+            app.header_subtitle(&chat),
+            format!("last seen today at {}", fmt_time(seen)),
+            "the last-seen line carries the reported instant"
+        );
+
+        // Offline with the last seen hidden by the contact's
+        // privacy settings: there is nothing truthful to show.
+        tx.send(BackendEvent::PresenceReceived {
+            chat_jid: CHAT_JID.to_owned(),
+            online: false,
+            last_seen: None,
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(app.header_subtitle(&chat), "");
+    }
+
+    /// Item 111: the watch follows the open chat. Leaving a
+    /// chat unsubscribes it and drops its reported presence, so
+    /// an "online" nobody is receiving updates for can never
+    /// linger.
+    #[test]
+    fn presence_watch_follows_the_open_chat_and_drops_stale_state() {
+        const OTHER_JID: &str = "6289999999999@s.whatsapp.net";
+        let (mut app, tx, ctx, cmd_rx) = live_app();
+        tx.send(dm_upsert(CHAT_JID)).unwrap();
+        tx.send(dm_upsert(OTHER_JID)).unwrap();
+        drain_all(&mut app, &ctx);
+        let first = jid_id(CHAT_JID);
+        let second = jid_id(OTHER_JID);
+        app.selected_chat = first;
+        app.poll_backend(&ctx);
+        assert_eq!(
+            cmd_rx.try_recv(),
+            Ok(BackendCommand::SetPresenceSubscription {
+                chat_jid: CHAT_JID.to_owned(),
+                subscribed: true,
+            })
+        );
+        tx.send(BackendEvent::PresenceReceived {
+            chat_jid: CHAT_JID.to_owned(),
+            online: true,
+            last_seen: None,
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        let first_chat = chat_of(&app, first);
+        assert_eq!(app.header_subtitle(&first_chat), "online");
+
+        app.selected_chat = second;
+        app.poll_backend(&ctx);
+        assert_eq!(
+            cmd_rx.try_recv(),
+            Ok(BackendCommand::SetPresenceSubscription {
+                chat_jid: CHAT_JID.to_owned(),
+                subscribed: false,
+            }),
+            "leaving the chat unsubscribes it"
+        );
+        assert_eq!(
+            cmd_rx.try_recv(),
+            Ok(BackendCommand::SetPresenceSubscription {
+                chat_jid: OTHER_JID.to_owned(),
+                subscribed: true,
+            }),
+            "the newly open chat is subscribed instead"
+        );
+        assert_eq!(app.header_subtitle(&first_chat), "", "the left chat's presence is dropped");
+        assert!(!app.live_presence.contains_key(&first));
+
+        // A late report for the chat nobody watches anymore is
+        // not stored either.
+        tx.send(BackendEvent::PresenceReceived {
+            chat_jid: CHAT_JID.to_owned(),
+            online: true,
+            last_seen: None,
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(!app.live_presence.contains_key(&first), "unwatched reports are not stored");
+    }
+
+    /// Item 111: losing the connection drops reported presence.
+    /// An "online" the feed can no longer back must not survive
+    /// the outage on screen.
+    #[test]
+    fn connection_loss_drops_reported_presence() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        tx.send(dm_upsert(CHAT_JID)).unwrap();
+        drain_all(&mut app, &ctx);
+        let chat_id = jid_id(CHAT_JID);
+        app.selected_chat = chat_id;
+        app.poll_backend(&ctx);
+        tx.send(BackendEvent::PresenceReceived {
+            chat_jid: CHAT_JID.to_owned(),
+            online: true,
+            last_seen: None,
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        let chat = chat_of(&app, chat_id);
+        assert_eq!(app.header_subtitle(&chat), "online");
+        tx.send(BackendEvent::ConnectionLost { reason: "test outage".to_owned() }).unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(app.header_subtitle(&chat), "", "presence does not outlive its connection");
+        assert!(app.live_presence.is_empty());
+    }
+
+    /// Item 111: a live group's header line is the real member
+    /// count from the fetched member list. Opening the group
+    /// asks for the list once; before it arrives the line is
+    /// empty.
+    #[test]
+    fn group_header_line_counts_the_fetched_members() {
+        const GROUP_JID: &str = "120207777777777777@g.us";
+        let (mut app, tx, ctx, cmd_rx) = live_app();
+        tx.send(BackendEvent::ChatUpsert(LiveChat {
+            jid: GROUP_JID.to_owned(),
+            title: "Group".to_owned(),
+            kind: LiveChatKind::Group,
+            preview: String::new(),
+            preview_sender: None,
+            timestamp: BASE_TS,
+            unread: 0,
+            archived: false,
+            pinned: false,
+            ephemeral_secs: 0,
+            muted: false,
+        }))
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        let group_id = jid_id(GROUP_JID);
+        app.selected_chat = group_id;
+        app.poll_backend(&ctx);
+        assert_eq!(
+            cmd_rx.try_recv(),
+            Ok(BackendCommand::FetchGroupMembers { chat_jid: GROUP_JID.to_owned() }),
+            "opening the group asks for its member list"
+        );
+        let chat = chat_of(&app, group_id);
+        assert_eq!(app.header_subtitle(&chat), "", "no count before the list arrives");
+        tx.send(BackendEvent::GroupMembers {
+            chat_jid: GROUP_JID.to_owned(),
+            members: vec![
+                ("6281111111111@s.whatsapp.net".to_owned(), "Alice Johnson".to_owned(), true),
+                ("6282222222222@s.whatsapp.net".to_owned(), "Bob Carter".to_owned(), false),
+                ("6283333333333@s.whatsapp.net".to_owned(), "Carol Danvers".to_owned(), false),
+            ],
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(app.header_subtitle(&chat), "3 members");
+    }
+
+    /// Item 111: the last-seen label names today and yesterday
+    /// with their word and older reports with the full date,
+    /// always with the report's own clock time.
+    #[test]
+    fn last_seen_label_names_today_yesterday_and_older_days() {
+        let now = i64::try_from(crate::state::now_unix()).unwrap();
+        let day_start = now.div_euclid(86_400) * 86_400;
+        let today = day_start + 3_600;
+        assert_eq!(last_seen_label(today), format!("last seen today at {}", fmt_time(today)));
+        let yesterday = day_start - 3_600;
+        assert_eq!(
+            last_seen_label(yesterday),
+            format!("last seen yesterday at {}", fmt_time(yesterday))
+        );
+        let older = day_start - 3 * 86_400 + 3_600;
+        assert_eq!(
+            last_seen_label(older),
+            format!("last seen {} at {}", fmt_day(older), fmt_time(older))
+        );
+    }
+
     /// The notification flood scenario: on a real (non-fake)
     /// session, a message stamped before the connection came up
     /// is offline catch-up and must not queue an OS notification,
@@ -6751,7 +7148,8 @@ mod chat_state_routing_tests {
     /// locally: the chat list, the session mirror and helper
     /// maps, and the archive rows; the open selection moves to
     /// a surviving chat, other chats are untouched, and the
-    /// adoption sends nothing back.
+    /// adoption itself sends nothing back (the presence watch
+    /// following the moved selection aside).
     #[test]
     fn server_chat_deleted_removes_the_chat_everywhere() {
         let (mut app, tx, ctx, cmd_rx) = live_app();
@@ -6794,7 +7192,16 @@ mod chat_state_routing_tests {
         assert_eq!(store.chats().unwrap().len(), 1, "the other archive row stays");
         assert_eq!(app.selected_chat, jid_id(OTHER_JID), "the selection moves to a survivor");
         assert!(app.conversation.is_empty(), "the open conversation follows the selection");
-        assert!(cmd_rx.try_recv().is_err(), "adopting a deletion sends nothing back");
+        // The adoption itself sends nothing back. The only
+        // commands on the channel are the presence watch
+        // following the moved selection: it subscribes to the
+        // survivor now open in the deleted chat's place.
+        while let Ok(command) = cmd_rx.try_recv() {
+            assert!(
+                matches!(command, BackendCommand::SetPresenceSubscription { .. }),
+                "adopting a deletion sent a command beyond the presence watch"
+            );
+        }
     }
 
     /// A chat cleared on the phone empties here too, on the
@@ -6837,6 +7244,12 @@ mod chat_state_routing_tests {
         app.selected_chat = chat_id;
         app.sync_conversation();
         assert_eq!(app.conversation.len(), 3, "the chat is open with all three messages");
+        // One settle frame: opening the conversation starts
+        // its presence watch (a subscription command), which
+        // belongs to the opening, not to the server events
+        // measured below.
+        app.poll_backend(&ctx);
+        while cmd_rx.try_recv().is_ok() {}
 
         // Keep-starred clear bounded at the starred message:
         // the plain message at the bound goes, the starred one
@@ -6923,6 +7336,12 @@ mod chat_state_routing_tests {
         app.selected_chat = chat_id;
         app.sync_conversation();
         assert_eq!(app.conversation.len(), 3);
+        // One settle frame: opening the conversation starts
+        // its presence watch (a subscription command), which
+        // belongs to the opening, not to the server events
+        // measured below.
+        app.poll_backend(&ctx);
+        while cmd_rx.try_recv().is_ok() {}
 
         // The middle message goes; its neighbours stay.
         tx.send(BackendEvent::MessageDeletedForMe {

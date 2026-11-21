@@ -47,6 +47,11 @@
 
 # ---- conversation ----
 "conversation.typing" = "typing..."
+"conversation.member_count" = "{count} members"
+"presence.online" = "online"
+"presence.last_seen_today" = "last seen today at {time}"
+"presence.last_seen_yesterday" = "last seen yesterday at {time}"
+"presence.last_seen_date" = "last seen {date} at {time}"
 "conversation.blocked_note" = "You blocked this contact"
 "conversation.unread_one" = "1 unread message"
 "conversation.unread_messages" = "{count} unread messages"
@@ -248,6 +253,7 @@
 "profile.about" = "About"
 "profile.demo_contact" = "Demo contact"
 "profile.channel_line" = "Channel · {subtitle}"
+"profile.channel_plain" = "Channel"
 "profile.meta_ai_line" = "AI assistant by Meta"
 "profile.meta_ai_desc" = "Meta's AI assistant. In Zaprust it behaves like a normal DM contact."
 "profile.meta_ai_desc_demo" = "Meta's AI assistant (demo data). In Zaprust it behaves like a normal DM contact."

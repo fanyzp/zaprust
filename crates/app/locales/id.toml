@@ -47,6 +47,11 @@
 
 # ---- conversation ----
 "conversation.typing" = "mengetik..."
+"conversation.member_count" = "{count} anggota"
+"presence.online" = "online"
+"presence.last_seen_today" = "terakhir dilihat hari ini pukul {time}"
+"presence.last_seen_yesterday" = "terakhir dilihat kemarin pukul {time}"
+"presence.last_seen_date" = "terakhir dilihat {date} pukul {time}"
 "conversation.blocked_note" = "Anda memblokir kontak ini"
 "conversation.unread_one" = "1 pesan belum dibaca"
 "conversation.unread_messages" = "{count} pesan belum dibaca"

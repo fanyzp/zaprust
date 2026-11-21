@@ -405,7 +405,7 @@ impl App {
                                     });
                                 } else {
                                     ui.label(
-                                        RichText::new(chat.subtitle.clone())
+                                        RichText::new(self.header_subtitle(&chat))
                                             .size(12.0)
                                             .color(rgb(t.text_secondary)),
                                     );

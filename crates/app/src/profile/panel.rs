@@ -138,10 +138,21 @@ impl App {
                 }
             }
             ProfileKind::Channel => {
-                crate::i18n::tf("profile.channel_line", "subtitle", &chat.subtitle)
+                // Live channels carry no subtitle (the backend
+                // surfaces no subscriber count), so the line is
+                // the bare kind word rather than a dangling
+                // separator after nothing.
+                if chat.subtitle.is_empty() {
+                    crate::i18n::t("profile.channel_plain")
+                } else {
+                    crate::i18n::tf("profile.channel_line", "subtitle", &chat.subtitle)
+                }
             }
             ProfileKind::Ai => crate::i18n::t("profile.meta_ai_line"),
-            ProfileKind::User => chat.subtitle.clone(),
+            // The same line the conversation header shows: the
+            // chat's own in demo mode, the watched contact's
+            // real presence in live mode.
+            ProfileKind::User => self.header_subtitle(&chat),
         };
         // The user variant's identifier line and About text: the
         // live JID when live, the demo caption otherwise; the About

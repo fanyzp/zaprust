@@ -195,6 +195,11 @@ impl App {
             BackendEvent::CallMissed { call_id, chat_jid, at } => {
                 ("backend", format!("CallMissed {call_id} from {chat_jid} at {at}"), None)
             }
+            BackendEvent::CallEndedElsewhere { call_id, chat_jid, answered, at } => (
+                "backend",
+                format!("CallEndedElsewhere {call_id} from {chat_jid} answered={answered} at {at}"),
+                None,
+            ),
         };
         self.trace_push(stage, &summary, body);
     }

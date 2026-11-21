@@ -1044,6 +1044,38 @@ impl crate::state::App {
         self.record_call(record);
     }
 
+    /// Records a call that ended on another of the account's
+    /// devices (see [`BackendEvent::CallEndedElsewhere`]). When
+    /// the app is showing that call ringing, the overlay ends
+    /// with the elsewhere outcome and the entry is built from
+    /// the call's tracked state; a call this device never
+    /// showed (another call held the line, or it rang and
+    /// ended while this device was away) is recorded directly.
+    /// Either way the entry is an incoming call that is not
+    /// missed: it was answered or declined on the other
+    /// device, and no talk time accrued here.
+    fn record_elsewhere_call(&mut self, call_id: &str, chat_jid: &str, answered: bool, at: i64) {
+        if self.on_call_ended_elsewhere(call_id, answered) {
+            self.record_ended_call(call_id, chat_jid, 0);
+        } else if !self.calls.active.as_ref().is_some_and(|c| c.call_id == call_id) {
+            // Not the call on screen (or none is): a call that
+            // never rang here still belongs in the history. A
+            // call that IS on screen but already left the
+            // ringing phase is left alone instead: its own end
+            // event records it, with its real duration.
+            self.record_call(backend::CallRecord {
+                id: 0,
+                call_id: call_id.to_owned(),
+                chat_jid: chat_jid.to_owned(),
+                video: false,
+                outgoing: false,
+                missed: false,
+                duration_secs: 0,
+                started_at: at,
+            });
+        }
+    }
+
     /// Records a missed call the app never showed ringing (see
     /// [`BackendEvent::CallMissed`]): an incoming entry with no
     /// duration, stamped when it rang. The signal carries no
@@ -1952,6 +1984,9 @@ impl crate::state::App {
             }
             BackendEvent::CallMissed { call_id, chat_jid, at } => {
                 self.record_missed_call(&call_id, &chat_jid, at);
+            }
+            BackendEvent::CallEndedElsewhere { call_id, chat_jid, answered, at } => {
+                self.record_elsewhere_call(&call_id, &chat_jid, answered, at);
             }
         }
     }
@@ -4269,6 +4304,139 @@ mod burst_drain_tests {
         assert_eq!(entry.timestamp, rang_at);
         assert_eq!(entry.chat_id, jid_id(CHAT_JID));
         assert_eq!(archived_calls(&app).len(), 1);
+    }
+
+    /// Item 130: the call ringing here is answered on the
+    /// phone. The elsewhere event ends the overlay with that
+    /// reason, and the history entry is an incoming call that
+    /// is not missed: the call was answered, just not here.
+    #[test]
+    fn incoming_call_answered_elsewhere_ends_the_overlay_and_is_not_missed() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        tx.send(BackendEvent::IncomingCall {
+            call_id: "call-7".to_owned(),
+            chat_jid: CHAT_JID.to_owned(),
+            video: false,
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        let active = app.calls.active.as_ref().expect("the call is on screen");
+        assert_eq!(active.phase, crate::call_ui::CallUiPhase::Incoming);
+        tx.send(BackendEvent::CallEndedElsewhere {
+            call_id: "call-7".to_owned(),
+            chat_jid: CHAT_JID.to_owned(),
+            answered: true,
+            at: BASE_TS,
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        let active = app.calls.active.as_ref().expect("the ended card is still shown");
+        assert_eq!(active.phase, crate::call_ui::CallUiPhase::Ended);
+        assert_eq!(active.reason.as_deref(), Some("Answered on another device"));
+        assert_eq!(app.calls.live_entries.len(), 1);
+        let entry = &app.calls.live_entries[0];
+        assert_eq!(entry.direction, CallDirection::Incoming);
+        assert!(!entry.missed, "a call answered on another device is not missed");
+        assert_eq!(entry.duration_secs, 0);
+        let history = archived_calls(&app);
+        assert_eq!(history.len(), 1);
+        assert!(!history[0].missed && !history[0].outgoing);
+    }
+
+    /// Item 130: the call ringing here is declined on the
+    /// phone. Same shape as the answered case: the overlay
+    /// ends with the elsewhere reason and the entry is a
+    /// normal incoming call, not a missed one.
+    #[test]
+    fn incoming_call_declined_elsewhere_is_recorded_not_missed() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        tx.send(BackendEvent::IncomingCall {
+            call_id: "call-8".to_owned(),
+            chat_jid: CHAT_JID.to_owned(),
+            video: false,
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        tx.send(BackendEvent::CallEndedElsewhere {
+            call_id: "call-8".to_owned(),
+            chat_jid: CHAT_JID.to_owned(),
+            answered: false,
+            at: BASE_TS,
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        let active = app.calls.active.as_ref().expect("the ended card is still shown");
+        assert_eq!(active.phase, crate::call_ui::CallUiPhase::Ended);
+        assert_eq!(active.reason.as_deref(), Some("Declined on another device"));
+        assert_eq!(app.calls.live_entries.len(), 1);
+        let entry = &app.calls.live_entries[0];
+        assert_eq!(entry.direction, CallDirection::Incoming);
+        assert!(!entry.missed, "a call declined on another device is not missed");
+        assert_eq!(archived_calls(&app).len(), 1);
+    }
+
+    /// Item 130: a call that ended elsewhere without ever
+    /// ringing here (another call held the line, or it rang
+    /// while this device was away) is still recorded, as an
+    /// incoming call that is not missed, stamped with the
+    /// event's own time; a repeat report changes nothing.
+    #[test]
+    fn unshown_call_ended_elsewhere_is_recorded_not_missed() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        let ended_at = BASE_TS - 3_600;
+        for _ in 0..2 {
+            tx.send(BackendEvent::CallEndedElsewhere {
+                call_id: "call-9".to_owned(),
+                chat_jid: CHAT_JID.to_owned(),
+                answered: true,
+                at: ended_at,
+            })
+            .unwrap();
+        }
+        drain_all(&mut app, &ctx);
+        assert!(app.calls.active.is_none(), "no overlay for a call that never rang here");
+        assert_eq!(app.calls.live_entries.len(), 1);
+        let entry = &app.calls.live_entries[0];
+        assert_eq!(entry.direction, CallDirection::Incoming);
+        assert!(!entry.missed);
+        assert_eq!(entry.timestamp, ended_at);
+        assert_eq!(archived_calls(&app).len(), 1);
+    }
+
+    /// Item 130: an elsewhere report for a second call while
+    /// one is ringing here records the second call and leaves
+    /// the ringing one untouched: it still ends through its
+    /// own end event afterwards, as a missed call.
+    #[test]
+    fn elsewhere_report_for_another_call_leaves_the_ringing_one_alone() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        tx.send(BackendEvent::IncomingCall {
+            call_id: "call-10".to_owned(),
+            chat_jid: CHAT_JID.to_owned(),
+            video: false,
+        })
+        .unwrap();
+        tx.send(BackendEvent::CallEndedElsewhere {
+            call_id: "call-11".to_owned(),
+            chat_jid: CHAT_JID.to_owned(),
+            answered: true,
+            at: BASE_TS,
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        let active = app.calls.active.as_ref().expect("the first call is still on screen");
+        assert_eq!(active.call_id, "call-10");
+        assert_eq!(active.phase, crate::call_ui::CallUiPhase::Incoming);
+        assert_eq!(app.calls.live_entries.len(), 1);
+        assert!(!app.calls.live_entries[0].missed);
+        // The ringing call ends on its own path, unaffected.
+        tx.send(call_changed("call-10", backend::CallPhase::Ended, 0, Some("Missed call")))
+            .unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(app.calls.live_entries.len(), 2);
+        let missed = app.calls.live_entries.iter().filter(|e| e.missed).collect::<Vec<_>>();
+        assert_eq!(missed.len(), 1, "only the call that rang out here is missed");
+        assert_eq!(archived_calls(&app).len(), 2);
     }
 
     /// Item 113: the recorded history is durable across app

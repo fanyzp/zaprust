@@ -53,6 +53,12 @@ pub(crate) struct CallUi {
     /// answer, so the history entry is a normal incoming call
     /// with no duration, not a missed call.
     pub declined: bool,
+    /// Another of the account's devices answered or declined
+    /// this call while it rang here. That is an answer too, so
+    /// like a local decline the history entry is a normal
+    /// incoming call with no duration, not a missed call: the
+    /// call did not go unanswered, it was picked up elsewhere.
+    pub ended_elsewhere: bool,
     /// An accept/reject/end command was sent and not yet confirmed
     /// by a phase change (or an error). While set, the action
     /// buttons ignore further clicks: a double-click used to send a
@@ -74,7 +80,7 @@ impl CallUi {
             chat_jid: chat_jid.to_owned(),
             video: self.video,
             outgoing: self.outgoing,
-            missed: !self.outgoing && !self.connected && !self.declined,
+            missed: !self.outgoing && !self.connected && !self.declined && !self.ended_elsewhere,
             duration_secs: if self.connected { seconds } else { 0 },
             started_at: self.started_at,
         }
@@ -155,6 +161,7 @@ impl App {
             started_at: crate::state::now_unix() as i64,
             connected: false,
             declined: false,
+            ended_elsewhere: false,
             action_pending: false,
         });
     }
@@ -228,6 +235,7 @@ impl App {
                 started_at: crate::state::now_unix() as i64,
                 connected: false,
                 declined: false,
+                ended_elsewhere: false,
                 action_pending: false,
             });
             return;
@@ -268,6 +276,38 @@ impl App {
                 }
             }
         }
+    }
+
+    /// Another of the account's devices answered or declined
+    /// the call that is ringing here: the overlay ends with
+    /// that reason, and the call is flagged
+    /// [`CallUi::ended_elsewhere`] so the history entry it
+    /// leaves is not a missed call. Returns true when the call
+    /// on screen is this event's call and still ringing, so
+    /// the caller records it from the tracked state; false
+    /// when the app is not showing this call ringing (it never
+    /// rang here, or it already left the ringing phase).
+    pub(crate) fn on_call_ended_elsewhere(&mut self, call_id: &str, answered: bool) -> bool {
+        let Some(call) = &mut self.calls.active else {
+            return false;
+        };
+        if call.call_id != call_id || call.outgoing || call.phase != CallUiPhase::Incoming {
+            return false;
+        }
+        // The ringing is over either way; a pending accept or
+        // decline of ours lost the race to the other device.
+        call.action_pending = false;
+        call.ended_elsewhere = true;
+        call.phase = CallUiPhase::Ended;
+        call.reason = Some(if answered {
+            "Answered on another device".to_owned()
+        } else {
+            "Declined on another device".to_owned()
+        });
+        if call.ended_at.is_none() {
+            call.ended_at = Some(std::time::Instant::now());
+        }
+        true
     }
 
     /// Draws the call card over the conversation, if a call is in

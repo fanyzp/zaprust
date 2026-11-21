@@ -715,12 +715,12 @@ fn create_poll_vote_and_react_commands_flow_through_the_fake() {
         })
         .unwrap();
     let voted = collect_until(&ch.events, 5, |e| {
-        matches!(e, BackendEvent::MessageUpsert(m)
-            if m.id == poll_id && matches!(&m.kind, backend::LiveMessageKind::Poll { options, .. } if options.first().map(|(_, v)| *v) == Some(1)))
+        matches!(e, BackendEvent::PollVote { message_id: id, from_me: true, selected, .. }
+            if *id == poll_id && selected == &vec![0])
     });
     assert!(
-        voted.iter().any(|e| matches!(e, BackendEvent::MessageUpsert(_))),
-        "the vote lands on the poll"
+        voted.iter().any(|e| matches!(e, BackendEvent::PollVote { from_me: true, .. })),
+        "the vote is answered by a PollVote event carrying my selection"
     );
     ch.commands
         .send(BackendCommand::React {
@@ -768,20 +768,19 @@ fn create_poll(ch: &BackendChannels, question: &str, multiple: bool) -> String {
         .expect("created poll is upserted")
 }
 
-/// Waits for the poll `poll_id` to be re-upserted with exactly
-/// `want_mine` as my vote set and `want_counts` as the per-option
-/// counts, in option order.
-fn await_poll_state(ch: &BackendChannels, poll_id: &str, want_mine: &[usize], want_counts: &[u32]) {
+/// Waits for the PollVote event answering a vote of mine on
+/// `poll_id` with exactly `want_selected` as the selection. The
+/// event carries my whole current vote set (replace-set
+/// semantics); aggregating it into counts is the app's job.
+fn await_poll_vote(ch: &BackendChannels, poll_id: &str, want_selected: &[usize]) {
     let is_want = |e: &BackendEvent| {
-        matches!(e, BackendEvent::MessageUpsert(m) if m.id == poll_id
-            && matches!(&m.kind, backend::LiveMessageKind::Poll { options, my_votes, .. }
-                if my_votes == want_mine
-                   && options.iter().map(|(_, v)| *v).collect::<Vec<_>>() == want_counts))
+        matches!(e, BackendEvent::PollVote { message_id, from_me: true, selected, .. }
+            if message_id == poll_id && selected == want_selected)
     };
     let events = collect_until(&ch.events, 5, is_want);
     assert!(
         events.iter().any(is_want),
-        "poll {poll_id} must reach my_votes={want_mine:?} counts={want_counts:?}: {events:?}"
+        "poll {poll_id} must answer with a PollVote selecting {want_selected:?}: {events:?}"
     );
 }
 
@@ -798,29 +797,59 @@ fn vote(ch: &BackendChannels, poll_id: &str, options: Vec<usize>) {
 #[test]
 fn vote_poll_with_an_empty_set_retracts_my_vote() {
     // Contract: VotePoll replaces my previous vote set, so sending
-    // an empty set after voting must clear my vote and its count.
-    // (The old fake applied the payload as toggle clicks, so an
-    // empty payload changed nothing and retraction was impossible.)
+    // an empty set after voting answers with a PollVote whose
+    // selection is empty: the retraction. (The old fake applied
+    // the payload as toggle clicks, so an empty payload changed
+    // nothing and retraction was impossible.)
     let (ch, _log) = linked_backend();
     let poll_id = create_poll(&ch, "Retract poll?", false);
     vote(&ch, &poll_id, vec![0]);
-    await_poll_state(&ch, &poll_id, &[0], &[1, 0, 0]);
+    await_poll_vote(&ch, &poll_id, &[0]);
     vote(&ch, &poll_id, vec![]);
-    await_poll_state(&ch, &poll_id, &[], &[0, 0, 0]);
+    await_poll_vote(&ch, &poll_id, &[]);
     ch.commands.send(BackendCommand::Shutdown).unwrap();
 }
 
 #[test]
 fn vote_poll_multi_select_change_keeps_the_votes_it_replaces() {
-    // Contract: with my_votes = [0], sending [0, 1] is a replace
-    // with a grown set: option 0 keeps its vote, option 1 gains
-    // one. (The old fake toggled 0 off and 1 on, ending at [1].)
+    // Contract: after voting [0], sending [0, 1] answers with the
+    // grown set [0, 1]: a replace, not a sequence of toggles.
+    // (The old fake toggled 0 off and 1 on, ending at [1].)
     let (ch, _log) = linked_backend();
     let poll_id = create_poll(&ch, "Multi change poll?", true);
     vote(&ch, &poll_id, vec![0]);
-    await_poll_state(&ch, &poll_id, &[0], &[1, 0, 0]);
+    await_poll_vote(&ch, &poll_id, &[0]);
     vote(&ch, &poll_id, vec![0, 1]);
-    await_poll_state(&ch, &poll_id, &[0, 1], &[1, 1, 0]);
+    await_poll_vote(&ch, &poll_id, &[0, 1]);
+    ch.commands.send(BackendCommand::Shutdown).unwrap();
+}
+
+#[test]
+fn register_poll_secret_reaches_the_backend() {
+    // Contract: a creation secret the app archived in an earlier
+    // session is handed back with RegisterPollSecret, silently
+    // (no event answers it); the fake records it in the command
+    // log like every other command.
+    let (ch, log) = linked_backend();
+    ch.commands
+        .send(BackendCommand::RegisterPollSecret {
+            chat_jid: "10000000001@s.whatsapp.net".to_owned(),
+            message_id: "archived-poll-1".to_owned(),
+            creator_jid: "10000000001@s.whatsapp.net".to_owned(),
+            secret: vec![7u8; 32],
+            options: vec!["Alpha".to_owned(), "Beta".to_owned()],
+        })
+        .unwrap();
+    let want = ["poll_secret:", "10000000001@s.whatsapp.net", ":", "archived-poll-1"].concat();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let mut seen = false;
+    while std::time::Instant::now() < deadline && !seen {
+        seen = log.lock().unwrap_or_else(std::sync::PoisonError::into_inner).contains(&want);
+        if !seen {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+    assert!(seen, "the registration reaches the backend: {log:?}");
     ch.commands.send(BackendCommand::Shutdown).unwrap();
 }
 

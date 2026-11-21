@@ -221,6 +221,12 @@ struct MessageData {
     forwarded: bool,
     #[serde(default)]
     view_once: bool,
+    /// A photo's re-download reference, archived with the message
+    /// so its bytes stay fetchable in later sessions. Dropped for
+    /// a view-once photo once its single view has been spent (see
+    /// [`Store::clear_photo_ref`]).
+    #[serde(default)]
+    photo_ref: Option<backend::PhotoRef>,
 }
 
 /// The archive store: one SQLite file, versioned schema.
@@ -738,6 +744,7 @@ impl Store {
             edited: msg.edited,
             forwarded: msg.forwarded,
             view_once: msg.view_once,
+            photo_ref: msg.photo_ref.clone(),
         };
         let data_json = serde_json::to_string(&data).map_err(|e| {
             StoreError::Sqlite(rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
@@ -902,6 +909,43 @@ impl Store {
         Ok(changed > 0)
     }
 
+    /// Drops the stored photo reference of one message, leaving
+    /// the rest of the row untouched. This is how a view-once
+    /// photo's re-download capability ends: the reference is what
+    /// makes the bytes fetchable, so once the single view has
+    /// been spent the archive must not keep a way back to them.
+    /// A message without a reference (or no such message) is a
+    /// quiet no-op.
+    ///
+    /// # Errors
+    /// [`StoreError`] on SQLite failures.
+    pub fn clear_photo_ref(&self, chat_jid: &str, id: &str) -> Result<(), StoreError> {
+        use rusqlite::OptionalExtension;
+        let data_text: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT data FROM messages WHERE chat_jid = ?1 AND id = ?2",
+                params![chat_jid, id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()?
+            .flatten();
+        let Some(data_text) = data_text else { return Ok(()) };
+        let mut data: MessageData = serde_json::from_str(&data_text).unwrap_or_default();
+        if data.photo_ref.is_none() {
+            return Ok(());
+        }
+        data.photo_ref = None;
+        let data_json = serde_json::to_string(&data).map_err(|e| {
+            StoreError::Sqlite(rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
+        })?;
+        self.conn.execute(
+            "UPDATE messages SET data = ?3 WHERE chat_jid = ?1 AND id = ?2",
+            params![chat_jid, id, data_json],
+        )?;
+        Ok(())
+    }
+
     /// All archived chats, most recent first.
     ///
     /// # Errors
@@ -964,6 +1008,7 @@ impl Store {
             msg.edited = data.edited;
             msg.forwarded = data.forwarded;
             msg.view_once = data.view_once;
+            msg.photo_ref = data.photo_ref;
             msg.expires_at = row.get(8)?;
             let flags: i64 = row.get(7)?;
             Ok((msg, flags))
@@ -1309,6 +1354,52 @@ mod tests {
         assert_eq!(loaded.body, msg.body);
         // Missing rows report false instead of fabricating one.
         assert!(!store.set_message_flags(&msg.chat_jid, "nope", 0).unwrap());
+    }
+
+    fn photo_reference() -> backend::PhotoRef {
+        backend::PhotoRef {
+            direct_path: "/v/t62.7118-24/photo.enc".to_owned(),
+            media_key: vec![7u8; 32],
+            file_sha256: vec![8u8; 32],
+            file_enc_sha256: vec![9u8; 32],
+            file_length: 123_456,
+        }
+    }
+
+    /// A photo's re-download reference is archived with the
+    /// message and comes back on reload: that round-trip is what
+    /// keeps a received photo fetchable after a restart.
+    #[test]
+    fn photo_ref_round_trips_with_the_message() {
+        let store = Store::open_in_memory().unwrap();
+        let mut msg = scripted_messages()[0].clone();
+        msg.photo_ref = Some(photo_reference());
+        store.upsert_message(&msg, 0).unwrap();
+        let rows = store.messages(&msg.chat_jid).unwrap();
+        assert_eq!(rows[0].0.photo_ref, Some(photo_reference()));
+        // A message archived without a reference stays without one.
+        let plain = scripted_messages()[0].clone();
+        assert_eq!(plain.photo_ref, None);
+    }
+
+    /// Clearing a photo reference (the view-once spend) removes
+    /// exactly the reference: the row, its body and its kind all
+    /// survive, and clearing a row that has none (or does not
+    /// exist) is a quiet no-op.
+    #[test]
+    fn clear_photo_ref_drops_only_the_reference() {
+        let store = Store::open_in_memory().unwrap();
+        let mut msg = scripted_messages()[0].clone();
+        msg.photo_ref = Some(photo_reference());
+        store.upsert_message(&msg, 0).unwrap();
+        store.clear_photo_ref(&msg.chat_jid, &msg.id).unwrap();
+        let rows = store.messages(&msg.chat_jid).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].0.photo_ref, None);
+        assert_eq!(rows[0].0.body, msg.body);
+        assert_eq!(rows[0].0.kind, msg.kind);
+        store.clear_photo_ref(&msg.chat_jid, &msg.id).unwrap();
+        store.clear_photo_ref(&msg.chat_jid, "no-such-id").unwrap();
     }
 
     /// The view-once opened state persists with the message's

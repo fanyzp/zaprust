@@ -153,6 +153,7 @@ mod tests {
             messages: HashMap::new(),
             times: HashMap::new(),
             fake,
+            logout_requested: false,
             flags: HashMap::new(),
             engaged_chats: std::collections::HashSet::new(),
             photo_refs: HashMap::new(),

@@ -28,6 +28,10 @@ pub(crate) enum LinkStatus {
     CodeReady,
     /// Linked and connected.
     Linked,
+    /// A log out was confirmed here and the disconnect command
+    /// is in flight; the session ends when the backend reports
+    /// it (or its channel closes).
+    LoggingOut,
     /// Logged out (phone or server side).
     LoggedOut,
     /// Temporarily banned by the server.
@@ -48,6 +52,7 @@ impl LinkStatus {
             Self::WaitingQr => "Waiting for scan, point your phone at the code.".to_owned(),
             Self::CodeReady => "Code ready, enter it on your phone.".to_owned(),
             Self::Linked => "Linked, this computer is connected.".to_owned(),
+            Self::LoggingOut => "Logging out…".to_owned(),
             Self::LoggedOut => "Logged out, link again to continue.".to_owned(),
             Self::Banned(code) => {
                 format!("This account is temporarily banned (reason {code}).")
@@ -156,6 +161,13 @@ pub(crate) struct LiveSession {
     pub(crate) times: HashMap<u64, i64>,
     /// True when running on the fake backend (UI labels it as such).
     pub(crate) fake: bool,
+    /// The user confirmed a log out for this session and the
+    /// disconnect command was sent. The session is torn down
+    /// once the backend's event channel closes (the real backend
+    /// ends its run on logout; the fake is shut down explicitly),
+    /// so everything the backend still has to say, including a
+    /// deregistration failure, is applied first.
+    pub(crate) logout_requested: bool,
     /// Archive flags per numeric message ID (the store's `FLAG_*`
     /// bits: deleted, starred, pinned), preserved across upserts
     /// and persisted in the store.
@@ -228,6 +240,9 @@ pub(crate) enum ConnectQr<'a> {
     /// No live start was ever requested (demo mode): pairing here
     /// is not real and must say so.
     Demo,
+    /// A session ended by logging out and none has started
+    /// since: the device is unlinked and can link again.
+    LoggedOut,
 }
 
 impl crate::state::App {
@@ -237,6 +252,9 @@ impl crate::state::App {
             return ConnectQr::StartFailed(message);
         }
         let Some(session) = &self.live else {
+            if self.logged_out {
+                return ConnectQr::LoggedOut;
+            }
             return ConnectQr::Demo;
         };
         match session.status {
@@ -667,6 +685,7 @@ impl crate::state::App {
             messages: HashMap::new(),
             times: HashMap::new(),
             fake,
+            logout_requested: false,
             flags: HashMap::new(),
             engaged_chats: std::collections::HashSet::new(),
             photo_refs: HashMap::new(),
@@ -744,6 +763,7 @@ impl crate::state::App {
         }
         self.live = Some(session);
         self.live_start_error = None;
+        self.logged_out = false;
         if let Some(note) = archive_note {
             self.notice = Some(note);
         }
@@ -779,6 +799,71 @@ impl crate::state::App {
         if let Some(session) = &self.live {
             let _ = session.channels.commands.send(cmd);
         }
+    }
+
+    /// Whether the account menu may offer Log out: a session
+    /// exists and this device is linked (connected now, or
+    /// temporarily disconnected, in which case the backend still
+    /// holds the link to end). A session that is still pairing
+    /// has nothing to unlink, and a dead session cannot act.
+    pub(crate) fn can_log_out(&self) -> bool {
+        self.live.as_ref().is_some_and(|session| {
+            !session.logout_requested
+                && matches!(session.status, LinkStatus::Linked | LinkStatus::Lost(_))
+        })
+    }
+
+    /// Logs the linked device out; the account menu parks the
+    /// confirmation and its confirm button lands here. Sends the
+    /// backend's disconnect command exactly once: the request is
+    /// latched on the session, so a repeat call sends nothing.
+    /// The backend unlinks the device and deletes its sign-in
+    /// data when the run ends; the session object itself is
+    /// dropped by [`App::end_live_session`] once the backend has
+    /// finished reporting, so a deregistration failure it emits
+    /// is applied (and shown) before the teardown.
+    pub(crate) fn log_out(&mut self) {
+        let started = self.live.as_mut().is_some_and(|session| {
+            if session.logout_requested
+                || !matches!(session.status, LinkStatus::Linked | LinkStatus::Lost(_))
+            {
+                return false;
+            }
+            session.logout_requested = true;
+            session.status = LinkStatus::LoggingOut;
+            session.clear_qr();
+            true
+        });
+        if !started {
+            return;
+        }
+        self.my_profile_open = false;
+        // The logout plays out on the connect screen: its status
+        // line names the in-flight state, then the logged-out
+        // state once the session is gone.
+        self.screen = crate::state::Screen::Connect;
+        self.send_backend(BackendCommand::Disconnect);
+    }
+
+    /// Ends the current live session for good after a logout:
+    /// the session object is dropped, the live data mirrors are
+    /// cleared so nothing from the unlinked account is presented
+    /// as current, and the app lands on the connect screen's
+    /// logged-out state, from which a fresh link can start. The
+    /// chat archive on disk is untouched: logging out ends the
+    /// link, it does not erase the local archive, and the next
+    /// start reloads it exactly as before.
+    pub(crate) fn end_live_session(&mut self) {
+        if self.live.take().is_none() {
+            return;
+        }
+        self.logged_out = true;
+        self.chats = Vec::new();
+        self.conversation = Vec::new();
+        self.sync_conversation();
+        self.my_profile.forget_account();
+        self.my_profile_open = false;
+        self.screen = crate::state::Screen::Connect;
     }
 
     /// Requests a pairing code for the typed phone number (digits
@@ -958,10 +1043,24 @@ impl crate::state::App {
     pub(crate) fn poll_backend(&mut self, ctx: &egui::Context) {
         // Top the queue up from the channel. Moving an event is
         // cheap; applying it is what costs, and that is budgeted
-        // below.
+        // below. A closed channel is remembered for this frame:
+        // the backend's run has ended, and once everything it
+        // queued has been applied a logged-out session is torn
+        // down (see `end_live_session`). std's channel returns
+        // every queued event before reporting the closure, so
+        // nothing the backend said is lost by tearing down after
+        // the drain.
+        let mut backend_gone = false;
         if let Some(session) = &self.live {
-            while let Ok(event) = session.channels.events.try_recv() {
-                self.event_queue.push_back(event);
+            loop {
+                match session.channels.events.try_recv() {
+                    Ok(event) => self.event_queue.push_back(event),
+                    Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        backend_gone = true;
+                        break;
+                    }
+                }
             }
         }
         if !self.event_queue.is_empty() {
@@ -981,6 +1080,20 @@ impl crate::state::App {
             self.finish_event_batch();
             if !self.event_queue.is_empty() {
                 ctx.request_repaint();
+            }
+        }
+        // A closed channel after a logout means the session is
+        // over: drop it so the app returns to a start-fresh
+        // connect state instead of holding a dead session it can
+        // never re-link from. A closure with no logout (the
+        // supervisor gave up after repeated crashes) keeps the
+        // session and its failure state on screen.
+        if backend_gone && self.event_queue.is_empty() {
+            let ended_by_logout = self.live.as_ref().is_some_and(|session| {
+                session.logout_requested || matches!(session.status, LinkStatus::LoggedOut)
+            });
+            if ended_by_logout {
+                self.end_live_session();
             }
         }
         // QR payloads die on the validity window the library
@@ -1149,6 +1262,7 @@ impl crate::state::App {
                 }
             }
             BackendEvent::LoggedOut => {
+                let fake = self.live.as_ref().is_some_and(|session| session.fake);
                 if let Some(session) = &mut self.live {
                     session.status = LinkStatus::LoggedOut;
                     session.clear_qr();
@@ -1158,6 +1272,19 @@ impl crate::state::App {
                 // not on an empty chat list.
                 if self.live_mode {
                     self.screen = crate::state::Screen::Connect;
+                }
+                if fake {
+                    // The fake backend answers a disconnect with
+                    // this event and then keeps running, so the
+                    // session can end right here: shut the fake
+                    // down (its supervisor exits with the run) and
+                    // drop the session. The real backend ends its
+                    // own run on logout; its session is dropped by
+                    // `poll_backend` when the event channel closes,
+                    // after the deregistration failure it reports
+                    // behind this event has been applied.
+                    self.send_backend(BackendCommand::Shutdown);
+                    self.end_live_session();
                 }
             }
             BackendEvent::TemporaryBan { code } => {
@@ -2953,6 +3080,11 @@ impl crate::state::App {
     /// account profile to edit.
     pub(crate) fn my_profile_mode(&self) -> crate::profile::MyProfileMode {
         match &self.live {
+            // Live mode without a session (a start that failed,
+            // or a session ended by logging out) is not demo
+            // mode: there is no account to edit until a device
+            // links again.
+            None if self.live_mode => crate::profile::MyProfileMode::NotLinked,
             None => crate::profile::MyProfileMode::Demo,
             Some(session) if session.status.is_linked() => crate::profile::MyProfileMode::Live,
             Some(_) => crate::profile::MyProfileMode::NotLinked,
@@ -3649,6 +3781,7 @@ mod burst_drain_tests {
             messages: HashMap::new(),
             times: HashMap::new(),
             fake: true,
+            logout_requested: false,
             flags: HashMap::new(),
             engaged_chats: std::collections::HashSet::new(),
             photo_refs: HashMap::new(),
@@ -5011,6 +5144,7 @@ mod chat_state_routing_tests {
             messages: HashMap::new(),
             times: HashMap::new(),
             fake: true,
+            logout_requested: false,
             flags: HashMap::new(),
             engaged_chats: std::collections::HashSet::new(),
             photo_refs: HashMap::new(),
@@ -6385,6 +6519,7 @@ mod mirror_pruning_tests {
             messages: HashMap::new(),
             times: HashMap::new(),
             fake: true,
+            logout_requested: false,
             flags: HashMap::new(),
             engaged_chats: std::collections::HashSet::new(),
             photo_refs: HashMap::new(),
@@ -6699,6 +6834,7 @@ mod qr_gate_tests {
             messages: HashMap::new(),
             times: HashMap::new(),
             fake: false,
+            logout_requested: false,
             flags: HashMap::new(),
             engaged_chats: std::collections::HashSet::new(),
             photo_refs: HashMap::new(),
@@ -6859,5 +6995,226 @@ mod qr_gate_tests {
         app.live = Some(session(LinkStatus::WaitingQr, true));
         app.sweep_qr_expiry();
         assert!(app.live.as_ref().unwrap().qr.is_some());
+    }
+}
+
+#[cfg(test)]
+mod logout_tests {
+    use super::*;
+    use crate::state::{App, Args, Screen, UiConfirm};
+
+    const CHAT_JID: &str = "6281234567890@s.whatsapp.net";
+
+    /// An app in live mode on a hand-fed backend channel, the
+    /// same harness shape as the other live test modules. The
+    /// session starts linked on the fake backend; tests that
+    /// need the real backend's end-of-run semantics flip
+    /// `fake` off, which is the only difference that matters to
+    /// the logout paths.
+    fn live_app() -> (
+        App,
+        std::sync::mpsc::Sender<BackendEvent>,
+        egui::Context,
+        std::sync::mpsc::Receiver<BackendCommand>,
+    ) {
+        let ctx = egui::Context::default();
+        crate::theme::install_fonts(&ctx);
+        let mut app = App::new(Args::parse(), &ctx);
+        // App::new may have attempted a real live start against
+        // this machine's data dir; the harness owns the state
+        // from here (the same normalization the gate tests use).
+        app.live_start_error = None;
+        app.logged_out = false;
+        let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<BackendCommand>();
+        let (evt_tx, evt_rx) = std::sync::mpsc::channel::<BackendEvent>();
+        app.live = Some(LiveSession {
+            channels: BackendChannels { commands: cmd_tx, events: evt_rx },
+            status: LinkStatus::Linked,
+            qr: None,
+            qr_expires_at: None,
+            pair_code: None,
+            pair_code_at: None,
+            account: "Test account".to_owned(),
+            connected_at: None,
+            store: Some(store::Store::open_in_memory().unwrap()),
+            jids: HashMap::new(),
+            messages: HashMap::new(),
+            times: HashMap::new(),
+            fake: true,
+            logout_requested: false,
+            flags: HashMap::new(),
+            engaged_chats: std::collections::HashSet::new(),
+            photo_refs: HashMap::new(),
+            voice_refs: HashMap::new(),
+            video_refs: HashMap::new(),
+            video_thumbs: HashMap::new(),
+        });
+        app.live_mode = true;
+        (app, evt_tx, ctx, cmd_rx)
+    }
+
+    fn drain_all(app: &mut App, ctx: &egui::Context) {
+        for _ in 0..64 {
+            app.poll_backend(ctx);
+            if app.event_queue.is_empty() {
+                return;
+            }
+        }
+        panic!("the event queue did not drain");
+    }
+
+    fn sent_commands(cmd_rx: &std::sync::mpsc::Receiver<BackendCommand>) -> Vec<BackendCommand> {
+        let mut out = Vec::new();
+        while let Ok(cmd) = cmd_rx.try_recv() {
+            out.push(cmd);
+        }
+        out
+    }
+
+    /// Parking the confirmation (what the account menu's Log out
+    /// row does) sends nothing, and cancelling it (what the
+    /// modal's Cancel, Escape and dim click do) sends nothing
+    /// either: the disconnect exists only behind the confirm.
+    #[test]
+    fn asking_and_cancelling_send_no_disconnect() {
+        let (mut app, _tx, _ctx, cmd_rx) = live_app();
+        assert!(app.can_log_out());
+        app.ui_confirm = Some(UiConfirm::LogOut);
+        assert!(sent_commands(&cmd_rx).is_empty(), "asking must not send");
+        app.ui_confirm = None;
+        assert!(sent_commands(&cmd_rx).is_empty(), "cancelling must not send");
+        assert!(app.can_log_out(), "the session is untouched");
+    }
+
+    /// Confirming sends Disconnect exactly once: the request is
+    /// latched on the session, so even a repeat call (a second
+    /// confirm landing late) cannot send it again.
+    #[test]
+    fn confirmed_log_out_sends_disconnect_exactly_once() {
+        let (mut app, _tx, _ctx, cmd_rx) = live_app();
+        app.log_out();
+        let sent = sent_commands(&cmd_rx);
+        assert_eq!(sent.len(), 1, "exactly one command: {sent:?}");
+        assert!(matches!(sent[0], BackendCommand::Disconnect));
+        let session = app.live.as_ref().unwrap();
+        assert!(session.logout_requested);
+        assert!(matches!(session.status, LinkStatus::LoggingOut));
+        assert_eq!(app.screen, Screen::Connect);
+        assert!(!app.can_log_out(), "no second offer while one is in flight");
+        app.log_out();
+        assert!(sent_commands(&cmd_rx).is_empty(), "no second disconnect");
+    }
+
+    /// A session that is not linked has nothing to unlink, and
+    /// no session at all is a no-op: neither sends a command.
+    #[test]
+    fn log_out_refuses_sessions_that_are_not_linked() {
+        let (mut app, _tx, _ctx, cmd_rx) = live_app();
+        app.live.as_mut().unwrap().status = LinkStatus::WaitingQr;
+        assert!(!app.can_log_out());
+        app.log_out();
+        assert!(sent_commands(&cmd_rx).is_empty());
+        app.live = None;
+        app.log_out();
+        assert!(app.live.is_none());
+    }
+
+    /// The fake backend answers Disconnect with LoggedOut and
+    /// keeps running: applying the event shuts the fake down and
+    /// tears the session down in the same pass, leaving the app
+    /// on the connect screen's logged-out state with the ended
+    /// account's data no longer presented.
+    #[test]
+    fn fake_logout_event_tears_the_session_down() {
+        let (mut app, tx, ctx, cmd_rx) = live_app();
+        tx.send(BackendEvent::MessageUpsert(LiveMessage::text(
+            "fake-1",
+            CHAT_JID,
+            Some("Sender".to_owned()),
+            "hello".to_owned(),
+            1_700_000_000,
+            false,
+        )))
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(!app.chats.is_empty(), "the chat mirror is populated");
+        app.log_out();
+        let _ = sent_commands(&cmd_rx);
+        tx.send(BackendEvent::LoggedOut).unwrap();
+        drain_all(&mut app, &ctx);
+        let sent = sent_commands(&cmd_rx);
+        assert!(
+            sent.iter().any(|c| matches!(c, BackendCommand::Shutdown)),
+            "the fake is shut down so its supervisor exits: {sent:?}"
+        );
+        assert!(app.live.is_none(), "the session is dropped");
+        assert!(app.logged_out);
+        assert_eq!(app.screen, Screen::Connect);
+        assert!(app.chats.is_empty(), "no stale chats presented as live");
+        assert!(
+            matches!(app.connect_qr(), ConnectQr::LoggedOut),
+            "the connect gate shows the logged-out state, not the demo panel"
+        );
+    }
+
+    /// The real backend reports a deregistration failure AFTER
+    /// the LoggedOut event and then ends its run. Both events
+    /// are applied before the teardown, so the failure wording
+    /// reaches the notice instead of a clean "logged out" claim,
+    /// and the closed channel then drops the session.
+    #[test]
+    fn deregistration_failure_is_shown_before_the_teardown() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        app.live.as_mut().unwrap().fake = false;
+        app.log_out();
+        tx.send(BackendEvent::LoggedOut).unwrap();
+        tx.send(BackendEvent::Error {
+            message: "Logging out did not reach the server: offline. \
+                      This device may still appear linked on your phone."
+                .to_owned(),
+        })
+        .unwrap();
+        drop(tx);
+        drain_all(&mut app, &ctx);
+        let notice = app.notice.clone().unwrap_or_default();
+        assert!(
+            notice.contains("still appear linked on your phone"),
+            "the deregistration failure is the visible outcome: {notice}"
+        );
+        assert!(app.live.is_none(), "the ended session is dropped");
+        assert!(app.logged_out);
+        assert_eq!(app.screen, Screen::Connect);
+    }
+
+    /// A logout from the phone side carries no local request:
+    /// the session stands while the backend is still reporting,
+    /// and is torn down when its run ends (the channel closes).
+    #[test]
+    fn phone_side_logout_tears_down_when_the_run_ends() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        app.live.as_mut().unwrap().fake = false;
+        tx.send(BackendEvent::LoggedOut).unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(app.live.is_some(), "no teardown before the run ends");
+        drop(tx);
+        app.poll_backend(&ctx);
+        assert!(app.live.is_none());
+        assert!(app.logged_out);
+        assert!(matches!(app.connect_qr(), ConnectQr::LoggedOut));
+    }
+
+    /// A closed channel with no logout behind it (the supervisor
+    /// gave up after repeated crashes) must not drop the
+    /// session: its failure state stays on screen.
+    #[test]
+    fn channel_close_without_logout_keeps_the_session() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        app.live.as_mut().unwrap().fake = false;
+        app.live.as_mut().unwrap().status =
+            LinkStatus::Failed("The connection worker failed twice and stopped.".to_owned());
+        drop(tx);
+        app.poll_backend(&ctx);
+        assert!(app.live.is_some(), "the failure state is kept");
+        assert!(!app.logged_out);
     }
 }

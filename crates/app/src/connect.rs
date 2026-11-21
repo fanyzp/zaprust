@@ -269,6 +269,12 @@ impl App {
                     slot.add_space(6.0);
                 }
                 slot.label(RichText::new(status_text).size(12.5).color(rgb(color)));
+            } else if self.logged_out {
+                slot.label(
+                    RichText::new("Logged out. Link again to continue.")
+                        .size(12.5)
+                        .color(rgb(t.accent)),
+                );
             }
             return;
         }
@@ -312,6 +318,7 @@ impl App {
             Connecting,
             Unavailable(String),
             Demo,
+            LoggedOut,
         }
         let state = match self.connect_qr() {
             crate::live::ConnectQr::Live(_) => return,
@@ -319,6 +326,7 @@ impl App {
             crate::live::ConnectQr::Connecting => Slot::Connecting,
             crate::live::ConnectQr::Unavailable(status) => Slot::Unavailable(status.label()),
             crate::live::ConnectQr::Demo => Slot::Demo,
+            crate::live::ConnectQr::LoggedOut => Slot::LoggedOut,
         };
         let mut slot = ui.new_child(
             egui::UiBuilder::new()
@@ -356,6 +364,31 @@ impl App {
                     .color(rgb(t.text_secondary)),
                 );
             }
+            Slot::LoggedOut => {
+                slot.add_space(28.0);
+                self.connect_logged_out_panel(&mut slot, t);
+            }
+        }
+    }
+
+    /// The logged-out panel shared by the QR slot and the
+    /// pairing-code panel: the state in plain words and the way
+    /// back in (a fresh link, which starts a new session).
+    fn connect_logged_out_panel(&mut self, ui: &mut egui::Ui, t: Tokens) {
+        ui.label(RichText::new("You are logged out").size(14.0).strong());
+        ui.add_space(8.0);
+        ui.label(
+            RichText::new(
+                "This computer is unlinked. The chats saved on this \
+                 computer stay in the local archive.",
+            )
+            .size(12.0)
+            .color(rgb(t.text_secondary)),
+        );
+        ui.add_space(12.0);
+        if crate::widgets::button(ui, t, "Link again", crate::widgets::Btn::Primary).clicked() {
+            let ctx = ui.ctx().clone();
+            self.start_live(&ctx, false, false);
         }
     }
 
@@ -384,6 +417,12 @@ impl App {
         // to a user whose live start just failed.
         if let Some(message) = self.live_start_error.clone() {
             self.connect_start_failed_panel(ui, t, &message);
+            return;
+        }
+        // A logged-out device owns the card the same way: there
+        // is no session to pair against until a fresh link starts.
+        if self.logged_out && self.live.is_none() {
+            self.connect_logged_out_panel(ui, t);
             return;
         }
         ui.add_space(6.0);
@@ -508,7 +547,9 @@ impl App {
         // shared modal dim, the same depth every modal uses.
         let area = root.max_rect();
         root.painter().rect_filled(area, CornerRadius::ZERO, crate::theme::modal_dim(menu_p));
-        let size = Vec2::new(430.0, 302.0);
+        // The modal grows by one row while a linked session can
+        // be logged out.
+        let size = Vec2::new(430.0, if self.can_log_out() { 352.0 } else { 302.0 });
         let rect = egui::Rect::from_min_size(
             Pos2::new(area.center().x - size.x / 2.0, area.top() + 96.0),
             size,
@@ -714,6 +755,43 @@ impl App {
                                 }
                             }
                             self.screen = Screen::Connect;
+                        }
+                        if self.can_log_out() {
+                            ui.add_space(6.0);
+                            // Log out: unlinks this device. A
+                            // destructive action, so the row only
+                            // parks the house confirmation; the
+                            // modal's confirm button performs it.
+                            let (lrect, lresp) = ui.allocate_exact_size(
+                                Vec2::new(size.x - 28.0, 44.0),
+                                Sense::click(),
+                            );
+                            if lresp.hovered() {
+                                ui.painter().rect_filled(
+                                    lrect,
+                                    CornerRadius::same(12),
+                                    rgb(t.bg_panel_alt),
+                                );
+                            }
+                            draw_icon(
+                                ui.painter(),
+                                Icon::LogOut,
+                                Pos2::new(lrect.left() + 26.0, lrect.center().y),
+                                18.0,
+                                rgb(t.danger),
+                                rgb(t.bg_panel),
+                            );
+                            ui.painter().text(
+                                Pos2::new(lrect.left() + 52.0, lrect.center().y),
+                                Align2::LEFT_CENTER,
+                                crate::i18n::t("account.log_out"),
+                                FontId::proportional(13.5),
+                                rgb(t.danger),
+                            );
+                            if lresp.clicked() && !exiting {
+                                self.account_menu_open = false;
+                                self.ui_confirm = Some(crate::state::UiConfirm::LogOut);
+                            }
                         }
                         ui.add_space(8.0);
                         let (drect, _) =

@@ -384,6 +384,11 @@ impl App {
                 crate::i18n::tf("privacy.exceptions_body", "name", label),
                 crate::i18n::t("privacy.exceptions_confirm"),
             ),
+            UiConfirm::LogOut => (
+                crate::i18n::t("account.log_out_title"),
+                crate::i18n::t("account.log_out_body"),
+                crate::i18n::t("account.log_out"),
+            ),
         };
         let mut decision: Option<bool> = None;
         if !exiting && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
@@ -477,6 +482,9 @@ impl App {
                 }
                 Some(UiConfirm::ReplaceExceptionList { category, .. }) => {
                     self.cycle_privacy(&category);
+                }
+                Some(UiConfirm::LogOut) => {
+                    self.log_out();
                 }
                 None => {}
             },

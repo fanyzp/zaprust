@@ -392,6 +392,10 @@ pub(crate) enum UiConfirm {
     /// that list, which this client cannot restore. Confirming
     /// performs the cycle the row click asked for.
     ReplaceExceptionList { category: String, label: String },
+    /// Log out: unlink this device from the account. Confirming
+    /// sends the backend's disconnect command; the local chats
+    /// stay in the archive on this computer.
+    LogOut,
 }
 
 /// Debug mode state (see debug_ui.rs): the trace ring, its clock and the inspector toggles.
@@ -896,6 +900,11 @@ pub(crate) struct App {
     /// session must not present a scannable-looking code or a
     /// waiting-for-scan status. Cleared by the next start attempt.
     pub(crate) live_start_error: Option<String>,
+    /// A live session ended by logging out and no new session
+    /// has started since. The connect screen renders its
+    /// logged-out state (not the demo panel) while this is set;
+    /// cleared when a fresh session starts.
+    pub(crate) logged_out: bool,
     /// Transient user-facing notice (backend errors, feature
     /// crashes, export results). Shown as a dismissible banner.
     pub(crate) notice: Option<String>,
@@ -1424,6 +1433,7 @@ impl App {
             live_mode: false,
             live: None,
             live_start_error: None,
+            logged_out: false,
             notice: None,
             crash_report: core::crash::unseen_report(&backend::data_dir().join("crashes")),
             crash_details_open: false,

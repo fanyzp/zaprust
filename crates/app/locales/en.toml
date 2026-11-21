@@ -317,6 +317,11 @@
 "profile.my_photo_error" = "That file could not be read as an image."
 "profile.my_default_name" = "You"
 
+# ---- account session (log out) ----
+"account.log_out" = "Log out"
+"account.log_out_title" = "Log out?"
+"account.log_out_body" = "This computer will be unlinked from your WhatsApp account and its sign-in data will be deleted. The chats saved on this computer stay in the local archive, and you can link again at any time."
+
 # ---- crash banner ----
 "crash.title" = "Zaprust crashed last time"
 "crash.report" = "Report on GitHub"

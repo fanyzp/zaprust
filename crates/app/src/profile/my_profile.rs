@@ -142,6 +142,21 @@ impl MyProfileState {
         self.photo_error = false;
     }
 
+    /// Drops everything that came from the linked account when
+    /// its session ends (log out): the read-back, the decoded
+    /// photo and any unsaved photo change stop being presented
+    /// as the user's profile. The demo-mode persisted values
+    /// (name, about, photo path) are untouched: they were never
+    /// the account's.
+    pub fn forget_account(&mut self) {
+        self.account = None;
+        self.photo_texture = None;
+        self.photo_key = None;
+        self.picked_photo = None;
+        self.photo_removed = false;
+        self.save_phase = SavePhase::Idle;
+    }
+
     /// True when the buffers differ from the account read-back
     /// (live mode). Always false before the first read-back.
     pub fn live_dirty(&self) -> bool {

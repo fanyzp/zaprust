@@ -350,6 +350,7 @@ dependencies = [
  "tracing",
  "tracing-log",
  "tracing-subscriber",
+ "ureq",
  "whatsapp-rust",
 ]
 

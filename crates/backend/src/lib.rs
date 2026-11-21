@@ -276,6 +276,25 @@ fn copy_dir_contents(src: &std::path::Path, dst: &std::path::Path) -> std::io::R
     Ok(())
 }
 
+/// The signed-in account's own profile, as read back from the
+/// server: the values other people see, not a local copy. Emitted
+/// in [`BackendEvent::OwnProfile`] when the account connects,
+/// when the UI asks with [`BackendCommand::FetchOwnProfile`], and
+/// again after every [`BackendCommand::UpdateOwnProfile`] (the
+/// post-change re-read is what reconciles the UI with the state
+/// the server actually kept).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnProfile {
+    /// The account's push name (display name).
+    pub name: String,
+    /// The account's About / text status (empty when unset).
+    pub about: String,
+    /// The account's current profile picture as encoded image
+    /// bytes, or `None` when the account has no picture (or its
+    /// bytes could not be downloaded).
+    pub photo: Option<Vec<u8>>,
+}
+
 /// The quoted message a reply points at, carried on outgoing
 /// `SendText` commands so the reply context reaches the wire.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -480,6 +499,36 @@ pub enum BackendCommand {
         category: String,
         /// The privacy value spelling.
         value: String,
+    },
+    /// Fetch the signed-in account's own profile (push name,
+    /// About, profile picture) from the server. Answered with an
+    /// [`BackendEvent::OwnProfile`] event. The real backend also
+    /// fetches unasked at connect; this command is the refresh
+    /// for when the UI opens the profile editor.
+    FetchOwnProfile,
+    /// Change the signed-in account's own profile on the server.
+    /// Each field is independent: `None` leaves that part of the
+    /// profile untouched, so one Save in the editor is one
+    /// command carrying exactly the fields the user changed.
+    ///
+    /// The backend applies the given fields and answers with a
+    /// fresh [`BackendEvent::OwnProfile`] re-read; on failure it
+    /// answers [`BackendEvent::OwnProfileSaveFailed`] and then
+    /// the same re-read, so the UI can show the failure and fall
+    /// back to the state the server kept.
+    UpdateOwnProfile {
+        /// New push name (display name), when changed. An empty
+        /// or all-whitespace name is refused: WhatsApp requires
+        /// a name.
+        name: Option<String>,
+        /// New About / text status, when changed. An empty
+        /// string clears the About.
+        about: Option<String>,
+        /// New profile picture, when changed: `Some(Some(jpeg))`
+        /// sets the picture to the given JPEG bytes (the caller
+        /// crops and sizes it, the protocol carries it as is),
+        /// `Some(None)` removes the picture.
+        photo: Option<Option<Vec<u8>>>,
     },
     /// Forward a message to another chat. The real backend can
     /// only forward messages it saw during this session (it needs
@@ -1332,6 +1381,20 @@ pub enum BackendEvent {
     /// Current privacy settings as fetched from the account
     /// (category → value spellings; see [`BackendCommand::SetPrivacy`]).
     PrivacyState(std::collections::BTreeMap<String, String>),
+    /// The signed-in account's own profile, read back from the
+    /// server (see [`OwnProfile`]). Emitted at connect, in answer
+    /// to [`BackendCommand::FetchOwnProfile`], and as the
+    /// reconciling re-read after every
+    /// [`BackendCommand::UpdateOwnProfile`], successful or not.
+    OwnProfile(OwnProfile),
+    /// An [`BackendCommand::UpdateOwnProfile`] change was refused
+    /// or failed on the server; the message is in user words. A
+    /// reconciling [`BackendEvent::OwnProfile`] re-read follows,
+    /// carrying the state the server kept.
+    OwnProfileSaveFailed {
+        /// Why the change failed, in user words.
+        message: String,
+    },
     /// The account's blocklist as fetched at connect: the JIDs
     /// blocked on the server, in the server's own spelling. The
     /// app adopts the list as its blocked set, replacing any

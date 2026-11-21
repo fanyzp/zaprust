@@ -242,6 +242,12 @@ pub(super) async fn run_async(
     // land, so a reconnect never adopts a stale blocklist.
     let blocklist_fetch: LatestTask = std::sync::Arc::new(std::sync::Mutex::new(None));
     let blocklist_fetch_conn = blocklist_fetch.clone();
+    // The own-profile fetch, spawned by `on_connected` and by the
+    // FetchOwnProfile command, same slot discipline as the privacy
+    // fetch: only the newest read-back may land, so the editor
+    // never adopts a profile older than the one it just saved.
+    let own_profile_fetch: LatestTask = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let own_profile_fetch_conn = own_profile_fetch.clone();
 
     let sink = events.clone();
     let sink_pair = events.clone();
@@ -280,6 +286,7 @@ pub(super) async fn run_async(
             let sink = sink_conn.clone();
             let fetch_slot = privacy_fetch_conn.clone();
             let blocklist_slot = blocklist_fetch_conn.clone();
+            let profile_slot = own_profile_fetch_conn.clone();
             async move {
                 sink.emit(BackendEvent::Connected { account: "WhatsApp account".to_owned() });
                 // The privacy fetch is a network round trip and this
@@ -296,6 +303,18 @@ pub(super) async fn run_async(
                     if let Ok(resp) = client_privacy.fetch_privacy_settings().await {
                         sink_privacy.emit(BackendEvent::PrivacyState(privacy_map(&resp)));
                     }
+                });
+                // The own-profile fetch rides the same pattern: the
+                // profile editor and the account surfaces show the
+                // account's real name, About and picture, read back
+                // from the server (see whatsapp::profile). Parts
+                // that cannot be read come back empty rather than
+                // failing the fetch.
+                let sink_profile = sink.clone();
+                let client_profile = client.clone();
+                spawn_latest(&profile_slot, async move {
+                    let profile = super::profile::fetch_own_profile(&client_profile).await;
+                    sink_profile.emit(BackendEvent::OwnProfile(profile));
                 });
                 // The blocklist fetch rides the same pattern: the
                 // app seeds its blocked set from the server's list,
@@ -1666,6 +1685,32 @@ pub(super) async fn run_async(
                         },
                     }
                 }
+                BackendCommand::FetchOwnProfile => {
+                    // Answered by a fresh read-back on the profile
+                    // fetch slot, so a fetch already in flight from
+                    // the connect is replaced rather than doubled.
+                    let sink_profile = events.clone();
+                    let client_profile = client.clone();
+                    spawn_latest(&own_profile_fetch, async move {
+                        let profile = super::profile::fetch_own_profile(&client_profile).await;
+                        sink_profile.emit(BackendEvent::OwnProfile(profile));
+                    });
+                }
+                BackendCommand::UpdateOwnProfile { name, about, photo } => {
+                    // Applied inline, like SetPrivacy: one save is
+                    // one outcome. Either way the profile is read
+                    // back afterwards, so the editor reconciles
+                    // with the state the server actually kept; a
+                    // failure is reported first, in user words.
+                    match super::profile::update_own_profile(&client, name, about, photo).await {
+                        Ok(()) => {}
+                        Err(message) => {
+                            events.emit(BackendEvent::OwnProfileSaveFailed { message });
+                        }
+                    }
+                    let profile = super::profile::fetch_own_profile(&client).await;
+                    events.emit(BackendEvent::OwnProfile(profile));
+                }
                 BackendCommand::Disconnect => {
                     // The local teardown always happens inside
                     // logout; what can silently fail is the
@@ -1717,6 +1762,8 @@ pub(super) async fn run_async(
     // Same for a blocklist fetch: it must not land after the
     // session it was fetched for has ended.
     abort_latest(&blocklist_fetch);
+    // Same for an own-profile fetch.
+    abort_latest(&own_profile_fetch);
 
     match run_outcome {
         Some(outcome) => {

@@ -27,7 +27,7 @@ use std::time::Duration;
 
 use crate::{
     Backend, BackendCommand, BackendConfig, BackendEvent, EventSink, LiveChat, LiveChatKind,
-    LiveMessage,
+    LiveMessage, OwnProfile,
 };
 
 /// The payload the fake backend asks the UI to render as a QR code.
@@ -625,6 +625,11 @@ impl Backend for FakeBackend {
         // backend's fetch: SetPrivacy mutates one entry and the
         // full map is re-emitted, as the real refetch reports it.
         let mut privacy_state = baseline_privacy_state();
+        // The account's own profile, mirroring the real backend's
+        // read-back: UpdateOwnProfile mutates the given fields and
+        // the full profile is re-emitted, as the real re-read
+        // reports it.
+        let mut own_profile_state = baseline_own_profile();
         let mut message_state: std::collections::HashMap<(String, String), LiveMessage> =
             scripted_messages()
                 .into_iter()
@@ -665,7 +670,7 @@ impl Backend for FakeBackend {
                         valid_for: std::time::Duration::from_secs(3600),
                     });
                     if self.auto_connect {
-                        emit_linked_script(&events, &call_state, &privacy_state);
+                        emit_linked_script(&events, &call_state, &privacy_state, &own_profile_state);
                         if self.demo_script && !script_started {
                             script_started = true;
                             let tick_events = events.clone();
@@ -680,7 +685,7 @@ impl Backend for FakeBackend {
                 BackendCommand::ConnectPairCode { phone } => {
                     events.emit(BackendEvent::PairCode { code: fake_pair_code(&phone) });
                     if self.auto_connect {
-                        emit_linked_script(&events, &call_state, &privacy_state);
+                        emit_linked_script(&events, &call_state, &privacy_state, &own_profile_state);
                         if self.demo_script && !script_started {
                             script_started = true;
                             let tick_events = events.clone();
@@ -1077,6 +1082,52 @@ impl Backend for FakeBackend {
                     }
                     privacy_state.insert(category, value);
                     events.emit(BackendEvent::PrivacyState(privacy_state.clone()));
+                }
+                BackendCommand::FetchOwnProfile => {
+                    events.emit(BackendEvent::OwnProfile(own_profile_state.clone()));
+                }
+                BackendCommand::UpdateOwnProfile { name, about, photo } => {
+                    if let Some(log) = &command_log {
+                        let mut log =
+                            log.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                        if let Some(name) = &name {
+                            log.push(format!("profile:name={name}"));
+                        }
+                        if let Some(about) = &about {
+                            log.push(format!("profile:about={about}"));
+                        }
+                        if let Some(photo) = &photo {
+                            match photo {
+                                Some(bytes) => {
+                                    log.push(format!("profile:photo=set:{}", bytes.len()))
+                                }
+                                None => log.push("profile:photo=remove".to_owned()),
+                            }
+                        }
+                    }
+                    // Mirrors the real backend (and the library
+                    // behind it): an empty name is refused before
+                    // anything is applied, the failure is reported,
+                    // and the unchanged profile is re-emitted so
+                    // the UI reconciles with what was kept.
+                    if name.as_deref().is_some_and(|n| n.trim().is_empty()) {
+                        events.emit(BackendEvent::OwnProfileSaveFailed {
+                            message: "Profile change failed: the name cannot be empty."
+                                .to_owned(),
+                        });
+                        events.emit(BackendEvent::OwnProfile(own_profile_state.clone()));
+                    } else {
+                        if let Some(name) = name {
+                            own_profile_state.name = name.trim().to_owned();
+                        }
+                        if let Some(about) = about {
+                            own_profile_state.about = about.trim().to_owned();
+                        }
+                        if let Some(photo) = photo {
+                            own_profile_state.photo = photo;
+                        }
+                        events.emit(BackendEvent::OwnProfile(own_profile_state.clone()));
+                    }
                 }
                 BackendCommand::ForwardMessage { from_chat_jid, message_id, to_chat_jid } => {
                     if let Some(log) = &command_log {
@@ -1604,10 +1655,23 @@ fn baseline_privacy_state() -> std::collections::BTreeMap<String, String> {
     privacy
 }
 
+/// The fake account's own profile at link time. The run loop
+/// keeps the live copy: UpdateOwnProfile mutates the given
+/// fields and the full profile is re-emitted, mirroring the
+/// real backend's re-read after a change.
+fn baseline_own_profile() -> OwnProfile {
+    OwnProfile {
+        name: "Fake User".to_owned(),
+        about: "Available (test account)".to_owned(),
+        photo: None,
+    }
+}
+
 fn emit_linked_script(
     events: &EventSink,
     call_state: &std::sync::Arc<std::sync::Mutex<FakeCallState>>,
     privacy: &std::collections::BTreeMap<String, String>,
+    own_profile: &OwnProfile,
 ) {
     events.emit(BackendEvent::Connected { account: "Fake account (not WhatsApp)".to_owned() });
     for chat in scripted_chats() {
@@ -1628,6 +1692,9 @@ fn emit_linked_script(
     // The account's privacy state, as the real backend reports
     // it after fetching the account's settings.
     events.emit(BackendEvent::PrivacyState(privacy.clone()));
+    // The account's own profile, as the real backend reports it
+    // after reading the profile back at connect.
+    events.emit(BackendEvent::OwnProfile(own_profile.clone()));
     // Baseline blocklist, as the real backend reports it after
     // fetching the account's list at connect: nobody blocked.
     events.emit(BackendEvent::Blocklist(Vec::new()));

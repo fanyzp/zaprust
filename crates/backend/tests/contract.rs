@@ -436,6 +436,120 @@ fn fake_privacy_state_round_trips_through_set_privacy() {
 }
 
 #[test]
+fn fake_linked_script_reports_the_baseline_own_profile() {
+    let (ch, _log) = linked_backend();
+    // The linked script reports the account's own profile, as
+    // the real backend reports its connect-time read-back.
+    let events = collect_until(&ch.events, 5, |e| matches!(e, BackendEvent::OwnProfile(_)));
+    let profile = events.iter().find_map(|e| match e {
+        BackendEvent::OwnProfile(p) => Some(p),
+        _ => None,
+    });
+    let profile = profile.expect("the linked script reports the own profile");
+    assert_eq!(profile.name, "Fake User");
+    assert_eq!(profile.about, "Available (test account)");
+    assert_eq!(profile.photo, None);
+    ch.commands.send(BackendCommand::Shutdown).unwrap();
+}
+
+#[test]
+fn own_profile_update_round_trips_through_the_fake() {
+    let (ch, log) = linked_backend();
+    let _ = collect_until(&ch.events, 5, |e| matches!(e, BackendEvent::OwnProfile(_)));
+
+    // FetchOwnProfile is answered with the current profile.
+    ch.commands.send(BackendCommand::FetchOwnProfile).unwrap();
+    let events = collect_until(&ch.events, 5, |e| matches!(e, BackendEvent::OwnProfile(_)));
+    assert!(events.iter().any(
+        |e| matches!(e, BackendEvent::OwnProfile(p) if p.name == "Fake User")
+    ));
+
+    // One save carrying a new name and a new picture: both are
+    // adopted, the field the command did not carry (the About)
+    // is untouched, and the full updated profile is re-emitted,
+    // mirroring the real backend's re-read after a change.
+    ch.commands
+        .send(BackendCommand::UpdateOwnProfile {
+            name: Some("New Name".to_owned()),
+            about: None,
+            photo: Some(Some(vec![1, 2, 3])),
+        })
+        .unwrap();
+    let events = collect_until(&ch.events, 5, |e| matches!(e, BackendEvent::OwnProfile(_)));
+    let updated = events.iter().find_map(|e| match e {
+        BackendEvent::OwnProfile(p) => Some(p),
+        _ => None,
+    });
+    let updated = updated.expect("UpdateOwnProfile re-emits the profile");
+    assert_eq!(updated.name, "New Name");
+    assert_eq!(updated.about, "Available (test account)", "uncarried fields stay");
+    assert_eq!(updated.photo.as_deref(), Some([1, 2, 3].as_slice()));
+
+    // A second save changing only the About (to empty: a clear)
+    // and removing the picture leaves the name alone.
+    ch.commands
+        .send(BackendCommand::UpdateOwnProfile {
+            name: None,
+            about: Some(String::new()),
+            photo: Some(None),
+        })
+        .unwrap();
+    let events = collect_until(&ch.events, 5, |e| matches!(e, BackendEvent::OwnProfile(_)));
+    let updated = events.iter().find_map(|e| match e {
+        BackendEvent::OwnProfile(p) => Some(p),
+        _ => None,
+    });
+    let updated = updated.expect("the second update re-emits the profile");
+    assert_eq!(updated.name, "New Name");
+    assert_eq!(updated.about, "");
+    assert_eq!(updated.photo, None);
+
+    ch.commands.send(BackendCommand::Shutdown).unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    let lines = log.lock().unwrap().join("\n");
+    assert!(lines.contains("profile:name=New Name"), "log: {lines}");
+    assert!(lines.contains("profile:photo=set:3"), "log: {lines}");
+    assert!(lines.contains("profile:about="), "log: {lines}");
+    assert!(lines.contains("profile:photo=remove"), "log: {lines}");
+}
+
+#[test]
+fn own_profile_update_with_an_empty_name_fails_and_changes_nothing() {
+    let (ch, _log) = linked_backend();
+    let _ = collect_until(&ch.events, 5, |e| matches!(e, BackendEvent::OwnProfile(_)));
+
+    // An empty name is refused before anything is applied (the
+    // library refuses it too), so the About carried by the same
+    // save must not land either: the failure is reported and the
+    // reconciling re-read still shows the baseline profile.
+    ch.commands
+        .send(BackendCommand::UpdateOwnProfile {
+            name: Some("   ".to_owned()),
+            about: Some("Should not land".to_owned()),
+            photo: None,
+        })
+        .unwrap();
+    let events = collect_until(&ch.events, 5, |e| {
+        matches!(e, BackendEvent::OwnProfileSaveFailed { .. })
+    });
+    let failed = events.iter().find_map(|e| match e {
+        BackendEvent::OwnProfileSaveFailed { message } => Some(message),
+        _ => None,
+    });
+    let failed = failed.expect("the empty name is reported as a save failure");
+    assert!(failed.contains("name cannot be empty"), "message: {failed}");
+    let events = collect_until(&ch.events, 5, |e| matches!(e, BackendEvent::OwnProfile(_)));
+    let reconciled = events.iter().find_map(|e| match e {
+        BackendEvent::OwnProfile(p) => Some(p),
+        _ => None,
+    });
+    let reconciled = reconciled.expect("a reconciling profile re-read follows the failure");
+    assert_eq!(reconciled.name, "Fake User");
+    assert_eq!(reconciled.about, "Available (test account)");
+    ch.commands.send(BackendCommand::Shutdown).unwrap();
+}
+
+#[test]
 fn fake_baseline_includes_online_and_round_trips_it() {
     let (ch, _log) = linked_backend();
     // The baseline carries the Online audience with a value the

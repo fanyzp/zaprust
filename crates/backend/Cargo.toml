@@ -17,7 +17,7 @@ default = ["whatsapp"]
 # tokio and tracing are used only by the whatsapp module (and, for
 # tokio, the calls-gated audio helper), so they ride along here
 # instead of taxing the fake-only build.
-whatsapp = ["dep:whatsapp-rust", "dep:diesel", "dep:tokio", "dep:tracing"]
+whatsapp = ["dep:whatsapp-rust", "dep:diesel", "dep:tokio", "dep:tracing", "dep:ureq"]
 # Voice/video calls. The feature set is assembled by hand instead of
 # using the library's umbrella `voip` feature: the umbrella pulls
 # voip-libopus (a C library binding), while WhatsApp calls natively
@@ -39,6 +39,11 @@ directories = "6"
 cpal = { version = "0.18", optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "time", "sync"], optional = true }
 tracing = { version = "0.1", optional = true }
+# HTTP client for one call in the whatsapp module: downloading
+# the account's own profile picture bytes from the CDN URL the
+# protocol library's picture lookup returns. Same version and
+# TLS stack the app crate uses for its own fetches.
+ureq = { version = "3", default-features = false, features = ["rustls"], optional = true }
 
 # Pinned to a git revision, deliberately not the crates.io release:
 # crates.io 0.7.0 enables a `simd` feature in wacore-binary that needs a

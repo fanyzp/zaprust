@@ -77,6 +77,12 @@ fn summarize(event: &BackendEvent) -> String {
             format!("Crashed restarted={restarted} {summary}")
         }
         BackendEvent::Error { message } => format!("Error {message}"),
+        BackendEvent::OwnProfile(profile) => {
+            format!("OwnProfile name={:?} about={:?}", profile.name, profile.about)
+        }
+        BackendEvent::OwnProfileSaveFailed { message } => {
+            format!("OwnProfileSaveFailed {message}")
+        }
     }
 }
 

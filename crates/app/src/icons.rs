@@ -64,6 +64,7 @@ pub(crate) enum Icon {
     CallMade,
     CallReceived,
     CallMissed,
+    LogOut,
 }
 
 /// The Material Symbols codepoint for `icon` in the bundled font.
@@ -120,6 +121,7 @@ pub(crate) fn glyph(icon: Icon) -> char {
         Icon::CallMade => '\u{e0b2}',     // call_made
         Icon::CallReceived => '\u{e0b5}', // call_received
         Icon::CallMissed => '\u{e0b4}',   // call_missed
+        Icon::LogOut => '\u{e9ba}',       // logout
     }
 }
 

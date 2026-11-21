@@ -94,6 +94,7 @@ WANTED = [
     ("CallMade", ["call_made"]),
     ("CallReceived", ["call_received"]),
     ("CallMissed", ["call_missed"]),
+    ("LogOut", ["logout"]),
 ]
 
 # Variable font axes pinned for the Rounded route.

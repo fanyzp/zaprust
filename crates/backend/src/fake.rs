@@ -50,8 +50,8 @@ pub struct FakeBackend {
     /// instead of waiting forever at the QR/code step.
     pub auto_connect: bool,
     /// Optional command log (privacy/state-machine tests): the fake
-    /// appends one line per MarkAsRead / SetTyping / SetPrivacy
-    /// command it receives.
+    /// appends one line per MarkAsRead / SetTyping / SetPrivacy /
+    /// SetPresenceSubscription command it receives.
     pub command_log: Option<std::sync::Arc<std::sync::Mutex<Vec<String>>>>,
     /// Whether the scheduled incoming-event script ([`demo_script`])
     /// plays after the linked script. Only the app demo enables
@@ -1076,6 +1076,26 @@ impl Backend for FakeBackend {
                         log.lock()
                             .unwrap_or_else(std::sync::PoisonError::into_inner)
                             .push(format!("typing:{chat_jid}:{typing}"));
+                    }
+                }
+                BackendCommand::SetPresenceSubscription { chat_jid, subscribed } => {
+                    if let Some(log) = &command_log {
+                        log.lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .push(format!("presence:{chat_jid}:{subscribed}"));
+                    }
+                    // The contract the real backend honors: a
+                    // subscription is answered with the contact's
+                    // current presence. The scripted DM contact
+                    // is online; other chats have no presence to
+                    // report (the app only ever subscribes to the
+                    // open DM anyway).
+                    if subscribed && chat_jid == FAKE_DM_JID {
+                        events.emit(BackendEvent::PresenceReceived {
+                            chat_jid,
+                            online: true,
+                            last_seen: None,
+                        });
                     }
                 }
                 BackendCommand::EditMessage { chat_jid, message_id, new_body } => {

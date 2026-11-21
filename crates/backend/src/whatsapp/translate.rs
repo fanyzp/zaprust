@@ -290,6 +290,18 @@ pub(super) fn translate_event(event: &Event, sink: &EventSink, own_jids: &[Strin
                 typing: !matches!(update.state, ChatActivity::Idle),
             });
         }
+        Event::Presence(update) => {
+            use whatsapp_rust::wacore::types::presence::PresenceStatus;
+            // The library only delivers these for contacts this
+            // client subscribed to (plus its own resubscribes
+            // after a reconnect), so every report is live data
+            // about a watched contact, never a cached guess.
+            sink.emit(BackendEvent::PresenceReceived {
+                chat_jid: update.from.to_string(),
+                online: matches!(update.status, PresenceStatus::Available),
+                last_seen: update.last_seen.map(|at| at.timestamp()),
+            });
+        }
         Event::TemporaryBan(ban) => {
             sink.emit(BackendEvent::TemporaryBan {
                 code: u32::try_from(ban.code.code()).unwrap_or(0),
@@ -1012,5 +1024,62 @@ mod qr_expiry_translate_tests {
         );
         translate_event(&event, &sink, &[]);
         assert!(matches!(rx.try_recv(), Ok(BackendEvent::QrExpired)));
+    }
+}
+
+#[cfg(test)]
+mod presence_translate_tests {
+    use super::translate_event;
+    use crate::{BackendEvent, EventSink};
+    use whatsapp_rust::wacore::chrono::DateTime;
+    use whatsapp_rust::wacore::types::events::{Event, PresenceUpdate};
+    use whatsapp_rust::wacore::types::presence::PresenceStatus;
+    use whatsapp_rust::wacore_binary::Jid;
+
+    fn contact() -> Jid {
+        "6281234567890@s.whatsapp.net".parse().expect("valid jid")
+    }
+
+    /// Item 111: a subscribed contact's availability report must
+    /// cross the boundary with its online flag and last-seen
+    /// instant intact; before this arm existed the event fell
+    /// into the catch-all and the header had nothing real to
+    /// show.
+    #[test]
+    fn presence_available_maps_to_online_without_last_seen() {
+        let (tx, rx) = std::sync::mpsc::sync_channel(4);
+        let sink = EventSink { tx, wake: std::sync::Arc::new(|| {}) };
+        let event = Event::Presence(
+            PresenceUpdate::builder().from(contact()).status(PresenceStatus::Available).build(),
+        );
+        translate_event(&event, &sink, &[]);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(BackendEvent::PresenceReceived { ref chat_jid, online: true, last_seen: None })
+                if chat_jid == "6281234567890@s.whatsapp.net"
+        ));
+    }
+
+    #[test]
+    fn presence_unavailable_carries_the_last_seen_instant() {
+        let (tx, rx) = std::sync::mpsc::sync_channel(4);
+        let sink = EventSink { tx, wake: std::sync::Arc::new(|| {}) };
+        let at = DateTime::from_timestamp(1_700_000_000, 0).expect("valid timestamp");
+        let event = Event::Presence(
+            PresenceUpdate::builder()
+                .from(contact())
+                .status(PresenceStatus::Unavailable)
+                .last_seen(at)
+                .build(),
+        );
+        translate_event(&event, &sink, &[]);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(BackendEvent::PresenceReceived {
+                online: false,
+                last_seen: Some(1_700_000_000),
+                ..
+            })
+        ));
     }
 }

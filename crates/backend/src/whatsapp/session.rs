@@ -874,6 +874,26 @@ pub(super) async fn run_async(
                         message: format!("Invalid chat address: {e}"),
                     }),
                 },
+                BackendCommand::SetPresenceSubscription { chat_jid, subscribed } => {
+                    match chat_jid.parse::<Jid>() {
+                        Ok(jid) => {
+                            // The library tracks the subscription
+                            // and re-subscribes on its own after a
+                            // reconnect; a failed send (mid-reconnect)
+                            // is dropped like the typing sends above,
+                            // and the app re-asks when the link state
+                            // settles.
+                            if subscribed {
+                                let _ = client.presence().subscribe(jid).await;
+                            } else {
+                                let _ = client.presence().unsubscribe(&jid).await;
+                            }
+                        }
+                        Err(e) => events.emit(BackendEvent::Error {
+                            message: format!("Invalid chat address: {e}"),
+                        }),
+                    }
+                }
                 BackendCommand::EditMessage { chat_jid, message_id, new_body } => {
                     use whatsapp_rust::wacore::proto_helpers::MessageBuilderExt;
                     match build_message_target(&chat_jid, &message_id, None, true) {

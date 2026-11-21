@@ -47,7 +47,7 @@ pub mod qr;
 #[cfg(feature = "whatsapp")]
 mod whatsapp;
 
-pub use fake::{FakeBackend, FAKE_GROUP_JID};
+pub use fake::{FakeBackend, FAKE_DM_JID, FAKE_GROUP_JID};
 pub use qr::{qr_matrix, QrMatrix};
 #[cfg(feature = "whatsapp")]
 pub use whatsapp::WhatsappBackend;
@@ -469,6 +469,19 @@ pub enum BackendCommand {
         chat_jid: String,
         /// True = composing, false = paused.
         typing: bool,
+    },
+    /// Subscribe to (or unsubscribe from) a contact's presence
+    /// updates. The app watches exactly one contact at a time:
+    /// the DM conversation currently open. While subscribed,
+    /// the backend reports the contact's availability as
+    /// [`BackendEvent::PresenceReceived`] events, starting with
+    /// their current state. Presence exists only for DM chats;
+    /// the app never sends this for groups or channels.
+    SetPresenceSubscription {
+        /// Chat JID (the contact).
+        chat_jid: String,
+        /// True = subscribe, false = unsubscribe.
+        subscribed: bool,
     },
     /// Edit one of my own messages.
     EditMessage {
@@ -1570,6 +1583,21 @@ pub enum BackendEvent {
         chat_jid: String,
         /// True while typing/recording, false when idle.
         typing: bool,
+    },
+    /// A watched contact's presence changed (or was first
+    /// reported after subscribing). Only ever sent for a chat
+    /// the app subscribed to with
+    /// [`BackendCommand::SetPresenceSubscription`].
+    PresenceReceived {
+        /// Chat JID (the contact).
+        chat_jid: String,
+        /// True when the contact is online now.
+        online: bool,
+        /// When the contact was last seen, unix seconds, when
+        /// the report carries it. `None` when the contact is
+        /// online, and also when their privacy settings hide
+        /// their last seen from this account.
+        last_seen: Option<i64>,
     },
     /// A group's member list, answering `FetchGroupMembers`.
     GroupMembers {

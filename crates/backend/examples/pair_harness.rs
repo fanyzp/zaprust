@@ -68,6 +68,7 @@ fn summarize(event: &BackendEvent) -> String {
             format!("VideoFetchFailed {message}")
         }
         BackendEvent::TypingReceived { .. } => "TypingReceived".to_owned(),
+        BackendEvent::PresenceReceived { .. } => "PresenceReceived".to_owned(),
         BackendEvent::GroupMembers { .. } => "GroupMembers".to_owned(),
         BackendEvent::GroupInviteLink { .. } => "GroupInviteLink".to_owned(),
         BackendEvent::GroupApprovalState { .. } => "GroupApprovalState".to_owned(),

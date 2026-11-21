@@ -396,6 +396,52 @@ fn privacy_commands_are_logged_by_the_fake() {
     assert!(lines.contains("mark_as_read:"), "log: {lines}");
 }
 
+/// Item 111: the presence contract. Subscribing to the scripted
+/// DM contact is answered with that contact's current presence
+/// (online), exactly as the real backend answers a subscription
+/// with the server's report; both halves of the subscription
+/// land in the command log.
+#[test]
+fn presence_subscription_is_answered_with_the_contacts_presence() {
+    let (ch, log) = linked_backend();
+    // Drain the linked script first.
+    let _ = collect_until(&ch.events, 3, |e| matches!(e, BackendEvent::ChatUpsert(_)));
+
+    ch.commands
+        .send(BackendCommand::SetPresenceSubscription {
+            chat_jid: backend::FAKE_DM_JID.to_owned(),
+            subscribed: true,
+        })
+        .unwrap();
+    let events =
+        collect_until(&ch.events, 5, |e| matches!(e, BackendEvent::PresenceReceived { .. }));
+    let report = events.iter().find_map(|e| match e {
+        BackendEvent::PresenceReceived { chat_jid, online, last_seen } => {
+            Some((chat_jid.clone(), *online, *last_seen))
+        }
+        _ => None,
+    });
+    assert_eq!(
+        report,
+        Some((backend::FAKE_DM_JID.to_owned(), true, None)),
+        "the subscription is answered with the contact's current presence"
+    );
+
+    ch.commands
+        .send(BackendCommand::SetPresenceSubscription {
+            chat_jid: backend::FAKE_DM_JID.to_owned(),
+            subscribed: false,
+        })
+        .unwrap();
+    ch.commands.send(BackendCommand::Shutdown).unwrap();
+    // Give the worker a moment to drain the log writes.
+    std::thread::sleep(Duration::from_millis(300));
+    let lines = log.lock().unwrap().join("\n");
+    let dm = backend::FAKE_DM_JID;
+    assert!(lines.contains(&format!("presence:{dm}:true")), "log: {lines}");
+    assert!(lines.contains(&format!("presence:{dm}:false")), "log: {lines}");
+}
+
 #[test]
 fn fake_privacy_state_round_trips_through_set_privacy() {
     let (ch, _log) = linked_backend();

@@ -33,6 +33,13 @@ pub(crate) struct Args {
     /// for the community home (screenshots of its lower sections).
     community_scroll: f32,
     pair_code: bool,
+    /// QA hook (--country-picker): open the connect form's
+    /// country picker (screenshots).
+    country_picker: bool,
+    /// QA hook (--pair-form): open the connect screen on the
+    /// phone-number form, before any code is requested
+    /// (screenshots).
+    pair_form: bool,
     account_menu: bool,
     live: bool,
     screen_explicit: bool,
@@ -70,6 +77,8 @@ impl Args {
             scroll_top: false,
             community_scroll: 0.0,
             pair_code: false,
+            country_picker: false,
+            pair_form: false,
             account_menu: false,
             // Live is the default: an installed copy opens as the
             // real client (link screen or the stored session).
@@ -157,6 +166,12 @@ impl Args {
                 }
                 "--pair-code" => {
                     args.pair_code = true;
+                }
+                "--country-picker" => {
+                    args.country_picker = true;
+                }
+                "--pair-form" => {
+                    args.pair_form = true;
                 }
                 "--account-menu" => {
                     args.account_menu = true;
@@ -1463,14 +1478,14 @@ impl App {
                 Some("about") => "About",
                 _ => "Appearance",
             },
-            pair_mode: if args.pair_code { PairMode::Code } else { PairMode::Qr },
+            pair_mode: if args.pair_code || args.pair_form { PairMode::Code } else { PairMode::Qr },
             pair_phone: crate::countries::compose_number(
                 crate::countries::default_country().dial,
                 "",
             ),
             pair_country_iso: crate::countries::default_country().iso.to_owned(),
             pair_national: String::new(),
-            country_picker_open: false,
+            country_picker_open: args.country_picker,
             country_search: String::new(),
             pair_code_shown: args.pair_code,
             account_menu_open: args.account_menu,

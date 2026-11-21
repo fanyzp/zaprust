@@ -460,9 +460,9 @@ fn own_profile_update_round_trips_through_the_fake() {
     // FetchOwnProfile is answered with the current profile.
     ch.commands.send(BackendCommand::FetchOwnProfile).unwrap();
     let events = collect_until(&ch.events, 5, |e| matches!(e, BackendEvent::OwnProfile(_)));
-    assert!(events.iter().any(
-        |e| matches!(e, BackendEvent::OwnProfile(p) if p.name == "Fake User")
-    ));
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, BackendEvent::OwnProfile(p) if p.name == "Fake User")));
 
     // One save carrying a new name and a new picture: both are
     // adopted, the field the command did not carry (the About)
@@ -529,9 +529,8 @@ fn own_profile_update_with_an_empty_name_fails_and_changes_nothing() {
             photo: None,
         })
         .unwrap();
-    let events = collect_until(&ch.events, 5, |e| {
-        matches!(e, BackendEvent::OwnProfileSaveFailed { .. })
-    });
+    let events =
+        collect_until(&ch.events, 5, |e| matches!(e, BackendEvent::OwnProfileSaveFailed { .. }));
     let failed = events.iter().find_map(|e| match e {
         BackendEvent::OwnProfileSaveFailed { message } => Some(message),
         _ => None,

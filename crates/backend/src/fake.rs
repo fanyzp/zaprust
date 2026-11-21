@@ -670,7 +670,12 @@ impl Backend for FakeBackend {
                         valid_for: std::time::Duration::from_secs(3600),
                     });
                     if self.auto_connect {
-                        emit_linked_script(&events, &call_state, &privacy_state, &own_profile_state);
+                        emit_linked_script(
+                            &events,
+                            &call_state,
+                            &privacy_state,
+                            &own_profile_state,
+                        );
                         if self.demo_script && !script_started {
                             script_started = true;
                             let tick_events = events.clone();
@@ -685,7 +690,12 @@ impl Backend for FakeBackend {
                 BackendCommand::ConnectPairCode { phone } => {
                     events.emit(BackendEvent::PairCode { code: fake_pair_code(&phone) });
                     if self.auto_connect {
-                        emit_linked_script(&events, &call_state, &privacy_state, &own_profile_state);
+                        emit_linked_script(
+                            &events,
+                            &call_state,
+                            &privacy_state,
+                            &own_profile_state,
+                        );
                         if self.demo_script && !script_started {
                             script_started = true;
                             let tick_events = events.clone();
@@ -1088,8 +1098,7 @@ impl Backend for FakeBackend {
                 }
                 BackendCommand::UpdateOwnProfile { name, about, photo } => {
                     if let Some(log) = &command_log {
-                        let mut log =
-                            log.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                        let mut log = log.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                         if let Some(name) = &name {
                             log.push(format!("profile:name={name}"));
                         }
@@ -1112,8 +1121,7 @@ impl Backend for FakeBackend {
                     // the UI reconciles with what was kept.
                     if name.as_deref().is_some_and(|n| n.trim().is_empty()) {
                         events.emit(BackendEvent::OwnProfileSaveFailed {
-                            message: "Profile change failed: the name cannot be empty."
-                                .to_owned(),
+                            message: "Profile change failed: the name cannot be empty.".to_owned(),
                         });
                         events.emit(BackendEvent::OwnProfile(own_profile_state.clone()));
                     } else {

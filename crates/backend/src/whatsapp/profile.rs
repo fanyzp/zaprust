@@ -19,7 +19,9 @@ use whatsapp_rust::usync::{
     UsyncContext, UsyncMode, UsyncOutcome, UsyncProtocol, UsyncProtocolKind, UsyncProtocolResult,
     UsyncQuery, UsyncResponse, UsyncUser,
 };
-use whatsapp_rust::{ProfilePictureRequest, ProfilePictureTarget, ProfilePictureType, TextStatusExpiry};
+use whatsapp_rust::{
+    ProfilePictureRequest, ProfilePictureTarget, ProfilePictureType, TextStatusExpiry,
+};
 
 use crate::OwnProfile;
 
@@ -85,16 +87,11 @@ pub(super) fn about_from_usync(response: &UsyncResponse) -> String {
 /// download of the URL it returns. `None` when the account has
 /// no picture or the bytes cannot be fetched.
 async fn fetch_own_picture(client: &Client, jid: &Jid) -> Option<Vec<u8>> {
-    let request = ProfilePictureRequest::new(
-        ProfilePictureTarget::Contact(jid),
-        ProfilePictureType::Preview,
-    );
+    let request =
+        ProfilePictureRequest::new(ProfilePictureTarget::Contact(jid), ProfilePictureType::Preview);
     let found = client.pictures().lookup(request).await.ok()?.into_found()?;
     let url = found.url;
-    tokio::task::spawn_blocking(move || download_picture(&url))
-        .await
-        .ok()
-        .flatten()
+    tokio::task::spawn_blocking(move || download_picture(&url)).await.ok().flatten()
 }
 
 /// Downloads a profile picture from its CDN URL. The URL passes
@@ -114,12 +111,7 @@ fn download_picture(url: &str) -> Option<Vec<u8>> {
         .build()
         .into();
     let mut response = agent.get(url).call().ok()?;
-    response
-        .body_mut()
-        .with_config()
-        .limit(MAX_PICTURE_BYTES)
-        .read_to_vec()
-        .ok()
+    response.body_mut().with_config().limit(MAX_PICTURE_BYTES).read_to_vec().ok()
 }
 
 /// Applies one editor save to the account's profile. Fields left
@@ -144,10 +136,8 @@ pub(super) async fn update_own_profile(
         // `SyncPending` when the presence frame carried the name
         // and the sync follows. The re-read after the save shows
         // the name either way.
-        let outcome = profile
-            .set_push_name(name)
-            .await
-            .map_err(|e| format!("Profile change failed: {e}"))?;
+        let outcome =
+            profile.set_push_name(name).await.map_err(|e| format!("Profile change failed: {e}"))?;
         match outcome {
             whatsapp_rust::PushNameOutcome::Synced
             | whatsapp_rust::PushNameOutcome::SyncPending { .. } => {}
@@ -160,10 +150,7 @@ pub(super) async fn update_own_profile(
     if let Some(about) = about {
         let about = about.trim();
         if about.is_empty() {
-            profile
-                .clear_text_status()
-                .await
-                .map_err(|e| format!("Profile change failed: {e}"))?;
+            profile.clear_text_status().await.map_err(|e| format!("Profile change failed: {e}"))?;
         } else {
             profile
                 .set_text_status(about, None, TextStatusExpiry::Never)

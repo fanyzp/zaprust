@@ -37,6 +37,22 @@ pub(crate) struct CallUi {
     pub speaker: bool,
     pub reason: Option<String>,
     pub ended_at: Option<std::time::Instant>,
+    /// True when this device placed the call. Part of the
+    /// history record the call leaves behind (see
+    /// [`CallUi::history_record`]).
+    pub outgoing: bool,
+    /// Unix second the call started (the offer arrived, or the
+    /// outgoing ring was confirmed): the history entry's
+    /// timestamp.
+    pub started_at: i64,
+    /// The call reached Active at some point: it connected, so
+    /// its history entry carries its talk duration and is never
+    /// a missed or unanswered one.
+    pub connected: bool,
+    /// The user declined this incoming call. Declining is an
+    /// answer, so the history entry is a normal incoming call
+    /// with no duration, not a missed call.
+    pub declined: bool,
     /// An accept/reject/end command was sent and not yet confirmed
     /// by a phase change (or an error). While set, the action
     /// buttons ignore further clicks: a double-click used to send a
@@ -46,6 +62,24 @@ pub(crate) struct CallUi {
 }
 
 impl CallUi {
+    /// The call-history record for this call, built when its
+    /// Ended event lands. `chat_jid` is the peer's JID as the
+    /// event carried it; `seconds` is the backend's final talk
+    /// duration (kept only for a call that connected: a call that
+    /// never connected has no talk time to record).
+    pub(crate) fn history_record(&self, chat_jid: &str, seconds: u32) -> backend::CallRecord {
+        backend::CallRecord {
+            id: 0,
+            call_id: self.call_id.clone(),
+            chat_jid: chat_jid.to_owned(),
+            video: self.video,
+            outgoing: self.outgoing,
+            missed: !self.outgoing && !self.connected && !self.declined,
+            duration_secs: if self.connected { seconds } else { 0 },
+            started_at: self.started_at,
+        }
+    }
+
     fn status_line(&self) -> String {
         match self.phase {
             CallUiPhase::Incoming => {
@@ -117,8 +151,48 @@ impl App {
             speaker: false,
             reason: None,
             ended_at: None,
+            outgoing: false,
+            started_at: crate::state::now_unix() as i64,
+            connected: false,
+            declined: false,
             action_pending: false,
         });
+    }
+
+    /// The overlay's Accept action: answers the ringing call.
+    /// Latched by `action_pending`, so a double click sends one
+    /// command (see the field's note).
+    pub(crate) fn accept_active_call(&mut self) {
+        if let Some(call) = &mut self.calls.active {
+            if !call.action_pending {
+                call.action_pending = true;
+                self.send_backend(BackendCommand::AcceptCall);
+            }
+        }
+    }
+
+    /// The overlay's Decline action: rejects the ringing call
+    /// and marks it declined, so the history entry it leaves is
+    /// a declined incoming call rather than a missed one.
+    pub(crate) fn reject_active_call(&mut self) {
+        if let Some(call) = &mut self.calls.active {
+            if !call.action_pending {
+                call.action_pending = true;
+                call.declined = true;
+                self.send_backend(BackendCommand::RejectCall);
+            }
+        }
+    }
+
+    /// The overlay's End call action: ends the current call,
+    /// ringing or active.
+    pub(crate) fn end_active_call(&mut self) {
+        if let Some(call) = &mut self.calls.active {
+            if !call.action_pending {
+                call.action_pending = true;
+                self.send_backend(BackendCommand::EndCall);
+            }
+        }
     }
 
     /// Backend reports a call phase change.
@@ -150,6 +224,10 @@ impl App {
                 speaker: false,
                 reason: None,
                 ended_at: None,
+                outgoing: true,
+                started_at: crate::state::now_unix() as i64,
+                connected: false,
+                declined: false,
                 action_pending: false,
             });
             return;
@@ -178,7 +256,10 @@ impl App {
                 }
             }
             CallPhase::Connecting => call.phase = CallUiPhase::Connecting,
-            CallPhase::Active => call.phase = CallUiPhase::Active,
+            CallPhase::Active => {
+                call.phase = CallUiPhase::Active;
+                call.connected = true;
+            }
             CallPhase::Ended => {
                 call.phase = CallUiPhase::Ended;
                 call.reason = reason;
@@ -304,30 +385,9 @@ impl App {
             },
         );
         match action {
-            Some("accept") => {
-                if let Some(call) = &mut self.calls.active {
-                    if !call.action_pending {
-                        call.action_pending = true;
-                        self.send_backend(BackendCommand::AcceptCall);
-                    }
-                }
-            }
-            Some("reject") => {
-                if let Some(call) = &mut self.calls.active {
-                    if !call.action_pending {
-                        call.action_pending = true;
-                        self.send_backend(BackendCommand::RejectCall);
-                    }
-                }
-            }
-            Some("end") => {
-                if let Some(call) = &mut self.calls.active {
-                    if !call.action_pending {
-                        call.action_pending = true;
-                        self.send_backend(BackendCommand::EndCall);
-                    }
-                }
-            }
+            Some("accept") => self.accept_active_call(),
+            Some("reject") => self.reject_active_call(),
+            Some("end") => self.end_active_call(),
             Some("mute") => {
                 if let Some(call) = &mut self.calls.active {
                     call.muted = !call.muted;

@@ -13,7 +13,9 @@ use backend::{
     FakeBackend, LiveChat, LiveChatKind, LiveMessage, QrMatrix, QuotedRef, ReceiptKind,
     WhatsappBackend,
 };
-use core::model::{Chat, ChatKind, Delivery, Message, MessageKind};
+use core::model::{
+    CallDirection, CallEntry, CallKind, Chat, ChatKind, Delivery, Message, MessageKind,
+};
 use eframe::egui;
 
 /// Where the link flow currently stands (drives the connect screen's
@@ -484,6 +486,21 @@ pub(crate) fn to_kind(kind: &backend::LiveMessageKind) -> MessageKind {
     }
 }
 
+/// Converts one persisted call-history record into the Calls
+/// panel's entry shape (the peer resolved to its numeric chat ID
+/// the same way chats and messages resolve theirs).
+fn to_call_entry(record: &backend::CallRecord) -> CallEntry {
+    CallEntry {
+        id: record.id,
+        chat_id: jid_id(&record.chat_jid),
+        kind: if record.video { CallKind::Video } else { CallKind::Voice },
+        direction: if record.outgoing { CallDirection::Outgoing } else { CallDirection::Incoming },
+        missed: record.missed,
+        duration_secs: record.duration_secs,
+        timestamp: record.started_at,
+    }
+}
+
 /// Converts a backend message (+ archive flags) into a core message.
 pub(crate) fn to_message_with_flags(live: &LiveMessage, flags: i64) -> Message {
     let mut kind = to_kind(&live.kind);
@@ -768,6 +785,9 @@ impl crate::state::App {
             self.notice = Some(note);
         }
         self.live_mode = true;
+        // The Calls panel's live history loads from the same
+        // archive, at the same point as the chats above.
+        self.load_call_history();
         // Entering live mode is a chat switch too (the Add
         // account path starts it from a running demo session):
         // the composer state of the chat being left parks under
@@ -861,9 +881,100 @@ impl crate::state::App {
         self.chats = Vec::new();
         self.conversation = Vec::new();
         self.sync_conversation();
+        // The call history mirror goes with the chats: it is
+        // reloaded from the archive when the next session starts.
+        self.calls.live_entries = Vec::new();
+        self.calls.recorded_ids.clear();
         self.my_profile.forget_account();
         self.my_profile_open = false;
         self.screen = crate::state::Screen::Connect;
+    }
+
+    /// Loads the archive's persisted call history into the Calls
+    /// panel's live list. Called when a live session starts, the
+    /// same point the archived chats load; the loaded call IDs
+    /// seed the recorded set, so a call the archive already holds
+    /// (a missed call replayed again on a later reconnect) is
+    /// never entered twice.
+    fn load_call_history(&mut self) {
+        let records = self
+            .live
+            .as_ref()
+            .and_then(|session| session.store.as_ref())
+            .and_then(|store| store.call_history().ok());
+        if let Some(records) = records {
+            for record in &records {
+                self.calls.recorded_ids.insert(record.call_id.clone());
+            }
+            self.calls.live_entries = records.iter().map(to_call_entry).collect();
+        }
+    }
+
+    /// Records the tracked call that just ended: the record is
+    /// built from the call's own tracked state (direction,
+    /// whether it connected, whether the user declined it) and
+    /// the Ended event's final duration.
+    fn record_ended_call(&mut self, call_id: &str, chat_jid: &str, seconds: u32) {
+        let record = {
+            let Some(call) = &self.calls.active else {
+                return;
+            };
+            if call.call_id != call_id {
+                return;
+            }
+            call.history_record(chat_jid, seconds)
+        };
+        self.record_call(record);
+    }
+
+    /// Records a missed call the app never showed ringing (see
+    /// [`BackendEvent::CallMissed`]): an incoming entry with no
+    /// duration, stamped when it rang. The signal carries no
+    /// media kind, so the entry is a voice call.
+    fn record_missed_call(&mut self, call_id: &str, chat_jid: &str, at: i64) {
+        self.record_call(backend::CallRecord {
+            id: 0,
+            call_id: call_id.to_owned(),
+            chat_jid: chat_jid.to_owned(),
+            video: false,
+            outgoing: false,
+            missed: true,
+            duration_secs: 0,
+            started_at: at,
+        });
+    }
+
+    /// Writes one call record into the history: the archive row
+    /// (which survives restarts) and the in-memory live list the
+    /// Calls panel renders, kept newest first in the archive's
+    /// read-back order. Each call ID is recorded once per run; a
+    /// repeat report of the same call changes nothing.
+    fn record_call(&mut self, mut record: backend::CallRecord) {
+        if !self.calls.recorded_ids.insert(record.call_id.clone()) {
+            return;
+        }
+        if let Some(session) = &self.live {
+            if let Some(store) = &session.store {
+                if let Ok(Some(row)) = store.record_call(&record) {
+                    record.id = row;
+                }
+            }
+        }
+        if record.id == 0 {
+            // No archive row backs this entry (the archive is
+            // unavailable, or it already held this call from an
+            // earlier run): the in-memory entry still needs a
+            // stable ID of its own.
+            record.id = jid_id(&record.call_id);
+        }
+        let entry = to_call_entry(&record);
+        let pos = self
+            .calls
+            .live_entries
+            .iter()
+            .position(|e| e.timestamp <= entry.timestamp)
+            .unwrap_or(self.calls.live_entries.len());
+        self.calls.live_entries.insert(pos, entry);
     }
 
     /// Requests a pairing code for the typed phone number (digits
@@ -1693,7 +1804,14 @@ impl crate::state::App {
             }
             BackendEvent::CallChanged { call_id, chat_jid, phase, seconds, reason } => {
                 let chat_id = jid_id(&chat_jid);
+                let ended = phase == backend::CallPhase::Ended;
                 self.on_call_changed(&call_id, chat_id, phase, seconds, reason);
+                if ended {
+                    self.record_ended_call(&call_id, &chat_jid, seconds);
+                }
+            }
+            BackendEvent::CallMissed { call_id, chat_jid, at } => {
+                self.record_missed_call(&call_id, &chat_jid, at);
             }
         }
     }
@@ -3816,6 +3934,200 @@ mod burst_drain_tests {
 
     fn stored_messages(app: &App) -> &Vec<(i64, Message)> {
         app.live.as_ref().unwrap().messages.get(&jid_id(CHAT_JID)).expect("the chat has messages")
+    }
+
+    fn call_changed(
+        call_id: &str,
+        phase: backend::CallPhase,
+        seconds: u32,
+        reason: Option<&str>,
+    ) -> BackendEvent {
+        BackendEvent::CallChanged {
+            call_id: call_id.to_owned(),
+            chat_jid: CHAT_JID.to_owned(),
+            phase,
+            seconds,
+            reason: reason.map(str::to_owned),
+        }
+    }
+
+    fn archived_calls(app: &App) -> Vec<backend::CallRecord> {
+        app.live.as_ref().unwrap().store.as_ref().unwrap().call_history().unwrap()
+    }
+
+    /// Item 113: an outgoing call that connects and ends is
+    /// recorded in the live history (and in the archive behind
+    /// it) with the duration the backend reported.
+    #[test]
+    fn connected_outgoing_call_is_recorded_with_its_duration() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        for event in [
+            call_changed("call-1", backend::CallPhase::Ringing, 0, None),
+            call_changed("call-1", backend::CallPhase::Active, 0, None),
+            call_changed("call-1", backend::CallPhase::Active, 65, None),
+            call_changed("call-1", backend::CallPhase::Ended, 65, Some("Call ended")),
+        ] {
+            tx.send(event).unwrap();
+        }
+        drain_all(&mut app, &ctx);
+        assert_eq!(app.calls.live_entries.len(), 1);
+        let entry = &app.calls.live_entries[0];
+        assert_eq!(entry.direction, CallDirection::Outgoing);
+        assert!(!entry.missed, "a connected call is not missed");
+        assert_eq!(entry.duration_secs, 65);
+        assert_eq!(entry.chat_id, jid_id(CHAT_JID));
+        let history = archived_calls(&app);
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].call_id, "call-1");
+        assert!(history[0].outgoing && !history[0].missed);
+        assert_eq!(history[0].duration_secs, 65);
+    }
+
+    /// Item 113: an outgoing call the peer never answers is
+    /// recorded as an outgoing entry with no duration, not as a
+    /// missed call (missed is an incoming outcome).
+    #[test]
+    fn unanswered_outgoing_call_is_recorded_not_missed() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        tx.send(call_changed("call-2", backend::CallPhase::Ringing, 0, None)).unwrap();
+        tx.send(call_changed("call-2", backend::CallPhase::Ended, 0, Some("No answer"))).unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(app.calls.live_entries.len(), 1);
+        let entry = &app.calls.live_entries[0];
+        assert_eq!(entry.direction, CallDirection::Outgoing);
+        assert!(!entry.missed);
+        assert_eq!(entry.duration_secs, 0);
+    }
+
+    /// Item 113: an incoming call that rings out unanswered is
+    /// recorded as missed, in the live list and the archive.
+    #[test]
+    fn unanswered_incoming_call_is_recorded_as_missed() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        tx.send(BackendEvent::IncomingCall {
+            call_id: "call-3".to_owned(),
+            chat_jid: CHAT_JID.to_owned(),
+            video: false,
+        })
+        .unwrap();
+        tx.send(call_changed("call-3", backend::CallPhase::Ended, 0, Some("Missed call"))).unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(app.calls.live_entries.len(), 1);
+        let entry = &app.calls.live_entries[0];
+        assert_eq!(entry.direction, CallDirection::Incoming);
+        assert!(entry.missed, "an unanswered incoming call is missed");
+        assert_eq!(entry.duration_secs, 0);
+        let history = archived_calls(&app);
+        assert_eq!(history.len(), 1);
+        assert!(history[0].missed);
+    }
+
+    /// Item 113: a call the user declines is recorded as a
+    /// normal incoming entry, not a missed one: declining is an
+    /// answer. The decline goes through the same action the
+    /// overlay's button uses, and a missed-call report for the
+    /// same call afterwards adds no second entry.
+    #[test]
+    fn declined_incoming_call_is_recorded_but_not_missed() {
+        let (mut app, tx, ctx, cmd_rx) = live_app();
+        tx.send(BackendEvent::IncomingCall {
+            call_id: "call-4".to_owned(),
+            chat_jid: CHAT_JID.to_owned(),
+            video: false,
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        app.reject_active_call();
+        assert!(
+            matches!(cmd_rx.try_recv(), Ok(BackendCommand::RejectCall)),
+            "the decline sends the reject command"
+        );
+        tx.send(call_changed("call-4", backend::CallPhase::Ended, 0, Some("Declined"))).unwrap();
+        tx.send(BackendEvent::CallMissed {
+            call_id: "call-4".to_owned(),
+            chat_jid: CHAT_JID.to_owned(),
+            at: BASE_TS,
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(app.calls.live_entries.len(), 1, "one call, one entry");
+        let entry = &app.calls.live_entries[0];
+        assert_eq!(entry.direction, CallDirection::Incoming);
+        assert!(!entry.missed, "a declined call is not a missed call");
+        assert_eq!(archived_calls(&app).len(), 1);
+    }
+
+    /// Item 113: a missed call the app never showed ringing (the
+    /// CallMissed path: another call was in progress, or the call
+    /// rang while this device was offline) is still recorded,
+    /// stamped when it rang rather than when it was reported,
+    /// and a repeat report of it changes nothing.
+    #[test]
+    fn missed_call_event_records_an_entry_stamped_when_it_rang() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        let rang_at = BASE_TS - 7_200;
+        for _ in 0..2 {
+            tx.send(BackendEvent::CallMissed {
+                call_id: "call-5".to_owned(),
+                chat_jid: CHAT_JID.to_owned(),
+                at: rang_at,
+            })
+            .unwrap();
+        }
+        drain_all(&mut app, &ctx);
+        assert_eq!(app.calls.live_entries.len(), 1);
+        let entry = &app.calls.live_entries[0];
+        assert_eq!(entry.direction, CallDirection::Incoming);
+        assert!(entry.missed);
+        assert_eq!(entry.timestamp, rang_at);
+        assert_eq!(entry.chat_id, jid_id(CHAT_JID));
+        assert_eq!(archived_calls(&app).len(), 1);
+    }
+
+    /// Item 113: the recorded history is durable across app
+    /// sessions: a new session loading the same archive (the
+    /// load start_live performs) renders the same entries, and
+    /// the loaded call IDs keep a replayed report of an already
+    /// archived call from entering twice.
+    #[test]
+    fn call_history_is_reloaded_from_the_archive_by_a_new_session() {
+        let dir =
+            std::env::temp_dir().join(format!("zaprust-app-calls-restart-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("archive.db");
+        let _ = std::fs::remove_file(&path);
+        let key = [3u8; 32];
+        {
+            let (mut app, tx, ctx, _cmd_rx) = live_app();
+            app.live.as_mut().unwrap().store = Some(store::Store::open(&path, &key).unwrap());
+            for event in [
+                call_changed("call-6", backend::CallPhase::Ringing, 0, None),
+                call_changed("call-6", backend::CallPhase::Active, 42, None),
+                call_changed("call-6", backend::CallPhase::Ended, 42, Some("Call ended")),
+            ] {
+                tx.send(event).unwrap();
+            }
+            drain_all(&mut app, &ctx);
+            assert_eq!(app.calls.live_entries.len(), 1);
+        }
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        app.live.as_mut().unwrap().store = Some(store::Store::open(&path, &key).unwrap());
+        app.calls.live_entries = Vec::new();
+        app.load_call_history();
+        assert_eq!(app.calls.live_entries.len(), 1);
+        let entry = &app.calls.live_entries[0];
+        assert_eq!(entry.direction, CallDirection::Outgoing);
+        assert_eq!(entry.duration_secs, 42);
+        // A missed-call replay of the archived call adds nothing.
+        tx.send(BackendEvent::CallMissed {
+            call_id: "call-6".to_owned(),
+            chat_jid: CHAT_JID.to_owned(),
+            at: BASE_TS,
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(app.calls.live_entries.len(), 1);
+        let _ = std::fs::remove_file(&path);
     }
 
     /// Privacy finding B1: a received message containing a URL

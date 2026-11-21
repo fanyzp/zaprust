@@ -185,6 +185,9 @@ impl App {
             BackendEvent::CallChanged { call_id, phase, seconds, .. } => {
                 ("backend", format!("CallChanged {call_id} {phase:?} at {seconds}s"), None)
             }
+            BackendEvent::CallMissed { call_id, chat_jid, at } => {
+                ("backend", format!("CallMissed {call_id} from {chat_jid} at {at}"), None)
+            }
         };
         self.trace_push(stage, &summary, body);
     }

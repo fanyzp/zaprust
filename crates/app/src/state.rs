@@ -438,10 +438,19 @@ pub(crate) struct AnimState {
 
 /// Calls state: the call log behind the Calls panel, its search and filters, the new-call picker, and the one live call's UI state.
 pub(crate) struct CallsState {
-    /// The call history behind the Calls panel: the demo log in
-    /// demo mode; empty in live mode, which has no call-log
-    /// source yet (the panel shows its honest empty state).
+    /// The demo mode call log, scripted from the demo contacts.
+    /// Demo mode only: live mode renders [`Self::live_entries`]
+    /// instead, and the two lists never mix.
     pub(crate) entries: Vec<core::model::CallEntry>,
+    /// The live call history: the archive's persisted records,
+    /// loaded when a live session starts and extended as calls
+    /// complete, newest first (the order the archive reads back).
+    pub(crate) live_entries: Vec<core::model::CallEntry>,
+    /// Protocol call IDs already written into the history this
+    /// run. A call can be reported twice (its end event and a
+    /// missed-call event), and the archive's own uniqueness is
+    /// the second line of defense, not the first.
+    pub(crate) recorded_ids: std::collections::HashSet<String>,
     /// The Calls panel's own search text.
     pub(crate) search: String,
     /// The Calls panel's Missed chip state.
@@ -1333,6 +1342,8 @@ impl App {
                 } else {
                     crate::calls::demo_call_log(now_unix() as i64)
                 },
+                live_entries: Vec::new(),
+                recorded_ids: std::collections::HashSet::new(),
                 search: String::new(),
                 missed_only: args.calls_missed,
                 favorites_only: false,

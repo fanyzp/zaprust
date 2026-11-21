@@ -20,10 +20,11 @@
 //! demo has no call path at all), so a row click or a picker
 //! choice opens the chat in demo mode, and in live mode opens
 //! the chat and starts the call through the same header path
-//! the conversation uses. In live mode there is no call-log
-//! source in the store or backend yet, so the panel shows its
-//! empty state instead of demo data; the new call picker still
-//! works there, because it lists chats, not history.
+//! the conversation uses. The history itself comes from
+//! [`call_log_source`]: the archive's persisted records in
+//! live mode (loaded when the session starts and extended as
+//! calls complete), the scripted demo log in demo mode. The
+//! two never mix.
 
 use crate::state::{App, Screen};
 use crate::theme::rgb;
@@ -250,6 +251,25 @@ fn group_calls<'a>(entries: &[&'a CallEntry]) -> Vec<CallRow<'a>> {
     rows
 }
 
+/// The entry list both Calls surfaces render: the persisted
+/// live history in live mode, the scripted demo log in demo
+/// mode. The gate is the same one the rest of the demo fixtures
+/// use, and this is the only place the choice is made, so the
+/// two sources cannot mix. (A free function over the two lists
+/// rather than a method: the panels hold the chosen list across
+/// a closure that mutates the neighboring filter state.)
+fn call_log_source<'a>(
+    live_mode: bool,
+    live: &'a [CallEntry],
+    demo: &'a [CallEntry],
+) -> &'a [CallEntry] {
+    if live_mode {
+        live
+    } else {
+        demo
+    }
+}
+
 impl App {
     /// The call log's display rows under the panel's current
     /// filters (Missed, the portrait favorites filter, search),
@@ -289,10 +309,8 @@ impl App {
         }
         let t = self.tokens();
         let photos = self.demo_photos(root.ctx());
-        // Live mode has no call-log source yet: the list is
-        // honestly empty there rather than filled with demo
-        // history.
-        let source: &[CallEntry] = if self.live_mode { &[] } else { &self.calls.entries };
+        let source: &[CallEntry] =
+            call_log_source(self.live_mode, &self.calls.live_entries, &self.calls.entries);
         let rows = self.visible_call_rows(source);
         let source_empty = source.is_empty();
         let mut open: Option<u64> = None;
@@ -681,10 +699,8 @@ impl App {
     fn draw_calls_panel_portrait(&mut self, root: &mut egui::Ui) {
         let t = self.tokens();
         let photos = self.demo_photos(root.ctx());
-        // Live mode has no call-log source yet: the list is
-        // honestly empty there rather than filled with demo
-        // history.
-        let source: &[CallEntry] = if self.live_mode { &[] } else { &self.calls.entries };
+        let source: &[CallEntry] =
+            call_log_source(self.live_mode, &self.calls.live_entries, &self.calls.entries);
         let rows = self.visible_call_rows(source);
         let source_empty = source.is_empty();
         let contacts = recent_call_contacts(source, 6);
@@ -1178,8 +1194,10 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::{
-        day_time_line, format_duration_label, group_calls, recent_call_contacts, relative_day,
+        call_log_source, day_time_line, format_duration_label, group_calls, recent_call_contacts,
+        relative_day,
     };
+    use crate::state::{App, Args};
     use core::model::{CallDirection, CallEntry, CallKind};
 
     fn entry(
@@ -1246,6 +1264,50 @@ mod tests {
         assert_eq!(recent_call_contacts(&entries, 6), vec![4, 2, 7]);
         assert_eq!(recent_call_contacts(&entries, 2), vec![4, 2]);
         assert!(recent_call_contacts(&[], 6).is_empty());
+    }
+
+    /// Item 113: the Calls surfaces render exactly one source
+    /// per mode: the persisted live history in live mode, the
+    /// scripted demo log in demo mode, never a mixture.
+    #[test]
+    fn call_log_source_never_mixes_live_and_demo() {
+        let live = vec![entry(101, 4, CallDirection::Incoming, true, 300)];
+        let demo = vec![entry(1, 4, CallDirection::Incoming, false, 300)];
+        let chosen = call_log_source(true, &live, &demo);
+        assert_eq!(chosen.len(), 1);
+        assert_eq!(chosen[0].id, 101, "live mode renders the live history");
+        let chosen = call_log_source(false, &live, &demo);
+        assert_eq!(chosen.len(), 1);
+        assert_eq!(chosen[0].id, 1, "demo mode renders the demo log");
+    }
+
+    /// Item 113: the Missed filter and the portrait shortcut row
+    /// run over the persisted live entries the same way they run
+    /// over the demo log: filtering keeps only the missed rows,
+    /// and the shortcuts are the history's own contacts.
+    #[test]
+    fn missed_filter_and_shortcuts_run_over_live_entries() {
+        let ctx = eframe::egui::Context::default();
+        crate::theme::install_fonts(&ctx);
+        let mut app = App::new(Args::parse(), &ctx);
+        // App::new may have attempted a real live start against
+        // this machine's data dir; the test owns the state from
+        // here.
+        app.live = None;
+        app.live_mode = true;
+        app.calls.live_entries = vec![
+            entry(11, 4, CallDirection::Incoming, true, 300),
+            entry(12, 2, CallDirection::Outgoing, false, 200),
+            entry(13, 4, CallDirection::Incoming, false, 100),
+        ];
+        let source = call_log_source(app.live_mode, &app.calls.live_entries, &app.calls.entries);
+        assert_eq!(recent_call_contacts(source, 6), vec![4, 2]);
+        app.calls.missed_only = true;
+        let source = call_log_source(app.live_mode, &app.calls.live_entries, &app.calls.entries);
+        let rows = app.visible_call_rows(source);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].entry.id, 11, "only the missed entry survives the filter");
+        assert!(rows[0].entry.missed);
     }
 
     #[test]

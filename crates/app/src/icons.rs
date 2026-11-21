@@ -59,7 +59,6 @@ pub(crate) enum Icon {
     Stop,
     LooksOne,
     BellOff,
-    Keyboard,
     AddCall,
     CallMade,
     CallReceived,
@@ -115,7 +114,6 @@ pub(crate) fn glyph(icon: Icon) -> char {
         Icon::Stop => '\u{e047}',         // stop
         Icon::LooksOne => '\u{e400}',     // looks_one
         Icon::BellOff => '\u{e7f6}',      // notifications_off
-        Icon::Keyboard => '\u{e312}',     // keyboard
         Icon::AddCall => '\u{f0b7}',      // add_call
         Icon::CallMade => '\u{e0b2}',     // call_made
         Icon::CallReceived => '\u{e0b5}', // call_received
@@ -155,7 +153,7 @@ pub(crate) fn draw(
 fn optical(icon: Icon) -> f32 {
     match icon {
         Icon::Chat | Icon::MoreVert => 1.10,
-        Icon::Search | Icon::Mic | Icon::Keyboard | Icon::Download | Icon::BellOff => 1.06,
+        Icon::Search | Icon::Mic | Icon::Download | Icon::BellOff => 1.06,
         Icon::Phone | Icon::Document | Icon::Edit => 1.04,
         _ => 1.0,
     }

@@ -184,7 +184,11 @@ fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_inner_size([1180.0, 760.0])
-            .with_min_inner_size([860.0, 560.0])
+            // Phone-like windows are supported (the shell goes
+            // single-pane below its breakpoint), so the minimum
+            // sits under the narrowest of those sizes instead of
+            // forbidding them outright.
+            .with_min_inner_size([320.0, 480.0])
             .with_title("Zaprust"),
         ..Default::default()
     };

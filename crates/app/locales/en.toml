@@ -68,8 +68,6 @@
 "conversation.type_message" = "Type a message"
 
 # ---- composer hint bar ----
-"composer.hint" = "Enter sends · Shift+Enter for a new line · *bold* _italic_ ~strike~ · Ctrl+V pastes a picture"
-"composer.hint_dismiss" = "Dismiss the shortcut hint"
 
 # ---- attach menu and composer attachments ----
 "attach.menu" = "Attach: photos, documents, location, poll"
@@ -151,8 +149,6 @@
 "chats_page.subtitle" = "Sending, downloads and history behavior."
 "chats_page.enter_sends" = "Enter sends"
 "chats_page.enter_sends_caption" = "Off: Ctrl+Enter sends instead"
-"chats_page.composer_hint" = "Composer shortcuts hint"
-"chats_page.composer_hint_caption" = "Show the shortcut line under the message input"
 
 # ---- settings: notifications ----
 "notifications.subtitle" = "What reaches your desktop, and how."

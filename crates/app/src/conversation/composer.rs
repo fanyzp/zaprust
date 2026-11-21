@@ -59,13 +59,6 @@ impl App {
             quick_replies::set_editor_open(false);
         }
         let fmargin = side_margin(full_rect.width());
-        // The shortcut hint bar lives in its OWN area under the
-        // pill. It must never become a trailing sibling of the
-        // multiline input inside the composer area: trailing
-        // content in that vertically-unbounded layout re-measures
-        // one row taller every frame, an endless growth loop.
-        let hint_visible = !self.composer.hint_dismissed && self.recorder.is_none();
-        let hint_total = if hint_visible { self.composer.hint_bar_h + 6.0 } else { 0.0 };
         // Fake-frost underlay for the composer zone: a
         // soft chat-background rect under the whole
         // floating stack deepens the frosted read where
@@ -75,16 +68,13 @@ impl App {
         let underlay = egui::Rect::from_min_max(
             Pos2::new(
                 full_rect.left() + fmargin - 6.0,
-                full_rect.bottom() - 20.0 - self.composer.stack_h - hint_total,
+                full_rect.bottom() - 20.0 - self.composer.stack_h,
             ),
             Pos2::new(full_rect.right() - fmargin + 6.0, full_rect.bottom() - 8.0),
         );
         ui.painter().rect_filled(underlay, CornerRadius::same(30), crate::theme::glass_underlay(t));
         let composer_area = egui::Area::new(egui::Id::unique("composer_float"))
-            .fixed_pos(Pos2::new(
-                full_rect.left() + fmargin,
-                full_rect.bottom() - 14.0 - hint_total,
-            ))
+            .fixed_pos(Pos2::new(full_rect.left() + fmargin, full_rect.bottom() - 14.0))
             .pivot(egui::Align2::LEFT_BOTTOM)
             .order(egui::Order::Foreground)
             .show(ui.ctx(), |ui| {
@@ -513,7 +503,16 @@ impl App {
                                             self.picker.open = true;
                                         }
                                     }
+                                    // In single-pane mode the
+                                    // quick replies button leaves
+                                    // the pill: at phone widths its
+                                    // 36 px is the difference
+                                    // between a usable input and a
+                                    // wrapped placeholder. The
+                                    // panel still opens by typing
+                                    // "/" in the input.
                                     if quick_replies_active
+                                        && !self.single_pane
                                         && composer_icon(
                                             ui,
                                             crate::icons::Icon::Chat,
@@ -635,9 +634,6 @@ impl App {
                                         input_changed = response.changed();
                                     }
                                 });
-                                // The shortcut hint as the pill's
-                                // footer line, the reference
-                                // wireframe's one-line keyboard help.
                             });
                         pill.response.rect
                     };
@@ -934,79 +930,6 @@ impl App {
             let secs = (self.motion.duration(120.0) / 1000.0) as f32;
             self.composer.stack_h =
                 crate::anim::scalar(ui, "composer_stack_h", measured_stack_h, secs);
-        }
-        // The hint bar's own area: a single natural-height row (no
-        // multiline input inside, so its measurement is stable).
-        // Its measured height feeds the composer anchor, the
-        // underlay and the stream clearance next frame.
-        if hint_visible {
-            let hint_area = egui::Area::new(egui::Id::unique("composer_hint"))
-                .fixed_pos(Pos2::new(full_rect.left() + fmargin, full_rect.bottom() - 10.0))
-                .pivot(egui::Align2::LEFT_BOTTOM)
-                .order(egui::Order::Foreground)
-                .show(ui.ctx(), |ui| {
-                    // Same width as the pill above (the pill reserves
-                    // 46 px for the morph slot), one quiet row: no
-                    // border, faint text, keyboard glyph far right.
-                    ui.set_width(full_rect.width() - fmargin * 2.0 - 46.0);
-                    egui::Frame::new()
-                        .fill(crate::theme::glass_fill(t))
-                        .corner_radius(CornerRadius::same(10))
-                        .inner_margin(Margin::symmetric(10, 3))
-                        .show(ui, |ui| {
-                            ui.with_layout(
-                                egui::Layout::left_to_right(egui::Align::Center),
-                                |ui| {
-                                    if crate::widgets::icon_button(
-                                        ui,
-                                        t,
-                                        crate::icons::Icon::X,
-                                        18.0,
-                                        &crate::i18n::t("composer.hint_dismiss"),
-                                        None,
-                                    )
-                                    .clicked()
-                                    {
-                                        self.composer.hint_dismissed = true;
-                                        self.persist_settings();
-                                    }
-                                    ui.add_space(2.0);
-                                    ui.label(
-                                        RichText::new(crate::i18n::t("composer.hint"))
-                                            .size(10.5)
-                                            .color(rgb(t.text_faint)),
-                                    );
-                                    ui.with_layout(
-                                        egui::Layout::right_to_left(egui::Align::Center),
-                                        |ui| {
-                                            let (krect, _) = ui.allocate_exact_size(
-                                                Vec2::splat(18.0),
-                                                Sense::hover(),
-                                            );
-                                            crate::icons::draw(
-                                                ui.painter(),
-                                                crate::icons::Icon::Keyboard,
-                                                krect.center(),
-                                                15.0,
-                                                rgb(t.text_faint),
-                                                crate::theme::glass_fill(t),
-                                            );
-                                        },
-                                    );
-                                },
-                            );
-                        });
-                });
-            let measured_hint_h = hint_area.response.rect.height();
-            if self.motion == crate::motion::MotionSetting::Off {
-                self.composer.hint_bar_h = measured_hint_h;
-            } else {
-                let secs = (self.motion.duration(120.0) / 1000.0) as f32;
-                self.composer.hint_bar_h =
-                    crate::anim::scalar(ui, "hint_bar_h", measured_hint_h, secs);
-            }
-        } else {
-            self.composer.hint_bar_h = 0.0;
         }
     }
 

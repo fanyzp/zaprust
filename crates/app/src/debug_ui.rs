@@ -135,6 +135,12 @@ impl App {
             BackendEvent::PhotoFetchFailed { chat_jid, message, .. } => {
                 ("backend", format!("PhotoFetchFailed for {chat_jid}: {message}"), None)
             }
+            BackendEvent::VoiceBytes { chat_jid, bytes, .. } => {
+                ("backend", format!("VoiceBytes for {chat_jid}: {} bytes", bytes.len()), None)
+            }
+            BackendEvent::VoiceFetchFailed { chat_jid, message, .. } => {
+                ("backend", format!("VoiceFetchFailed for {chat_jid}: {message}"), None)
+            }
             BackendEvent::TypingReceived { chat_jid, typing } => {
                 ("backend", format!("TypingReceived {chat_jid} typing={typing}"), None)
             }

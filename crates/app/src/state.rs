@@ -472,6 +472,18 @@ pub(crate) enum PhotoFetchState {
     Failed,
 }
 
+/// One voice fetch's progress, tracked per message in
+/// [`MediaState::voice_fetch`]: the same two states as a photo
+/// fetch, with the same meaning.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum VoiceFetchState {
+    /// The fetch command was sent; the bytes have not landed.
+    Loading,
+    /// The fetch failed, the bytes did not decode, or no output
+    /// device would open; the note is unavailable until retried.
+    Failed,
+}
+
 pub(crate) struct MediaState {
     /// Lazily-created demo photo texture.
     pub(crate) photo_texture: Option<egui::TextureHandle>,
@@ -502,8 +514,31 @@ pub(crate) struct MediaState {
     /// arrived (or were never painted) has not been viewed, and
     /// its allowance survives.
     pub(crate) view_once_shown: Option<u64>,
-    /// Voice-note playback state (demo: simulated progress, no audio).
-    pub(crate) voice_playing: Option<VoicePlayback>,
+    /// The voice-note playback session, when one note is loaded
+    /// in the playback engine (playing or paused). The engine
+    /// owns the position: it is the output's own consumption
+    /// count, never a timed estimate.
+    pub(crate) voice_player: Option<crate::player::VoicePlayer>,
+    /// Voice fetches in flight or failed, per app message ID.
+    /// Absence means no fetch has been requested yet; a landed
+    /// fetch removes the entry and starts the player instead.
+    pub(crate) voice_fetch: std::collections::HashMap<u64, VoiceFetchState>,
+    /// The note the user most recently asked to hear. Fetched
+    /// bytes start a player only for this note: bytes that land
+    /// late for a note the user has already moved past are
+    /// dropped, not played over the current one.
+    pub(crate) voice_wanted: Option<u64>,
+    /// The most recently decoded voice note's PCM, kept so
+    /// replaying that note does not fetch and decode it again.
+    /// One note only: decoded PCM is large (96 KB per second).
+    pub(crate) voice_pcm: Option<(u64, std::sync::Arc<[i16]>)>,
+    /// Seeks requested for a note whose bytes have not landed
+    /// yet, applied to its player the moment it is created.
+    pub(crate) voice_pending_seek: std::collections::HashMap<u64, f32>,
+    /// Output sink for the voice player: the machine's device in
+    /// normal runs. Tests and speaker-less machines substitute
+    /// the null sink (see `player::VoiceSink`).
+    pub(crate) voice_sink: crate::player::VoiceSink,
     /// Per-message voice playback rates chosen on the speed pill,
     /// owned here with the rest of the playback state: a fresh
     /// session starts at the stored rate, and cycling the pill
@@ -1325,7 +1360,12 @@ impl App {
                 viewing_photo: if args.open_viewonce { Some(112) } else { None },
                 photo_fetch: std::collections::HashMap::new(),
                 view_once_shown: None,
-                voice_playing: None,
+                voice_player: None,
+                voice_fetch: std::collections::HashMap::new(),
+                voice_wanted: None,
+                voice_pcm: None,
+                voice_pending_seek: std::collections::HashMap::new(),
+                voice_sink: crate::player::VoiceSink::Device,
                 voice_rates: std::collections::HashMap::new(),
             },
             unread_divider: initial_divider,
@@ -1825,176 +1865,9 @@ impl App {
     }
 }
 
-/// Simulated voice-note playback. The demo has no audio pipeline yet, so
-/// playback is a timed progress state (play / pause / resume / finish)
-/// driven by the egui clock. Progress advances at `rate` media seconds
-/// per wall-clock second: the speed pill's rate is real, not cosmetic.
-/// Elapsed time is banked in media seconds, and every rate change or
-/// seek rebases the bank at the current position so the playhead never
-/// jumps when the rate changes mid-play.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct VoicePlayback {
-    /// Message id being played.
-    pub(crate) id: u64,
-    /// Total duration in seconds.
-    pub(crate) secs: f64,
-    /// Playback rate of the current run (1.0, 1.5 or 2.0).
-    pub(crate) rate: f64,
-    /// egui time when playback (last) started.
-    pub(crate) started_at: f64,
-    /// Media seconds banked before the current run (pause/resume,
-    /// rate changes and seeks all rebase through here).
-    pub(crate) banked: f64,
-    /// When paused, the egui time of the pause; `None` while playing.
-    pub(crate) paused_at: Option<f64>,
-}
-
-impl VoicePlayback {
-    pub(crate) fn new(id: u64, secs: u32, now: f64) -> Self {
-        Self { id, secs: f64::from(secs), rate: 1.0, started_at: now, banked: 0.0, paused_at: None }
-    }
-
-    /// Sets the rate the session runs at (the rate stored for the
-    /// message when playback starts).
-    pub(crate) fn with_rate(mut self, rate: f64) -> Self {
-        self.rate = if rate > 0.0 { rate } else { 1.0 };
-        self
-    }
-
-    /// Elapsed media seconds at time `now`.
-    pub(crate) fn elapsed(&self, now: f64) -> f64 {
-        let running = (self.paused_at.unwrap_or(now) - self.started_at) * self.rate;
-        (self.banked + running).clamp(0.0, self.secs)
-    }
-
-    /// Progress 0.0–1.0 at time `now`.
-    pub(crate) fn progress(&self, now: f64) -> f32 {
-        if self.secs <= 0.0 {
-            return 1.0;
-        }
-        (self.elapsed(now) / self.secs) as f32
-    }
-
-    pub(crate) fn is_playing(&self) -> bool {
-        self.paused_at.is_none()
-    }
-
-    /// Changes the playback rate mid-play: the position reached so
-    /// far is banked first, so the playhead stays exactly where it
-    /// is and only the speed of what follows changes.
-    pub(crate) fn set_rate(&mut self, rate: f64, now: f64) {
-        if rate <= 0.0 {
-            return;
-        }
-        self.banked = self.elapsed(now);
-        self.started_at = self.paused_at.unwrap_or(now);
-        self.rate = rate;
-    }
-
-    /// Moves the playhead to a fraction of the duration, keeping
-    /// the playing/paused state. Seeking to the very end finishes
-    /// the session (progress reaches 1.0).
-    pub(crate) fn seek_to(&mut self, fraction: f64, now: f64) {
-        self.banked = (fraction.clamp(0.0, 1.0) * self.secs).clamp(0.0, self.secs);
-        self.started_at = self.paused_at.unwrap_or(now);
-    }
-
-    pub(crate) fn toggle_pause(&mut self, now: f64) {
-        if let Some(p) = self.paused_at {
-            self.banked += (p - self.started_at) * self.rate;
-            self.started_at = now;
-            self.paused_at = None;
-        } else {
-            self.paused_at = Some(now);
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn voice_playback_progresses_pauses_resumes_and_clamps() {
-        let mut v = VoicePlayback::new(7, 10, 100.0);
-        assert!(v.is_playing());
-        assert_eq!(v.progress(100.0), 0.0);
-        assert!((v.progress(105.0) - 0.5).abs() < 1e-6);
-        v.toggle_pause(105.0);
-        assert!(!v.is_playing());
-        // Paused: time does not advance.
-        assert!((v.progress(140.0) - 0.5).abs() < 1e-6, "paused playback must freeze");
-        v.toggle_pause(140.0);
-        assert!(v.is_playing());
-        assert!((v.progress(145.0) - 1.0).abs() < 1e-6, "resume banks the paused span");
-        // Never past the end.
-        assert_eq!(v.progress(999.0), 1.0);
-    }
-
-    #[test]
-    fn voice_playback_rate_scales_progress() {
-        // At 2x, N wall seconds advance the playhead 2N media seconds.
-        let v = VoicePlayback::new(7, 10, 100.0).with_rate(2.0);
-        assert!((v.elapsed(102.5) - 5.0).abs() < 1e-9, "2.5 wall s at 2x is 5 media s");
-        assert!((v.progress(102.5) - 0.5).abs() < 1e-6);
-        // The 10 s note is done after 5 wall seconds.
-        assert_eq!(v.progress(105.0), 1.0);
-        // At 1.5x the same wall span lands proportionally earlier.
-        let v = VoicePlayback::new(7, 10, 100.0).with_rate(1.5);
-        assert!((v.elapsed(104.0) - 6.0).abs() < 1e-9, "4 wall s at 1.5x is 6 media s");
-    }
-
-    #[test]
-    fn voice_playback_rate_change_keeps_position() {
-        let mut v = VoicePlayback::new(7, 10, 100.0);
-        assert!((v.elapsed(104.0) - 4.0).abs() < 1e-9);
-        v.set_rate(2.0, 104.0);
-        // The switch itself must not move the playhead.
-        assert!((v.elapsed(104.0) - 4.0).abs() < 1e-9, "rate change rebases, no jump");
-        assert!((v.elapsed(105.0) - 6.0).abs() < 1e-9, "then runs at the new rate");
-        assert_eq!(v.progress(107.0), 1.0);
-        // Slowing back down mid-play is continuous too.
-        let mut v = VoicePlayback::new(7, 10, 100.0).with_rate(2.0);
-        v.set_rate(1.0, 102.0);
-        assert!((v.elapsed(102.0) - 4.0).abs() < 1e-9);
-        assert!((v.elapsed(104.0) - 6.0).abs() < 1e-9);
-    }
-
-    #[test]
-    fn voice_playback_pause_resume_at_rate() {
-        let mut v = VoicePlayback::new(7, 10, 100.0).with_rate(1.5);
-        v.toggle_pause(102.0);
-        assert!(!v.is_playing());
-        // Paused at 3 media seconds, frozen however long the pause lasts.
-        assert!((v.elapsed(150.0) - 3.0).abs() < 1e-9, "pause freezes at the rated position");
-        v.toggle_pause(150.0);
-        assert!(v.is_playing());
-        assert!((v.elapsed(152.0) - 6.0).abs() < 1e-9, "resume keeps the rate");
-        // A rate change while paused applies on resume, position intact.
-        v.toggle_pause(152.0);
-        v.set_rate(2.0, 160.0);
-        assert!((v.elapsed(170.0) - 6.0).abs() < 1e-9, "paused rate change moves nothing");
-        v.toggle_pause(170.0);
-        assert!((v.elapsed(171.0) - 8.0).abs() < 1e-9, "resume runs at the new rate");
-    }
-
-    #[test]
-    fn voice_playback_seek_moves_the_playhead() {
-        let mut v = VoicePlayback::new(7, 10, 100.0).with_rate(2.0);
-        v.seek_to(0.5, 101.0);
-        assert!((v.elapsed(101.0) - 5.0).abs() < 1e-9, "seek lands on the fraction");
-        assert!((v.elapsed(102.0) - 7.0).abs() < 1e-9, "playback continues from there");
-        // Seeking while paused stays paused at the new position.
-        v.toggle_pause(102.0);
-        v.seek_to(0.25, 130.0);
-        assert!(!v.is_playing());
-        assert!((v.elapsed(140.0) - 2.5).abs() < 1e-9);
-        // Fractions clamp to the ends.
-        v.seek_to(1.7, 140.0);
-        assert_eq!(v.progress(140.0), 1.0);
-        v.seek_to(-0.5, 140.0);
-        assert_eq!(v.elapsed(140.0), 0.0);
-    }
 
     #[test]
     fn unread_divider_sits_above_the_first_unread_incoming() {

@@ -102,6 +102,8 @@
 
 # ---- photos ----
 "photo.unavailable" = "Foto tidak tersedia"
+"voice.unavailable" = "Pesan suara tidak tersedia"
+"voice.demo_unavailable" = "Pesan suara tidak dapat diputar dalam mode uji."
 "photo.view_once_not_loaded" = "Foto itu tidak dapat dimuat, jadi belum terpakai. Kamu bisa mencoba membukanya lagi nanti."
 
 # ---- settings shell ----

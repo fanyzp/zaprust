@@ -258,7 +258,9 @@ fn resample_bars(levels: &[f32], bars: usize) -> Vec<f32> {
 
 /// Encodes mono i16 PCM at 48 kHz into an Opus-in-Ogg voice note
 /// (OpusHead, OpusTags, 20 ms frames, 48 kHz granule clock).
-fn encode_ogg_opus(pcm: &[i16]) -> Result<Vec<u8>, String> {
+/// Shared with the player module's tests: the bytes a recording
+/// produces are exactly what playback must be able to decode.
+pub(crate) fn encode_ogg_opus(pcm: &[i16]) -> Result<Vec<u8>, String> {
     let mut encoder =
         opus::Encoder::new(TARGET_RATE, opus::Channels::Mono, opus::Application::Audio)
             .map_err(|e| format!("Opus encoder: {e}"))?;

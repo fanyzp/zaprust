@@ -110,6 +110,8 @@
 
 # ---- photos ----
 "photo.unavailable" = "Photo unavailable"
+"voice.unavailable" = "Voice message unavailable"
+"voice.demo_unavailable" = "Voice messages cannot be played in test mode."
 "photo.view_once_not_loaded" = "That photo could not be loaded, so it has not been used up. You can try opening it again later."
 
 # ---- settings shell ----

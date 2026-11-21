@@ -89,6 +89,10 @@ pub(crate) struct VoiceSnap {
     pub(crate) playing: bool,
     /// Playback rate shown on the speed pill (1.0, 1.5 or 2.0).
     pub(crate) speed: f32,
+    /// Seconds of the note the output has actually consumed,
+    /// read from the playback engine (not derived from the
+    /// declared duration).
+    pub(crate) elapsed_secs: f32,
 }
 
 /// Media state a bubble needs from the app: the demo photo texture and
@@ -109,6 +113,10 @@ pub(crate) struct MediaCtx {
     /// Playback snapshot for this voice message, when a playback
     /// session is active for it (playing or paused).
     pub(crate) voice: Option<VoiceSnap>,
+    /// This voice message's fetch state, when its bytes were
+    /// requested but no session could start: loading, or failed
+    /// (the note is honestly unavailable until retried).
+    pub(crate) voice_fetch: Option<crate::state::VoiceFetchState>,
     /// The group sender's profile photo, when the sender is a demo
     /// persona with a bundled portrait.
     pub(crate) sender_photo: Option<egui::TextureId>,
@@ -1134,15 +1142,38 @@ pub(crate) fn message_bubble(
                 let snap = media.voice;
                 let (progress, playing) = snap.map_or((0.0, false), |s| (s.progress, s.playing));
                 let disc = Pos2::new(x + 20.0, y + 24.0);
-                painter.circle_filled(disc, 19.0, rgb(t.accent));
-                crate::icons::draw(
-                    painter,
-                    if playing { crate::icons::Icon::Pause } else { crate::icons::Icon::Play },
-                    disc,
-                    22.0,
-                    rgb(core::theme::on_color(t.accent)),
-                    bubble_color,
-                );
+                // A note whose bytes were requested but produced
+                // no session (still fetching, or failed) wears a
+                // muted disc instead of the accent one: it is not
+                // playable right now, and the button must not
+                // promise otherwise. Clicking it retries.
+                let unavailable = if snap.is_none() { media.voice_fetch } else { None };
+                match unavailable {
+                    Some(state) => {
+                        let fill = rgb(t.bg_panel_alt);
+                        painter.circle_filled(disc, 19.0, fill);
+                        let icon = match state {
+                            crate::state::VoiceFetchState::Loading => crate::icons::Icon::Play,
+                            crate::state::VoiceFetchState::Failed => crate::icons::Icon::Info,
+                        };
+                        crate::icons::draw(painter, icon, disc, 20.0, rgb(t.text_faint), fill);
+                    }
+                    None => {
+                        painter.circle_filled(disc, 19.0, rgb(t.accent));
+                        crate::icons::draw(
+                            painter,
+                            if playing {
+                                crate::icons::Icon::Pause
+                            } else {
+                                crate::icons::Icon::Play
+                            },
+                            disc,
+                            22.0,
+                            rgb(core::theme::on_color(t.accent)),
+                            bubble_color,
+                        );
+                    }
+                }
                 let wave = voice_wave_rect(x, y, inner_w, snap.is_some());
                 let bar_x0 = wave.left();
                 let bar_x1 = wave.right();
@@ -1192,13 +1223,16 @@ pub(crate) fn message_bubble(
                             Some(BubbleAction::SeekVoice(msg.id, voice_seek_fraction(wave, p.x)));
                     }
                 }
-                // Elapsed time while a session is active, the total
+                // Elapsed time while a session is active (the
+                // engine's own consumed position), the total
                 // duration otherwise; both as m:ss. Received notes
                 // wear a small download chip in the top-right corner
                 // while no playback session occupies it (the speed
                 // pill parks there when one is).
-                let shown_secs =
-                    if snap.is_some() { (progress * (*secs as f32)).round() as u32 } else { *secs };
+                let shown_secs = match snap {
+                    Some(s) => s.elapsed_secs.round() as u32,
+                    None => *secs,
+                };
                 let dur = format!("{}:{:02}", shown_secs / 60, shown_secs % 60);
                 let g = layout_text(ui, &dur, small_font.clone(), secondary, 48.0);
                 painter.galley(Pos2::new(bar_x0, y + 33.0), g, secondary);

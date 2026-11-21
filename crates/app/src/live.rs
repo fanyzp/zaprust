@@ -166,6 +166,11 @@ pub(crate) struct LiveSession {
     /// longer holds in its session cache passes the reference
     /// along, so photos from before this session stay fetchable.
     pub(crate) photo_refs: HashMap<u64, backend::PhotoRef>,
+    /// Voice re-download references per numeric message ID,
+    /// seeded and extended exactly like `photo_refs`. A playback
+    /// fetch passes the reference along, so a voice note from
+    /// before this session stays playable.
+    pub(crate) voice_refs: HashMap<u64, backend::VoiceRef>,
     /// Chats where the user performed a real read action (scrolled
     /// to the newest messages, focused or typed in the composer,
     /// sent a reply) since the last receipt went out. Read
@@ -654,6 +659,7 @@ impl crate::state::App {
             flags: HashMap::new(),
             engaged_chats: std::collections::HashSet::new(),
             photo_refs: HashMap::new(),
+            voice_refs: HashMap::new(),
         };
         // Load the archive into the rendered data. Live mode never
         // shows demo data: start from empty and fill from the archive.
@@ -689,6 +695,13 @@ impl crate::state::App {
                             if let Some(reference) = &m.photo_ref {
                                 session
                                     .photo_refs
+                                    .insert(message_id(&m.chat_jid, &m.id), reference.clone());
+                            }
+                            // A voice note's reference is seeded
+                            // the same way, for playback.
+                            if let Some(reference) = &m.voice_ref {
+                                session
+                                    .voice_refs
                                     .insert(message_id(&m.chat_jid, &m.id), reference.clone());
                             }
                         }
@@ -1359,6 +1372,53 @@ impl crate::state::App {
                     self.media.photo_fetch.insert(mid, crate::state::PhotoFetchState::Failed);
                 }
             }
+            BackendEvent::VoiceBytes { chat_jid, message_id: pid, bytes } => {
+                let mid = message_id(&chat_jid, &pid);
+                // Bytes that land for a note the user has already
+                // moved past are dropped, never played over the
+                // current one; only the wanted note decodes.
+                if self.media.voice_wanted != Some(mid) {
+                    if self.media.voice_fetch.get(&mid)
+                        == Some(&crate::state::VoiceFetchState::Loading)
+                    {
+                        self.media.voice_fetch.remove(&mid);
+                    }
+                } else {
+                    match crate::player::decode_voice(&bytes) {
+                        Ok(pcm) => {
+                            let pcm: std::sync::Arc<[i16]> = std::sync::Arc::from(pcm);
+                            self.media.voice_pcm = Some((mid, std::sync::Arc::clone(&pcm)));
+                            self.media.voice_fetch.remove(&mid);
+                            let seek = self.media.voice_pending_seek.remove(&mid);
+                            self.start_voice_player(mid, pcm, seek);
+                        }
+                        Err(message) => {
+                            // Bytes that do not decode are a failed
+                            // fetch, never silent playback.
+                            self.media
+                                .voice_fetch
+                                .insert(mid, crate::state::VoiceFetchState::Failed);
+                            self.media.voice_pending_seek.remove(&mid);
+                            self.notice = Some(message);
+                        }
+                    }
+                }
+            }
+            BackendEvent::VoiceFetchFailed { chat_jid, message_id: pid, message } => {
+                let mid = message_id(&chat_jid, &pid);
+                // Only a fetch still in flight can fail (see the
+                // photo arm); the failure is surfaced only for the
+                // note the user is actually trying to hear.
+                if self.media.voice_fetch.get(&mid) == Some(&crate::state::VoiceFetchState::Loading)
+                {
+                    self.media.voice_fetch.remove(&mid);
+                    if self.media.voice_wanted == Some(mid) {
+                        self.media.voice_fetch.insert(mid, crate::state::VoiceFetchState::Failed);
+                        self.media.voice_pending_seek.remove(&mid);
+                        self.notice = Some(message);
+                    }
+                }
+            }
             BackendEvent::TypingReceived { chat_jid, typing } => {
                 let chat_id = jid_id(&chat_jid);
                 if typing {
@@ -1971,6 +2031,9 @@ impl crate::state::App {
             if let Some(reference) = &live.photo_ref {
                 session.photo_refs.insert(msg_id, reference.clone());
             }
+            if let Some(reference) = &live.voice_ref {
+                session.voice_refs.insert(msg_id, reference.clone());
+            }
             let mut flags = session.flags.get(&msg_id).copied().unwrap_or(0);
             if live.starred {
                 flags |= store::FLAG_STARRED;
@@ -2379,6 +2442,117 @@ impl crate::state::App {
             self.media.photo_fetch.remove(&msg_id);
         }
         self.ensure_photo_fetch(msg_id);
+    }
+
+    /// The play/pause gesture on one voice message. A note already
+    /// loaded in the engine pauses or resumes (a finished note
+    /// restarts from the top); any other note ends the current
+    /// session and begins through [`App::begin_voice`], so what
+    /// the user hears is always real decoded audio or a stated
+    /// failure, never a moving playhead over silence.
+    pub(crate) fn toggle_voice(&mut self, msg_id: u64) {
+        let current = self.media.voice_player.as_ref().is_some_and(|p| p.id == msg_id);
+        if current {
+            let player = self.media.voice_player.as_ref().expect("checked above");
+            if player.is_ended() {
+                player.seek_fraction(0.0);
+                player.resume();
+            } else {
+                player.toggle_pause();
+            }
+            return;
+        }
+        self.media.voice_player = None;
+        self.begin_voice(msg_id, None);
+    }
+
+    /// The seek gesture on one voice message's waveform. A loaded
+    /// note seeks in the engine; any other note begins at the
+    /// sought position (the seek is parked and applied when its
+    /// player is created, if its bytes still have to be fetched).
+    pub(crate) fn seek_voice(&mut self, msg_id: u64, fraction: f32) {
+        let current = self.media.voice_player.as_ref().is_some_and(|p| p.id == msg_id);
+        if current {
+            self.media
+                .voice_player
+                .as_ref()
+                .expect("checked above")
+                .seek_fraction(f64::from(fraction));
+            return;
+        }
+        self.media.voice_player = None;
+        self.begin_voice(msg_id, Some(fraction));
+    }
+
+    /// Begins hearing one voice note: from the decoded PCM still
+    /// held for it when there is some, otherwise by fetching its
+    /// bytes. Demo mode has no session and its notes are scripted
+    /// fixtures with no audio behind them; that is said plainly
+    /// instead of animating a playhead over nothing.
+    fn begin_voice(&mut self, msg_id: u64, seek: Option<f32>) {
+        self.media.voice_wanted = Some(msg_id);
+        if let Some((held, pcm)) = &self.media.voice_pcm {
+            if *held == msg_id {
+                let pcm = std::sync::Arc::clone(pcm);
+                self.start_voice_player(msg_id, pcm, seek);
+                return;
+            }
+        }
+        if self.live.is_none() {
+            self.media.voice_fetch.insert(msg_id, crate::state::VoiceFetchState::Failed);
+            self.notice = Some(crate::i18n::t("voice.demo_unavailable"));
+            return;
+        }
+        if self.media.voice_fetch.get(&msg_id) == Some(&crate::state::VoiceFetchState::Loading) {
+            // A fetch for this note is already running; only the
+            // parked seek can still change.
+            if let Some(fraction) = seek {
+                self.media.voice_pending_seek.insert(msg_id, fraction);
+            }
+            return;
+        }
+        let (chat_jid, voice_ref) = {
+            let Some(session) = &self.live else { return };
+            let Some(chat_jid) = session.jids.get(&self.selected_chat).cloned() else {
+                return;
+            };
+            (chat_jid, session.voice_refs.get(&msg_id).cloned())
+        };
+        let Some(protocol_id) = self.protocol_ids.get(&msg_id).cloned() else {
+            // A live voice note without a protocol id can never be
+            // addressed; record the failure instead of spinning.
+            self.media.voice_fetch.insert(msg_id, crate::state::VoiceFetchState::Failed);
+            return;
+        };
+        self.media.voice_fetch.insert(msg_id, crate::state::VoiceFetchState::Loading);
+        if let Some(fraction) = seek {
+            self.media.voice_pending_seek.insert(msg_id, fraction);
+        }
+        self.send_backend(BackendCommand::FetchVoice {
+            chat_jid,
+            message_id: protocol_id,
+            voice_ref,
+        });
+    }
+
+    /// Creates the playback engine session for one note whose PCM
+    /// is here. A player that will not start (no output device,
+    /// a refused stream) fails the note honestly and says why.
+    fn start_voice_player(&mut self, msg_id: u64, pcm: std::sync::Arc<[i16]>, seek: Option<f32>) {
+        let rate = f64::from(self.voice_speed(msg_id));
+        match crate::player::VoicePlayer::start(msg_id, pcm, rate, self.media.voice_sink) {
+            Ok(player) => {
+                if let Some(fraction) = seek {
+                    player.seek_fraction(f64::from(fraction));
+                }
+                self.media.voice_fetch.remove(&msg_id);
+                self.media.voice_player = Some(player);
+            }
+            Err(message) => {
+                self.media.voice_fetch.insert(msg_id, crate::state::VoiceFetchState::Failed);
+                self.notice = Some(message);
+            }
+        }
     }
 
     /// Closes the photo viewer on one message. A view-once photo
@@ -3087,6 +3261,7 @@ mod burst_drain_tests {
             flags: HashMap::new(),
             engaged_chats: std::collections::HashSet::new(),
             photo_refs: HashMap::new(),
+            voice_refs: HashMap::new(),
         });
         app.live_mode = true;
         (app, evt_tx, ctx, cmd_rx)
@@ -3288,6 +3463,40 @@ mod burst_drain_tests {
         live
     }
 
+    /// A voice-note upsert carrying its re-download reference,
+    /// the shape the backend delivers for every voice note whose
+    /// wire payload was complete.
+    fn voice_message(id: &str, ts: i64) -> LiveMessage {
+        let mut live =
+            LiveMessage::text(id, CHAT_JID, Some("Sender".to_owned()), String::new(), ts, false);
+        live.kind = backend::LiveMessageKind::Media {
+            media: backend::MediaKind::Voice,
+            caption: String::new(),
+            seconds: 1,
+            size_bytes: 4_096,
+        };
+        live.voice_ref = Some(backend::VoiceRef {
+            direct_path: "/v/t62.7119-24/voice.enc".to_owned(),
+            media_key: vec![7u8; 32],
+            file_sha256: vec![8u8; 32],
+            file_enc_sha256: vec![9u8; 32],
+            file_length: 4_096,
+        });
+        live
+    }
+
+    /// A small real voice note, encoded in memory with the app's
+    /// own recorder encoder: a one-second tone in Ogg/Opus.
+    fn voice_bytes() -> Vec<u8> {
+        let pcm: Vec<i16> = (0..48_000)
+            .map(|i| {
+                let t = i as f64 / 48_000.0;
+                ((t * 440.0 * std::f64::consts::TAU).sin() * 12_000.0) as i16
+            })
+            .collect();
+        crate::recorder::encode_ogg_opus(&pcm).unwrap()
+    }
+
     /// A small real image, encoded in memory, standing in for
     /// fetched photo bytes.
     fn png_bytes() -> Vec<u8> {
@@ -3400,6 +3609,126 @@ mod burst_drain_tests {
             "undecodable bytes are a failed fetch, not a photo"
         );
         assert!(!app.media.textures.contains_key(&mid));
+    }
+
+    /// Item 110: pressing play on a live voice note fetches its
+    /// bytes with the archived reference riding along, and a
+    /// second press while the fetch runs sends nothing new.
+    #[test]
+    fn voice_play_fetches_with_the_archived_reference() {
+        let (mut app, tx, ctx, cmd_rx) = live_app();
+        make_real(&mut app);
+        tx.send(BackendEvent::MessageUpsert(voice_message("vn-1", BASE_TS))).unwrap();
+        drain_all(&mut app, &ctx);
+        app.selected_chat = jid_id(CHAT_JID);
+        let mid = message_id(CHAT_JID, "vn-1");
+
+        app.toggle_voice(mid);
+        assert_eq!(app.media.voice_fetch.get(&mid), Some(&crate::state::VoiceFetchState::Loading));
+        match cmd_rx.try_recv() {
+            Ok(BackendCommand::FetchVoice { chat_jid, message_id, voice_ref }) => {
+                assert_eq!(chat_jid, CHAT_JID);
+                assert_eq!(message_id, "vn-1");
+                let reference = voice_ref.expect("the archived reference rides along");
+                assert_eq!(reference.direct_path, "/v/t62.7119-24/voice.enc");
+                assert_eq!(reference.file_length, 4_096);
+            }
+            other => panic!("expected a FetchVoice command, got {other:?}"),
+        }
+        app.toggle_voice(mid);
+        assert!(cmd_rx.try_recv().is_err(), "a running fetch is not duplicated");
+        assert!(app.media.voice_player.is_none(), "nothing plays before the bytes land");
+    }
+
+    /// Item 110: fetched voice bytes decode and start the real
+    /// playback engine (against the null sink on this machine);
+    /// the play gesture then pauses the engine itself.
+    #[test]
+    fn voice_bytes_start_the_playback_engine() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        make_real(&mut app);
+        app.media.voice_sink = crate::player::VoiceSink::Null;
+        tx.send(BackendEvent::MessageUpsert(voice_message("vn-1", BASE_TS))).unwrap();
+        drain_all(&mut app, &ctx);
+        app.selected_chat = jid_id(CHAT_JID);
+        let mid = message_id(CHAT_JID, "vn-1");
+
+        app.toggle_voice(mid);
+        tx.send(BackendEvent::VoiceBytes {
+            chat_jid: CHAT_JID.to_owned(),
+            message_id: "vn-1".to_owned(),
+            bytes: voice_bytes(),
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        let player = app.media.voice_player.as_ref().expect("the engine session exists");
+        assert_eq!(player.id, mid);
+        assert!(player.is_playing(), "the engine is consuming the note");
+        assert!(!app.media.voice_fetch.contains_key(&mid), "the fetch state clears");
+
+        app.toggle_voice(mid);
+        let player = app.media.voice_player.as_ref().expect("the session survives a pause");
+        assert!(!player.is_playing(), "the pause reaches the engine");
+    }
+
+    /// Item 110: a failed fetch and bytes that do not decode both
+    /// fail the note honestly: a Failed state and a spoken reason,
+    /// never a player animating over silence.
+    #[test]
+    fn voice_failures_mark_the_note_failed() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        make_real(&mut app);
+        app.media.voice_sink = crate::player::VoiceSink::Null;
+        tx.send(BackendEvent::MessageUpsert(voice_message("vn-1", BASE_TS))).unwrap();
+        drain_all(&mut app, &ctx);
+        app.selected_chat = jid_id(CHAT_JID);
+        let mid = message_id(CHAT_JID, "vn-1");
+
+        app.toggle_voice(mid);
+        tx.send(BackendEvent::VoiceFetchFailed {
+            chat_jid: CHAT_JID.to_owned(),
+            message_id: "vn-1".to_owned(),
+            message: "Download failed.".to_owned(),
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(app.media.voice_fetch.get(&mid), Some(&crate::state::VoiceFetchState::Failed));
+        assert!(app.media.voice_player.is_none());
+        assert_eq!(app.notice.as_deref(), Some("Download failed."));
+
+        // Retrying fetches again; undecodable bytes fail the same
+        // way instead of playing.
+        app.toggle_voice(mid);
+        assert_eq!(app.media.voice_fetch.get(&mid), Some(&crate::state::VoiceFetchState::Loading));
+        tx.send(BackendEvent::VoiceBytes {
+            chat_jid: CHAT_JID.to_owned(),
+            message_id: "vn-1".to_owned(),
+            bytes: vec![1, 2, 3],
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(
+            app.media.voice_fetch.get(&mid),
+            Some(&crate::state::VoiceFetchState::Failed),
+            "undecodable bytes are a failed fetch, not playback"
+        );
+        assert!(app.media.voice_player.is_none());
+        assert!(app.notice.is_some(), "the decode failure is said out loud");
+    }
+
+    /// Item 110: in demo (test) mode a voice note has no audio
+    /// behind it, so pressing play states that plainly and starts
+    /// nothing: no fetch, no player, no simulated playhead.
+    #[test]
+    fn demo_voice_press_states_unavailable() {
+        let (mut app, _tx, _ctx, cmd_rx) = live_app();
+        app.live = None;
+        app.live_mode = false;
+        app.toggle_voice(42);
+        assert_eq!(app.media.voice_fetch.get(&42), Some(&crate::state::VoiceFetchState::Failed));
+        assert!(app.media.voice_player.is_none());
+        assert_eq!(app.notice.as_deref(), Some(crate::i18n::t("voice.demo_unavailable").as_str()));
+        assert!(cmd_rx.try_recv().is_err(), "no fetch leaves a sessionless app");
     }
 
     /// Item 109, the view-once half: closing the viewer on a
@@ -4022,6 +4351,7 @@ mod chat_state_routing_tests {
             flags: HashMap::new(),
             engaged_chats: std::collections::HashSet::new(),
             photo_refs: HashMap::new(),
+            voice_refs: HashMap::new(),
         });
         app.live_mode = true;
         (app, evt_tx, ctx, cmd_rx)
@@ -5260,6 +5590,7 @@ mod mirror_pruning_tests {
             flags: HashMap::new(),
             engaged_chats: std::collections::HashSet::new(),
             photo_refs: HashMap::new(),
+            voice_refs: HashMap::new(),
         });
         app.live_mode = true;
         (app, evt_tx, ctx, cmd_rx)
@@ -5571,6 +5902,7 @@ mod qr_gate_tests {
             flags: HashMap::new(),
             engaged_chats: std::collections::HashSet::new(),
             photo_refs: HashMap::new(),
+            voice_refs: HashMap::new(),
         };
         if with_payload {
             session.qr = Some(backend::qr_matrix("ref,noise,identity,adv,1").unwrap());

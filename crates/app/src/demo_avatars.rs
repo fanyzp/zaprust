@@ -156,6 +156,7 @@ mod tests {
             flags: HashMap::new(),
             engaged_chats: std::collections::HashSet::new(),
             photo_refs: HashMap::new(),
+            voice_refs: HashMap::new(),
         }
     }
 

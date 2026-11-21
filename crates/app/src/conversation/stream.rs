@@ -16,7 +16,7 @@ impl App {
         ui: &mut egui::Ui,
         chat: &core::model::Chat,
         t: Tokens,
-        now: f64,
+        _now: f64,
         composer_clearance: f32,
         pending_actions: &mut Vec<BubbleAction>,
         engaged: &mut bool,
@@ -249,18 +249,20 @@ impl App {
                         },
                         own_photo: self.media.textures.get(&msg.id).map(egui::TextureHandle::id),
                         photo_tile,
-                        voice: match &self.media.voice_playing {
-                            Some(vp) if vp.id == msg.id => {
+                        voice: match &self.media.voice_player {
+                            Some(player) if player.id == msg.id => {
                                 Some(crate::bubble::VoiceSnap {
-                                    progress: vp.progress(now),
-                                    playing: vp.is_playing(),
+                                    progress: player.progress(),
+                                    playing: player.is_playing(),
                                     // The pill shows the rate the
-                                    // session is really running at.
-                                    speed: vp.rate as f32,
+                                    // engine is really running at.
+                                    speed: player.rate() as f32,
+                                    elapsed_secs: player.position_secs() as f32,
                                 })
                             }
                             _ => None,
                         },
+                        voice_fetch: self.media.voice_fetch.get(&msg.id).copied(),
                         view_once_opened: self.media.opened_view_once.contains(&msg.id),
                         sender_photo: if group_incoming {
                             msg.sender.as_deref().and_then(|name| sender_photos.get(name).copied())
@@ -427,61 +429,21 @@ impl App {
                     self.download_media(id);
                 }
                 BubbleAction::ToggleVoice(id) => {
-                    let secs = self
-                        .conversation
-                        .iter()
-                        .find(|m| m.id == id)
-                        .and_then(|m| match m.kind {
-                            core::model::MessageKind::Voice { secs, .. } => Some(secs),
-                            _ => None,
-                        })
-                        .unwrap_or(0);
-                    match &mut self.media.voice_playing {
-                        Some(vp) if vp.id == id => vp.toggle_pause(now),
-                        // A fresh session runs at the rate
-                        // stored for this message.
-                        _ => {
-                            self.media.voice_playing = Some(
-                                VoicePlayback::new(id, secs, now)
-                                    .with_rate(f64::from(self.voice_speed(id))),
-                            );
-                        }
-                    }
+                    self.toggle_voice(id);
                 }
                 BubbleAction::CycleVoiceSpeed(id) => {
                     let rate = self.cycle_voice_speed(id);
-                    // The pill drives the live session too:
-                    // the rate change rebases the playhead,
-                    // it never just relabels it.
-                    if let Some(vp) = &mut self.media.voice_playing {
-                        if vp.id == id {
-                            vp.set_rate(f64::from(rate), now);
+                    // The pill drives the live session too: the
+                    // engine's own rate changes, never just the
+                    // label.
+                    if let Some(player) = &self.media.voice_player {
+                        if player.id == id {
+                            player.set_rate(f64::from(rate));
                         }
                     }
                 }
                 BubbleAction::SeekVoice(id, fraction) => {
-                    let secs = self
-                        .conversation
-                        .iter()
-                        .find(|m| m.id == id)
-                        .and_then(|m| match m.kind {
-                            core::model::MessageKind::Voice { secs, .. } => Some(secs),
-                            _ => None,
-                        })
-                        .unwrap_or(0);
-                    match &mut self.media.voice_playing {
-                        Some(vp) if vp.id == id => {
-                            vp.seek_to(f64::from(fraction), now);
-                        }
-                        // No session yet: start one at the
-                        // sought position, at the stored rate.
-                        _ => {
-                            let mut vp = VoicePlayback::new(id, secs, now)
-                                .with_rate(f64::from(self.voice_speed(id)));
-                            vp.seek_to(f64::from(fraction), now);
-                            self.media.voice_playing = Some(vp);
-                        }
-                    }
+                    self.seek_voice(id, fraction);
                 }
                 BubbleAction::OpenViewOnce(id) => {
                     self.media.viewing_photo = Some(id);
@@ -497,10 +459,14 @@ impl App {
                 }
             }
         }
-        if let Some(vp) = &self.media.voice_playing {
-            if vp.progress(now) >= 1.0 {
-                self.media.voice_playing = None;
-            } else if vp.is_playing() {
+        // End of stream closes the session: the bubble falls
+        // back to its idle state (the waveform keeps its heard
+        // fill from the final progress read). While a note plays,
+        // the paint loop follows the engine's real position.
+        if let Some(player) = &self.media.voice_player {
+            if player.is_ended() {
+                self.media.voice_player = None;
+            } else if player.is_playing() {
                 ui.ctx().request_repaint_after(std::time::Duration::from_millis(40));
             }
         }

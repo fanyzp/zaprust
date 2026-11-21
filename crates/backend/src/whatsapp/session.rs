@@ -29,8 +29,9 @@ use super::translate::{
 };
 use super::util::{
     abort_latest, build_message_target, cap_poll_secrets, download_proto, fetch_photo_by_ref,
-    fetch_photo_bytes, lock_cache, parse_address, proto_is_view_once, received_poll_secret,
-    spawn_latest, unix_now, LatestTask, PollSecrets, ProtoCache,
+    fetch_photo_bytes, fetch_voice_by_ref, fetch_voice_bytes, lock_cache, parse_address,
+    proto_is_view_once, received_poll_secret, spawn_latest, unix_now, LatestTask, PollSecrets,
+    ProtoCache,
 };
 
 /// How many session events may wait for the event callbacks.
@@ -1463,6 +1464,42 @@ pub(super) async fn run_async(
                                 bytes,
                             }),
                             Err(message) => events.emit(BackendEvent::PhotoFetchFailed {
+                                chat_jid,
+                                message_id,
+                                message,
+                            }),
+                        }
+                    });
+                }
+                BackendCommand::FetchVoice { chat_jid, message_id, voice_ref } => {
+                    // Playback fetch, in memory only (see the
+                    // command's docs). Resolution order mirrors
+                    // FetchPhoto: the session's protocol payload
+                    // first, then the archived reference. The
+                    // transfer runs as its own task so the dispatch
+                    // loop never waits behind the network.
+                    let proto = lock_cache(&proto_cache)
+                        .0
+                        .get(&(chat_jid.clone(), message_id.clone()))
+                        .cloned();
+                    let client = client.clone();
+                    let events = events.clone();
+                    tokio::spawn(async move {
+                        let fetched = match (&proto, &voice_ref) {
+                            (Some(proto), _) => fetch_voice_bytes(&client, proto).await,
+                            (None, Some(reference)) => fetch_voice_by_ref(&client, reference).await,
+                            (None, None) => Err("That voice note is not available: it was received \
+                                                 before this session and has no stored \
+                                                 download reference."
+                                .to_owned()),
+                        };
+                        match fetched {
+                            Ok(bytes) => events.emit(BackendEvent::VoiceBytes {
+                                chat_jid,
+                                message_id,
+                                bytes,
+                            }),
+                            Err(message) => events.emit(BackendEvent::VoiceFetchFailed {
                                 chat_jid,
                                 message_id,
                                 message,

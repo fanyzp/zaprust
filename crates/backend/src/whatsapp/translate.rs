@@ -381,6 +381,9 @@ pub(super) fn translate_message(ctx: &MessageContext) -> Option<(LiveChat, LiveM
     // after this session's protocol cache is gone. Non-photos and
     // incomplete payloads yield no reference.
     msg.photo_ref = super::util::photo_ref_of(&ctx.message);
+    // A voice message's reference travels the same way, so the
+    // note stays fetchable for playback in later sessions.
+    msg.voice_ref = super::util::voice_ref_of(&ctx.message);
     if let LiveMessageKind::Other(label) = &msg.kind {
         if msg.body == "[non-text message]" {
             msg.body = label.clone();

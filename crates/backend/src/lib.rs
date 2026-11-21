@@ -662,6 +662,22 @@ pub enum BackendCommand {
         /// Archived re-download reference, when the caller has one.
         photo_ref: Option<PhotoRef>,
     },
+    /// Fetch a voice message's bytes for playback. Answered with
+    /// `VoiceBytes` or `VoiceFetchFailed`. The bytes travel in
+    /// memory only: nothing is written to disk, so playback never
+    /// leaves a copy of the note behind. When the message is no
+    /// longer in the session's protocol cache (a note from before
+    /// this session), the caller passes the archived [`VoiceRef`]
+    /// it stored with the message; without either source the
+    /// fetch fails.
+    FetchVoice {
+        /// Chat JID.
+        chat_jid: String,
+        /// Protocol ID of the voice message.
+        message_id: String,
+        /// Archived re-download reference, when the caller has one.
+        voice_ref: Option<VoiceRef>,
+    },
     /// Stop the backend worker.
     Shutdown,
 }
@@ -908,6 +924,25 @@ pub struct PhotoRef {
     pub file_length: u64,
 }
 
+/// The persistable CDN reference of one voice message: the same
+/// re-download material as [`PhotoRef`], extracted from the wire
+/// audio payload and archived with the message so a voice note
+/// stays fetchable for playback after a restart. It carries the
+/// media key, so it belongs in the encrypted archive only.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct VoiceRef {
+    /// CDN path of the encrypted media.
+    pub direct_path: String,
+    /// Media decryption key (32 bytes).
+    pub media_key: Vec<u8>,
+    /// SHA-256 of the decrypted bytes (32 bytes).
+    pub file_sha256: Vec<u8>,
+    /// SHA-256 of the encrypted bytes (32 bytes).
+    pub file_enc_sha256: Vec<u8>,
+    /// Announced plaintext size in bytes.
+    pub file_length: u64,
+}
+
 /// A message as the backend reports it (protocol-neutral).
 #[derive(Debug, Clone, PartialEq)]
 pub struct LiveMessage {
@@ -959,6 +994,11 @@ pub struct LiveMessage {
     /// other kind, and for photos whose wire payload did not
     /// carry a complete reference.
     pub photo_ref: Option<PhotoRef>,
+    /// For a voice message: the reference its bytes can be
+    /// re-downloaded from (see [`VoiceRef`]). `None` for every
+    /// other kind, and for voice messages whose wire payload did
+    /// not carry a complete reference.
+    pub voice_ref: Option<VoiceRef>,
 }
 
 impl LiveMessage {
@@ -993,6 +1033,7 @@ impl LiveMessage {
             sender_jid: None,
             expires_at: 0,
             photo_ref: None,
+            voice_ref: None,
         }
     }
 }
@@ -1292,6 +1333,26 @@ pub enum BackendEvent {
         /// Chat JID the photo belongs to.
         chat_jid: String,
         /// Protocol ID of the photo message.
+        message_id: String,
+        /// Why the fetch failed, in user words.
+        message: String,
+    },
+    /// A voice fetch for playback finished; the decrypted bytes
+    /// are carried in memory and were never written to disk.
+    VoiceBytes {
+        /// Chat JID the voice message belongs to.
+        chat_jid: String,
+        /// Protocol ID of the voice message.
+        message_id: String,
+        /// The voice note's decrypted bytes (an encoded audio file).
+        bytes: Vec<u8>,
+    },
+    /// A voice fetch for playback failed. Reported per message
+    /// (not as a global `Error`); the message is in user words.
+    VoiceFetchFailed {
+        /// Chat JID the voice message belongs to.
+        chat_jid: String,
+        /// Protocol ID of the voice message.
         message_id: String,
         /// Why the fetch failed, in user words.
         message: String,

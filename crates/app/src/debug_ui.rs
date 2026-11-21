@@ -90,6 +90,11 @@ impl App {
             BackendEvent::PinFailed { message, .. } => {
                 ("message", format!("PinFailed {message}"), None)
             }
+            BackendEvent::PollVote { chat_jid, selected, .. } => (
+                "message",
+                format!("PollVote in {chat_jid}: {} option(s) selected", selected.len()),
+                None,
+            ),
             BackendEvent::MessageEdited { .. } => ("message", "MessageEdited".to_owned(), None),
             BackendEvent::MessageRevoked { .. } => ("message", "MessageRevoked".to_owned(), None),
             BackendEvent::DisappearingChanged { chat_jid, duration_secs } => {

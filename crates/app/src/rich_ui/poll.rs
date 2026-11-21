@@ -35,10 +35,15 @@ impl App {
                 self.protocol_ids.get(&msg_id).cloned(),
             ) {
                 self.send_backend(BackendCommand::VotePoll {
-                    chat_jid: jid,
-                    message_id: proto,
-                    options: new_options,
+                    chat_jid: jid.clone(),
+                    message_id: proto.clone(),
+                    options: new_options.clone(),
                 });
+                // My vote is durable at once, in the mirror and
+                // the archive, not only when the server echoes it
+                // back; the echo, when it arrives, re-applies the
+                // identical selection and changes nothing.
+                self.apply_poll_vote(&jid, &proto, "", true, &new_options);
             }
         }
     }

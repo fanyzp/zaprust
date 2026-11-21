@@ -160,6 +160,7 @@ mod tests {
             voice_refs: HashMap::new(),
             video_refs: HashMap::new(),
             video_thumbs: HashMap::new(),
+            poll_ballots: HashMap::new(),
         }
     }
 

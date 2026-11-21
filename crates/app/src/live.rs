@@ -116,12 +116,35 @@ pub(crate) struct EventBatch {
     /// lands later in the same batch is part of the stored row,
     /// exactly as if each write had happened in event order.
     pub(crate) store_writes: Vec<LiveMessage>,
+    /// Poll tally states produced by vote events in this batch.
+    /// They are full snapshots (counts, my votes, ballots) taken
+    /// from the mirror as each vote was applied, and the flush
+    /// writes them after the batch's upserts, so a vote on a poll
+    /// whose creation upsert sits in the same batch still lands
+    /// on an existing row, and the last snapshot wins.
+    pub(crate) poll_tally_writes: Vec<PollTallyWrite>,
     /// Chats whose unread badge a batch upsert raised. The
     /// badge lives in the mirror, but the archive row must carry
     /// the same count (a restart reloads from the archive), so
     /// the flush writes these chats' rows from the mirror once
     /// per batch instead of once per message.
     pub(crate) chat_rows_dirty: std::collections::HashSet<u64>,
+}
+
+/// One poll's aggregated tally state, on its way to the archive:
+/// per-option counts, my votes, and the per-voter ballots they
+/// were derived from.
+pub(crate) struct PollTallyWrite {
+    /// Chat JID the poll lives in.
+    pub(crate) chat_jid: String,
+    /// Protocol ID of the poll message.
+    pub(crate) message_id: String,
+    /// Per-option vote counts, in option order.
+    pub(crate) counts: Vec<u32>,
+    /// Option indices I voted for.
+    pub(crate) my_votes: Vec<usize>,
+    /// Latest ballot per voter.
+    pub(crate) ballots: Vec<(String, Vec<usize>)>,
 }
 
 /// One running live session: channels, link state, and the live data
@@ -196,6 +219,14 @@ pub(crate) struct LiveSession {
     /// its own frame in later sessions without fetching its
     /// bytes.
     pub(crate) video_thumbs: HashMap<u64, Vec<u8>>,
+    /// Per-voter poll ballots per numeric message ID, seeded
+    /// from the archive at start and extended by every vote
+    /// event. A vote replaces the voter's whole previous ballot
+    /// (last-vote-wins), so the tallies can only be kept honest
+    /// while the previous ballots are remembered; the archive
+    /// copy rides on the stored message (see
+    /// `store::Store::set_poll_tally`).
+    pub(crate) poll_ballots: HashMap<u64, Vec<(String, Vec<usize>)>>,
     /// Chats where the user performed a real read action (scrolled
     /// to the newest messages, focused or typed in the composer,
     /// sent a reply) since the last receipt went out. Read
@@ -438,6 +469,26 @@ fn to_chat(live: &LiveChat) -> Chat {
         community: None,
         messages: Vec::new(),
     }
+}
+
+/// Builds the command that hands one archived poll's creation
+/// secret back to the backend, or `None` when the message is not
+/// a poll whose secret and creator were both kept. A poll from an
+/// earlier session needs this before it can be voted on or have
+/// its incoming votes decrypted in the new one.
+fn poll_secret_registration(msg: &LiveMessage) -> Option<BackendCommand> {
+    let secret = msg.poll_secret.as_ref()?;
+    let creator = msg.poll_creator.as_ref()?;
+    let backend::LiveMessageKind::Poll { options, .. } = &msg.kind else {
+        return None;
+    };
+    Some(BackendCommand::RegisterPollSecret {
+        chat_jid: msg.chat_jid.clone(),
+        message_id: msg.id.clone(),
+        creator_jid: creator.clone(),
+        secret: secret.clone(),
+        options: options.iter().map(|(label, _)| label.clone()).collect(),
+    })
 }
 
 /// Converts a backend rich kind into the core model kind.
@@ -816,10 +867,16 @@ impl crate::state::App {
             voice_refs: HashMap::new(),
             video_refs: HashMap::new(),
             video_thumbs: HashMap::new(),
+            poll_ballots: HashMap::new(),
         };
         // Load the archive into the rendered data. Live mode never
         // shows demo data: start from empty and fill from the archive.
         self.chats = Vec::new();
+        // Polls whose creation secret the archive kept: after the
+        // session is installed, each is handed back to the backend
+        // so the poll stays votable and its votes stay decryptable
+        // in this session too.
+        let mut archived_poll_secrets: Vec<BackendCommand> = Vec::new();
         if let Some(store) = &session.store {
             if let Ok(chats) = store.chats() {
                 for chat in &chats {
@@ -882,6 +939,22 @@ impl crate::state::App {
                                     .video_thumbs
                                     .insert(message_id(&m.chat_jid, &m.id), thumb.clone());
                             }
+                            // A poll's per-voter ballots are seeded
+                            // the same way, so the next vote event
+                            // replaces the right previous ballot
+                            // instead of double-counting.
+                            if !m.poll_ballots.is_empty() {
+                                session
+                                    .poll_ballots
+                                    .insert(message_id(&m.chat_jid, &m.id), m.poll_ballots.clone());
+                            }
+                            // A poll whose creation secret was
+                            // archived is re-registered with the
+                            // backend below, once the session
+                            // exists to send commands through.
+                            if let Some(cmd) = poll_secret_registration(m) {
+                                archived_poll_secrets.push(cmd);
+                            }
                         }
                         session.messages.insert(
                             jid_id(&chat.jid),
@@ -925,6 +998,9 @@ impl crate::state::App {
         self.switch_composer_chat(previous, first_live);
         self.selected_chat = first_live;
         self.sync_conversation();
+        for cmd in archived_poll_secrets {
+            self.send_backend(cmd);
+        }
         self.send_backend(BackendCommand::ConnectQr);
         if fake {
             self.trace_fake_script();
@@ -1534,6 +1610,22 @@ impl crate::state::App {
                     let _ = store.upsert_messages(&rows);
                 }
             }
+            if !batch.poll_tally_writes.is_empty() {
+                if let Some(store) = &session.store {
+                    // After the upserts, per the batch contract:
+                    // a tally for a poll created in this same
+                    // batch lands on the row the flush just wrote.
+                    for tally in &batch.poll_tally_writes {
+                        let _ = store.set_poll_tally(
+                            &tally.chat_jid,
+                            &tally.message_id,
+                            &tally.counts,
+                            &tally.my_votes,
+                            &tally.ballots,
+                        );
+                    }
+                }
+            }
             if !batch.chat_rows_dirty.is_empty() {
                 if let Some(store) = &session.store {
                     // Written from the mirror as it stands now,
@@ -1842,6 +1934,9 @@ impl crate::state::App {
                     self.apply_pin_restored(chat_id, mid, &pid, previous);
                 }
                 self.notice = Some(human_error(&message));
+            }
+            BackendEvent::PollVote { chat_jid, message_id: pid, voter_jid, from_me, selected } => {
+                self.apply_poll_vote(&chat_jid, &pid, &voter_jid, from_me, &selected);
             }
             BackendEvent::MessageEdited { chat_jid, message_id: pid, new_body } => {
                 let chat_id = jid_id(&chat_jid);
@@ -2696,6 +2791,121 @@ impl crate::state::App {
         }
     }
 
+    /// Applies one decrypted poll vote: the voter's whole current
+    /// selection replaces their previous ballot, so counts move by
+    /// the difference only and re-applying the same ballot is a
+    /// no-op. The mirror poll is updated first; a poll the mirror
+    /// does not hold (its chat was never loaded this session) is
+    /// updated straight in the archive. Either way the resulting
+    /// tally snapshot is persisted, so the counts and the ballots
+    /// they came from survive a restart.
+    pub(crate) fn apply_poll_vote(
+        &mut self,
+        chat_jid: &str,
+        poll_id: &str,
+        voter: &str,
+        from_me: bool,
+        selected: &[usize],
+    ) {
+        let chat_id = jid_id(chat_jid);
+        let mid = message_id(chat_jid, poll_id);
+        let mut tally: Option<PollTallyWrite> = None;
+        if let Some(session) = &mut self.live {
+            let ballots = session.poll_ballots.get(&mid).cloned().unwrap_or_default();
+            if let Some(entry) = session.messages.get_mut(&chat_id) {
+                if let Some((_, msg)) = entry.iter_mut().find(|(_, m)| m.id == mid) {
+                    if let MessageKind::Poll { options, my_votes, .. } = &mut msg.kind {
+                        let core::rich::PollTally {
+                            options: new_options,
+                            my_votes: new_mine,
+                            ballots: new_ballots,
+                        } = core::rich::apply_poll_ballot(
+                            options, my_votes, &ballots, voter, from_me, selected,
+                        );
+                        *options = new_options.clone();
+                        *my_votes = new_mine.clone();
+                        tally = Some(PollTallyWrite {
+                            chat_jid: chat_jid.to_owned(),
+                            message_id: poll_id.to_owned(),
+                            counts: new_options.iter().map(|(_, c)| *c).collect(),
+                            my_votes: new_mine,
+                            ballots: new_ballots,
+                        });
+                    }
+                }
+            }
+            if let Some(tally) = &tally {
+                if tally.ballots.is_empty() {
+                    session.poll_ballots.remove(&mid);
+                } else {
+                    session.poll_ballots.insert(mid, tally.ballots.clone());
+                }
+            }
+        }
+        if tally.is_none() {
+            // The mirror never loaded this poll (its chat is not in
+            // memory): aggregate against the archived copy and
+            // write the tally straight back to the archive.
+            if let Some(store) = self.live.as_ref().and_then(|s| s.store.as_ref()) {
+                if let Ok(rows) = store.messages(chat_jid) {
+                    if let Some((archived, _)) = rows.into_iter().find(|(m, _)| m.id == poll_id) {
+                        if let backend::LiveMessageKind::Poll { options, my_votes, .. } =
+                            &archived.kind
+                        {
+                            let core::rich::PollTally {
+                                options: new_options,
+                                my_votes: new_mine,
+                                ballots: new_ballots,
+                            } = core::rich::apply_poll_ballot(
+                                options,
+                                my_votes,
+                                &archived.poll_ballots,
+                                voter,
+                                from_me,
+                                selected,
+                            );
+                            let counts: Vec<u32> = new_options.iter().map(|(_, c)| *c).collect();
+                            let _ = store.set_poll_tally(
+                                chat_jid,
+                                poll_id,
+                                &counts,
+                                &new_mine,
+                                &new_ballots,
+                            );
+                        }
+                    }
+                }
+            }
+            return;
+        }
+        if let Some(tally) = tally {
+            self.persist_poll_tally(tally);
+        }
+        if self.selected_chat == chat_id {
+            self.sync_conversation();
+        }
+    }
+
+    /// Routes one poll tally snapshot to the archive: queued into
+    /// the running event batch when there is one (its flush writes
+    /// tallies after the batch's upserts), written immediately
+    /// otherwise.
+    fn persist_poll_tally(&mut self, tally: PollTallyWrite) {
+        if self.event_batch.active {
+            self.event_batch.poll_tally_writes.push(tally);
+            return;
+        }
+        if let Some(store) = self.live.as_ref().and_then(|s| s.store.as_ref()) {
+            let _ = store.set_poll_tally(
+                &tally.chat_jid,
+                &tally.message_id,
+                &tally.counts,
+                &tally.my_votes,
+                &tally.ballots,
+            );
+        }
+    }
+
     /// Applies one backend message upsert. Returns true only when
     /// the upsert pushed a genuinely new incoming message (not an
     /// echo replacement and not a re-upsert of a known id).
@@ -2764,7 +2974,27 @@ impl crate::state::App {
             session.jids.entry(chat_id).or_insert_with(|| live.chat_jid.clone());
             session.times.insert(chat_id, live.timestamp);
             let entry = session.messages.entry(chat_id).or_default();
-            let converted = to_message_with_flags(live, flags);
+            let mut converted = to_message_with_flags(live, flags);
+            // A poll creation re-delivered (history sync, a
+            // receipt-driven re-upsert) carries zero counts and no
+            // ballots: keep the tallies the mirror has already
+            // aggregated, the same merge the archive write applies.
+            if let MessageKind::Poll { options: new_options, my_votes: new_mine, .. } =
+                &mut converted.kind
+            {
+                if let Some((_, old)) = entry.iter().find(|(_, m)| m.id == converted.id) {
+                    if let MessageKind::Poll { options: old_options, my_votes: old_mine, .. } =
+                        &old.kind
+                    {
+                        if old_options.len() == new_options.len() {
+                            for (new, old_count) in new_options.iter_mut().zip(old_options.iter()) {
+                                new.1 = old_count.1;
+                            }
+                            *new_mine = old_mine.clone();
+                        }
+                    }
+                }
+            }
             // Replace a pending local echo of this outgoing message.
             // Text echoes match on body; media echoes match on kind,
             // because their display bodies legitimately differ
@@ -4386,6 +4616,7 @@ mod burst_drain_tests {
             voice_refs: HashMap::new(),
             video_refs: HashMap::new(),
             video_thumbs: HashMap::new(),
+            poll_ballots: HashMap::new(),
         });
         app.live_mode = true;
         (app, evt_tx, ctx, cmd_rx)
@@ -6338,6 +6569,7 @@ mod chat_state_routing_tests {
             voice_refs: HashMap::new(),
             video_refs: HashMap::new(),
             video_thumbs: HashMap::new(),
+            poll_ballots: HashMap::new(),
         });
         app.live_mode = true;
         (app, evt_tx, ctx, cmd_rx)
@@ -7889,6 +8121,7 @@ mod mirror_pruning_tests {
             voice_refs: HashMap::new(),
             video_refs: HashMap::new(),
             video_thumbs: HashMap::new(),
+            poll_ballots: HashMap::new(),
         });
         app.live_mode = true;
         (app, evt_tx, ctx, cmd_rx)
@@ -8149,6 +8382,231 @@ mod mirror_pruning_tests {
         let row = archived.iter().find(|(m, _)| m.id == "f1").expect("the row is archived");
         assert_eq!(row.1, 0, "the archive row still records the cleared flag");
     }
+
+    /// A poll creation as the backend delivers it in this
+    /// harness: three options, zero counts, and the creation
+    /// secret plus creator the translation layer extracted.
+    fn poll_upsert(id: &str) -> LiveMessage {
+        let mut msg = LiveMessage::text(
+            id,
+            CHAT_JID,
+            Some("Alice".to_owned()),
+            "Lunch?",
+            1_700_000_000,
+            false,
+        );
+        msg.kind = backend::LiveMessageKind::Poll {
+            question: "Lunch?".to_owned(),
+            options: vec![
+                ("Deli".to_owned(), 0),
+                ("Sushi".to_owned(), 0),
+                ("Delivery".to_owned(), 0),
+            ],
+            multiple: true,
+            my_votes: Vec::new(),
+            correct: None,
+        };
+        msg.poll_secret = Some(vec![7u8; 32]);
+        msg.poll_creator = Some(CHAT_JID.to_owned());
+        msg
+    }
+
+    fn poll_vote(id: &str, voter: &str, from_me: bool, selected: &[usize]) -> BackendEvent {
+        BackendEvent::PollVote {
+            chat_jid: CHAT_JID.to_owned(),
+            message_id: id.to_owned(),
+            voter_jid: voter.to_owned(),
+            from_me,
+            selected: selected.to_vec(),
+        }
+    }
+
+    /// (counts, my_votes) of the poll in the mirror.
+    fn mirror_poll(app: &App) -> (Vec<u32>, Vec<usize>) {
+        let msg = app
+            .live
+            .as_ref()
+            .unwrap()
+            .messages
+            .get(&jid_id(CHAT_JID))
+            .expect("the chat has messages")
+            .iter()
+            .map(|(_, m)| m)
+            .find(|m| matches!(m.kind, MessageKind::Poll { .. }))
+            .expect("the poll is in the mirror");
+        match &msg.kind {
+            MessageKind::Poll { options, my_votes, .. } => {
+                (options.iter().map(|(_, v)| *v).collect(), my_votes.clone())
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    /// (counts, my_votes, ballots) of one poll, read from the archive.
+    type ArchivedPoll = (Vec<u32>, Vec<usize>, Vec<(String, Vec<usize>)>);
+
+    fn archived_poll(app: &App) -> ArchivedPoll {
+        let rows = app.live.as_ref().unwrap().store.as_ref().unwrap().messages(CHAT_JID).unwrap();
+        let (msg, _) = rows
+            .iter()
+            .find(|(m, _)| matches!(m.kind, backend::LiveMessageKind::Poll { .. }))
+            .expect("the poll is in the archive");
+        match &msg.kind {
+            backend::LiveMessageKind::Poll { options, my_votes, .. } => (
+                options.iter().map(|(_, v)| *v).collect(),
+                my_votes.clone(),
+                msg.poll_ballots.clone(),
+            ),
+            _ => unreachable!(),
+        }
+    }
+
+    /// Item 123: incoming votes aggregate onto the poll, in the
+    /// mirror and in the archive. A voter changing their
+    /// selection replaces their ballot (counts move, they do not
+    /// stack), and an empty selection retracts it.
+    #[test]
+    fn poll_votes_aggregate_with_replacement_and_clear() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        tx.send(BackendEvent::MessageUpsert(poll_upsert("poll-1"))).unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(mirror_poll(&app).0, vec![0, 0, 0]);
+
+        tx.send(poll_vote("poll-1", "10000000007@s.whatsapp.net", false, &[0])).unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(mirror_poll(&app).0, vec![1, 0, 0]);
+
+        tx.send(poll_vote("poll-1", "10000000007@s.whatsapp.net", false, &[0, 2])).unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(mirror_poll(&app).0, vec![1, 0, 1], "a changed vote replaces, not stacks");
+
+        tx.send(poll_vote("poll-1", "10000000008@s.whatsapp.net", false, &[0])).unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(mirror_poll(&app).0, vec![2, 0, 1]);
+
+        tx.send(poll_vote("poll-1", "10000000007@s.whatsapp.net", false, &[])).unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(mirror_poll(&app).0, vec![1, 0, 0], "an empty selection retracts the ballot");
+
+        let (counts, _mine, ballots) = archived_poll(&app);
+        assert_eq!(counts, vec![1, 0, 0], "the archive carries the same tally");
+        assert_eq!(
+            ballots,
+            vec![("10000000008@s.whatsapp.net".to_owned(), vec![0])],
+            "and the one surviving ballot it was derived from"
+        );
+    }
+
+    /// Item 123: my vote is applied optimistically when I cast it
+    /// (what `vote_poll` does after sending the command); the
+    /// server's echo of the same ballot must not count it twice.
+    #[test]
+    fn my_poll_vote_applies_once_when_the_echo_repeats_it() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        tx.send(BackendEvent::MessageUpsert(poll_upsert("poll-1"))).unwrap();
+        drain_all(&mut app, &ctx);
+
+        app.apply_poll_vote(CHAT_JID, "poll-1", "", true, &[1]);
+        assert_eq!(mirror_poll(&app), (vec![0, 1, 0], vec![1]));
+
+        tx.send(poll_vote("poll-1", "10000000000@s.whatsapp.net", true, &[1])).unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(mirror_poll(&app), (vec![0, 1, 0], vec![1]), "the echo changes nothing");
+        let (counts, mine, _) = archived_poll(&app);
+        assert_eq!((counts, mine), (vec![0, 1, 0], vec![1]), "and the archive agrees");
+    }
+
+    /// Item 123: a vote for a poll whose chat is not loaded in
+    /// the mirror still lands, straight on the archived copy.
+    #[test]
+    fn poll_vote_for_an_unloaded_chat_updates_the_archive() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        tx.send(BackendEvent::MessageUpsert(poll_upsert("poll-1"))).unwrap();
+        drain_all(&mut app, &ctx);
+        app.live.as_mut().unwrap().messages.remove(&jid_id(CHAT_JID));
+
+        tx.send(poll_vote("poll-1", "10000000007@s.whatsapp.net", false, &[2])).unwrap();
+        drain_all(&mut app, &ctx);
+        let (counts, _mine, ballots) = archived_poll(&app);
+        assert_eq!(counts, vec![0, 0, 1]);
+        assert_eq!(ballots, vec![("10000000007@s.whatsapp.net".to_owned(), vec![2])]);
+    }
+
+    /// Item 123: the ballots seeded from the archive at session
+    /// start (the load start_live performs) make the next vote
+    /// from the same voter replace their pre-restart ballot
+    /// instead of stacking on top of it.
+    #[test]
+    fn seeded_ballots_make_the_next_vote_replace() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        tx.send(BackendEvent::MessageUpsert(poll_upsert("poll-1"))).unwrap();
+        tx.send(poll_vote("poll-1", "10000000007@s.whatsapp.net", false, &[0])).unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(archived_poll(&app).0, vec![1, 0, 0]);
+
+        // The restart load, performed the way start_live performs
+        // it: mirror rebuilt from the archive rows, ballot map
+        // seeded from the archived ballots.
+        {
+            let session = app.live.as_mut().unwrap();
+            let rows = session.store.as_ref().unwrap().messages(CHAT_JID).unwrap();
+            session.poll_ballots.clear();
+            for (m, _) in &rows {
+                if !m.poll_ballots.is_empty() {
+                    session
+                        .poll_ballots
+                        .insert(message_id(&m.chat_jid, &m.id), m.poll_ballots.clone());
+                }
+            }
+            session.messages.insert(
+                jid_id(CHAT_JID),
+                rows.iter()
+                    .map(|(m, flags)| (m.timestamp, to_message_with_flags(m, *flags)))
+                    .collect(),
+            );
+        }
+
+        tx.send(poll_vote("poll-1", "10000000007@s.whatsapp.net", false, &[2])).unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(
+            mirror_poll(&app).0,
+            vec![0, 0, 1],
+            "the pre-restart ballot is replaced, not stacked"
+        );
+        assert_eq!(archived_poll(&app).0, vec![0, 0, 1]);
+    }
+
+    /// Item 123: an archived poll that kept its creation secret
+    /// builds the registration command the next session sends to
+    /// the backend; anything without a kept secret builds none.
+    #[test]
+    fn archived_poll_secret_builds_a_registration_command() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        tx.send(BackendEvent::MessageUpsert(poll_upsert("poll-1"))).unwrap();
+        drain_all(&mut app, &ctx);
+
+        let rows = app.live.as_ref().unwrap().store.as_ref().unwrap().messages(CHAT_JID).unwrap();
+        let (msg, _) = rows.iter().find(|(m, _)| m.id == "poll-1").unwrap();
+        let cmd = poll_secret_registration(msg).expect("the archived poll carries its secret");
+        let BackendCommand::RegisterPollSecret {
+            chat_jid,
+            message_id,
+            creator_jid,
+            secret,
+            options,
+        } = cmd
+        else {
+            panic!("the registration is a RegisterPollSecret command");
+        };
+        assert_eq!(chat_jid, CHAT_JID);
+        assert_eq!(message_id, "poll-1");
+        assert_eq!(creator_jid, CHAT_JID);
+        assert_eq!(secret, vec![7u8; 32]);
+        assert_eq!(options, vec!["Deli".to_owned(), "Sushi".to_owned(), "Delivery".to_owned()]);
+
+        let plain = LiveMessage::text("t-1", CHAT_JID, None, "hi", 1_700_000_000, false);
+        assert!(poll_secret_registration(&plain).is_none(), "no secret, no registration");
+    }
 }
 
 #[cfg(test)]
@@ -8204,6 +8662,7 @@ mod qr_gate_tests {
             voice_refs: HashMap::new(),
             video_refs: HashMap::new(),
             video_thumbs: HashMap::new(),
+            poll_ballots: HashMap::new(),
         };
         if with_payload {
             session.qr = Some(backend::qr_matrix("ref,noise,identity,adv,1").unwrap());
@@ -8411,6 +8870,7 @@ mod logout_tests {
             voice_refs: HashMap::new(),
             video_refs: HashMap::new(),
             video_thumbs: HashMap::new(),
+            poll_ballots: HashMap::new(),
         });
         app.live_mode = true;
         (app, evt_tx, ctx, cmd_rx)

@@ -1507,3 +1507,27 @@ fn blocklist_is_emitted_at_connect_and_after_block_toggles() {
         "unblock re-emits the list: {events:?}"
     );
 }
+
+/// Disconnect is the log out command: the backend answers it
+/// with a LoggedOut event (the app ends the session on it). The
+/// real backend additionally deregisters the device with the
+/// server and wipes the local sign-in store when its run ends;
+/// those live behind the whatsapp feature and are covered by
+/// the session tests there.
+#[test]
+fn disconnect_answers_with_logged_out() {
+    let (ch, _log) = linked_backend();
+    // Drain the linked script first.
+    let _ = collect_until(
+        &ch.events,
+        3,
+        |e| matches!(e, BackendEvent::MessageUpsert(m) if m.id == "fake-3"),
+    );
+    ch.commands.send(BackendCommand::Disconnect).unwrap();
+    let events = collect_until(&ch.events, 5, |e| matches!(e, BackendEvent::LoggedOut));
+    assert!(
+        events.iter().any(|e| matches!(e, BackendEvent::LoggedOut)),
+        "disconnect is answered by LoggedOut: {events:?}"
+    );
+    ch.commands.send(BackendCommand::Shutdown).unwrap();
+}

@@ -59,6 +59,8 @@
 "conversation.this_chat" = "This chat"
 "conversation.archive" = "Archive chat"
 "conversation.unarchive" = "Unarchive chat"
+"conversation.add_favorite" = "Add to favorites"
+"conversation.remove_favorite" = "Remove from favorites"
 "conversation.pin" = "Pin chat"
 "conversation.unpin" = "Unpin chat"
 "conversation.mute_notifications" = "Mute notifications"

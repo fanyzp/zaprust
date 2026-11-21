@@ -779,6 +779,11 @@ impl crate::state::App {
             }
         }
         self.live = Some(session);
+        // The archive's favorite flags belong to the chats just
+        // loaded: the conversion cannot carry them (they are
+        // not part of the synced chat row), so they are applied
+        // from the archive's own record here.
+        self.apply_stored_favorites();
         self.live_start_error = None;
         self.logged_out = false;
         if let Some(note) = archive_note {
@@ -3752,6 +3757,53 @@ pub(crate) fn should_send_typing(typing_indicators: bool, live_mode: bool) -> bo
 }
 
 impl crate::state::App {
+    /// Applies a favorite toggle for one chat: the mirror flips
+    /// at once, and in live mode the flag is written through to
+    /// the archive, so it survives restarts. Unlike archive, pin
+    /// and mute, a favorite is a purely local concept (WhatsApp
+    /// has no such property), so no backend command is ever sent
+    /// for it; the archive column the write lands in is one the
+    /// chat sync paths never touch, so a later re-sync of the
+    /// chat list cannot wipe the flag either. In demo mode there
+    /// is no session and no archive: the toggle is the in-memory
+    /// fixture flip only, like every other demo interaction.
+    pub(crate) fn apply_favorite(&mut self, chat_id: u64, favorite: bool) {
+        if let Some(c) = self.chats.iter_mut().find(|c| c.id == chat_id) {
+            c.favorite = favorite;
+        }
+        if let Some(c) = self.detached_chat.as_mut().filter(|c| c.id == chat_id) {
+            c.favorite = favorite;
+        }
+        if let Some(session) = &self.live {
+            if let (Some(store), Some(jid)) = (&session.store, session.jids.get(&chat_id)) {
+                let _ = store.set_chat_favorite(jid, favorite);
+            }
+        }
+    }
+
+    /// Applies the archive's recorded favorite flags to the
+    /// chat mirror. The chat conversion cannot carry them (the
+    /// synced chat row has no favorite field), so a live session
+    /// overlays them from the archive's own record when it loads
+    /// the chat list; every chat the archive does not flag is
+    /// set unfavorited, so the mirror never inherits a flag from
+    /// anywhere else (least of all from demo fixtures).
+    pub(crate) fn apply_stored_favorites(&mut self) {
+        let favorites: std::collections::HashSet<u64> = self
+            .live
+            .as_ref()
+            .and_then(|session| session.store.as_ref())
+            .and_then(|store| store.chat_favorites().ok())
+            .map(|jids| jids.iter().map(|j| jid_id(j)).collect())
+            .unwrap_or_default();
+        for chat in &mut self.chats {
+            chat.favorite = favorites.contains(&chat.id);
+        }
+        if let Some(c) = self.detached_chat.as_mut() {
+            c.favorite = favorites.contains(&c.id);
+        }
+    }
+
     /// Applies archive/pin/mute state to one chat: locally at once,
     /// and through the backend in live mode (the archive store is
     /// written by the same path, so the state survives restarts).
@@ -5525,6 +5577,34 @@ mod chat_state_routing_tests {
         app.chats.iter().find(|c| c.id == jid_id(CHAT_JID)).expect("chat exists").muted
     }
 
+    fn chat_favorite(app: &App) -> bool {
+        app.chats.iter().find(|c| c.id == jid_id(CHAT_JID)).expect("chat exists").favorite
+    }
+
+    fn archived_favorites(app: &App) -> Vec<String> {
+        let store = app.live.as_ref().unwrap().store.as_ref().unwrap();
+        store.chat_favorites().unwrap()
+    }
+
+    /// An arrival-style upsert for a second chat, so the
+    /// favorites filter test can tell flagged and unflagged
+    /// chats apart.
+    fn arrival_upsert_for(jid: &str) -> BackendEvent {
+        BackendEvent::ChatUpsert(LiveChat {
+            jid: jid.to_owned(),
+            title: "Other".to_owned(),
+            kind: LiveChatKind::Dm,
+            preview: "hello".to_owned(),
+            preview_sender: None,
+            timestamp: BASE_TS,
+            unread: 0,
+            archived: false,
+            pinned: false,
+            ephemeral_secs: 0,
+            muted: false,
+        })
+    }
+
     fn archived_muted(app: &App) -> bool {
         let store = app.live.as_ref().unwrap().store.as_ref().unwrap();
         store
@@ -5615,6 +5695,122 @@ mod chat_state_routing_tests {
         );
         assert!(!chat_muted(&app));
         assert!(!archived_muted(&app));
+    }
+
+    /// Item 116: the row menu's favorite toggle (apply_favorite,
+    /// the handler the menu pick lands in) flips the mirror at
+    /// once and writes the flag through to the archive, and it
+    /// never sends a backend command: a favorite is a local
+    /// concept with no server counterpart.
+    #[test]
+    fn favorite_toggle_persists_locally_without_a_backend_command() {
+        let (mut app, tx, ctx, cmd_rx) = live_app();
+        seed_chat(&mut app, &tx, &ctx);
+        let chat_id = jid_id(CHAT_JID);
+        assert!(!chat_favorite(&app));
+        assert!(archived_favorites(&app).is_empty());
+
+        app.apply_favorite(chat_id, true);
+        assert!(chat_favorite(&app), "the local flip applies at once");
+        assert_eq!(
+            archived_favorites(&app),
+            vec![CHAT_JID.to_owned()],
+            "the archive write-through carries the flag"
+        );
+        assert!(cmd_rx.try_recv().is_err(), "no backend command may be sent for a favorite");
+
+        app.apply_favorite(chat_id, false);
+        assert!(!chat_favorite(&app));
+        assert!(archived_favorites(&app).is_empty());
+        assert!(cmd_rx.try_recv().is_err());
+    }
+
+    /// Item 116: a chat-list re-sync must not wipe a favorite.
+    /// The arrival upsert knows nothing about favorites (the
+    /// wire has no such field) and the merge leaves the mirror
+    /// flag alone; the archive flag sits in a column the sync
+    /// write never names, so it survives there by construction
+    /// too.
+    #[test]
+    fn arrival_upsert_keeps_the_known_favorite() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        seed_chat(&mut app, &tx, &ctx);
+        let chat_id = jid_id(CHAT_JID);
+        app.apply_favorite(chat_id, true);
+
+        tx.send(arrival_upsert()).unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(chat_favorite(&app), "an arrival upsert must not unfavorite");
+        assert_eq!(archived_favorites(&app), vec![CHAT_JID.to_owned()]);
+    }
+
+    /// Item 116: the Favorites filter chip reads the live
+    /// flags: over two live chats it lists exactly the flagged
+    /// one.
+    #[test]
+    fn favorites_filter_lists_only_flagged_live_chats() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        seed_chat(&mut app, &tx, &ctx);
+        const OTHER_JID: &str = "628999888777@s.whatsapp.net";
+        tx.send(arrival_upsert_for(OTHER_JID)).unwrap();
+        drain_all(&mut app, &ctx);
+        app.apply_favorite(jid_id(CHAT_JID), true);
+
+        let out = core::filter::filter_chats(&app.chats, core::filter::ChatFilter::Favorites, "");
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].id, jid_id(CHAT_JID));
+        let all = core::filter::filter_chats(&app.chats, core::filter::ChatFilter::All, "");
+        assert_eq!(all.len(), 2, "the unfiltered list still shows both chats");
+    }
+
+    /// Item 116: the flags are durable across sessions: a new
+    /// session loading the same archive (the conversion plus
+    /// overlay start_live performs) renders the favorite the
+    /// previous session recorded.
+    #[test]
+    fn favorite_survives_into_a_new_session_from_the_same_archive() {
+        let dir = std::env::temp_dir()
+            .join(format!("zaprust-app-favorites-restart-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("archive.db");
+        let _ = std::fs::remove_file(&path);
+        let key = [3u8; 32];
+        {
+            let (mut app, tx, ctx, _cmd_rx) = live_app();
+            app.live.as_mut().unwrap().store = Some(store::Store::open(&path, &key).unwrap());
+            seed_chat(&mut app, &tx, &ctx);
+            app.apply_favorite(jid_id(CHAT_JID), true);
+            assert!(chat_favorite(&app));
+        }
+        let (mut app, _tx, _ctx, _cmd_rx) = live_app();
+        app.live.as_mut().unwrap().store = Some(store::Store::open(&path, &key).unwrap());
+        // The start_live load: convert the archived rows, then
+        // overlay the archive's favorite flags.
+        let stored = app.live.as_ref().unwrap().store.as_ref().unwrap().chats().unwrap();
+        app.chats = stored.iter().map(to_chat).collect();
+        assert!(!chat_favorite(&app), "the conversion alone carries no favorite");
+        app.apply_stored_favorites();
+        assert!(chat_favorite(&app), "the overlay restores the recorded favorite");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Item 116: mode gating. A live session's archive starts
+    /// with no favorites, whatever the demo fixtures carry
+    /// (some demo chats are favorited); and in demo mode, with
+    /// no session and no archive behind it, the toggle is the
+    /// in-memory fixture flip only.
+    #[test]
+    fn favorite_toggle_in_demo_mode_stays_in_memory() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        seed_chat(&mut app, &tx, &ctx);
+        assert!(
+            archived_favorites(&app).is_empty(),
+            "a fresh archive has no favorites, whatever the demo fixtures carry"
+        );
+        app.live = None;
+        app.live_mode = false;
+        app.apply_favorite(jid_id(CHAT_JID), true);
+        assert!(chat_favorite(&app), "the in-memory flip still lands for the demo session");
     }
 
     /// A mute change the server reports (another device, or a

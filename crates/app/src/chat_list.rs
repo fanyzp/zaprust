@@ -25,6 +25,18 @@ pub(crate) const TITLE_DY: f32 = 21.0;
 /// Snippet baseline y offset from the row's top edge.
 pub(crate) const SNIPPET_DY: f32 = 43.0;
 
+/// What a chat-row context-menu pick asks for. The menu
+/// closure only records the pick; the list applies it after
+/// rendering, once the borrow of the chat list the rows were
+/// drawn from has been released.
+#[derive(Clone, Copy)]
+enum RowPick {
+    /// Set the chat's archived state.
+    SetArchived(bool),
+    /// Set the chat's favorite state.
+    SetFavorite(bool),
+}
+
 /// The chat row's preview line: in a group the sender's name
 /// prefixes the preview ("Sender: text"); everywhere else the
 /// preview stands alone. Shared by the chat row and the
@@ -250,14 +262,14 @@ impl App {
                 let photos = self.demo_photos(ui.ctx());
                 let visible = filter_chats(&self.chats, self.filter, &self.search);
                 let mut clicked: Option<u64> = None;
-                // A row context-menu pick (chat id, target archived
-                // state), applied after the list renders. Archiving
+                // A row context-menu pick (chat id, what it asks
+                // for), applied after the list renders. Archiving
                 // lives on the left, on the rows themselves (the
                 // WhatsApp Web pattern): the conversation header
                 // menu carries no archive item, and there is no
                 // separate Archived entry row in this panel (the
                 // rail and the filter chip are the entries).
-                let row_action = std::cell::Cell::new(None::<(u64, bool)>);
+                let row_action = std::cell::Cell::new(None::<(u64, RowPick)>);
                 egui::ScrollArea::vertical().auto_shrink([false, false]).show_rows(
                     ui,
                     64.0,
@@ -295,7 +307,26 @@ impl App {
                                 )
                                 .clicked()
                                 {
-                                    row_action.set(Some((chat.id, !chat.archived)));
+                                    row_action
+                                        .set(Some((chat.id, RowPick::SetArchived(!chat.archived))));
+                                    ui.close();
+                                }
+                                let fav_label = if chat.favorite {
+                                    crate::i18n::t("conversation.remove_favorite")
+                                } else {
+                                    crate::i18n::t("conversation.add_favorite")
+                                };
+                                if crate::widgets::menu_item_icon(
+                                    ui,
+                                    t,
+                                    Some(crate::icons::Icon::Star),
+                                    &fav_label,
+                                    None,
+                                )
+                                .clicked()
+                                {
+                                    row_action
+                                        .set(Some((chat.id, RowPick::SetFavorite(!chat.favorite))));
                                     ui.close();
                                 }
                             });
@@ -366,10 +397,17 @@ impl App {
                     self.unread_divider =
                         crate::state::unread_divider_for(unread_at_open, &self.conversation);
                 }
-                if let Some((id, target_archived)) = row_action.get() {
-                    if let Some(c) = self.chats.iter().find(|c| c.id == id) {
-                        let (pinned, muted) = (c.pinned, c.muted);
-                        self.apply_chat_action(id, target_archived, pinned, muted);
+                if let Some((id, pick)) = row_action.get() {
+                    match pick {
+                        RowPick::SetArchived(target_archived) => {
+                            if let Some(c) = self.chats.iter().find(|c| c.id == id) {
+                                let (pinned, muted) = (c.pinned, c.muted);
+                                self.apply_chat_action(id, target_archived, pinned, muted);
+                            }
+                        }
+                        RowPick::SetFavorite(target) => {
+                            self.apply_favorite(id, target);
+                        }
                     }
                 }
                 if no_visible {

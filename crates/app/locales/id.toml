@@ -235,6 +235,8 @@
 "conversation.this_chat" = "Obrolan ini"
 "conversation.archive" = "Arsipkan obrolan"
 "conversation.unarchive" = "Batalkan arsip"
+"conversation.add_favorite" = "Tambahkan ke favorit"
+"conversation.remove_favorite" = "Hapus dari favorit"
 "conversation.pin" = "Sematkan obrolan"
 "conversation.unpin" = "Lepas sematan"
 "conversation.mute_notifications" = "Bisukan notifikasi"

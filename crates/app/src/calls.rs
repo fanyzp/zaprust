@@ -1310,6 +1310,35 @@ mod tests {
         assert!(rows[0].entry.missed);
     }
 
+    /// Item 116: the portrait favorites filter runs over the
+    /// chats' real favorite flags: with the filter on, only
+    /// entries whose chat is flagged favorite survive.
+    #[test]
+    fn favorites_filter_keeps_only_favorite_chats_entries() {
+        let ctx = eframe::egui::Context::default();
+        crate::theme::install_fonts(&ctx);
+        let mut app = App::new(Args::parse(), &ctx);
+        // As in the test above, the test owns the state from
+        // here; the flags are set explicitly so the fixture
+        // defaults cannot leak into the assertion.
+        app.live = None;
+        app.live_mode = true;
+        let mut chats = core::model::demo_chats();
+        for c in &mut chats {
+            c.favorite = c.id == 4;
+        }
+        app.chats = chats;
+        app.calls.live_entries = vec![
+            entry(11, 4, CallDirection::Incoming, false, 300),
+            entry(12, 2, CallDirection::Outgoing, false, 200),
+        ];
+        app.calls.favorites_only = true;
+        let source = call_log_source(app.live_mode, &app.calls.live_entries, &app.calls.entries);
+        let rows = app.visible_call_rows(source);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].entry.id, 11, "only the favorite chat's entry survives the filter");
+    }
+
     #[test]
     fn consecutive_same_chat_entries_group_with_a_count() {
         let entries = [

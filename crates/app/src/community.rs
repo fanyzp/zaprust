@@ -189,13 +189,7 @@ fn other_group_row(ui: &mut egui::Ui, chat: &Chat, t: Tokens) -> bool {
         egui::Stroke::new(1.0, rgb(t.accent)),
         egui::StrokeKind::Inside,
     );
-    painter.text(
-        pill.center(),
-        egui::Align2::CENTER_CENTER,
-        join_label,
-        join_font,
-        rgb(t.accent),
-    );
+    painter.text(pill.center(), egui::Align2::CENTER_CENTER, join_label, join_font, rgb(t.accent));
     pill_resp.clicked()
 }
 
@@ -640,10 +634,8 @@ impl App {
                     // opens the create form; the backend exposes a
                     // real creation command, so the row is a working
                     // entry, not a placeholder.
-                    let (rect, resp) = ui.allocate_exact_size(
-                        Vec2::new(ui.available_width(), 62.0),
-                        Sense::click(),
-                    );
+                    let (rect, resp) = ui
+                        .allocate_exact_size(Vec2::new(ui.available_width(), 62.0), Sense::click());
                     let hov = crate::anim::hover_factor(ui, "community_new_row", resp.hovered());
                     if hov > 0.001 {
                         ui.painter().rect_filled(
@@ -656,8 +648,7 @@ impl App {
                         Pos2::new(rect.left() + 8.0, rect.center().y - 24.0),
                         Vec2::splat(48.0),
                     );
-                    ui.painter()
-                        .rect_filled(thumb, CornerRadius::same(10), rgb(t.bg_panel_alt));
+                    ui.painter().rect_filled(thumb, CornerRadius::same(10), rgb(t.bg_panel_alt));
                     crate::icons::draw(
                         ui.painter(),
                         crate::icons::Icon::Plus,
@@ -831,13 +822,7 @@ impl App {
     /// local id.
     fn add_session_community(&mut self, name: String, announcement_chat_id: u64) {
         let avatar_seed = name.bytes().fold(0u8, u8::wrapping_add);
-        let id = self
-            .communities()
-            .iter()
-            .map(|c| c.id)
-            .max()
-            .unwrap_or(0)
-            + 1;
+        let id = self.communities().iter().map(|c| c.id).max().unwrap_or(0) + 1;
         self.session_announcements.push(Chat {
             id: announcement_chat_id,
             kind: ChatKind::Group,

@@ -126,6 +126,14 @@ pub(crate) struct MediaCtx {
     /// The group sender's profile photo, when the sender is a demo
     /// persona with a bundled portrait.
     pub(crate) sender_photo: Option<egui::TextureId>,
+    /// The sender-name color assigned for this conversation (the
+    /// stream assigns palette colors without replacement per
+    /// conversation, so adjacent senders never collide); falls
+    /// back to the standalone per-name color when unset.
+    pub(crate) sender_color: Option<Color32>,
+    /// The quoted sender's color from the same per-conversation
+    /// assignment as `sender_color`.
+    pub(crate) quoted_color: Option<Color32>,
     /// This view-once photo was already opened (receipt state).
     pub(crate) view_once_opened: bool,
 }
@@ -172,11 +180,21 @@ fn voice_pill_rect(x: f32, y: f32, inner_w: f32) -> Rect {
 /// The waveform strip's rect for a voice bubble whose content
 /// origin is `(x, y)` with inner width `inner_w`: the bars start
 /// right of the play disc and stop short of the speed pill while a
-/// session is active. Shared by the paint and hit-test passes so
+/// session is active, and short of the download chip while a
+/// received note has no session, so the bars never run under
+/// either control and read as clipped by the bubble's right edge.
+/// Shared by the paint and hit-test passes so
 /// seeking lands exactly on the bars the user sees. Vertically it
 /// covers the bars (centred on `y + 16`) with a little slack.
-fn voice_wave_rect(x: f32, y: f32, inner_w: f32, session: bool) -> Rect {
-    let x1 = x + inner_w - if session { VOICE_PILL_W + 8.0 } else { 0.0 };
+fn voice_wave_rect(x: f32, y: f32, inner_w: f32, session: bool, download: bool) -> Rect {
+    let reserve = if session {
+        VOICE_PILL_W + 8.0
+    } else if download {
+        VOICE_DL + 8.0
+    } else {
+        0.0
+    };
+    let x1 = x + inner_w - reserve;
     Rect::from_min_max(Pos2::new(x + 52.0, y + 4.0), Pos2::new(x1, y + 28.0))
 }
 
@@ -377,11 +395,13 @@ fn sender_seed(name: &str) -> u8 {
     name.bytes().fold(0u8, u8::wrapping_add)
 }
 
-/// The hover chevron's rect: a 24 px square tucked into the
-/// bubble's top-right corner. Shared by the paint and hit-test
-/// passes so the button is exactly where it is drawn.
+/// The hover chevron's rect: a 24 px square fully inside the
+/// bubble's top-right corner, with a 6 px margin from the right
+/// edge and 4 px from the top, so its disc never straddles the
+/// bubble edge. Shared by the paint and hit-test passes so the
+/// button is exactly where it is drawn.
 fn chevron_rect(rect: Rect) -> Rect {
-    Rect::from_min_size(Pos2::new(rect.right() - 26.0, rect.top() + 2.0), Vec2::splat(24.0))
+    Rect::from_min_size(Pos2::new(rect.right() - 30.0, rect.top() + 4.0), Vec2::splat(24.0))
 }
 
 /// `c` at `f` of its own alpha (the chevron's fade-in).
@@ -497,7 +517,14 @@ pub(crate) fn message_bubble(
         // The stream intercepts system messages before this
         // renderer, but any other caller gets the same
         // centered system pill, never a bubble-shaped frame.
-        crate::conversation::system_pill(ui, t, &msg.body, rgb(t.system_text), false);
+        crate::conversation::system_pill(
+            ui,
+            t,
+            &msg.body,
+            rgb(t.text_secondary),
+            false,
+            crate::conversation::SystemPillKind::Event,
+        );
         return None;
     }
 
@@ -830,7 +857,13 @@ pub(crate) fn message_bubble(
                         let on_dl = !mine
                             && media.voice.is_none()
                             && pos.is_some_and(|p| voice_dl_rect(vx, vy, inner_w).contains(p));
-                        let wave = voice_wave_rect(vx, vy, inner_w, media.voice.is_some());
+                        let wave = voice_wave_rect(
+                            vx,
+                            vy,
+                            inner_w,
+                            media.voice.is_some(),
+                            !mine && media.voice.is_none(),
+                        );
                         if on_pill {
                             Some(BubbleAction::CycleVoiceSpeed(msg.id))
                         } else if on_dl {
@@ -904,6 +937,19 @@ pub(crate) fn message_bubble(
             ),
             egui::StrokeKind::Inside,
         );
+        // Raised top edge: a faint light line just inside the
+        // bubble's top edge, the second half of the depth recipe
+        // (the shadow below lifts the bubble, this edge catches
+        // the light). It runs only across the flat top span, so
+        // it never crosses the rounded corners.
+        let edge_alpha = if t.is_light() { 40 } else { 24 };
+        painter.line_segment(
+            [
+                Pos2::new(rect.left() + f32::from(BUBBLE_RADIUS), rect.top() + 1.0),
+                Pos2::new(rect.right() - f32::from(BUBBLE_RADIUS), rect.top() + 1.0),
+            ],
+            Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(255, 255, 255, edge_alpha)),
+        );
 
         // Group sender avatar: the column is reserved for every
         // incoming bubble of the run, but the disc paints only
@@ -931,9 +977,9 @@ pub(crate) fn message_bubble(
 
         if show_sender {
             let name = msg.sender.as_deref().unwrap_or("");
-            let g =
-                layout_text(ui, name, FontId::proportional(13.0), sender_color(name, t), inner_w);
-            painter.galley(Pos2::new(x, y), g, sender_color(name, t));
+            let name_color = media.sender_color.unwrap_or_else(|| sender_color(name, t));
+            let g = layout_text(ui, name, FontId::proportional(13.0), name_color, inner_w);
+            painter.galley(Pos2::new(x, y), g, name_color);
             y += sender_h;
         }
         if let Some(q) = &quote {
@@ -941,7 +987,9 @@ pub(crate) fn message_bubble(
             // the stepped fill, a 3 px bar in the quoted sender's
             // color, their name in that color, then the quoted
             // text. Same for incoming and outgoing, DM and group.
-            let qs_color = sender_color(msg.quoted_sender.as_deref().unwrap_or(""), t);
+            let qs_color = media
+                .quoted_color
+                .unwrap_or_else(|| sender_color(msg.quoted_sender.as_deref().unwrap_or(""), t));
             let block = Rect::from_min_size(Pos2::new(x, y), Vec2::new(inner_w, q.h));
             painter.rect_filled(
                 block,
@@ -1194,7 +1242,7 @@ pub(crate) fn message_bubble(
                         );
                     }
                 }
-                let wave = voice_wave_rect(x, y, inner_w, snap.is_some());
+                let wave = voice_wave_rect(x, y, inner_w, snap.is_some(), !mine && snap.is_none());
                 let bar_x0 = wave.left();
                 let bar_x1 = wave.right();
                 let bar_cy = wave.center().y;
@@ -1261,12 +1309,19 @@ pub(crate) fn message_bubble(
                     let resp = ui
                         .interact(dl, egui::Id::unique(("voice_dl", msg.id)), egui::Sense::click())
                         .on_hover_cursor(egui::CursorIcon::PointingHand);
+                    // The disc fill derives from the bubble fill
+                    // (the inner-card step), not the panel alt:
+                    // on an incoming bubble the panel alt is the
+                    // bubble's own color, which made the disc
+                    // invisible and the glyph read as clipped
+                    // against the bubble's right edge.
+                    let dl_base = core::theme::pressed_step(t.bubble_in);
                     let fill = if resp.is_pointer_button_down_on() {
-                        rgb(core::theme::pressed_step(t.bg_panel_alt))
+                        rgb(core::theme::pressed_step(dl_base))
                     } else if resp.hovered() {
-                        rgb(core::theme::hover_step(t.bg_panel_alt))
+                        rgb(core::theme::hover_step(dl_base))
                     } else {
-                        rgb(t.bg_panel_alt)
+                        rgb(dl_base)
                     };
                     painter.circle_filled(dl.center(), VOICE_DL / 2.0, fill);
                     crate::icons::draw(
@@ -1705,7 +1760,32 @@ pub(crate) fn message_album(
 
 #[cfg(test)]
 mod tests {
-    use super::{human_size, preview_site};
+    use super::{chevron_rect, human_size, preview_site, voice_wave_rect, VOICE_DL, VOICE_PILL_W};
+    use eframe::egui::{Pos2, Rect, Vec2};
+
+    #[test]
+    fn chevron_sits_fully_inside_the_bubble() {
+        let bubble = Rect::from_min_size(Pos2::new(100.0, 50.0), Vec2::new(220.0, 64.0));
+        let chev = chevron_rect(bubble);
+        assert!(chev.left() >= bubble.left());
+        assert!(chev.top() >= bubble.top());
+        assert!(chev.right() <= bubble.right());
+        assert!(chev.bottom() <= bubble.bottom());
+        // The disc painted on the rect (radius 12 around its
+        // centre) also stays inside, with margin to spare.
+        assert!(bubble.right() - chev.right() >= 6.0);
+        assert!(chev.top() - bubble.top() >= 4.0);
+    }
+
+    #[test]
+    fn voice_waveform_reserves_the_download_and_speed_slots() {
+        let plain = voice_wave_rect(0.0, 0.0, 264.0, false, false);
+        assert_eq!(plain.right(), 264.0);
+        let with_dl = voice_wave_rect(0.0, 0.0, 264.0, false, true);
+        assert_eq!(with_dl.right(), 264.0 - VOICE_DL - 8.0);
+        let with_pill = voice_wave_rect(0.0, 0.0, 264.0, true, false);
+        assert_eq!(with_pill.right(), 264.0 - VOICE_PILL_W - 8.0);
+    }
 
     #[test]
     fn preview_site_takes_the_host_and_drops_www() {

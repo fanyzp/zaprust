@@ -21,20 +21,21 @@ pub(crate) fn card_shadow(t: Tokens) -> egui::Shadow {
     }
 }
 
-/// The whisper of depth under a message bubble: a 1 px drop with
-/// a tight blur, so bubbles sit on the chat background instead of
-/// being pasted onto it. Much softer than a card's shadow; the
-/// bubble fill itself stays flat.
+/// The depth under a message bubble: a 2 px drop with a 6 px
+/// blur, so bubbles sit on the chat background instead of being
+/// pasted onto it. Still softer than a card's shadow; the bubble
+/// fill itself stays flat, and the bubble's raised top edge is
+/// painted by the bubble renderer.
 pub(crate) fn bubble_shadow(t: Tokens) -> egui::Shadow {
     if t.is_light() {
         egui::Shadow {
-            offset: [0, 1],
-            blur: 4,
+            offset: [0, 2],
+            blur: 6,
             spread: 0,
-            color: Color32::from_rgba_unmultiplied(17, 27, 33, 38),
+            color: Color32::from_rgba_unmultiplied(17, 27, 33, 44),
         }
     } else {
-        egui::Shadow { offset: [0, 1], blur: 4, spread: 0, color: Color32::from_black_alpha(56) }
+        egui::Shadow { offset: [0, 2], blur: 6, spread: 0, color: Color32::from_black_alpha(72) }
     }
 }
 

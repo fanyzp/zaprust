@@ -7,7 +7,42 @@ mod stream;
 
 /// The stream's centered system pill, shared with the bubble
 /// renderer (its system-message fallback draws the same pill).
-pub(crate) use stream::system_pill;
+pub(crate) use stream::{system_pill, SystemPillKind};
+
+/// The floating composer's lift off the bottom edge of the
+/// conversation panel: the composer stack, the stream's bottom
+/// clearance and the scroll-to-bottom button all derive their
+/// positions from this one measure, so the stream can never
+/// slide under the composer and the button can never overlap
+/// the stream.
+pub(crate) const COMPOSER_LIFT: f32 = 14.0;
+
+/// The breathing room between the last bubble and the top of
+/// the floating composer stack, reserved as the stream's
+/// bottom inset on top of the composer's own height and lift.
+pub(crate) const STREAM_COMPOSER_GAP: f32 = 12.0;
+
+/// The gap between the scroll-to-bottom button and the top of
+/// the floating composer stack: the button parks above the
+/// composer, never over the messages.
+pub(crate) const SCROLL_BUTTON_GAP: f32 = 10.0;
+
+/// The stream's bottom inset for a composer stack of height
+/// `stack_h`: the stack itself, its lift off the bottom edge,
+/// and the gap above it. The last bubble always rests at
+/// least this far above the panel's bottom edge, fully clear
+/// of the composer.
+pub(crate) fn composer_clearance(stack_h: f32) -> f32 {
+    stack_h + COMPOSER_LIFT + STREAM_COMPOSER_GAP
+}
+
+/// The top edge of the scroll-to-bottom button for a stream
+/// panel ending at `full_bottom` with a composer stack of
+/// height `stack_h`: the button's bottom sits
+/// [`SCROLL_BUTTON_GAP`] above the composer's top edge.
+pub(crate) fn scroll_bottom_button_top(full_bottom: f32, stack_h: f32, size: f32) -> f32 {
+    full_bottom - COMPOSER_LIFT - stack_h - SCROLL_BUTTON_GAP - size
+}
 
 use crate::bubble::{message_bubble, BubbleAction, MediaCtx};
 use crate::state::App;
@@ -211,12 +246,13 @@ impl App {
         // Bottom clearance for the floating composer stack: the
         // stack's height as measured the last time it was drawn
         // (accessory lines, the quick replies panel and the pill
-        // itself), plus its 14 px lift off the bottom edge and a
-        // small breath. Measured, not estimated, so the clearance
+        // itself), plus its lift off the bottom edge and the
+        // stream's gap above it (see composer_clearance).
+        // Measured, not estimated, so the clearance
         // cannot desync when the stack changes shape; the
         // measurement is stored where the composer is drawn,
         // further down.
-        let composer_clearance = self.composer.stack_h + 20.0;
+        let clearance = composer_clearance(self.composer.stack_h);
         let mut pending_actions: Vec<BubbleAction> = Vec::new();
         let chat = self.selected().clone();
         // Motion: a short fade covers the switch between chats.
@@ -489,7 +525,7 @@ impl App {
                     &chat,
                     t,
                     now,
-                    composer_clearance,
+                    clearance,
                     &mut pending_actions,
                     &mut engaged,
                 );
@@ -642,6 +678,32 @@ fn header_avatar(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stream_clearance_clears_the_floating_composer() {
+        // For any stack height, the reserved inset is the stack
+        // plus its lift plus the gap: the last bubble can never
+        // rest under the composer or flush against it.
+        for stack_h in [0.0, 52.0, 84.0, 160.0] {
+            assert_eq!(composer_clearance(stack_h), stack_h + COMPOSER_LIFT + STREAM_COMPOSER_GAP);
+            assert!(composer_clearance(stack_h) > stack_h + COMPOSER_LIFT);
+        }
+    }
+
+    #[test]
+    fn scroll_button_parks_above_the_composer() {
+        // The button's bottom edge sits exactly SCROLL_BUTTON_GAP
+        // above the composer stack's top edge, for any stack
+        // height: it floats over the gap, never over messages
+        // and never over the composer.
+        let size = 46.0;
+        for stack_h in [52.0, 84.0, 160.0] {
+            let top = scroll_bottom_button_top(900.0, stack_h, size);
+            let button_bottom = top + size;
+            let composer_top = 900.0 - COMPOSER_LIFT - stack_h;
+            assert_eq!(composer_top - button_bottom, SCROLL_BUTTON_GAP);
+        }
+    }
 
     fn export_test_dir(name: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(name);

@@ -14,10 +14,6 @@ use core::filter::ChatFilter;
 use core::model::{Chat, Message, MessageKind, PreviewMedia};
 use eframe::egui::{self, CornerRadius, FontId, Margin, Pos2, RichText, Sense, Vec2};
 
-/// Height of one starred row: two lines (chat title + date,
-/// then the kind chip or the text snippet).
-const ROW_H: f32 = 56.0;
-
 /// The text in a starred row's second line for messages that do
 /// not get a kind chip: the body text (an image caption counts
 /// as the text), with the deleted placeholder the bubble also
@@ -97,25 +93,24 @@ fn twelve_hour(time: &str) -> String {
     }
 }
 
-/// The row's right-aligned date line: "21 Oct 2026 at 5:55 PM".
-/// The calendar date resolves from the message's day label
-/// through the same civil-date helpers the live layer composes
-/// labels with ("Today" and "Yesterday" map to the current and
-/// previous civil day, a full-date label parses back); a label
-/// that resolves neither way is shown as-is next to the clock.
-fn date_line(msg: &Message) -> String {
-    let time = twelve_hour(&msg.time);
-    let days = (crate::state::now_unix() / 86_400) as i64;
-    let (y, m, d) = match msg.day_label() {
-        "Today" => crate::live::civil_from_days(days),
-        "Yesterday" => crate::live::civil_from_days(days - 1),
+/// The row's compact date, in the chat list's date language:
+/// today's messages carry just their clock (the way a chat row
+/// stamps its latest message), yesterday's carry the word, and
+/// older ones a short calendar date ("22 Nov 2026"), never a
+/// full sentence with the clock spelled out. A day label that
+/// does not parse is shown as-is.
+fn compact_date(msg: &Message) -> String {
+    match msg.day_label() {
+        "Today" => msg.time.clone(),
+        "Yesterday" => "Yesterday".to_owned(),
         label => match parse_full_date(label) {
-            Some(date) => date,
-            None => return format!("{label} · {time}"),
+            Some((y, m, d)) => {
+                let month = &crate::live::MONTH_NAMES[(m - 1) as usize][..3];
+                format!("{d} {month} {y}")
+            }
+            None => label.to_owned(),
         },
-    };
-    let month = &crate::live::MONTH_NAMES[(m - 1) as usize][..3];
-    format!("{d} {month} {y} at {time}")
+    }
 }
 
 impl App {
@@ -205,9 +200,17 @@ impl App {
                     return;
                 }
                 egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                    for (chat_id, title, msg) in &visible {
+                    // Rows are built on the shared chat row's
+                    // geometry and anatomy (chat_list.rs owns the
+                    // metrics): avatar, title line with the date at
+                    // the right inset, snippet line, and a star
+                    // marker where the chat row keeps its badges.
+                    // A hairline divider under the text column
+                    // separates consecutive rows.
+                    let last = visible.len() - 1;
+                    for (idx, (chat_id, title, msg)) in visible.iter().enumerate() {
                         let (rect, resp) = ui.allocate_exact_size(
-                            Vec2::new(ui.available_width(), ROW_H),
+                            Vec2::new(ui.available_width(), crate::chat_list::ROW_H),
                             Sense::click(),
                         );
                         let hov =
@@ -220,10 +223,23 @@ impl App {
                             );
                         }
                         let painter = ui.painter();
-                        let text_left = rect.left() + 8.0;
-                        // First line: the source chat's title and
-                        // the message's full date, right-aligned.
-                        let date = date_line(msg);
+                        if let Some(chat) = view.iter().find(|c| c.id == *chat_id) {
+                            let center = Pos2::new(
+                                rect.left() + crate::chat_list::AVATAR_CX,
+                                rect.center().y,
+                            );
+                            crate::widgets::paint_chat_avatar(
+                                painter,
+                                center,
+                                crate::chat_list::AVATAR_R,
+                                chat,
+                            );
+                        }
+                        let text_left = rect.left() + crate::chat_list::TEXT_X;
+                        // First line: the source chat's name (the
+                        // row's context) and the compact date,
+                        // right-aligned at the chat row's inset.
+                        let date = compact_date(msg);
                         let date_font = FontId::proportional(11.5);
                         let date_w = ui.ctx().fonts_mut(|f| {
                             f.layout_no_wrap(date.clone(), date_font.clone(), rgb(t.text_faint))
@@ -231,7 +247,7 @@ impl App {
                                 .x
                         });
                         painter.text(
-                            Pos2::new(rect.right() - 6.0, rect.top() + 16.0),
+                            Pos2::new(rect.right() - 6.0, rect.top() + crate::chat_list::TITLE_DY),
                             egui::Align2::RIGHT_CENTER,
                             date,
                             date_font,
@@ -241,19 +257,21 @@ impl App {
                         let title_text = crate::widgets::ellipsize(
                             ui,
                             title,
-                            crate::theme::medium(14.0),
+                            crate::theme::medium(15.5),
                             title_budget,
                         );
                         painter.text(
-                            Pos2::new(text_left, rect.top() + 16.0),
+                            Pos2::new(text_left, rect.top() + crate::chat_list::TITLE_DY),
                             egui::Align2::LEFT_CENTER,
                             title_text,
-                            crate::theme::medium(14.0),
+                            crate::theme::medium(15.5),
                             rgb(t.text_primary),
                         );
                         // Second line: a kind chip for media, the
-                        // text snippet for plain text.
-                        let line2_y = rect.top() + 40.0;
+                        // text snippet for plain text, and the star
+                        // marker at the right inset.
+                        let line2_y = rect.top() + crate::chat_list::SNIPPET_DY;
+                        let budget = (rect.right() - 28.0 - text_left).max(0.0);
                         if let Some(kind) = chip_label(msg) {
                             let chip_text = format!("{kind} {}", twelve_hour(&msg.time));
                             let chip_font = FontId::proportional(11.5);
@@ -268,7 +286,7 @@ impl App {
                             }) + 16.0;
                             let chip_rect = egui::Rect::from_min_size(
                                 Pos2::new(text_left, line2_y - 9.0),
-                                Vec2::new(chip_w, 19.0),
+                                Vec2::new(chip_w.min(budget), 19.0),
                             );
                             painter.rect_filled(
                                 chip_rect,
@@ -283,19 +301,33 @@ impl App {
                                 rgb(t.text_secondary),
                             );
                         } else {
-                            let budget = (rect.right() - 14.0 - text_left).max(0.0);
                             let line = crate::widgets::ellipsize(
                                 ui,
                                 &snippet(msg),
-                                FontId::proportional(12.5),
+                                FontId::proportional(13.0),
                                 budget,
                             );
                             painter.text(
                                 Pos2::new(text_left, line2_y),
                                 egui::Align2::LEFT_CENTER,
                                 line,
-                                FontId::proportional(12.5),
+                                FontId::proportional(13.0),
                                 rgb(t.text_secondary),
+                            );
+                        }
+                        crate::icons::draw(
+                            painter,
+                            crate::icons::Icon::Star,
+                            Pos2::new(rect.right() - 15.0, line2_y),
+                            15.0,
+                            rgb(t.accent),
+                            rgb(t.bg_panel),
+                        );
+                        if idx < last {
+                            painter.hline(
+                                text_left..=(rect.right() - 6.0),
+                                rect.bottom() - 0.5,
+                                egui::Stroke::new(1.0, rgb(t.border)),
                             );
                         }
                         if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
@@ -337,7 +369,7 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_full_date, snippet, twelve_hour};
+    use super::{compact_date, parse_full_date, snippet, twelve_hour};
     use core::model::{Message, MessageKind};
 
     #[test]
@@ -364,6 +396,23 @@ mod tests {
         // Unparseable clocks pass through untouched.
         assert_eq!(twelve_hour("…"), "…");
         assert_eq!(twelve_hour("25:00"), "25:00");
+    }
+
+    #[test]
+    fn compact_dates_use_the_chat_list_language() {
+        // No day label resolves to Today: just the clock, the
+        // way a chat row stamps its latest message.
+        let mut msg = Message::theirs(1, "Sarah", "hi", "17:48");
+        assert_eq!(compact_date(&msg), "17:48");
+        msg.day = "Yesterday".to_owned();
+        assert_eq!(compact_date(&msg), "Yesterday");
+        // Older days collapse to a short calendar date with no
+        // clock and no "at".
+        msg.day = "22 November 2026".to_owned();
+        assert_eq!(compact_date(&msg), "22 Nov 2026");
+        // A label that does not parse is shown as-is.
+        msg.day = "Someday".to_owned();
+        assert_eq!(compact_date(&msg), "Someday");
     }
 
     #[test]

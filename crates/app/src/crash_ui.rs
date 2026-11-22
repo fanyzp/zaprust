@@ -53,7 +53,11 @@ impl App {
         let mut y = area.top() + 12.0;
 
         if !on_connect && self.crash_report.is_some() {
-            let size = Vec2::new(560.0, 86.0);
+            // The banner sizes to the window: the fixed cap on
+            // wide windows, and never wider than the window minus
+            // the same 12.0 side margins its top offset uses, so
+            // a portrait window never clips it.
+            let size = Vec2::new((area.width() - 24.0).min(560.0), 86.0);
             let rect =
                 egui::Rect::from_min_size(Pos2::new(area.center().x - size.x / 2.0, y), size);
             let mut height = size.y;
@@ -80,7 +84,10 @@ impl App {
             // busy.
             let phase = crate::anim::popup_phase(root.ctx(), "notice_banner", true, self.motion);
             if let Some(banner_p) = phase {
-                let size = Vec2::new(560.0, 40.0);
+                // Same window-sized width as the crash banner
+                // above: cap 560.0, window width minus margins
+                // below that.
+                let size = Vec2::new((area.width() - 24.0).min(560.0), 40.0);
                 let slide = if self.motion.slides() { (1.0 - banner_p) * 10.0 } else { 0.0 };
                 let rect = egui::Rect::from_min_size(
                     Pos2::new(area.center().x - size.x / 2.0, y + slide),

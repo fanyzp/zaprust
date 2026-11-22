@@ -758,18 +758,30 @@ impl App {
         ctx.data_mut(|d| {
             d.insert_temp(egui::Id::unique("country_picker_seen"), self.country_picker_open);
         });
-        if !self.country_picker_open {
+        // The entrance runs on the shared popup phase (FADE in,
+        // EXIT out) like every other menu and dialog; this popup
+        // used to appear and vanish instantly. While the exit
+        // runs the picker still draws, but its dismissals and
+        // selections are ignored, the same contract the other
+        // popup_phase surfaces follow.
+        let Some(pick_p) = crate::anim::popup_phase(
+            ctx,
+            "country_picker",
+            self.country_picker_open,
+            self.motion,
+        ) else {
             return;
-        }
+        };
+        let exiting = !self.country_picker_open;
         let t = self.tokens();
         let area = ctx.content_rect();
         let rect = country_picker_rect(area, self.connect_card_rect, self.country_anchor);
         let size = rect.size();
-        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        if !exiting && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             self.country_picker_open = false;
             return;
         }
-        if was_open && ctx.input(|i| i.pointer.any_click()) {
+        if !exiting && was_open && ctx.input(|i| i.pointer.any_click()) {
             if let Some(pos) = ctx.input(|i| i.pointer.interact_pos()) {
                 if !rect.contains(pos) {
                     self.country_picker_open = false;
@@ -782,6 +794,9 @@ impl App {
             .fixed_pos(rect.min)
             .order(egui::Order::Foreground)
             .show(ctx, |ui| {
+                if pick_p < 0.999 {
+                    ui.set_opacity(pick_p);
+                }
                 let frame = crate::theme::glass_frame(t, 16)
                     .inner_margin(Margin::symmetric(12, 10))
                     .show(ui, |ui| {
@@ -852,10 +867,13 @@ impl App {
                     });
                 crate::theme::paint_glass_edge(ui.painter(), frame.response.rect, 16.0, t);
             });
-        if let Some(country) = chosen {
-            self.pair_country_iso = country.iso.to_owned();
-            self.pair_phone = crate::countries::compose_number(country.dial, &self.pair_national);
-            self.country_picker_open = false;
+        if !exiting {
+            if let Some(country) = chosen {
+                self.pair_country_iso = country.iso.to_owned();
+                self.pair_phone =
+                    crate::countries::compose_number(country.dial, &self.pair_national);
+                self.country_picker_open = false;
+            }
         }
     }
 

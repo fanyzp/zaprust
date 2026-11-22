@@ -202,10 +202,9 @@ impl App {
                                 );
                             });
                         } else {
-                            ui.with_layout(
-                                egui::Layout::top_down(egui::Align::Center),
-                                |ui| self.connect_card_main(ui, t),
-                            );
+                            ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
+                                self.connect_card_main(ui, t)
+                            });
                         }
                     });
                 // The country picker takes its width from this
@@ -325,14 +324,11 @@ impl App {
                 // code. It never narrates the machinery behind
                 // the wait, and it never claims a scan is being
                 // awaited before a payload exists to scan.
-                let status_label = match waiting_line_key(
-                    self.pair_mode,
-                    &session.status,
-                    session.qr.is_some(),
-                ) {
-                    Some(key) => crate::i18n::t(key),
-                    None => session.status.label(),
-                };
+                let status_label =
+                    match waiting_line_key(self.pair_mode, &session.status, session.qr.is_some()) {
+                        Some(key) => crate::i18n::t(key),
+                        None => session.status.label(),
+                    };
                 let (status_text, color) = if session.fake {
                     (format!("Test mode (not WhatsApp): {status_label}"), t.text_faint)
                 } else if failed {
@@ -522,11 +518,8 @@ impl App {
             // the tiles stay empty, because a dotted tile reads
             // as a masked code that has already arrived.
             let live_code = self.live.as_ref().and_then(|s| s.pair_code.clone());
-            let code: Option<String> = if self.live_mode {
-                live_code
-            } else {
-                Some(pairing_code(&self.pair_phone))
-            };
+            let code: Option<String> =
+                if self.live_mode { live_code } else { Some(pairing_code(&self.pair_phone)) };
             let tiles = pair_code_tiles(code.as_deref());
             ui.vertical_centered(|ui| {
                 for row in 0..2 {

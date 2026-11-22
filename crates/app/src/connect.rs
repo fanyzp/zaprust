@@ -573,10 +573,20 @@ impl App {
                                 CornerRadius::same(11),
                                 rgb(t.bg_panel_alt),
                             );
+                            // The tiles sit inside one flat card,
+                            // so their frame takes the softened
+                            // inset form (the border token at the
+                            // shared separator alpha), not the
+                            // full-contrast stroke of a floating
+                            // surface.
+                            let bc = rgb(t.border);
                             ui.painter().rect_stroke(
                                 rect,
                                 CornerRadius::same(11),
-                                Stroke::new(1.0_f32, rgb(t.border)),
+                                Stroke::new(
+                                    1.0_f32,
+                                    Color32::from_rgba_unmultiplied(bc.r(), bc.g(), bc.b(), 100),
+                                ),
                                 egui::StrokeKind::Inside,
                             );
                             if let Some(ch) = ch {
@@ -1247,7 +1257,15 @@ fn steps_stepper(ui: &mut egui::Ui, t: Tokens, items: &[&str], complete: bool) {
         if i > 0 {
             let from = Pos2::new(rect.left() + cell_w * (i as f32 - 0.5) + 14.0, cy);
             let to = Pos2::new(rect.left() + cell_w * (i as f32 + 0.5) - 14.0, cy);
-            let col = if complete { rgb(t.accent) } else { rgb(t.border) };
+            // A connector inside one flat surface takes the
+            // softened form; only a completed sequence earns the
+            // full accent.
+            let bc = rgb(t.border);
+            let col = if complete {
+                rgb(t.accent)
+            } else {
+                Color32::from_rgba_unmultiplied(bc.r(), bc.g(), bc.b(), 100)
+            };
             painter.line_segment([from, to], Stroke::new(1.0_f32, col));
         }
     }
@@ -1278,7 +1296,14 @@ fn steps_column(ui: &mut egui::Ui, t: Tokens, items: &[&str], complete: bool) {
         if i > 0 {
             let from = Pos2::new(cx, rect.top() + row_h * (i as f32 - 0.5) + 14.0);
             let to = Pos2::new(cx, rect.top() + row_h * (i as f32 + 0.5) - 14.0);
-            let col = if complete { rgb(t.accent) } else { rgb(t.border) };
+            // Same softened connector as the horizontal stepper:
+            // one flat surface, so no full-contrast line.
+            let bc = rgb(t.border);
+            let col = if complete {
+                rgb(t.accent)
+            } else {
+                Color32::from_rgba_unmultiplied(bc.r(), bc.g(), bc.b(), 100)
+            };
             painter.line_segment([from, to], Stroke::new(1.0_f32, col));
         }
     }

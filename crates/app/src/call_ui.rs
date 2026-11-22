@@ -3,7 +3,7 @@
 //! matching the backend's contract.
 
 use backend::BackendCommand;
-use eframe::egui::{self, Align2, Area, Frame, Id, Margin, RichText, Sense, Vec2};
+use eframe::egui::{self, Align2, Area, Id, Margin, RichText, Sense, Vec2};
 
 use crate::icons::{self, Icon};
 use crate::state::App;
@@ -342,9 +342,12 @@ impl App {
         Area::new(Id::unique("call_overlay")).anchor(Align2::CENTER_CENTER, Vec2::ZERO).show(
             ctx,
             |ui| {
-                Frame::new()
+                // The card floats over the conversation, so it
+                // carries the frame treatment every other floating
+                // surface carries (the shared glass frame's stroke
+                // and shadow), keeping its own panel fill.
+                let card = crate::theme::glass_frame(t, 16)
                     .fill(rgb(t.bg_panel))
-                    .corner_radius(16.0)
                     .inner_margin(Margin::symmetric(28, 22))
                     .show(ui, |ui| {
                         ui.set_min_width(280.0);
@@ -436,6 +439,7 @@ impl App {
                             });
                         });
                     });
+                crate::theme::paint_glass_edge(ui.painter(), card.response.rect, 16.0, t);
             },
         );
         match action {

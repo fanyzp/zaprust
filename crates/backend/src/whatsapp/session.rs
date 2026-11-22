@@ -22,7 +22,8 @@ use super::calls::{
     CallIncoming,
 };
 use super::send::{
-    outgoing_location_message, outgoing_text_message, send_media, stamp_ephemeral, OutgoingMedia,
+    outgoing_location_message, outgoing_text_message, post_text_status, send_media,
+    stamp_ephemeral, OutgoingMedia,
 };
 use super::translate::{
     participant_name, privacy_map, translate_event, translate_message, translate_special,
@@ -646,6 +647,32 @@ pub(super) async fn run_async(
                         });
                     }
                 },
+                BackendCommand::PostTextStatus { text, recipients } => {
+                    // A status post is a sender-key fan-out to
+                    // its audience, so the command carries the
+                    // audience JIDs. Unusable entries are dropped;
+                    // an empty text, or a post with nobody left
+                    // to receive it, is refused honestly instead
+                    // of being sent to nobody.
+                    let audience: Vec<Jid> =
+                        recipients.iter().filter_map(|r| r.parse::<Jid>().ok()).collect();
+                    if text.trim().is_empty() {
+                        events.emit(BackendEvent::StatusPostFailed {
+                            message: "That status is empty, nothing was posted.".to_owned(),
+                        });
+                    } else if audience.is_empty() {
+                        events.emit(BackendEvent::StatusPostFailed {
+                            message: "There is nobody to post that status to.".to_owned(),
+                        });
+                    } else {
+                        match post_text_status(&client, &text, &audience).await {
+                            Ok(_) => events.emit(BackendEvent::StatusPosted { text }),
+                            Err(e) => events.emit(BackendEvent::StatusPostFailed {
+                                message: format!("Posting the status failed: {e}"),
+                            }),
+                        }
+                    }
+                }
                 BackendCommand::SetDisappearingTimer { chat_jid, duration_secs } => {
                     match chat_jid.parse::<Jid>() {
                         Ok(jid) => {

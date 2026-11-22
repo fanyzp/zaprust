@@ -104,6 +104,35 @@ pub(super) async fn send_media(
     client.send_message(jid.clone(), message).await.map_err(|e| format!("send: {e}"))
 }
 
+/// The background a text status post carries, as an ARGB word:
+/// the house green, the color a text status wears when the user
+/// picks no color of their own.
+pub(super) const STATUS_TEXT_BACKGROUND_ARGB: u32 = 0xFF00_A884;
+
+/// Posts a text status through the library's status API. The
+/// recipients are the post's audience (a status is a sender-key
+/// fan-out, not a single-address send); the options keep the
+/// library default, the `contacts` privacy setting. Returns the
+/// library's send result so the caller can report success
+/// against the assigned protocol ID.
+pub(super) async fn post_text_status(
+    client: &whatsapp_rust::Client,
+    text: &str,
+    recipients: &[Jid],
+) -> Result<SendResult, String> {
+    client
+        .status()
+        .send_text(
+            text,
+            STATUS_TEXT_BACKGROUND_ARGB,
+            wa::message::extended_text_message::FontType::SYSTEM,
+            recipients,
+            whatsapp_rust::StatusSendOptions::default(),
+        )
+        .await
+        .map_err(|e| format!("{e}"))
+}
+
 /// Builds the outgoing text message: bare text, or extendedText
 /// carrying the reply context (the quoted message's protocol id, its
 /// author as the participant, and a text preview of its body). A

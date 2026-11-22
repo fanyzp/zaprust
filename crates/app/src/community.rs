@@ -165,25 +165,36 @@ fn other_group_row(ui: &mut egui::Ui, chat: &Chat, t: Tokens) -> bool {
             rgb(t.text_secondary),
         );
     }
-    // The pill as its own button: hover and pressed fills step
-    // like the house buttons, with the pointing hand.
+    // The pill as its own button: a quiet tinted outline, never
+    // a filled button sitting inside a list row. Hover and press
+    // only deepen the tint, with the pointing hand.
     let pill_resp = ui
         .interact(pill, egui::Id::unique(("join_pill", chat.id)), Sense::click())
         .on_hover_cursor(egui::CursorIcon::PointingHand);
-    let pill_fill = if pill_resp.is_pointer_button_down_on() {
-        rgb(core::theme::pressed_step(t.accent))
+    let pill_alpha = if pill_resp.is_pointer_button_down_on() {
+        96
     } else if pill_resp.hovered() {
-        rgb(core::theme::hover_step(t.accent))
+        64
     } else {
-        rgb(t.accent)
+        32
     };
-    painter.rect_filled(pill, CornerRadius::same(14), pill_fill);
+    painter.rect_filled(
+        pill,
+        CornerRadius::same(14),
+        crate::theme::glass_wash(t, t.accent, pill_alpha),
+    );
+    painter.rect_stroke(
+        pill,
+        CornerRadius::same(14),
+        egui::Stroke::new(1.0, rgb(t.accent)),
+        egui::StrokeKind::Inside,
+    );
     painter.text(
         pill.center(),
         egui::Align2::CENTER_CENTER,
         join_label,
         join_font,
-        rgb(t.on_accent()),
+        rgb(t.accent),
     );
     pill_resp.clicked()
 }
@@ -246,7 +257,11 @@ pub fn community_home(
                 );
             }
         }
-        ui.add_space(SP_3);
+        // The identity block's avatar overlaps the cover's bottom
+        // edge by half its height (a negative advance pulls the
+        // cursor back over the cover, and the avatar paints after
+        // it, so it sits on top of the banner's edge).
+        ui.add_space(-40.0);
         // Centered identity block: avatar, name, the community
         // subtitle line and the description with its toggle.
         ui.vertical_centered(|ui| {
@@ -322,41 +337,52 @@ pub fn community_home(
             }
         });
         ui.add_space(SP_SECTION);
-        // Announcement chat: the shared chat row with a megaphone
-        // avatar override, keeping its own unread badge.
-        section_label(ui, t, &crate::i18n::t("community.announcements"));
-        if crate::chat_list::chat_row(
-            ui,
-            announcement,
-            false,
-            false,
-            t,
-            None,
-            Some(crate::icons::Icon::Megaphone),
-            None,
-        )
-        .clicked()
-        {
-            intents.open_chat = Some(announcement.id);
-        }
-        ui.add_space(SP_SECTION);
-        // The groups the user is in.
-        section_label(ui, t, &crate::i18n::t("community.your_groups"));
-        for group in groups {
-            if crate::chat_list::chat_row(ui, group, false, false, t, None, None, None).clicked() {
-                intents.open_chat = Some(group.id);
+        // The sections share one inset axis with the chat list:
+        // the frame's 10 px inner margin is the list panel's own
+        // margin, so section labels start where chat row text
+        // starts and row timestamps and badges end the same
+        // distance from the pane edge as they do in the list,
+        // instead of running to the edge of the content area.
+        egui::Frame::new().inner_margin(egui::Margin::symmetric(10, 0)).show(ui, |ui| {
+            // Announcement chat: the shared chat row with a
+            // megaphone avatar override, keeping its own unread
+            // badge.
+            section_label(ui, t, &crate::i18n::t("community.announcements"));
+            if crate::chat_list::chat_row(
+                ui,
+                announcement,
+                false,
+                false,
+                t,
+                None,
+                Some(crate::icons::Icon::Megaphone),
+                None,
+            )
+            .clicked()
+            {
+                intents.open_chat = Some(announcement.id);
             }
-        }
-        // Groups of this community the user has not joined yet.
-        if !other_groups.is_empty() {
             ui.add_space(SP_SECTION);
-            section_label(ui, t, &crate::i18n::t("community.other_groups"));
-            for group in other_groups {
-                if other_group_row(ui, group, t) {
-                    intents.join_group = Some(group.id);
+            // The groups the user is in.
+            section_label(ui, t, &crate::i18n::t("community.your_groups"));
+            for group in groups {
+                if crate::chat_list::chat_row(ui, group, false, false, t, None, None, None)
+                    .clicked()
+                {
+                    intents.open_chat = Some(group.id);
                 }
             }
-        }
+            // Groups of this community the user has not joined yet.
+            if !other_groups.is_empty() {
+                ui.add_space(SP_SECTION);
+                section_label(ui, t, &crate::i18n::t("community.other_groups"));
+                for group in other_groups {
+                    if other_group_row(ui, group, t) {
+                        intents.join_group = Some(group.id);
+                    }
+                }
+            }
+        });
     });
     intents
 }

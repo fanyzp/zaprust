@@ -22,8 +22,7 @@ fn menu_sense(ui: &egui::Ui) -> egui::Sense {
 /// instead of snapping between hard fills.
 fn menu_wash(ui: &mut egui::Ui, t: Tokens, rect: egui::Rect, resp: &egui::Response, key: &str) {
     let hov = crate::anim::hover_factor(ui, ("menu_row", key), resp.hovered());
-    let press =
-        crate::anim::press_factor(ui, ("menu_row", key), resp.is_pointer_button_down_on());
+    let press = crate::anim::press_factor(ui, ("menu_row", key), resp.is_pointer_button_down_on());
     if press > 0.001 {
         let pressed = core::theme::pressed_step(t.bg_panel_alt);
         let fill = core::theme::mix(t.bg_panel_alt, pressed, press);

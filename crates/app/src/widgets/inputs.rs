@@ -199,11 +199,8 @@ pub(crate) fn radio_row(
     // factors, crossfading on HOVER and PRESS (instant under
     // Motion Off) instead of snapping between hard fills.
     let hov = crate::anim::hover_factor(ui, ("radio_row", label), response.hovered());
-    let press = crate::anim::press_factor(
-        ui,
-        ("radio_row", label),
-        response.is_pointer_button_down_on(),
-    );
+    let press =
+        crate::anim::press_factor(ui, ("radio_row", label), response.is_pointer_button_down_on());
     if press > 0.001 {
         let pressed = core::theme::pressed_step(t.bg_panel_alt);
         let fill = core::theme::mix(t.bg_panel_alt, pressed, press);

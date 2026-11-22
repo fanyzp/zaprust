@@ -386,11 +386,8 @@ pub(crate) fn icon_button_on(
     // is the caller's hover fill stepped back toward the panel;
     // mixing from the panel keeps the wash's endpoints exact.
     let hov = crate::anim::hover_factor(ui, ("icon_button", tooltip), resp.hovered());
-    let press = crate::anim::press_factor(
-        ui,
-        ("icon_button", tooltip),
-        resp.is_pointer_button_down_on(),
-    );
+    let press =
+        crate::anim::press_factor(ui, ("icon_button", tooltip), resp.is_pointer_button_down_on());
     if press > 0.001 {
         let base = core::theme::mix(t.bg_panel, hover, hov);
         let fill = core::theme::mix(base, pressed, press);

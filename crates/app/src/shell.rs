@@ -153,8 +153,7 @@ impl App {
             None => self.anim.screen_key = Some(key),
             Some(prev) if prev != key => {
                 self.anim.screen_key = Some(key);
-                self.anim.screen_fade =
-                    Some(self.fresh_anim(crate::motion::dur::SWITCH, ctx));
+                self.anim.screen_fade = Some(self.fresh_anim(crate::motion::dur::SWITCH, ctx));
             }
             _ => {}
         }
@@ -163,10 +162,8 @@ impl App {
         if p < 1.0 {
             let t = self.tokens();
             let alpha = ((1.0 - p) * 220.0) as u8;
-            let layer = egui::LayerId::new(
-                egui::Order::Foreground,
-                egui::Id::unique("screen_fade_layer"),
-            );
+            let layer =
+                egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("screen_fade_layer"));
             ctx.layer_painter(layer).rect_filled(
                 ctx.content_rect(),
                 egui::CornerRadius::ZERO,

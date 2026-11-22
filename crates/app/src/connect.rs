@@ -764,12 +764,9 @@ impl App {
         // runs the picker still draws, but its dismissals and
         // selections are ignored, the same contract the other
         // popup_phase surfaces follow.
-        let Some(pick_p) = crate::anim::popup_phase(
-            ctx,
-            "country_picker",
-            self.country_picker_open,
-            self.motion,
-        ) else {
+        let Some(pick_p) =
+            crate::anim::popup_phase(ctx, "country_picker", self.country_picker_open, self.motion)
+        else {
             return;
         };
         let exiting = !self.country_picker_open;

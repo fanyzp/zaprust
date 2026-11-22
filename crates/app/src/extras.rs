@@ -127,8 +127,9 @@ pub(crate) fn write_json_file_pub(path: &std::path::Path, text: &str) {
 /// a small set of bracketed labels for a message with no text
 /// of its own: the fake backend labels sent media "[photo]",
 /// "[video]", "[voice note]", "[document]" and "[sticker]",
-/// and the real backend falls back to "[non-text message]" for
-/// a non-text payload with no caption. Both producers pair the
+/// and the real backend summarizes a non-text payload by its
+/// kind (its caption, or a label such as "Photo"). Both
+/// producers pair the
 /// label with a non-Text kind, so a genuine text message is
 /// never media-only, even when its text matches a label. Media
 /// from the fake scripted set carries an empty body instead of

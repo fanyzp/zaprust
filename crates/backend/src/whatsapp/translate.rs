@@ -115,7 +115,13 @@ pub(super) fn translate_special(ctx: &MessageContext, sink: &EventSink) -> bool 
                     return true;
                 }
             }
-            _ => {}
+            // Any other protocol message (history sync
+            // notifications the library consumes itself, peer
+            // data operations, group settings records) is not
+            // chat content: it is handled here so it can never
+            // surface as a message bubble.
+            Some(_) => return true,
+            None => {}
         }
     }
     false
@@ -324,22 +330,216 @@ pub(super) fn translate_event(event: &Event, sink: &EventSink, own_jids: &[Strin
             // app must stop presenting it as scannable.
             sink.emit(BackendEvent::QrExpired);
         }
+        Event::HistorySync(lazy) => {
+            // The roster itself: after pairing, the phone sends
+            // the account's conversations and their recent
+            // messages as history sync chunks. This event is the
+            // ONLY channel that carries them; without a handler
+            // the list stays empty except for chats a live message
+            // happens to create. Progress rides the same event.
+            sink.emit(BackendEvent::SyncProgress { percent: lazy.progress() });
+            if let Some(sync) = lazy.get() {
+                translate_history_sync(sync, sink);
+            }
+        }
+        Event::OfflineSyncPreview(_) => {
+            sink.emit(BackendEvent::SyncProgress { percent: None });
+        }
+        Event::OfflineSyncCompleted(_) => {
+            sink.emit(BackendEvent::SyncCompleted);
+        }
         _ => {}
     }
 }
 
+/// Translates one decoded history sync payload into chat and
+/// message upserts: the roster as the phone reported it, with each
+/// conversation's carried messages translated by the same
+/// classifier and body rules as live traffic, so history and live
+/// messages are indistinguishable downstream.
+pub(super) fn translate_history_sync(
+    sync: &whatsapp_rust::prelude::wa::HistorySync,
+    sink: &EventSink,
+) {
+    let push_names: std::collections::HashMap<&str, &str> = sync
+        .pushnames
+        .iter()
+        .filter_map(|p| Some((p.id.as_deref()?, p.pushname.as_deref()?)))
+        .collect();
+    for conv in &sync.conversations {
+        translate_history_conversation(conv, &push_names, sink);
+    }
+}
+
+fn translate_history_conversation(
+    conv: &whatsapp_rust::prelude::wa::Conversation,
+    push_names: &std::collections::HashMap<&str, &str>,
+    sink: &EventSink,
+) {
+    let chat_jid = conv.id.clone();
+    if chat_jid.is_empty() {
+        return;
+    }
+    let kind = kind_of(&chat_jid);
+    let mut messages: Vec<LiveMessage> = Vec::new();
+    for entry in &conv.messages {
+        if let Some(info) = entry.message.as_option() {
+            if let Some(msg) = history_message(&chat_jid, info) {
+                messages.push(msg);
+            }
+        }
+    }
+    messages.sort_by_key(|m| m.timestamp);
+    let last = messages.last();
+    let title = conv
+        .name
+        .clone()
+        .filter(|n| !n.trim().is_empty())
+        .or_else(|| conv.display_name.clone().filter(|n| !n.trim().is_empty()))
+        .or_else(|| match kind {
+            LiveChatKind::Dm => last
+                .and_then(|m| m.sender.clone())
+                .or_else(|| push_names.get(chat_jid.as_str()).map(|s| (*s).to_owned())),
+            _ => None,
+        })
+        .unwrap_or_else(|| user_part(&chat_jid));
+    let timestamp = conv
+        .last_msg_timestamp
+        .map(|t| i64::try_from(t).unwrap_or(0))
+        .filter(|t| *t > 0)
+        .or_else(|| last.map(|m| m.timestamp))
+        .unwrap_or(0);
+    let now_secs = now_millis() / 1000;
+    let chat = LiveChat {
+        jid: chat_jid.clone(),
+        title,
+        kind,
+        preview: last.map(|m| m.body.clone()).unwrap_or_default(),
+        preview_sender: if kind == LiveChatKind::Group {
+            last.and_then(|m| m.sender.clone())
+        } else {
+            None
+        },
+        timestamp,
+        unread: conv.unread_count.unwrap_or(0),
+        archived: conv.archived.unwrap_or(false),
+        pinned: conv.pinned.is_some_and(|p| p > 0),
+        ephemeral_secs: conv.ephemeral_expiration.unwrap_or(0),
+        muted: conv.mute_end_time.is_some_and(|end| i64::try_from(end).unwrap_or(0) > now_secs),
+    };
+    sink.emit(BackendEvent::ChatUpsert(chat));
+    for msg in messages {
+        sink.emit(BackendEvent::MessageUpsert(msg));
+    }
+}
+
+/// Translates one history-carried message. Stub entries and
+/// messages the phone marked to ignore carry no displayable
+/// payload and are skipped.
+fn history_message(
+    chat_jid: &str,
+    info: &whatsapp_rust::prelude::wa::WebMessageInfo,
+) -> Option<LiveMessage> {
+    if info.ignore == Some(true) {
+        return None;
+    }
+    let proto = info.message.as_option()?;
+    let key = info.key.as_option()?;
+    let id = key.id.clone()?;
+    let from_me = key.from_me.unwrap_or(false);
+    let timestamp = i64::try_from(info.message_timestamp.unwrap_or(0)).unwrap_or(0);
+    let text = proto.text_content().map(ToOwned::to_owned);
+    let (mut kind, view_once) = classify_message(proto);
+    if matches!(kind, LiveMessageKind::Text) && text.is_none() {
+        kind = LiveMessageKind::Other("Message".to_owned());
+    }
+    let body = body_for(&kind, view_once, text.as_deref());
+    let sender_jid = key.participant.clone().or_else(|| info.participant.clone());
+    let sender_name = if from_me {
+        None
+    } else {
+        info.push_name
+            .clone()
+            .filter(|n| !n.trim().is_empty())
+            .or_else(|| sender_jid.as_deref().map(user_part))
+    };
+    let mut msg = LiveMessage::text(id, chat_jid.to_owned(), sender_name, body, timestamp, from_me);
+    msg.kind = kind;
+    msg.view_once = view_once;
+    msg.photo_ref = super::util::photo_ref_of(proto);
+    msg.voice_ref = super::util::voice_ref_of(proto);
+    msg.video_ref = super::util::video_ref_of(proto);
+    msg.video_thumbnail = super::util::video_thumbnail_of(proto);
+    msg.sender_jid = sender_jid;
+    if matches!(msg.kind, LiveMessageKind::Poll { .. }) {
+        if let Some((secret, _names)) = super::util::received_poll_secret(proto) {
+            msg.poll_secret = Some(secret);
+            msg.poll_creator = msg.sender_jid.clone();
+        }
+    }
+    Some(msg)
+}
+
+/// The display body for one translated message: its own text when
+/// it has any, otherwise a typed summary from its kind (a photo
+/// reads "Photo", a document its file name from the caption slot,
+/// a poll its question). A view-once caption stays sealed: it is
+/// part of the protected payload and is never promoted to the
+/// body, where previews, notifications and the archive would pick
+/// it up as ordinary text. No bracketed placeholder is ever
+/// produced: the old "[non-text message]" literal rendered as a
+/// fake text bubble for every unwrapped media payload.
+pub(super) fn body_for(kind: &LiveMessageKind, view_once: bool, text: Option<&str>) -> String {
+    if let Some(text) = text {
+        if !text.is_empty() {
+            return text.to_owned();
+        }
+    }
+    match kind {
+        LiveMessageKind::Media { media, caption, .. } => {
+            if !view_once && !caption.is_empty() {
+                caption.clone()
+            } else {
+                match media {
+                    crate::MediaKind::Photo => "Photo",
+                    crate::MediaKind::Video => "Video",
+                    crate::MediaKind::Voice => "Voice message",
+                    crate::MediaKind::Document => "Document",
+                    crate::MediaKind::Sticker => "Sticker",
+                }
+                .to_owned()
+            }
+        }
+        LiveMessageKind::Poll { question, .. } => {
+            if question.is_empty() {
+                "Poll".to_owned()
+            } else {
+                question.clone()
+            }
+        }
+        LiveMessageKind::Location { name, .. } => name.clone(),
+        LiveMessageKind::Contact { name, .. } => name.clone(),
+        LiveMessageKind::Carousel { body, .. } => body.clone(),
+        LiveMessageKind::Other(label) => label.clone(),
+        LiveMessageKind::Text => "Message".to_owned(),
+    }
+}
+
 /// Translates one incoming message context into a chat + message
-/// upsert, in Zaprust terms. Non-text messages are summarized with a
-/// bracketed placeholder in this phase (media download/display is a
-/// later milestone).
+/// upsert, in Zaprust terms.
 pub(super) fn translate_message(ctx: &MessageContext) -> Option<(LiveChat, LiveMessage)> {
     let source = &ctx.info.source;
     let chat_jid = source.chat.to_string();
     let kind = kind_of(&chat_jid);
-    let body = ctx
-        .message
-        .text_content()
-        .map_or_else(|| "[non-text message]".to_owned(), ToOwned::to_owned);
+    let text = ctx.message.text_content().map(ToOwned::to_owned);
+    let (mut msg_kind, view_once) = classify_kind(ctx);
+    if matches!(msg_kind, LiveMessageKind::Text) && text.is_none() {
+        // A payload with no text and no classifier arm (an
+        // interactive reply, a template, an album): it is not a
+        // text message and must not wear a text body.
+        msg_kind = LiveMessageKind::Other("Message".to_owned());
+    }
+    let body = body_for(&msg_kind, view_once, text.as_deref());
     let push_name = ctx.info.push_name.trim();
     let sender_name = if source.is_from_me {
         None
@@ -385,8 +585,7 @@ pub(super) fn translate_message(ctx: &MessageContext) -> Option<(LiveChat, LiveM
             msg.expires_at = timestamp + i64::from(expiration);
         }
     }
-    let (kind, view_once) = classify_kind(ctx);
-    msg.kind = kind;
+    msg.kind = msg_kind;
     msg.view_once = view_once;
     // A photo's re-download reference travels with the message so
     // the app can archive it: the photo's bytes stay fetchable
@@ -403,22 +602,6 @@ pub(super) fn translate_message(ctx: &MessageContext) -> Option<(LiveChat, LiveM
     // video's visual identity until its bytes are played.
     msg.video_ref = super::util::video_ref_of(&ctx.message);
     msg.video_thumbnail = super::util::video_thumbnail_of(&ctx.message);
-    if let LiveMessageKind::Other(label) = &msg.kind {
-        if msg.body == "[non-text message]" {
-            msg.body = label.clone();
-        }
-    }
-    if let LiveMessageKind::Media { caption, .. } = &msg.kind {
-        // A view-once caption is part of the sealed payload: it
-        // stays on the kind (the viewer shows it with the media)
-        // but is never promoted to the body, where previews,
-        // notifications and the archive would pick it up as
-        // ordinary text. The body keeps the generic non-text
-        // marker those consumers already handle.
-        if !view_once && !caption.is_empty() && msg.body == "[non-text message]" {
-            msg.body = caption.clone();
-        }
-    }
     // Quote context, when the message carries one.
     if let Some(quoted) = quoted_context(ctx) {
         msg.quoted_sender = quoted.0;
@@ -457,16 +640,23 @@ pub(super) fn classify_kind(ctx: &MessageContext) -> (LiveMessageKind, bool) {
 pub(super) fn classify_message(
     msg: &whatsapp_rust::prelude::wa::Message,
 ) -> (LiveMessageKind, bool) {
-    // View-once wrappers: classify the wrapped message and flag it.
-    let wrapped = msg
-        .view_once_message
-        .as_option()
-        .and_then(|vo| vo.message.as_option())
-        .or_else(|| msg.view_once_message_v2.as_option().and_then(|vo| vo.message.as_option()));
-    if let Some(inner) = wrapped {
-        let (kind, _) = classify_message(inner);
-        return (kind, true);
-    }
+    // Wrapper layers are peeled before classifying: a photo sent
+    // from the phone arrives inside a device-sent wrapper, media
+    // in a disappearing chat inside an ephemeral wrapper, and
+    // classifying the wrapper instead of the base made every such
+    // message fall through to the Text fallback. The library's
+    // base-message walk peels those layers; the view-once flag is
+    // read off the wrapper walk separately, because the base walk
+    // steps over that layer without exposing it.
+    let view_once = super::util::proto_is_view_once(msg);
+    let (kind, _) = classify_unwrapped(msg.get_base_message());
+    (kind, view_once)
+}
+
+/// Classifies one already-unwrapped protocol message.
+fn classify_unwrapped(
+    msg: &whatsapp_rust::prelude::wa::Message,
+) -> (LiveMessageKind, bool) {
     if let Some(poll) =
         msg.poll_creation_message.as_option().or_else(|| msg.poll_creation_message_v3.as_option())
     {
@@ -621,7 +811,7 @@ pub(super) fn classify_message(
 pub(super) fn embedded_link_preview(
     msg: &whatsapp_rust::prelude::wa::Message,
 ) -> Option<LivePreview> {
-    let extended = msg.extended_text_message.as_option()?;
+    let extended = msg.get_base_message().extended_text_message.as_option()?;
     let title = extended.title.clone().unwrap_or_default();
     let description = extended.description.clone().unwrap_or_default();
     if title.is_empty() && description.is_empty() {
@@ -634,7 +824,7 @@ pub(super) fn embedded_link_preview(
 /// the context info of an extended-text message carries the stanza
 /// id + participant + quoted payload.
 pub(super) fn quoted_context(ctx: &MessageContext) -> Option<(Option<String>, Option<String>)> {
-    let extended = ctx.message.extended_text_message.as_option()?;
+    let extended = ctx.message.get_base_message().extended_text_message.as_option()?;
     let context = extended.context_info.as_option()?;
     context.stanza_id.as_ref()?;
     let excerpt =

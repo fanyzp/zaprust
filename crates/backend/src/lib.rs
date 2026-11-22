@@ -1135,8 +1135,9 @@ pub struct LiveMessage {
     pub chat_jid: String,
     /// Sender display name; `None` means "me".
     pub sender: Option<String>,
-    /// Plain-text body. Non-text messages are summarized by the
-    /// backend (e.g. `"[photo]"`) in this phase.
+    /// Plain-text body. Non-text messages carry a typed summary
+    /// from the backend (their caption, or a kind label such as
+    /// "Photo"), never a bracketed placeholder.
     pub body: String,
     /// Unix timestamp (seconds).
     pub timestamp: i64,
@@ -1847,6 +1848,16 @@ pub enum BackendEvent {
         /// Short human-readable reason.
         reason: String,
     },
+    /// Catch-up sync (history sync after pairing, offline sync on
+    /// reconnect) is running. `percent` is the library's reported
+    /// progress when it provides one.
+    SyncProgress {
+        /// Progress 0 to 100, when the library reports it.
+        percent: Option<u32>,
+    },
+    /// The catch-up sync finished: the roster and recent history
+    /// the phone sent are fully applied.
+    SyncCompleted,
     /// The backend worker panicked and was contained by the
     /// supervisor. `restarted` says whether the single automatic
     /// restart was attempted after this crash.

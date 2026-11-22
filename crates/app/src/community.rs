@@ -89,7 +89,7 @@ fn section_label(ui: &mut egui::Ui, t: Tokens, text: &str) {
 
 /// Characters of description shown while collapsed (about two
 /// lines at the identity block's width). Longer descriptions are
-/// cut on a char boundary with an ellipsis and a Read more toggle.
+/// cut on a word boundary with an ellipsis and a Read more toggle.
 const DESC_COLLAPSED_CHARS: usize = 140;
 
 fn collapsed_description(desc: &str) -> String {
@@ -97,6 +97,14 @@ fn collapsed_description(desc: &str) -> String {
         return desc.to_owned();
     }
     let cut: String = desc.chars().take(DESC_COLLAPSED_CHARS).collect();
+    // Back the cut up to the last word boundary inside it, so the
+    // ellipsis never lands mid-word. A single word longer than
+    // the whole budget has no boundary to back up to and keeps
+    // the hard char cut.
+    let cut = match cut.rfind(char::is_whitespace) {
+        Some(idx) => &cut[..idx],
+        None => &cut[..],
+    };
     let cut = cut.trim_end();
     format!("{cut}...")
 }
@@ -267,25 +275,50 @@ pub fn community_home(
                     Vec2::new(440.0_f32.min(ui.available_width()), 0.0),
                     egui::Layout::top_down(egui::Align::Center),
                     |ui| {
-                        ui.label(RichText::new(shown).size(13.0).color(rgb(t.text_secondary)));
+                        // The expander rides inline at the end of
+                        // the description text (accent section of
+                        // the same layout job), not on its own line
+                        // below it; the whole label is the toggle's
+                        // click target.
+                        let mut job = egui::text::LayoutJob::default();
+                        job.halign = egui::Align::Center;
+                        job.append(
+                            &shown,
+                            0.0,
+                            egui::TextFormat {
+                                font_id: FontId::proportional(13.0),
+                                color: rgb(t.text_secondary),
+                                ..Default::default()
+                            },
+                        );
+                        if needs_toggle {
+                            let label = if desc_expanded {
+                                crate::i18n::t("community.show_less")
+                            } else {
+                                crate::i18n::t("community.read_more")
+                            };
+                            job.append(
+                                &format!(" {label}"),
+                                0.0,
+                                egui::TextFormat {
+                                    font_id: FontId::proportional(13.0),
+                                    color: rgb(t.accent),
+                                    ..Default::default()
+                                },
+                            );
+                        }
+                        let label = egui::Label::new(job);
+                        let resp = if needs_toggle {
+                            ui.add(label.sense(Sense::click()))
+                                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        } else {
+                            ui.add(label)
+                        };
+                        if needs_toggle && resp.clicked() {
+                            intents.toggle_desc = true;
+                        }
                     },
                 );
-                if needs_toggle {
-                    let label = if desc_expanded {
-                        crate::i18n::t("community.show_less")
-                    } else {
-                        crate::i18n::t("community.read_more")
-                    };
-                    if ui
-                        .add(
-                            egui::Button::new(RichText::new(label).size(13.0).color(rgb(t.accent)))
-                                .frame(false),
-                        )
-                        .clicked()
-                    {
-                        intents.toggle_desc = true;
-                    }
-                }
             }
         });
         ui.add_space(SP_SECTION);
@@ -706,6 +739,17 @@ mod tests {
         let desc = "é".repeat(DESC_COLLAPSED_CHARS + 10);
         let out = collapsed_description(&desc);
         assert_eq!(out, format!("{}...", "é".repeat(DESC_COLLAPSED_CHARS)));
+    }
+
+    #[test]
+    fn truncation_lands_on_a_word_boundary() {
+        // Ten-letter words separated by spaces: the raw char cut
+        // would land inside the thirteenth word, so the collapsed
+        // text backs up to the end of the twelfth word instead.
+        let desc = vec!["abcdefghij"; 20].join(" ");
+        let out = collapsed_description(&desc);
+        let words = vec!["abcdefghij"; 12].join(" ");
+        assert_eq!(out, format!("{words}..."));
     }
 
     #[test]

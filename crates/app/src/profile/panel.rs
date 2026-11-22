@@ -5,15 +5,15 @@
 
 use super::dock::{
     disappearing_section, dock_card, dock_card_section, dock_member_row, dock_prose, dock_row,
-    profile_ai_body, profile_counts_section, profile_header, profile_user_body, DOCK_LABEL_X, SP_1,
-    SP_2, SP_3, SP_SECTION,
+    dock_separator, profile_ai_body, profile_counts_section, profile_header, profile_user_body,
+    DOCK_LABEL_X, SP_1, SP_2, SP_3, SP_SECTION,
 };
 use super::{profile_kind, MemberAction, ProfileIntents, ProfileKind};
 use crate::icons::Icon;
 use crate::state::{App, UiConfirm};
 use crate::theme::rgb;
 use crate::widgets::{button, text_field, Btn};
-use core::model::{ChatKind, MessageKind};
+use core::model::ChatKind;
 use eframe::egui::{self, RichText};
 
 impl App {
@@ -92,28 +92,14 @@ impl App {
                 part.strip_prefix('+').and_then(|n| n.trim().parse::<usize>().ok())
             })
             .unwrap_or(0);
-        let media_count = self
-            .conversation
-            .iter()
-            .filter(|m| {
-                matches!(
-                    m.kind,
-                    MessageKind::Image { .. }
-                        | MessageKind::Video { .. }
-                        | MessageKind::Carousel { .. }
-                )
-            })
-            .count();
-        let link_count = self
-            .conversation
-            .iter()
-            .filter(|m| m.body.contains("http://") || m.body.contains("https://"))
-            .count();
-        let doc_count = self
-            .conversation
-            .iter()
-            .filter(|m| matches!(m.kind, MessageKind::Document { .. }))
-            .count();
+        // The counts come from the conversation's own messages:
+        // the loaded conversation, falling back to the chat's
+        // archived messages when nothing is loaded, so a count
+        // can never contradict the conversation it describes.
+        let count_source =
+            if self.conversation.is_empty() { &chat.messages } else { &self.conversation };
+        let counts = core::model::conversation_counts(count_source);
+        let (media_count, link_count, doc_count) = (counts.media, counts.links, counts.docs);
         let siblings: Vec<(u64, String)> = chat
             .community
             .as_ref()
@@ -155,20 +141,12 @@ impl App {
             ProfileKind::User => self.header_subtitle(&chat),
         };
         // The user variant's identifier line and About text: the
-        // live JID when live, the demo caption otherwise; the About
-        // card only appears when the subtitle is a status line
-        // rather than a presence line.
-        let user_id_line: Option<String> = if kind == ProfileKind::User {
-            self.live_jid(chat.id).or_else(|| {
-                if self.live.is_none() {
-                    Some(crate::i18n::t("profile.demo_contact"))
-                } else {
-                    None
-                }
-            })
-        } else {
-            None
-        };
+        // live JID when live, nothing otherwise (demo data has
+        // no address to show, and no caption stands in for one);
+        // the About section only appears when the subtitle is a
+        // status line rather than a presence line.
+        let user_id_line: Option<String> =
+            if kind == ProfileKind::User { self.live_jid(chat.id) } else { None };
         let user_about: Option<String> = if kind == ProfileKind::User {
             let s = chat.subtitle.trim();
             let presence = s == "online"
@@ -199,13 +177,9 @@ impl App {
         .collect();
         let blocked = self.blocked_chats.contains(&chat.id);
 
-        // Dock header: the info title for this kind of chat, with
-        // the mute toggle and the close button pinned right as
-        // small icon-only buttons, Telegram-style. Mute lives in
-        // the header, not as a pill in the body, so every variant
-        // carries it in the same place; the icon shows the state
-        // (bell / bell-off) and the tooltip names the action, so
-        // nothing is lost by dropping the text label.
+        // Dock header: the info title for this kind of chat and
+        // the close button only. Mute is a row in the body
+        // below, where the dock's other settings live.
         let info_title = match kind {
             ProfileKind::Group => crate::i18n::t("profile.group_info"),
             ProfileKind::Channel => crate::i18n::t("profile.channel_info"),
@@ -241,24 +215,6 @@ impl App {
                     {
                         close = true;
                     }
-                    let (mute_icon, mute_key) = if chat.muted {
-                        (Icon::Bell, "conversation.unmute_notifications")
-                    } else {
-                        (Icon::BellOff, "conversation.mute_notifications")
-                    };
-                    if crate::widgets::icon_button(
-                        ui,
-                        t,
-                        mute_icon,
-                        28.0,
-                        &crate::i18n::t(mute_key),
-                        None,
-                    )
-                    .clicked()
-                        && !exiting
-                    {
-                        toggle_mute = true;
-                    }
                 });
             },
         );
@@ -278,6 +234,29 @@ impl App {
         // needed an explicit height clamp for the same reason).
         egui::ScrollArea::vertical().id_salt("profile_dock_scroll").show(ui, |ui| {
             profile_header(ui, t, &chat, &subtitle, header_photo);
+            // Mute as a body row, in the same place for every
+            // variant: the bell icon shows the action, the label
+            // names it, and the click routes through the same
+            // apply_chat_action path as the header menu.
+            ui.add_space(SP_3);
+            let (mute_icon, mute_key) = if chat.muted {
+                (Icon::Bell, "conversation.unmute_notifications")
+            } else {
+                (Icon::BellOff, "conversation.mute_notifications")
+            };
+            if dock_row(
+                ui,
+                t,
+                Some((mute_icon, t.text_secondary)),
+                &crate::i18n::t(mute_key),
+                t.text_primary,
+                false,
+            )
+            .clicked()
+                && !exiting
+            {
+                toggle_mute = true;
+            }
             match kind {
                 ProfileKind::Ai => {
                     profile_ai_body(ui, t, &ai_description, &ai_suggestions, &mut intents);
@@ -297,9 +276,7 @@ impl App {
                 }
                 ProfileKind::Group | ProfileKind::Channel => {
                     // Export is a row on the shared grid (groups
-                    // only, and only when the feature is on). Mute
-                    // and Close are not repeated here: they live in
-                    // the dock header as icon buttons.
+                    // only, and only when the feature is on).
                     if chat.kind == ChatKind::Group && export_active {
                         ui.add_space(SP_3);
                         let clicked = dock_card(ui, t, |ui| {
@@ -370,7 +347,10 @@ impl App {
                                     );
                                 });
                                 ui.add_space(SP_1);
-                                for (id, title) in &siblings {
+                                for (i, (id, title)) in siblings.iter().enumerate() {
+                                    if i > 0 {
+                                        dock_separator(ui, t);
+                                    }
                                     if dock_row(
                                         ui,
                                         t,
@@ -396,8 +376,8 @@ impl App {
                     // the dock at narrow window sizes.
                     if chat.kind == ChatKind::Group {
                         if self.live.is_some() {
-                            // Read before the settings card opens:
-                            // the requests card below it keys off
+                            // Read before the settings section opens:
+                            // the requests section below it keys off
                             // the same value.
                             let approval_on =
                                 self.groups.approval.get(&chat.id).copied().unwrap_or(false);
@@ -537,7 +517,7 @@ impl App {
                             ui.add_space(SP_3);
                             // Membership approval switch (the
                             // requests themselves get their own
-                            // card below, when approval is on).
+                            // section below, when approval is on).
                             ui.allocate_ui_with_layout(
                                 egui::vec2(ui.available_width(), 28.0),
                                 egui::Layout::right_to_left(egui::Align::Center),
@@ -690,7 +670,7 @@ impl App {
                                 });
                             }
                             // Leave group: a danger row in its
-                            // own card; the confirmation is the
+                            // own section; the confirmation is the
                             // house modal, never an inline strip.
                             ui.add_space(SP_SECTION);
                             let leave_clicked = dock_card(ui, t, |ui| {
@@ -873,7 +853,7 @@ impl App {
                         // Add member row: in live groups it
                         // opens the inline add form right here
                         // (the form used to hide in the group
-                        // settings card below the fold); demo
+                        // settings section below the fold); demo
                         // mode says group management is
                         // live-only.
                         if dock_row(
@@ -921,6 +901,9 @@ impl App {
                             );
                         }
                         for (i, name) in members.iter().enumerate() {
+                            if i > 0 {
+                                dock_separator(ui, t);
+                            }
                             dock_member_row(ui, t, name, None, i == 0, false);
                             ui.add_space(SP_1);
                         }
@@ -938,7 +921,7 @@ impl App {
                         );
                         // Leave group row (demo: archives the
                         // row locally, like live leave), in its
-                        // own card, confirmed by the house modal.
+                        // own section, confirmed by the house modal.
                         ui.add_space(SP_SECTION);
                         let leave_clicked = dock_card(ui, t, |ui| {
                             dock_row(

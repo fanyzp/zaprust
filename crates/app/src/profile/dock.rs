@@ -121,42 +121,49 @@ pub(super) const SP_2: f32 = 8.0;
 
 pub(super) const SP_3: f32 = 12.0;
 
-/// Gap above a section card.
+/// Gap above a section.
 pub(super) const SP_SECTION: f32 = 20.0;
 
-/// The resting fill of a dock section card: the elevated-card
-/// step above the dock panel, so a grouped section reads as a
-/// sheet resting on the panel instead of more of the same flat
-/// fill. Every row helper in the dock paints its hover and
-/// pressed states as steps of this fill, which is what makes
-/// the card the dock's one interactive surface.
+/// The resting fill rows paint their hover and pressed states
+/// from: the dock panel itself. Sections are flat, in the
+/// settings page language, so a row's states step from the
+/// panel fill the row rests on.
 pub(super) fn dock_card_fill(t: Tokens) -> core::theme::Rgb {
-    core::theme::elevated_step(t.bg_panel)
+    t.bg_panel
 }
 
-/// One grouped dock section as an elevated card: the card fill,
-/// a hairline border and rounded corners, with the dock's
-/// content inset on every side. The grid constants (icon axis,
-/// label line) are measured from the card's content edge, so
-/// rows in every card share one alignment.
+/// A hairline between two rows of one section, inset to the
+/// label line so it runs under the row text, the same divider
+/// the settings pages draw between rows.
+pub(super) fn dock_separator(ui: &mut egui::Ui, t: Tokens) {
+    let width = ui.available_width();
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, 1.0), egui::Sense::hover());
+    ui.painter().hline(
+        (rect.left() + DOCK_LABEL_X)..=rect.right(),
+        rect.center().y,
+        Stroke::new(1.0_f32, rgb(t.border)),
+    );
+}
+
+/// One grouped dock section, flat on the panel: no fill, border
+/// or padding of its own. Sections separate by spacing, rows
+/// inside a section by hairlines, exactly like a settings page.
+/// The grid constants (icon axis, label line) are measured from
+/// the dock's content edge, so rows in every section share one
+/// alignment. The name keeps the call sites readable; it groups
+/// rows, it no longer draws a card.
 pub(super) fn dock_card<R>(
     ui: &mut egui::Ui,
-    t: Tokens,
+    _t: Tokens,
     body: impl FnOnce(&mut egui::Ui) -> R,
 ) -> egui::InnerResponse<R> {
-    egui::Frame::new()
-        .fill(rgb(dock_card_fill(t)))
-        .corner_radius(CornerRadius::same(12))
-        .stroke(Stroke::new(1.0_f32, rgb(t.border)))
-        .inner_margin(egui::Margin::symmetric(10, 10))
-        .show(ui, |ui| {
-            // Every card spans the dock's full content width:
-            // a card whose body is one short row (the requests
-            // card's Review button) must not hug its content
-            // while its neighbours stretch.
-            ui.set_min_width(ui.available_width());
-            body(ui)
-        })
+    egui::Frame::new().show(ui, |ui| {
+        // Every section spans the dock's full content width:
+        // a section whose body is one short row must not hug
+        // its content while its neighbours stretch.
+        ui.set_min_width(ui.available_width());
+        body(ui)
+    })
 }
 
 /// Prose on the dock's label line (section captions, the
@@ -165,7 +172,7 @@ pub(super) fn dock_card<R>(
 /// takes its unwrapped width, so a long caption would size the
 /// row, and with it the whole dock, to hundreds of pixels
 /// beyond the panel; in a margin frame the same label wraps at
-/// the card's inner width like prose should.
+/// the section's width like prose should.
 pub(super) fn dock_prose<R>(ui: &mut egui::Ui, body: impl FnOnce(&mut egui::Ui) -> R) -> R {
     egui::Frame::new()
         .inner_margin(egui::Margin { left: DOCK_LABEL_X as i8, right: 0, top: 0, bottom: 0 })
@@ -173,8 +180,8 @@ pub(super) fn dock_prose<R>(ui: &mut egui::Ui, body: impl FnOnce(&mut egui::Ui) 
         .inner
 }
 
-/// A dock section card with its heading inside, on the label
-/// line, and an optional caption under it: the standard grouped
+/// A flat dock section with its heading on the label line and
+/// an optional one-line caption under it: the standard grouped
 /// section of the dock.
 pub(super) fn dock_card_section<R>(
     ui: &mut egui::Ui,
@@ -478,36 +485,34 @@ pub(super) fn ephemeral_option_row(
 }
 
 /// The disappearing-messages section of the info dock: a
-/// heading, a caption, and one radio row per duration. Shared
-/// by the user and group bodies; channels do not carry the
-/// feature (a newsletter is not an end-to-end chat).
+/// heading and one radio row per duration, separated by
+/// hairlines. The explanation of the feature lives in Settings;
+/// the dock only carries the choice. Shared by the user and
+/// group bodies; channels do not carry the feature (a
+/// newsletter is not an end-to-end chat).
 pub(super) fn disappearing_section(
     ui: &mut egui::Ui,
     t: Tokens,
     current: u32,
     intents: &mut ProfileIntents,
 ) {
-    dock_card_section(
-        ui,
-        t,
-        &crate::i18n::t("profile.disappearing"),
-        Some(&crate::i18n::t("profile.disappearing_caption")),
-        |ui| {
-            for secs in core::model::EPHEMERAL_OPTIONS {
-                let label = crate::extras::ephemeral_duration_label(secs);
-                if ephemeral_option_row(ui, t, &label, secs == current) {
-                    intents.ephemeral_pick = Some(secs);
-                }
+    dock_card_section(ui, t, &crate::i18n::t("profile.disappearing"), None, |ui| {
+        for (i, secs) in core::model::EPHEMERAL_OPTIONS.iter().enumerate() {
+            if i > 0 {
+                dock_separator(ui, t);
             }
-        },
-    );
+            let label = crate::extras::ephemeral_duration_label(*secs);
+            if ephemeral_option_row(ui, t, &label, *secs == current) {
+                intents.ephemeral_pick = Some(*secs);
+            }
+        }
+    });
 }
 
-/// The user (DM contact) body, standard WhatsApp layout: the
-/// action row, an identifier line (the live JID, or the demo
-/// caption in demo data), an About card when the contact carries a
-/// non-presence status line, the media counts, and the block /
-/// report rows at the bottom.
+/// The user (DM contact) body: the action row, an identifier
+/// line (the live JID, when there is one), an About section
+/// when the contact carries a non-presence status line, the
+/// media counts, and the block / report rows at the bottom.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn profile_user_body(
     ui: &mut egui::Ui,
@@ -556,14 +561,15 @@ pub(crate) fn profile_user_body(
     profile_counts_section(ui, t, counts.0, counts.1, counts.2);
     disappearing_section(ui, t, ephemeral_secs, intents);
     ui.add_space(SP_SECTION);
-    // Block / report rows in their own card: danger text on the
-    // shared row grid, no chevron (they act immediately, they do
-    // not navigate).
+    // Block / report rows in their own section: danger text on
+    // the shared row grid, no chevron (they act immediately,
+    // they do not navigate).
     dock_card(ui, t, |ui| {
         let block_label = crate::i18n::t(if blocked { "profile.unblock" } else { "profile.block" });
         if dock_row(ui, t, None, &block_label, t.danger, false).clicked() {
             intents.toggle_block = true;
         }
+        dock_separator(ui, t);
         if dock_row(ui, t, None, &crate::i18n::t("profile.report"), t.danger, false).clicked() {
             intents.toggle_block = true;
         }

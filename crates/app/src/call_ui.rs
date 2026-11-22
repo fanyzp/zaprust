@@ -500,12 +500,7 @@ fn call_button(
 ) -> bool {
     let (rect, response) = ui.allocate_exact_size(Vec2::splat(52.0), Sense::click());
     let dim = |c: egui::Color32| {
-        egui::Color32::from_rgba_unmultiplied(
-            c.r(),
-            c.g(),
-            c.b(),
-            (f32::from(c.a()) * 0.55) as u8,
-        )
+        egui::Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), (f32::from(c.a()) * 0.55) as u8)
     };
     let (bg, glyph) =
         if pending { (dim(bg), dim(egui::Color32::WHITE)) } else { (bg, egui::Color32::WHITE) };

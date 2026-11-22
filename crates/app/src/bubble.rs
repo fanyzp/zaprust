@@ -1099,9 +1099,7 @@ pub(crate) fn message_bubble(
                         let mut slot = ui.new_child(
                             egui::UiBuilder::new()
                                 .max_rect(spinner_rect)
-                                .layout(Layout::centered_and_justified(
-                                    egui::Direction::TopDown,
-                                )),
+                                .layout(Layout::centered_and_justified(egui::Direction::TopDown)),
                         );
                         crate::widgets::spinner(&mut slot, 20.0);
                     } else {
@@ -1250,13 +1248,10 @@ pub(crate) fn message_bubble(
                             // bytes are in flight, so the wait
                             // reads as a wait.
                             let disc_rect = Rect::from_center_size(disc, Vec2::splat(38.0));
-                            let mut slot = ui.new_child(
-                                egui::UiBuilder::new()
-                                    .max_rect(disc_rect)
-                                    .layout(Layout::centered_and_justified(
-                                        egui::Direction::TopDown,
-                                    )),
-                            );
+                            let mut slot =
+                                ui.new_child(egui::UiBuilder::new().max_rect(disc_rect).layout(
+                                    Layout::centered_and_justified(egui::Direction::TopDown),
+                                ));
                             crate::widgets::spinner(&mut slot, 17.0);
                         } else {
                             // Failed is the only other fetch state:

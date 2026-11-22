@@ -392,6 +392,21 @@ pub enum BackendCommand {
         /// (`0` sends a normal, non-expiring message).
         ephemeral_secs: u32,
     },
+    /// Post a text status (story) update. Status posts are
+    /// sender-key fan-outs, so the caller supplies the audience:
+    /// the JIDs the status is encrypted for. The app passes the
+    /// account's known direct-chat partners; the post carries
+    /// the library's default status privacy setting (`contacts`).
+    /// Answered with [`BackendEvent::StatusPosted`] on success
+    /// and [`BackendEvent::StatusPostFailed`] on failure. An
+    /// empty text or an empty recipient list is refused by the
+    /// backends with `StatusPostFailed`, never posted.
+    PostTextStatus {
+        /// The status text.
+        text: String,
+        /// Audience JIDs (direct-chat partners of the account).
+        recipients: Vec<String>,
+    },
     /// Start an outgoing 1:1 call to a chat. `video` asks for a
     /// video call; backends without video wiring report that
     /// honestly instead of silently placing a voice call.
@@ -1367,6 +1382,25 @@ pub enum BackendEvent {
         /// Protocol ID of the target message.
         message_id: String,
         /// Why the pin failed, in user words.
+        message: String,
+    },
+    /// A [`BackendCommand::PostTextStatus`] reached the server:
+    /// the text status is posted. The app adopts `text` as its
+    /// current status for the rest of the session.
+    StatusPosted {
+        /// The status text that was posted.
+        text: String,
+    },
+    /// A [`BackendCommand::PostTextStatus`] never reached the
+    /// server: the text was empty, the audience was empty or
+    /// unusable, or the send itself failed. The app keeps its
+    /// previous status state and shows `message` where the post
+    /// was attempted. Deliberately not the generic
+    /// [`BackendEvent::Error`], for the same reason as
+    /// [`BackendEvent::StarFailed`]: that path also fails pending
+    /// message echoes, which a refused status post must not touch.
+    StatusPostFailed {
+        /// Why the post failed, in user words.
         message: String,
     },
     /// A vote landed on a poll. Votes arrive on the wire as

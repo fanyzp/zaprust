@@ -52,8 +52,9 @@ pub struct FakeBackend {
     /// instead of waiting forever at the QR/code step.
     pub auto_connect: bool,
     /// Optional command log (privacy/state-machine tests): the fake
-    /// appends one line per MarkAsRead / SetTyping / SetPrivacy /
-    /// SetPresenceSubscription command it receives.
+    /// appends one line per command it records, among them
+    /// MarkAsRead / SetTyping / SetPrivacy / SetPresenceSubscription
+    /// and PostTextStatus.
     pub command_log: Option<std::sync::Arc<std::sync::Mutex<Vec<String>>>>,
     /// Whether the scheduled incoming-event script ([`demo_script`])
     /// plays after the linked script. Only the app demo enables
@@ -769,6 +770,27 @@ impl Backend for FakeBackend {
                             reply.expires_at = ts + 1 + i64::from(reply_timer);
                         }
                         events.emit(BackendEvent::MessageUpsert(reply));
+                    }
+                }
+                BackendCommand::PostTextStatus { text, recipients } => {
+                    if let Some(log) = &command_log {
+                        log.lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .push(format!("post_text_status:{text}:{}", recipients.len()));
+                    }
+                    // The recorded success is deterministic, but
+                    // the refusals are the real backend's too: an
+                    // empty text or an empty audience never posts.
+                    if text.trim().is_empty() {
+                        events.emit(BackendEvent::StatusPostFailed {
+                            message: "That status is empty, nothing was posted.".to_owned(),
+                        });
+                    } else if recipients.is_empty() {
+                        events.emit(BackendEvent::StatusPostFailed {
+                            message: "There is nobody to post that status to.".to_owned(),
+                        });
+                    } else {
+                        events.emit(BackendEvent::StatusPosted { text });
                     }
                 }
                 BackendCommand::SetDisappearingTimer { chat_jid, duration_secs } => {
@@ -1980,6 +2002,51 @@ mod tests {
                 other => panic!("expected scripted reply, got {other:?}"),
             }
         }
+        ch.commands.send(BackendCommand::Shutdown).unwrap();
+    }
+
+    #[test]
+    fn post_text_status_is_recorded_and_answers_posted() {
+        let log = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let ch = start(FakeBackend::auto_with_log(log.clone()));
+        ch.commands
+            .send(BackendCommand::PostTextStatus {
+                text: "Out for a walk".to_owned(),
+                recipients: vec![FAKE_DM_JID.to_owned()],
+            })
+            .unwrap();
+        match next(&ch) {
+            BackendEvent::StatusPosted { text } => assert_eq!(text, "Out for a walk"),
+            other => panic!("expected StatusPosted, got {other:?}"),
+        }
+        let recorded = log.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        assert_eq!(recorded, ["post_text_status:Out for a walk:1"]);
+        ch.commands.send(BackendCommand::Shutdown).unwrap();
+    }
+
+    #[test]
+    fn post_text_status_refuses_an_empty_text_or_audience() {
+        let ch = start(FakeBackend::auto());
+        ch.commands
+            .send(BackendCommand::PostTextStatus {
+                text: "  ".to_owned(),
+                recipients: vec![FAKE_DM_JID.to_owned()],
+            })
+            .unwrap();
+        assert!(
+            matches!(next(&ch), BackendEvent::StatusPostFailed { .. }),
+            "an empty status text is refused"
+        );
+        ch.commands
+            .send(BackendCommand::PostTextStatus {
+                text: "Hello".to_owned(),
+                recipients: Vec::new(),
+            })
+            .unwrap();
+        assert!(
+            matches!(next(&ch), BackendEvent::StatusPostFailed { .. }),
+            "an empty audience is refused"
+        );
         ch.commands.send(BackendCommand::Shutdown).unwrap();
     }
 }

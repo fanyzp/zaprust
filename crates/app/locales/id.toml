@@ -284,7 +284,7 @@
 "appearance.motion_off" = "Mati"
 "appearance.language" = "Bahasa"
 "appearance.language_caption" = "Bahasa antarmuka. Bahasa Indonesia baru sebagian: teks yang belum diterjemahkan tampil dalam Bahasa Inggris."
-"appearance.color_finetuning" = "Penyesuaian warna"
+"appearance.advanced" = "Lanjutan"
 "appearance.contrast" = "Kontras"
 "appearance.saturation" = "Saturasi"
 "appearance.reset" = "Atur ulang"

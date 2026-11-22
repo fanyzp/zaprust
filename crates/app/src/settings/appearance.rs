@@ -2,6 +2,14 @@
 
 use super::*;
 
+/// Whether a settings row lives under the Appearance page's
+/// Advanced disclosure (the calibration sliders). A search
+/// jump to one of these rows opens the disclosure, or the
+/// highlighted row would not exist to highlight.
+pub(super) fn advanced_contains(id: &str) -> bool {
+    matches!(id, "appearance.saturation" | "appearance.contrast")
+}
+
 impl App {
     pub(crate) fn page_appearance(&mut self, ui: &mut egui::Ui, t: core::theme::Tokens) {
         page_header(ui, &crate::i18n::t("settings.appearance"));
@@ -93,63 +101,105 @@ impl App {
             self.persist_settings();
         }
         ui.add_space(16.0);
-        group_label(ui, t, &crate::i18n::t("appearance.color_finetuning"));
-        let scoped = ui.scope(|ui| {
-            settings_card(ui, t, |ui| {
-                let mut changed = false;
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new(crate::i18n::t("appearance.saturation")).size(13.0));
-                    let resp = ui.add(
-                        egui::Slider::new(&mut self.saturation, 0.0..=1.5)
-                            .show_value(true)
-                            .custom_formatter(|v, _| format!("{v:.2}")),
-                    );
-                    changed |= resp.changed();
-                });
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new(crate::i18n::t("appearance.contrast")).size(13.0));
-                    let resp = ui.add(
-                        egui::Slider::new(&mut self.contrast, 0.8..=1.2)
-                            .show_value(true)
-                            .custom_formatter(|v, _| format!("{v:.2}")),
-                    );
-                    changed |= resp.changed();
-                });
-                ui.add_space(4.0);
-                if crate::widgets::button(
-                    ui,
-                    t,
-                    &crate::i18n::t("appearance.reset"),
-                    crate::widgets::Btn::Secondary,
-                )
-                .clicked()
-                {
-                    self.saturation = 1.0;
-                    self.contrast = 1.0;
-                    changed = true;
-                }
-                if changed {
-                    self.apply_theme_choice(ui.ctx());
-                    self.persist_settings();
-                }
-            })
-        });
-        paint_highlight(
-            ui,
-            &mut self.settings_highlight,
-            self.motion,
-            "appearance.saturation",
-            scoped.response.rect,
-            t,
+        // The saturation and contrast sliders are calibration
+        // controls, not everyday settings: they live under an
+        // Advanced disclosure, collapsed by default. Their
+        // values, ranges and persistence are unchanged. A
+        // search jump to either slider opens the disclosure,
+        // or the highlighted row would not exist to highlight.
+        if self.settings_highlight.as_ref().is_some_and(|h| advanced_contains(h.id)) {
+            self.appearance_advanced_open = true;
+        }
+        let (header_rect, header_resp) =
+            ui.allocate_exact_size(egui::vec2(ui.available_width(), 30.0), egui::Sense::click());
+        if header_resp.hovered() {
+            ui.painter().rect_filled(
+                header_rect,
+                egui::CornerRadius::same(8),
+                rgb(t.bg_panel_alt),
+            );
+        }
+        crate::icons::draw(
+            ui.painter(),
+            if self.appearance_advanced_open {
+                crate::icons::Icon::ChevronDown
+            } else {
+                crate::icons::Icon::ChevronRight
+            },
+            egui::Pos2::new(header_rect.left() + 9.0, header_rect.center().y),
+            16.0,
+            rgb(t.text_secondary),
+            rgb(t.bg_app),
         );
-        paint_highlight(
-            ui,
-            &mut self.settings_highlight,
-            self.motion,
-            "appearance.contrast",
-            scoped.response.rect,
-            t,
+        ui.painter().text(
+            egui::Pos2::new(header_rect.left() + 26.0, header_rect.center().y),
+            egui::Align2::LEFT_CENTER,
+            crate::i18n::t("appearance.advanced").to_uppercase(),
+            crate::theme::semibold(11.0),
+            rgb(t.text_secondary),
         );
+        if header_resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+            self.appearance_advanced_open = !self.appearance_advanced_open;
+        }
+        if self.appearance_advanced_open {
+            ui.add_space(6.0);
+            let scoped = ui.scope(|ui| {
+                settings_card(ui, t, |ui| {
+                    let mut changed = false;
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(crate::i18n::t("appearance.saturation")).size(13.0));
+                        let resp = ui.add(
+                            egui::Slider::new(&mut self.saturation, 0.0..=1.5)
+                                .show_value(true)
+                                .custom_formatter(|v, _| format!("{v:.2}")),
+                        );
+                        changed |= resp.changed();
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(crate::i18n::t("appearance.contrast")).size(13.0));
+                        let resp = ui.add(
+                            egui::Slider::new(&mut self.contrast, 0.8..=1.2)
+                                .show_value(true)
+                                .custom_formatter(|v, _| format!("{v:.2}")),
+                        );
+                        changed |= resp.changed();
+                    });
+                    ui.add_space(4.0);
+                    if crate::widgets::button(
+                        ui,
+                        t,
+                        &crate::i18n::t("appearance.reset"),
+                        crate::widgets::Btn::Secondary,
+                    )
+                    .clicked()
+                    {
+                        self.saturation = 1.0;
+                        self.contrast = 1.0;
+                        changed = true;
+                    }
+                    if changed {
+                        self.apply_theme_choice(ui.ctx());
+                        self.persist_settings();
+                    }
+                })
+            });
+            paint_highlight(
+                ui,
+                &mut self.settings_highlight,
+                self.motion,
+                "appearance.saturation",
+                scoped.response.rect,
+                t,
+            );
+            paint_highlight(
+                ui,
+                &mut self.settings_highlight,
+                self.motion,
+                "appearance.contrast",
+                scoped.response.rect,
+                t,
+            );
+        }
         ui.add_space(16.0);
         group_label(ui, t, &crate::i18n::t("appearance.font_size"));
         let scoped = ui.scope(|ui| {

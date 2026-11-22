@@ -176,7 +176,7 @@
 "appearance.motion_off" = "Off"
 "appearance.language" = "Language"
 "appearance.language_caption" = "Interface language. Indonesian is partial: untranslated text falls back to English."
-"appearance.color_finetuning" = "Color fine-tuning"
+"appearance.advanced" = "Advanced"
 "appearance.contrast" = "Contrast"
 "appearance.saturation" = "Saturation"
 "appearance.glow" = "Glow"

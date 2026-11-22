@@ -909,6 +909,11 @@ pub(crate) struct App {
     /// The settings row a search activation just jumped to: it
     /// highlights briefly and the highlight fades (settings.rs).
     pub(crate) settings_highlight: Option<crate::settings::SettingHighlight>,
+    /// Whether the Appearance page's Advanced disclosure (the
+    /// saturation and contrast calibration sliders) is open.
+    /// Session state only, collapsed by default; the sliders'
+    /// values persist as before, this flag never does.
+    pub(crate) appearance_advanced_open: bool,
     /// The user's font-size preference (Settings, Appearance):
     /// a percent of the designed UI size, persisted in
     /// settings.json. The shell composes it with the layout
@@ -1521,6 +1526,7 @@ impl App {
             },
             settings_search: args.settings_search.clone().unwrap_or_default(),
             settings_highlight: None,
+            appearance_advanced_open: false,
             qa_scroll_top: args.scroll_top,
             qa_community_scroll: args.community_scroll,
             zoom_percent: 100,

@@ -1097,6 +1097,25 @@ mod tests {
     }
 
     #[test]
+    fn advanced_disclosure_starts_collapsed_and_holds_the_sliders() {
+        let ctx = egui::Context::default();
+        crate::theme::install_fonts(&ctx);
+        let app = App::new(Args::parse(), &ctx);
+        assert!(!app.appearance_advanced_open, "the disclosure is collapsed by default");
+        // Only the two calibration sliders live under it;
+        // every other Appearance row stays on the page surface.
+        assert!(super::appearance::advanced_contains("appearance.saturation"));
+        assert!(super::appearance::advanced_contains("appearance.contrast"));
+        assert!(!super::appearance::advanced_contains("appearance.theme"));
+        assert!(!super::appearance::advanced_contains("appearance.motion"));
+        // And both sliders stay searchable while collapsed:
+        // the registry entries are the index, the page opens
+        // the disclosure when a jump targets them.
+        assert!(result_ids("saturation").contains(&("Appearance", "appearance.saturation")));
+        assert!(result_ids("contrast").contains(&("Appearance", "appearance.contrast")));
+    }
+
+    #[test]
     fn removed_build_row_is_not_searchable() {
         // The permanent Build row (commit, build kind, target
         // triple) was removed from the About page; build detail

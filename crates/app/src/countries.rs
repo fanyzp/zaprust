@@ -19,6 +19,12 @@ pub(crate) struct Country {
 }
 
 /// All countries, sorted by name.
+///
+/// The flag glyph on each picker row is a deliberate exception
+/// to the no-emoji-iconography rule: no Material flag set exists
+/// to draw flags from, and the glyph is content, not chrome,
+/// because the flag itself identifies the country alongside its
+/// name and dial code.
 pub(crate) const COUNTRIES: &[Country] = &[
     Country { iso: "AF", name: "Afghanistan", dial: "93" },
     Country { iso: "AL", name: "Albania", dial: "355" },

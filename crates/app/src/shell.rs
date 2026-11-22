@@ -1122,6 +1122,11 @@ mod tests {
     fn filtered_screen_keeps_a_foreign_selection_untouched() {
         let ctx = egui::Context::default();
         let mut app = shell_app(&ctx);
+        // The membership assertions below are about the demo
+        // dataset (chat 1 a group, chat 5 a channel); the shell
+        // fixture's own chat list depends on the machine's data
+        // dir, so load the dataset explicitly.
+        app.chats = core::model::demo_chats();
         app.screen = Screen::Channels;
         app.filter = core::filter::ChatFilter::Channels;
         // The shell app starts on chat 1, a group: foreign here.

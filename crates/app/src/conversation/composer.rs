@@ -477,164 +477,245 @@ impl App {
                                         );
                                     });
                                 }
-                                ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                                    if composer_icon(
-                                        ui,
-                                        crate::icons::Icon::Plus,
-                                        t,
-                                        &crate::i18n::t("attach.menu"),
-                                    ) {
-                                        if self.composer.rich_menu_open {
-                                            self.composer.rich_menu_open = false;
-                                        } else {
-                                            self.close_composer_surfaces();
-                                            self.composer.rich_menu_open = true;
-                                        }
-                                    }
-                                    if composer_icon(
-                                        ui,
-                                        crate::icons::Icon::Smile,
-                                        t,
-                                        &crate::i18n::t("picker.title"),
-                                    ) {
-                                        if self.picker.open {
-                                            self.picker.open = false;
-                                        } else {
-                                            self.close_composer_surfaces();
-                                            self.picker.open = true;
-                                        }
-                                    }
-                                    // In single-pane mode the
-                                    // quick replies button leaves
-                                    // the pill: at phone widths its
-                                    // 36 px is the difference
-                                    // between a usable input and a
-                                    // wrapped placeholder. The
-                                    // panel still opens by typing
-                                    // "/" in the input.
-                                    if quick_replies_active
-                                        && !self.single_pane
-                                        && composer_icon(
-                                            ui,
-                                            crate::icons::Icon::Chat,
-                                            t,
-                                            &crate::i18n::t("conversation.quick_replies"),
-                                        )
-                                    {
-                                        if quick_replies::panel_open() {
-                                            quick_replies::set_panel_open(false);
-                                        } else {
-                                            self.close_composer_surfaces();
-                                            quick_replies::set_panel_open(true);
-                                        }
-                                    }
-                                    let rec_secs = (self.motion.duration(120.0) / 1000.0) as f32;
-                                    let rec_p = crate::anim::scalar(
-                                        ui,
-                                        "rec_bar_p",
-                                        if self.recorder.is_some() { 1.0 } else { 0.0 },
-                                        rec_secs,
-                                    );
-                                    if rec_p > 0.001 {
-                                        // The recording bar takes the
-                                        // input row: pulsing dot, the
-                                        // running timer, the live level
-                                        // waveform, cancel and stop. It
-                                        // crossfades in over the input.
-                                        ui.scope(|ui| {
-                                            if rec_p < 0.999 {
-                                                ui.set_opacity(rec_p);
-                                            }
-                                            draw_recording_bar(self, ui, t, now, engaged);
-                                        });
-                                        has_text = false;
+                                // The input row is allocated at an
+                                // exact height computed from the
+                                // CURRENT draft (see
+                                // composer_row_height). A plain
+                                // with_layout row is offered the
+                                // floating Area's height, which the
+                                // Area carries over from the last
+                                // frame, and the row reports that
+                                // offered height back as its own:
+                                // once a multiline draft had grown
+                                // the pill, the row (and so the
+                                // pill) stayed that tall after the
+                                // draft was cleared or sent, with
+                                // the icons floating in the middle
+                                // of the empty box. An exact
+                                // allocation makes the height a
+                                // pure function of the draft, so
+                                // the pill shrinks back the frame
+                                // the draft does.
+                                let staged_active = !self.composer.staged.is_empty();
+                                let rec_secs = (self.motion.duration(120.0) / 1000.0) as f32;
+                                let rec_p = crate::anim::scalar(
+                                    ui,
+                                    "rec_bar_p",
+                                    if self.recorder.is_some() { 1.0 } else { 0.0 },
+                                    rec_secs,
+                                );
+                                let line_height = composer_line_height(ui);
+                                let (field_rows, field_h) = if rec_p > 0.001 {
+                                    (1, composer_field_height(1, line_height))
+                                } else {
+                                    let active_text: &str = if staged_active {
+                                        &self.composer.staged_caption
                                     } else {
-                                        // While media is staged the
-                                        // input row IS the caption
-                                        // field, WhatsApp-style; the
-                                        // draft returns once the stage
-                                        // clears.
-                                        let staged_active = !self.composer.staged.is_empty();
-                                        let text = if staged_active {
-                                            &mut self.composer.staged_caption
-                                        } else {
-                                            &mut self.composer.draft
-                                        };
-                                        // No local style override: the
-                                        // composer text inherits the global
-                                        // text style and field look from the
-                                        // finishing layer in theme.rs. The
-                                        // TextEdit paints no background of
-                                        // its own (custom Frame::NONE), so
-                                        // the pill fill below is the only
-                                        // surface and stays as designed.
-                                        let edit = egui::TextEdit::multiline(text)
-                                            .hint_text(if staged_active {
-                                                crate::i18n::t("attach.caption_hint")
+                                        &self.composer.draft
+                                    };
+                                    // The width the text field
+                                    // will get inside the row:
+                                    // the row's width minus the
+                                    // icon buttons ahead of it
+                                    // (36 px each plus one item
+                                    // spacing each) and the
+                                    // field's own 8 px reserve,
+                                    // mirroring the desired_width
+                                    // call below.
+                                    let icons = if quick_replies_active && !self.single_pane {
+                                        3.0
+                                    } else {
+                                        2.0
+                                    };
+                                    let consumed = icons * (36.0 + ui.spacing().item_spacing.x);
+                                    let field_w = (ui.available_width() - consumed - 8.0).max(80.0);
+                                    let rows = composer_visual_rows(
+                                        ui,
+                                        active_text,
+                                        (field_w - 8.0).max(1.0),
+                                        line_height,
+                                    );
+                                    (rows, composer_field_height(rows, line_height))
+                                };
+                                let row_h = composer_row_height(field_rows, line_height);
+                                ui.allocate_ui_with_layout(
+                                    Vec2::new(ui.available_width(), row_h),
+                                    Layout::left_to_right(Align::Center),
+                                    |ui| {
+                                        if composer_icon(
+                                            ui,
+                                            crate::icons::Icon::Plus,
+                                            t,
+                                            &crate::i18n::t("attach.menu"),
+                                        ) {
+                                            if self.composer.rich_menu_open {
+                                                self.composer.rich_menu_open = false;
                                             } else {
-                                                crate::i18n::t("conversation.type_message")
-                                            })
-                                            .desired_rows(1)
-                                            .desired_width((ui.available_width() - 8.0).max(80.0))
-                                            .frame(
-                                                egui::Frame::NONE
-                                                    .inner_margin(Margin::symmetric(4, 8)),
-                                            );
-                                        let response = ui.add(edit);
-                                        input_focused = response.has_focus();
-                                        // Read-by-action: focusing or
-                                        // typing in the composer is a
-                                        // real read action (see live.rs).
-                                        if response.gained_focus() || response.changed() {
-                                            *engaged = true;
+                                                self.close_composer_surfaces();
+                                                self.composer.rich_menu_open = true;
+                                            }
                                         }
-                                        // Typing "/" at the start of the
-                                        // draft opens the native quick
-                                        // replies panel, closing the
-                                        // picker or attach menu if one
-                                        // is up (one surface at a time).
+                                        if composer_icon(
+                                            ui,
+                                            crate::icons::Icon::Smile,
+                                            t,
+                                            &crate::i18n::t("picker.title"),
+                                        ) {
+                                            if self.picker.open {
+                                                self.picker.open = false;
+                                            } else {
+                                                self.close_composer_surfaces();
+                                                self.picker.open = true;
+                                            }
+                                        }
+                                        // In single-pane mode the
+                                        // quick replies button leaves
+                                        // the pill: at phone widths its
+                                        // 36 px is the difference
+                                        // between a usable input and a
+                                        // wrapped placeholder. The
+                                        // panel still opens by typing
+                                        // "/" in the input.
                                         if quick_replies_active
-                                            && !staged_active
-                                            && self.composer.draft.starts_with('/')
-                                            && !quick_replies::panel_open()
+                                            && !self.single_pane
+                                            && composer_icon(
+                                                ui,
+                                                crate::icons::Icon::Chat,
+                                                t,
+                                                &crate::i18n::t("conversation.quick_replies"),
+                                            )
                                         {
-                                            self.close_composer_surfaces();
-                                            quick_replies::set_panel_open(true);
+                                            if quick_replies::panel_open() {
+                                                quick_replies::set_panel_open(false);
+                                            } else {
+                                                self.close_composer_surfaces();
+                                                quick_replies::set_panel_open(true);
+                                            }
                                         }
-                                        enter_send = self.enter_sends
-                                            && response.has_focus()
-                                            && ui.input(|i| {
-                                                i.key_pressed(egui::Key::Enter)
-                                                    && !i.modifiers.shift
+                                        if rec_p > 0.001 {
+                                            // The recording bar takes the
+                                            // input row: pulsing dot, the
+                                            // running timer, the live level
+                                            // waveform, cancel and stop. It
+                                            // crossfades in over the input.
+                                            ui.scope(|ui| {
+                                                if rec_p < 0.999 {
+                                                    ui.set_opacity(rec_p);
+                                                }
+                                                draw_recording_bar(self, ui, t, now, engaged);
                                             });
-                                        // Ctrl+V with a picture on the
-                                        // clipboard: egui-winit delivers it
-                                        // as PasteImage (text pastes stay
-                                        // native Paste events).
-                                        let pasted_images: Vec<egui::ColorImage> = ui.input(|i| {
-                                            i.events
-                                                .iter()
-                                                .filter_map(|e| match e {
-                                                    egui::Event::PasteImage(img) => {
-                                                        Some((**img).clone())
-                                                    }
-                                                    _ => None,
-                                                })
-                                                .collect()
-                                        });
-                                        for img in pasted_images {
-                                            self.stage_pasted_image(ui.ctx(), img);
-                                        }
-                                        has_text = if staged_active {
-                                            // Staged files send even
-                                            // without a caption.
-                                            true
+                                            has_text = false;
                                         } else {
-                                            !self.composer.draft.trim().is_empty()
-                                        };
-                                        input_changed = response.changed();
-                                    }
-                                });
+                                            // While media is staged the
+                                            // input row IS the caption
+                                            // field, WhatsApp-style; the
+                                            // draft returns once the stage
+                                            // clears. (staged_active is
+                                            // computed above the row, with
+                                            // the row height.)
+                                            let text = if staged_active {
+                                                &mut self.composer.staged_caption
+                                            } else {
+                                                &mut self.composer.draft
+                                            };
+                                            // No local style override: the
+                                            // composer text inherits the global
+                                            // text style and field look from the
+                                            // finishing layer in theme.rs. The
+                                            // TextEdit paints no background of
+                                            // its own (custom Frame::NONE), so
+                                            // the pill fill below is the only
+                                            // surface and stays as designed.
+                                            let edit = egui::TextEdit::multiline(text)
+                                                .hint_text(if staged_active {
+                                                    crate::i18n::t("attach.caption_hint")
+                                                } else {
+                                                    crate::i18n::t("conversation.type_message")
+                                                })
+                                                .desired_rows(clamped_composer_rows(field_rows))
+                                                .desired_width(
+                                                    (ui.available_width() - 8.0).max(80.0),
+                                                )
+                                                .frame(
+                                                    egui::Frame::NONE
+                                                        .inner_margin(Margin::symmetric(4, 8)),
+                                                );
+                                            // Past the row cap the field
+                                            // scrolls internally instead
+                                            // of growing the pill: the
+                                            // scroll area is exactly the
+                                            // field height the row was
+                                            // sized for, and the text
+                                            // edit's scroll-to-cursor
+                                            // keeps the caret visible
+                                            // while typing. The
+                                            // min-scrolled height must be
+                                            // zeroed: egui's 64 px default
+                                            // would floor a one-line
+                                            // field at 64 px tall.
+                                            let response = egui::ScrollArea::vertical()
+                                                .id_salt("composer_field")
+                                                .max_height(field_h)
+                                                .min_scrolled_height(0.0)
+                                                .auto_shrink([true, true])
+                                                .show(ui, |ui| ui.add(edit))
+                                                .inner;
+                                            input_focused = response.has_focus();
+                                            // Read-by-action: focusing or
+                                            // typing in the composer is a
+                                            // real read action (see live.rs).
+                                            if response.gained_focus() || response.changed() {
+                                                *engaged = true;
+                                            }
+                                            // Typing "/" at the start of the
+                                            // draft opens the native quick
+                                            // replies panel, closing the
+                                            // picker or attach menu if one
+                                            // is up (one surface at a time).
+                                            if quick_replies_active
+                                                && !staged_active
+                                                && self.composer.draft.starts_with('/')
+                                                && !quick_replies::panel_open()
+                                            {
+                                                self.close_composer_surfaces();
+                                                quick_replies::set_panel_open(true);
+                                            }
+                                            enter_send = self.enter_sends
+                                                && response.has_focus()
+                                                && ui.input(|i| {
+                                                    i.key_pressed(egui::Key::Enter)
+                                                        && !i.modifiers.shift
+                                                });
+                                            // Ctrl+V with a picture on the
+                                            // clipboard: egui-winit delivers it
+                                            // as PasteImage (text pastes stay
+                                            // native Paste events).
+                                            let pasted_images: Vec<egui::ColorImage> =
+                                                ui.input(|i| {
+                                                    i.events
+                                                        .iter()
+                                                        .filter_map(|e| match e {
+                                                            egui::Event::PasteImage(img) => {
+                                                                Some((**img).clone())
+                                                            }
+                                                            _ => None,
+                                                        })
+                                                        .collect()
+                                                });
+                                            for img in pasted_images {
+                                                self.stage_pasted_image(ui.ctx(), img);
+                                            }
+                                            has_text = if staged_active {
+                                                // Staged files send even
+                                                // without a caption.
+                                                true
+                                            } else {
+                                                !self.composer.draft.trim().is_empty()
+                                            };
+                                            input_changed = response.changed();
+                                        }
+                                    },
+                                );
                             });
                         pill.response.rect
                     };
@@ -1056,6 +1137,74 @@ impl App {
     }
 }
 
+/// The tallest the composer text field may grow, in visual
+/// rows: past this the field scrolls internally instead of
+/// growing the pill.
+pub(crate) const COMPOSER_MAX_ROWS: usize = 5;
+
+/// Vertical space the text field's own frame adds around the
+/// text: the `Margin::symmetric(4, 8)` inner margin on the
+/// composer's text edit, top plus bottom.
+const COMPOSER_FIELD_MARGIN_Y: f32 = 16.0;
+
+/// The height the composer input row is floored at: the
+/// 36 px icon buttons it always contains.
+const COMPOSER_ROW_MIN_H: f32 = 36.0;
+
+fn clamped_composer_rows(visual_rows: usize) -> usize {
+    visual_rows.clamp(1, COMPOSER_MAX_ROWS)
+}
+
+/// The text field's height for a draft occupying
+/// `visual_rows` wrapped lines at `line_height`: the clamped
+/// row count times the line height, plus the field frame's
+/// vertical margins. A pure function of the current draft:
+/// an empty draft is one row, and a draft that shrinks back
+/// to one row returns this to the one-line height on the
+/// same frame, whatever it grew to before.
+fn composer_field_height(visual_rows: usize, line_height: f32) -> f32 {
+    clamped_composer_rows(visual_rows) as f32 * line_height + COMPOSER_FIELD_MARGIN_Y
+}
+
+/// The input row's height: the field height, floored at the
+/// icon buttons' height, so a one-line draft yields exactly
+/// the shipped one-line pill (a 36 px row inside the pill's
+/// own margins).
+fn composer_row_height(visual_rows: usize, line_height: f32) -> f32 {
+    composer_field_height(visual_rows, line_height).max(COMPOSER_ROW_MIN_H)
+}
+
+/// The composer's line height, computed the way egui's text
+/// edit computes it: the Body font's row height plus the
+/// style's extra line spacing.
+fn composer_line_height(ui: &egui::Ui) -> f32 {
+    let font_id = egui::TextStyle::Body.resolve(ui.style());
+    ui.fonts_mut(|f| f.row_height(&font_id)) + ui.spacing().extra_text_line_spacing
+}
+
+/// How many visual (wrapped) rows `text` occupies at
+/// `wrap_width`, laid out with the same job the text edit
+/// builds for itself: the Body font, the same line height,
+/// trailing whitespace kept. An empty draft is one row.
+fn composer_visual_rows(ui: &egui::Ui, text: &str, wrap_width: f32, line_height: f32) -> usize {
+    if text.is_empty() {
+        return 1;
+    }
+    let font_id = egui::TextStyle::Body.resolve(ui.style());
+    let mut job = egui::text::LayoutJob::simple(
+        text.to_owned(),
+        font_id,
+        ui.style().visuals.text_color(),
+        wrap_width,
+    );
+    job.halign = Align::LEFT;
+    job.keep_trailing_whitespace = true;
+    for section in &mut job.sections {
+        section.format.line_height = Some(line_height);
+    }
+    ui.fonts_mut(|f| f.layout_job(job)).rows.len().max(1)
+}
+
 /// A round hoverable icon button used inside the composer pill.
 /// Returns true when clicked. Delegates to the shared
 /// [`crate::widgets::icon_button`] so the composer gets the same
@@ -1152,5 +1301,50 @@ fn draw_recording_bar(app: &mut App, ui: &mut egui::Ui, t: Tokens, now: f64, eng
         app.cancel_recording();
     } else if stop {
         app.finish_recording(engaged);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The line height the shipped theme produces for the
+    // Body font (14 px Inter): the value the layout probe
+    // measured in the running app, where a one-line field is
+    // 33 px tall including its 16 px of frame margins.
+    const LINE_H: f32 = 17.0;
+
+    #[test]
+    fn empty_draft_is_the_one_line_pill() {
+        assert_eq!(composer_field_height(1, LINE_H), 33.0);
+        // The row is floored at the 36 px icon buttons, so a
+        // one-line (or degenerate zero-row) draft yields
+        // exactly the one-line row the shipped pill has.
+        assert_eq!(composer_row_height(1, LINE_H), 36.0);
+        assert_eq!(composer_row_height(0, LINE_H), 36.0);
+    }
+
+    #[test]
+    fn multiline_draft_grows_one_line_at_a_time() {
+        assert_eq!(composer_field_height(2, LINE_H), 50.0);
+        assert_eq!(composer_row_height(2, LINE_H), 50.0);
+        assert_eq!(composer_row_height(3, LINE_H), 67.0);
+    }
+
+    #[test]
+    fn growth_is_capped_at_the_max_rows() {
+        assert_eq!(composer_row_height(12, LINE_H), composer_row_height(COMPOSER_MAX_ROWS, LINE_H));
+        assert_eq!(composer_field_height(12, LINE_H), 101.0);
+    }
+
+    #[test]
+    fn cleared_draft_returns_to_one_line() {
+        // The height functions are stateless: whatever the
+        // draft grew to while typing, one visual row always
+        // maps back to the one-line height, so clearing the
+        // draft (or sending it) shrinks the pill on the same
+        // frame.
+        assert_eq!(composer_row_height(5, LINE_H), 101.0);
+        assert_eq!(composer_row_height(1, LINE_H), 36.0);
     }
 }

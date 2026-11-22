@@ -473,9 +473,9 @@ mod tests {
         }
         // A window narrower than the cap plus margins: the
         // pill takes the width the side margins leave.
-        let bar = nav_bar_rect(strip(360.0));
+        let bar = nav_bar_rect(strip(340.0));
         assert_eq!(bar.left(), NAV_BAR_SIDE);
-        assert_eq!(bar.width(), 360.0 - 2.0 * NAV_BAR_SIDE);
+        assert_eq!(bar.width(), 340.0 - 2.0 * NAV_BAR_SIDE);
     }
 
     #[test]

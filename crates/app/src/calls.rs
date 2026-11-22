@@ -636,6 +636,7 @@ impl App {
         let source: &[CallEntry] =
             call_log_source(self.live_mode, &self.calls.live_entries, &self.calls.entries);
         let rows = self.visible_call_rows(source);
+        let nav_inset = self.nav_scroll_inset();
         let source_empty = source.is_empty();
         let mut open: Option<(u64, CallKind)> = None;
         let mut shortcut_open: Option<u64> = None;
@@ -741,7 +742,7 @@ impl App {
                             egui::ScrollArea::vertical()
                                 .auto_shrink([false, false])
                                 .content_margin(egui::Margin {
-                                    bottom: self.nav_scroll_inset() as i8,
+                                    bottom: nav_inset as i8,
                                     ..Default::default()
                                 })
                                 .show(ui, |ui| {
@@ -815,6 +816,7 @@ impl App {
         let source: &[CallEntry] =
             call_log_source(self.live_mode, &self.calls.live_entries, &self.calls.entries);
         let rows = self.visible_call_rows(source);
+        let nav_inset = self.nav_scroll_inset();
         let source_empty = source.is_empty();
         let mut open: Option<(u64, CallKind)> = None;
         let mut shortcut_open: Option<u64> = None;
@@ -895,7 +897,7 @@ impl App {
                     egui::ScrollArea::vertical()
                         .auto_shrink([false, false])
                         .content_margin(egui::Margin {
-                            bottom: self.nav_scroll_inset() as i8,
+                            bottom: nav_inset as i8,
                             ..Default::default()
                         })
                         .show(ui, |ui| {

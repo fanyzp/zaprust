@@ -242,9 +242,7 @@ fn draw_call_row(
         0.0
     } else {
         ui.ctx().fonts_mut(|f| {
-            f.layout_no_wrap(count_text.clone(), count_font.clone(), rgb(t.text_secondary))
-                .size()
-                .x
+            f.layout_no_wrap(count_text.clone(), count_font.clone(), rgb(t.text_secondary)).size().x
         })
     };
     let name_budget = (rect.right() - 52.0 - count_w - text_left).max(0.0);
@@ -1057,8 +1055,7 @@ impl App {
                                         // are checked first, like the
                                         // row paradigm's call-back.
                                         let mut action_chosen: Option<bool> = None;
-                                        for (i, action) in
-                                            picker_call_actions().iter().enumerate()
+                                        for (i, action) in picker_call_actions().iter().enumerate()
                                         {
                                             let btn_rect = egui::Rect::from_center_size(
                                                 Pos2::new(

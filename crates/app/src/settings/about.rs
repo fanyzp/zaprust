@@ -61,7 +61,7 @@ impl App {
                 if !notes.is_empty() {
                     divider(ui, t);
                     let summary: String = notes.chars().take(400).collect();
-                    row_with(ui, t, "What is new", "", |ui| {
+                    row_with_text_control(ui, t, "What is new", "", |ui| {
                         ui.label(RichText::new(summary).size(12.5).color(rgb(t.text_secondary)));
                     });
                 }
@@ -161,7 +161,7 @@ impl App {
         let mut report_bug = false;
         group_label(ui, t, "App");
         settings_card(ui, t, |ui| {
-            row_with(ui, t, "Zaprust", "", |ui| {
+            row_with_text_control(ui, t, "Zaprust", "", |ui| {
                 ui.label(
                     RichText::new(if self.live_mode {
                         if self.live.as_ref().is_some_and(|s| s.fake) {

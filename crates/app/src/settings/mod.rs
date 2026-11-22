@@ -817,12 +817,10 @@ fn divider_inset(ui: &mut egui::Ui, t: core::theme::Tokens, inset: f32) {
 /// the right. Returns the row's rect (the search highlight
 /// paints over it; see row_hl).
 ///
-/// The row is laid out right-to-left: the control is placed
-/// first and reserves its own width at the right edge, and the
-/// label column gets only what remains. Laying the column out
-/// first (the naive left-to-right order) lets it claim the full
-/// row width, so a long description wraps at the full width and
-/// runs underneath the control, clipped mid-sentence.
+/// The label column must be width-capped before it renders:
+/// uncapped, it claims the full row width, so a long
+/// description wraps at the full width and runs underneath the
+/// control, clipped mid-sentence.
 fn row_with(
     ui: &mut egui::Ui,
     _t: core::theme::Tokens,
@@ -830,25 +828,64 @@ fn row_with(
     desc: &str,
     control: impl FnOnce(&mut egui::Ui),
 ) -> egui::Rect {
-    let resp = ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+    // The label column renders first, capped so the description
+    // wraps clear of the control instead of running underneath
+    // it. The cap reserves a fixed allowance for the control:
+    // every control used with this variant (switches, buttons,
+    // hyperlinks) is narrower than the reserve, so the label
+    // keeps the rest of the row. The row is a plain horizontal,
+    // so its height stays the taller of the two columns; a
+    // right-to-left outer layout here would claim the card's
+    // full available height and stretch the row to fill it.
+    let reserve = 208.0;
+    let resp = ui.horizontal(|ui| {
         ui.scope(|ui| {
-            // A text control (the About status line, say) may
-            // wrap, but it may not claim the whole row and
-            // squeeze the title column out; real controls are
-            // far narrower than this cap.
-            ui.set_max_width(ui.available_width() * 0.62);
+            ui.set_max_width((ui.available_width() - reserve).max(120.0));
+            label_column(ui, title, desc);
+        });
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             control(ui);
         });
-        ui.with_layout(egui::Layout::left_to_right(egui::Align::Min), |ui| {
-            ui.vertical(|ui| {
-                ui.label(RichText::new(title).size(14.0));
-                if !desc.is_empty() {
-                    ui.label(RichText::new(desc).size(11.5).color(ui.visuals().weak_text_color()));
-                }
+    });
+    resp.response.rect
+}
+
+/// `row_with` for rows whose control is running text (the About
+/// status line, the release-notes summary): the text may wrap
+/// and may claim up to 62% of the row, but it may not squeeze
+/// the title column out.
+fn row_with_text_control(
+    ui: &mut egui::Ui,
+    _t: core::theme::Tokens,
+    title: &str,
+    desc: &str,
+    control: impl FnOnce(&mut egui::Ui),
+) -> egui::Rect {
+    let row_width = ui.available_width();
+    let resp = ui.horizontal(|ui| {
+        ui.scope(|ui| {
+            ui.set_max_width(row_width * 0.38);
+            label_column(ui, title, desc);
+        });
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.scope(|ui| {
+                ui.set_max_width(row_width * 0.62);
+                control(ui);
             });
         });
     });
     resp.response.rect
+}
+
+/// The settings row's label column: the title with its optional
+/// wrapping description under it.
+fn label_column(ui: &mut egui::Ui, title: &str, desc: &str) {
+    ui.vertical(|ui| {
+        ui.label(RichText::new(title).size(14.0));
+        if !desc.is_empty() {
+            ui.label(RichText::new(desc).size(11.5).color(ui.visuals().weak_text_color()));
+        }
+    });
 }
 
 /// The native feature switchboard rows: (feature id, display

@@ -236,7 +236,7 @@ impl App {
                             .fill(crate::theme::glass_text_tint(t, t.bg_panel_alt))
                             .corner_radius(CornerRadius::same(28))
                             .stroke(Stroke::new(1.0_f32, rgb(t.border)))
-                            .shadow(crate::theme::glass_shadow(t))
+                            .shadow(crate::theme::composer_shadow(t))
                             .inner_margin(Margin::symmetric(12, 8))
                             .show(ui, |ui| {
                                 ui.set_width(pill_w - 24.0);
@@ -719,6 +719,17 @@ impl App {
                             });
                         pill.response.rect
                     };
+                    // The raised top edge on the pill: the solid
+                    // surface's lift cue, worn in both glow modes
+                    // (the glass specular edge is a separate,
+                    // brighter line the floating menus paint).
+                    crate::theme::paint_raised_edge(
+                        ui.painter(),
+                        pill_rect,
+                        28.0,
+                        t.bg_panel_alt,
+                        t,
+                    );
                     // The morph button gets its own small Area in
                     // the reserved slot: bottom-aligned with the
                     // pill however tall the pill grows (reply

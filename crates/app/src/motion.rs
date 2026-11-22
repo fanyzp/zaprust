@@ -94,6 +94,10 @@ pub(crate) mod dur {
     pub(crate) const PRESS: f64 = 90.0;
     /// The unread badge pop when its count changes.
     pub(crate) const POP: f64 = 300.0;
+    /// The bottom navigation icon pop on tab activation: a
+    /// single short swell and settle, the restrained emphasis
+    /// the native bars give the tab you just chose.
+    pub(crate) const TAB_POP: f64 = 160.0;
     /// The scroll-to-bottom button fading in or out.
     pub(crate) const REVEAL: f64 = 150.0;
 }

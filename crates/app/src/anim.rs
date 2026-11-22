@@ -22,6 +22,9 @@
 //!   [`message_entrance`] for each bubble's opacity and rise.
 //! - Count badges: [`pop_scale`] gives a badge a small pop on the
 //!   frame its number changes, then settles back to 1.0.
+//! - Activations: [`activation_pop`] gives a navigation icon or
+//!   a floating action button one subtle swell when it is
+//!   chosen, governed end to end by the Motion setting.
 //! - Free-form scalars: [`scalar`] eases any f32 toward a target.
 
 use eframe::egui::{self, Color32, Id, Pos2, Sense, Vec2};
@@ -42,6 +45,8 @@ pub(crate) mod dur {
     pub(crate) const PRESS: f32 = (crate::motion::dur::PRESS / 1000.0) as f32;
     /// The unread badge pop when its count changes.
     pub(crate) const POP: f32 = (crate::motion::dur::POP / 1000.0) as f32;
+    /// The bottom navigation icon pop on tab activation.
+    pub(crate) const TAB_POP: f32 = (crate::motion::dur::TAB_POP / 1000.0) as f32;
 }
 
 /// Ease-out cubic shaped for egui's easing slot; the curve itself
@@ -244,6 +249,117 @@ pub(crate) fn pop_scale(
     1.0 + 0.30 * bump(p)
 }
 
+/// The activation pop's parameters at a Motion setting, as
+/// `(duration seconds, peak extra scale)`, or `None` when the
+/// setting forbids the pop outright (Off). The peaks are the
+/// owner's "tipis banget" spec made literal: Full swells to
+/// 1.12, inside the 1.08-1.15 band; Reduced is clearly
+/// dampened at 1.05 over the setting's shortened duration.
+fn activation_params(motion: crate::motion::MotionSetting) -> Option<(f32, f32)> {
+    use crate::motion::MotionSetting;
+    match motion {
+        MotionSetting::Off => None,
+        MotionSetting::Full => Some((dur::TAB_POP, 0.12)),
+        MotionSetting::Reduced => {
+            Some(((motion.duration(crate::motion::dur::TAB_POP) / 1000.0) as f32, 0.05))
+        }
+    }
+}
+
+/// The activation pop's scale at linear progress `p`: exactly
+/// 1.0 at both ends (the bump is only evaluated strictly
+/// inside the run, so the settle is exact, never a float
+/// residue), swelling to `1.0 + peak` at the midpoint on the
+/// shared bump curve. No overshoot: the bump never exceeds 1,
+/// so the scale never exceeds `1.0 + peak`.
+pub(crate) fn activation_scale(p: f32, peak: f32) -> f32 {
+    if p <= 0.0 || p >= 1.0 {
+        return 1.0;
+    }
+    1.0 + peak * bump(p)
+}
+
+/// One element's activation-pop state, kept in egui temp
+/// data. A pop fires on an activation edge: the element
+/// becoming active (a tab being selected) or an explicit
+/// `fired` from the caller (a tap on the already-active tab,
+/// a FAB click). The first sight of an element never pops:
+/// priming records the resting state silently, the same rule
+/// the badge pop follows.
+#[derive(Clone, Copy, Default)]
+struct PopRun {
+    primed: bool,
+    was_active: bool,
+    start: Option<f64>,
+}
+
+impl PopRun {
+    /// Advances the run for this frame and returns
+    /// `(scale, running)`. `running` is the repaint contract:
+    /// true only while the pop is genuinely in flight, false
+    /// forever once it completes, so an idle app never keeps
+    /// repainting for it.
+    fn drive(
+        &mut self,
+        now: f64,
+        active: bool,
+        fired: bool,
+        motion: crate::motion::MotionSetting,
+    ) -> (f32, bool) {
+        let Some((secs, peak)) = activation_params(motion) else {
+            // Off (or a mid-flight switch to Off): static,
+            // exactly 1.0, and any live run is cancelled.
+            self.start = None;
+            self.primed = true;
+            self.was_active = active;
+            return (1.0, false);
+        };
+        if !self.primed {
+            self.primed = true;
+            self.was_active = active;
+            return (1.0, false);
+        }
+        if fired || (active && !self.was_active) {
+            self.start = Some(now);
+        }
+        self.was_active = active;
+        let Some(start) = self.start else {
+            return (1.0, false);
+        };
+        let p = ((now - start) / f64::from(secs)) as f32;
+        if p >= 1.0 {
+            self.start = None;
+            return (1.0, false);
+        }
+        (activation_scale(p, peak), true)
+    }
+}
+
+/// Scale for an element that pops when it is activated: the
+/// portrait bottom navigation icons on tab switch (and on a
+/// tap of the already-selected tab), the floating action
+/// buttons on click. One pop per activation; repaints are
+/// requested only while a pop is in flight, and at rest the
+/// scale is exactly 1.0, so idle frames render identically
+/// to an app without the pop. All parameters come from the
+/// Motion setting via [`activation_params`]: Off never pops.
+pub(crate) fn activation_pop(
+    ui: &egui::Ui,
+    key: impl std::hash::Hash + std::fmt::Debug,
+    active: bool,
+    fired: bool,
+    motion: crate::motion::MotionSetting,
+) -> f32 {
+    let id = Id::unique(("anim_activation_pop", key));
+    let now = ui.input(|i| i.time);
+    let (scale, running) =
+        ui.data_mut(|d| d.get_temp_mut_or_default::<PopRun>(id).drive(now, active, fired, motion));
+    if running {
+        ui.ctx().request_repaint_after(Duration::from_millis(16));
+    }
+    scale
+}
+
 /// Which way a popup's visibility animation is travelling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PopupPhase {
@@ -408,7 +524,8 @@ pub(crate) fn typing_dots(ui: &mut egui::Ui, color: Color32) {
 
 #[cfg(test)]
 mod tests {
-    use super::{bump, ease_out};
+    use super::{activation_params, activation_scale, bump, ease_out, PopRun};
+    use crate::motion::MotionSetting;
 
     #[test]
     fn ease_out_endpoints_are_exact() {
@@ -424,5 +541,74 @@ mod tests {
         assert!((bump(0.5) - 1.0).abs() < 1e-6);
         assert!(bump(1.0).abs() < 1e-4);
         assert!(bump(0.25) > 0.0 && bump(0.25) < 1.0);
+    }
+
+    #[test]
+    fn activation_scale_endpoints_are_exactly_one() {
+        for peak in [0.12, 0.05] {
+            assert_eq!(activation_scale(0.0, peak), 1.0, "exact at the start");
+            assert_eq!(activation_scale(1.0, peak), 1.0, "exact at the settle");
+            assert_eq!(activation_scale(-0.5, peak), 1.0, "clamped before");
+            assert_eq!(activation_scale(1.5, peak), 1.0, "clamped after");
+        }
+    }
+
+    #[test]
+    fn activation_scale_never_exceeds_its_peak() {
+        // The Full peak sits inside the owner's 1.08-1.15 band;
+        // Reduced is dampened well under it.
+        let (full_secs, full_peak) = activation_params(MotionSetting::Full).unwrap();
+        let (reduced_secs, reduced_peak) = activation_params(MotionSetting::Reduced).unwrap();
+        assert!((1.08..=1.15).contains(&(1.0 + full_peak)), "Full peak in the spec band");
+        assert!(reduced_peak < full_peak, "Reduced is dampened");
+        assert!(reduced_secs < full_secs, "Reduced is shorter");
+        assert_eq!(activation_params(MotionSetting::Off), None, "Off forbids the pop");
+        for peak in [full_peak, reduced_peak] {
+            for i in 0..=100 {
+                let s = activation_scale(i as f32 / 100.0, peak);
+                assert!((1.0..=1.0 + peak).contains(&s), "capped at step {i}");
+            }
+            assert!((activation_scale(0.5, peak) - (1.0 + peak)).abs() < 1e-6, "peak at midpoint");
+        }
+    }
+
+    #[test]
+    fn activation_pop_fires_on_the_selection_edge_and_finishes() {
+        let full = MotionSetting::Full;
+        let mut run = PopRun::default();
+        // First sight primes silently, even when already active:
+        // an app that opens on the Chats tab must not pop.
+        assert_eq!(run.drive(10.0, true, false, full), (1.0, false));
+        // Steady state: no run, no repaint requests, forever.
+        assert_eq!(run.drive(10.5, true, false, full), (1.0, false));
+        // Switching away and back is the activation edge.
+        assert_eq!(run.drive(11.0, false, false, full), (1.0, false));
+        let (s, running) = run.drive(12.0, true, false, full);
+        assert_eq!(s, 1.0, "the pop starts from rest");
+        assert!(running, "and reports itself in flight");
+        let (s, running) = run.drive(12.08, true, false, full);
+        assert!(s > 1.0 && s <= 1.12, "mid-pop inside the cap, got {s}");
+        assert!(running);
+        // Just past the duration's end the run is finished,
+        // and it stays finished: the repaint contract is
+        // terminal.
+        assert_eq!(run.drive(12.17, true, false, full), (1.0, false));
+        assert_eq!(run.drive(99.0, true, false, full), (1.0, false));
+    }
+
+    #[test]
+    fn activation_pop_fires_on_tap_and_off_is_always_static() {
+        let full = MotionSetting::Full;
+        let mut run = PopRun::default();
+        assert_eq!(run.drive(0.0, true, false, full), (1.0, false), "primed");
+        // A tap on the already-active element fires through
+        // `fired`, with no selection edge involved.
+        let (_, running) = run.drive(1.0, true, true, full);
+        assert!(running, "tap starts the pop");
+        // Off yields exactly 1.0 on every input, even mid-run
+        // and even on an explicit fire.
+        assert_eq!(run.drive(1.05, true, true, MotionSetting::Off), (1.0, false));
+        assert_eq!(run.drive(2.0, false, true, MotionSetting::Off), (1.0, false));
+        assert_eq!(run.drive(3.0, true, false, MotionSetting::Off), (1.0, false));
     }
 }

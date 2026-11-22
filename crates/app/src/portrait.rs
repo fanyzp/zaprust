@@ -143,6 +143,7 @@ impl App {
     /// shadow, specular top edge).
     pub(crate) fn draw_bottom_nav(&mut self, root: &mut egui::Ui) {
         let t = self.tokens();
+        let motion = self.motion;
         let unread = total_unread(&self.chats);
         let mut go: Option<Screen> = None;
         egui::Panel::bottom("bottom_nav")
@@ -206,7 +207,7 @@ impl App {
                     ),
                 ];
                 for (index, (screen, tab)) in tabs.into_iter().enumerate() {
-                    if bottom_tab(ui, t, nav_slot(bar, index), tab) {
+                    if bottom_tab(ui, t, motion, nav_slot(bar, index), tab) {
                         go = Some(screen);
                     }
                 }
@@ -222,6 +223,7 @@ impl App {
     /// create-group dialog state), never a second flow.
     pub(crate) fn draw_new_chat_fab(&mut self, root: &mut egui::Ui) {
         let t = self.tokens();
+        let motion = self.motion;
         let size = FAB_SIZE;
         let rect = fab_rect(root.ctx().content_rect(), size);
         let mut clicked = false;
@@ -231,12 +233,18 @@ impl App {
             .show(root.ctx(), |ui| {
                 let (r, resp) = ui.allocate_exact_size(Vec2::splat(size), Sense::click());
                 let fill = fab_fill(t, &resp);
-                paint_fab(ui.painter(), t, r, fill);
+                // The activation pop, on the painted body only:
+                // the allocation never moves, so nothing around
+                // the button shifts while it swells.
+                let pop =
+                    crate::anim::activation_pop(ui, "portrait_fab", false, resp.clicked(), motion);
+                let body = Rect::from_center_size(r.center(), r.size() * pop);
+                paint_fab(ui.painter(), t, body, fill);
                 crate::icons::draw(
                     ui.painter(),
                     crate::icons::Icon::Edit,
                     r.center(),
-                    26.0,
+                    26.0 * pop,
                     rgb(t.on_accent()),
                     fill,
                 );
@@ -258,6 +266,7 @@ impl App {
     /// the Calls header's new call button opens in the other modes.
     pub(crate) fn draw_calls_fab(&mut self, root: &mut egui::Ui) {
         let t = self.tokens();
+        let motion = self.motion;
         let size = FAB_SIZE;
         let rect = fab_rect(root.ctx().content_rect(), size);
         let mut clicked = false;
@@ -267,12 +276,23 @@ impl App {
             .show(root.ctx(), |ui| {
                 let (r, resp) = ui.allocate_exact_size(Vec2::splat(size), Sense::click());
                 let fill = fab_fill(t, &resp);
-                paint_fab(ui.painter(), t, r, fill);
+                // The activation pop, on the painted body only:
+                // the allocation never moves, so nothing around
+                // the button shifts while it swells.
+                let pop = crate::anim::activation_pop(
+                    ui,
+                    "portrait_calls_fab",
+                    false,
+                    resp.clicked(),
+                    motion,
+                );
+                let body = Rect::from_center_size(r.center(), r.size() * pop);
+                paint_fab(ui.painter(), t, body, fill);
                 crate::icons::draw(
                     ui.painter(),
                     crate::icons::Icon::AddCall,
                     r.center(),
-                    26.0,
+                    26.0 * pop,
                     rgb(t.on_accent()),
                     fill,
                 );
@@ -293,9 +313,12 @@ impl App {
 /// an accent circle. Shared by every FAB so shape, size and lift
 /// can never drift apart between tabs.
 fn paint_fab(painter: &egui::Painter, t: core::theme::Tokens, r: Rect, fill: egui::Color32) {
-    painter
-        .add(crate::theme::card_shadow(t).as_shape(r, CornerRadius::same((FAB_SIZE / 2.0) as u8)));
-    painter.circle_filled(r.center(), FAB_SIZE / 2.0, fill);
+    // The radius follows the rect, not the constant, so a
+    // caller painting a popped (scaled) body still gets a true
+    // circle; at rest the rect is exactly FAB_SIZE across.
+    let radius = r.width() / 2.0;
+    painter.add(crate::theme::card_shadow(t).as_shape(r, CornerRadius::same(radius as u8)));
+    painter.circle_filled(r.center(), radius, fill);
 }
 
 /// The FABs' shared fill steps: accent at rest, its hover and
@@ -327,11 +350,30 @@ struct BottomTab<'a> {
 /// it (semibold while selected), and an unread count pill at
 /// the icon's top right, in the chat row badge's language.
 /// Everything is positioned from the slot rect, so a tab can
-/// never drift out of the bar. Returns true on click.
-fn bottom_tab(ui: &mut egui::Ui, t: core::theme::Tokens, slot: Rect, tab: BottomTab<'_>) -> bool {
+/// never drift out of the bar. The icon pops once when the tab
+/// is activated (the switch itself is instant; the pop is
+/// paint-only, at the Motion setting's amplitude). Returns
+/// true on click.
+fn bottom_tab(
+    ui: &mut egui::Ui,
+    t: core::theme::Tokens,
+    motion: crate::motion::MotionSetting,
+    slot: Rect,
+    tab: BottomTab<'_>,
+) -> bool {
     let BottomTab { key, icon, label, selected, badge: badge_count } = tab;
     let label = label.as_str();
     let response = ui.interact(slot, egui::Id::unique(("portrait_tab", key)), Sense::click());
+    let clicked = response.clicked();
+    // The switch fires through the selection edge inside the
+    // helper; a tap on the already-selected tab fires here.
+    let pop = crate::anim::activation_pop(
+        ui,
+        ("portrait_tab", key),
+        selected,
+        selected && clicked,
+        motion,
+    );
     let icon_center = Pos2::new(slot.center().x, slot.top() + 21.0);
     let pill = egui::Rect::from_center_size(icon_center, Vec2::new(56.0, 30.0));
     if selected {
@@ -353,7 +395,7 @@ fn bottom_tab(ui: &mut egui::Ui, t: core::theme::Tokens, slot: Rect, tab: Bottom
         ui.painter().rect_filled(pill, CornerRadius::same(15), rgb(t.bg_panel_alt));
     }
     let color = if selected { rgb(t.accent) } else { rgb(t.text_secondary) };
-    crate::icons::draw(ui.painter(), icon, icon_center, 24.0, color, rgb(t.bg_panel));
+    crate::icons::draw(ui.painter(), icon, icon_center, 24.0 * pop, color, rgb(t.bg_panel));
     if badge_count > 0 {
         let text = badge_count.to_string();
         let font = FontId::proportional(11.0);
@@ -378,7 +420,8 @@ fn bottom_tab(ui: &mut egui::Ui, t: core::theme::Tokens, slot: Rect, tab: Bottom
         label_font,
         label_color,
     );
-    response.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(label).clicked()
+    response.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(label);
+    clicked
 }
 
 #[cfg(test)]

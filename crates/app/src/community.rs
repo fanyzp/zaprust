@@ -628,7 +628,13 @@ impl App {
                     );
                 });
                 ui.add_space(SP_3);
-                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .content_margin(egui::Margin {
+                        bottom: self.nav_scroll_inset() as i8,
+                        ..Default::default()
+                    })
+                    .show(ui, |ui| {
                     // The lead row: New community, in the same row
                     // language as the community rows below it (a
                     // squircle where their cover thumbs sit, the

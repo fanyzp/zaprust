@@ -738,7 +738,13 @@ impl App {
                                     .color(rgb(t.text_faint)),
                             );
                             ui.add_space(4.0);
-                            egui::ScrollArea::vertical().auto_shrink([false, false]).show(
+                            egui::ScrollArea::vertical()
+                                .auto_shrink([false, false])
+                                .content_margin(egui::Margin {
+                                    bottom: self.nav_scroll_inset() as i8,
+                                    ..Default::default()
+                                })
+                                .show(
                                 ui,
                                 |ui| {
                                     for row in &rows {
@@ -889,7 +895,13 @@ impl App {
                             .color(rgb(t.text_primary)),
                     );
                     ui.add_space(4.0);
-                    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false, false])
+                        .content_margin(egui::Margin {
+                            bottom: self.nav_scroll_inset() as i8,
+                            ..Default::default()
+                        })
+                        .show(ui, |ui| {
                         for row in &rows {
                             let entry = row.entry;
                             let chat: Option<&Chat> =

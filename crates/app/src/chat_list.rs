@@ -331,7 +331,13 @@ impl App {
                 // separate Archived entry row in this panel (the
                 // rail and the filter chip are the entries).
                 let row_action = std::cell::Cell::new(None::<(u64, RowPick)>);
-                egui::ScrollArea::vertical().auto_shrink([false, false]).show_rows(
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .content_margin(egui::Margin {
+                        bottom: self.nav_scroll_inset() as i8,
+                        ..Default::default()
+                    })
+                    .show_rows(
                     ui,
                     64.0,
                     visible.len(),

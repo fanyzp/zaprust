@@ -57,14 +57,9 @@ impl eframe::App for App {
         }
         if self.portrait {
             // No rail in portrait mode: the bottom navigation
-            // bar takes its place. It is drawn before the
-            // screens so its panel reserves the bottom strip;
-            // while full-screen content or a non-tab page is up
-            // it is not drawn at all and the screen takes the
-            // whole height.
-            if self.bottom_nav_visible() {
-                self.draw_bottom_nav(ui);
-            }
+            // pill takes its place. The pill is drawn as an
+            // overlay after the screens, so portrait has no
+            // rail here and the screens render full-height.
         } else {
             self.draw_rail(ui);
             if self.sidebar_collapsed && self.screen.is_list_screen() {
@@ -111,6 +106,10 @@ impl eframe::App for App {
         } else if self.screen == Screen::Debug {
             self.draw_simple_list_panel(ui, "Debug");
             self.draw_debug_screen(ui);
+        }
+        // The portrait pill overlays the finished screens.
+        if self.bottom_nav_visible() {
+            self.draw_bottom_nav(ui);
         }
         self.paint_screen_fade(&ctx);
         // The account surfaces (menu header, rail button) paint

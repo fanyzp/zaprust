@@ -31,26 +31,38 @@ pub(crate) fn tick_count(delivery: Option<Delivery>) -> usize {
     }
 }
 
-/// Paints WhatsApp-style tick marks with line segments.
-/// (The bundled egui fonts contain no checkmark glyph.) Shared
-/// with the chat list, whose snippet paints the same ticks for
-/// an outgoing last message.
+/// Paints the delivery ticks (one for sent, two for delivered
+/// or read) from the shared icon font: the Material `done` and
+/// `done_all` glyphs, the same family as every other icon in
+/// the app. Shared with the chat list, whose snippet paints the
+/// same ticks for an outgoing last message. The span reserved
+/// by the old hand-drawn ticks (7 pt per tick) is kept, so the
+/// meta layouts around the call sites do not move.
 pub(crate) fn paint_ticks(painter: &egui::Painter, x0: f32, y: f32, count: usize, color: Color32) {
-    let stroke = Stroke::new(1.3_f32, color);
-    for i in 0..count {
-        let x = x0 + i as f32 * 7.0;
-        painter.line_segment([Pos2::new(x, y + 4.0), Pos2::new(x + 2.5, y + 6.5)], stroke);
-        painter.line_segment([Pos2::new(x + 2.5, y + 6.5), Pos2::new(x + 7.5, y + 0.5)], stroke);
-    }
+    let icon = if count >= 2 { crate::icons::Icon::DoneAll } else { crate::icons::Icon::Done };
+    let span = count as f32 * 7.0 + 0.5;
+    crate::icons::draw(
+        painter,
+        icon,
+        Pos2::new(x0 + span / 2.0, y + 3.5),
+        crate::icons::SIZE_BADGE,
+        color,
+        color,
+    );
 }
 
-/// Paints the small clock shown while a message is still sending:
-/// a circle outline with two hands, in place of the ticks.
+/// Paints the small clock shown while a message is still
+/// sending, in place of the ticks: the icon font's `schedule`
+/// glyph, centred on the same point the hand-drawn clock used.
 pub(crate) fn paint_clock(painter: &egui::Painter, center: Pos2, color: Color32) {
-    let stroke = Stroke::new(1.2_f32, color);
-    painter.circle_stroke(center, 4.2, stroke);
-    painter.line_segment([center, Pos2::new(center.x, center.y - 2.8)], stroke);
-    painter.line_segment([center, Pos2::new(center.x + 2.2, center.y + 1.2)], stroke);
+    crate::icons::draw(
+        painter,
+        crate::icons::Icon::Schedule,
+        center,
+        crate::icons::SIZE_BADGE,
+        color,
+        color,
+    );
 }
 
 /// What a click on a bubble asked the app to do.
@@ -1027,9 +1039,14 @@ pub(crate) fn message_bubble(
                 let opened = media.view_once_opened;
                 let icon_color = if opened { rgb(t.text_faint) } else { rgb(t.accent) };
                 let center = Pos2::new(x + 13.0, y + 15.0);
-                painter.circle_stroke(center, 10.5, Stroke::new(1.6_f32, icon_color));
-                let g = layout_text(ui, "1", FontId::proportional(12.0), icon_color, 12.0);
-                painter.galley(Pos2::new(center.x - 3.0, center.y - 7.5), g, icon_color);
+                crate::icons::draw(
+                    painter,
+                    crate::icons::Icon::LooksOne,
+                    center,
+                    crate::icons::SIZE_CONTROL,
+                    icon_color,
+                    icon_color,
+                );
                 let label = if opened { "Opened" } else { "Photo" };
                 let label_color = if opened { rgb(t.text_faint) } else { text_color };
                 let g =
@@ -1077,7 +1094,7 @@ pub(crate) fn message_bubble(
                         painter,
                         crate::icons::Icon::Image,
                         Pos2::new(center.x, center.y - 8.0),
-                        30.0,
+                        crate::icons::SIZE_LARGE,
                         rgb(t.text_faint),
                         rgb(t.bg_panel_alt),
                     );
@@ -1114,9 +1131,14 @@ pub(crate) fn message_bubble(
                     let opened = media.view_once_opened;
                     let icon_color = if opened { rgb(t.text_faint) } else { rgb(t.accent) };
                     let center = Pos2::new(x + 13.0, y + 15.0);
-                    painter.circle_stroke(center, 10.5, Stroke::new(1.6_f32, icon_color));
-                    let g = layout_text(ui, "1", FontId::proportional(12.0), icon_color, 12.0);
-                    painter.galley(Pos2::new(center.x - 3.0, center.y - 7.5), g, icon_color);
+                    crate::icons::draw(
+                        painter,
+                        crate::icons::Icon::LooksOne,
+                        center,
+                        crate::icons::SIZE_CONTROL,
+                        icon_color,
+                        icon_color,
+                    );
                     let label = if opened { "Opened" } else { "Video" };
                     let label_color = if opened { rgb(t.text_faint) } else { text_color };
                     let g = layout_text(
@@ -1158,15 +1180,17 @@ pub(crate) fn message_bubble(
                             );
                         }
                     }
-                    // Play triangle + duration chip, WhatsApp-style.
+                    // Play glyph + duration chip, WhatsApp-style.
                     let c = img_rect.center();
                     painter.circle_filled(c, 22.0, rgb(t.accent));
-                    let tri = vec![
-                        Pos2::new(c.x - 6.0, c.y - 9.0),
-                        Pos2::new(c.x - 6.0, c.y + 9.0),
-                        Pos2::new(c.x + 9.0, c.y),
-                    ];
-                    painter.add(egui::Shape::convex_polygon(tri, rgb(t.bg_panel), Stroke::NONE));
+                    crate::icons::draw(
+                        painter,
+                        crate::icons::Icon::Play,
+                        c,
+                        crate::icons::SIZE_CONTROL,
+                        rgb(t.bg_panel),
+                        rgb(t.accent),
+                    );
                     let dur = format!("{}:{:02}", secs / 60, secs % 60);
                     let g = layout_text(ui, &dur, FontId::proportional(11.0), text_color, 60.0);
                     painter.galley(Pos2::new(x + 8.0, y + 176.0), g, rgb(t.text_secondary));
@@ -1207,7 +1231,14 @@ pub(crate) fn message_bubble(
                             crate::state::VoiceFetchState::Loading => crate::icons::Icon::Play,
                             crate::state::VoiceFetchState::Failed => crate::icons::Icon::Info,
                         };
-                        crate::icons::draw(painter, icon, disc, 20.0, rgb(t.text_faint), fill);
+                        crate::icons::draw(
+                            painter,
+                            icon,
+                            disc,
+                            crate::icons::SIZE_CONTROL,
+                            rgb(t.text_faint),
+                            fill,
+                        );
                     }
                     None => {
                         painter.circle_filled(disc, 19.0, rgb(t.accent));
@@ -1219,7 +1250,7 @@ pub(crate) fn message_bubble(
                                 crate::icons::Icon::Play
                             },
                             disc,
-                            22.0,
+                            crate::icons::SIZE_CONTROL,
                             rgb(core::theme::on_color(t.accent)),
                             bubble_color,
                         );
@@ -1311,7 +1342,7 @@ pub(crate) fn message_bubble(
                         painter,
                         crate::icons::Icon::Download,
                         dl.center(),
-                        15.0,
+                        crate::icons::SIZE_ROW,
                         rgb(t.accent),
                         fill,
                     );
@@ -1350,7 +1381,7 @@ pub(crate) fn message_bubble(
                     painter,
                     crate::icons::Icon::Document,
                     disc.center(),
-                    20.0,
+                    crate::icons::SIZE_CONTROL,
                     rgb(t.accent),
                     rgb(t.bg_panel_alt),
                 );
@@ -1387,7 +1418,7 @@ pub(crate) fn message_bubble(
                         painter,
                         crate::icons::Icon::Download,
                         dl.center(),
-                        17.0,
+                        crate::icons::SIZE_ROW,
                         rgb(t.accent),
                         fill,
                     );
@@ -1397,18 +1428,31 @@ pub(crate) fn message_bubble(
                     painter.galley(Pos2::new(x, y + DOC_ROW_H + 4.0), g, text_color);
                 }
             }
-            MessageKind::Poll { question, options, .. } => {
+            MessageKind::Poll { question, options, my_votes } => {
                 let g = layout_text(ui, question, body_font.clone(), text_color, inner_w);
                 painter.galley(Pos2::new(x, y), g, text_color);
                 let mut oy = y + body_galley.size().y + 8.0;
                 let total: u32 = options.iter().map(|o| o.1).sum::<u32>().max(1);
-                for (label, votes) in options {
+                for (opt_idx, (label, votes)) in options.iter().enumerate() {
                     painter.rect_stroke(
                         Rect::from_min_size(Pos2::new(x, oy + 2.0), Vec2::splat(13.0)),
                         CornerRadius::same(3),
                         Stroke::new(1.2_f32, secondary),
                         egui::StrokeKind::Inside,
                     );
+                    // An option the user voted for carries the
+                    // icon font's check inside its box, the same
+                    // mark the rest of the app uses.
+                    if my_votes.contains(&opt_idx) {
+                        crate::icons::draw(
+                            painter,
+                            crate::icons::Icon::Check,
+                            Pos2::new(x + 6.5, oy + 8.5),
+                            crate::icons::SIZE_BADGE,
+                            rgb(t.accent),
+                            bubble_color,
+                        );
+                    }
                     let g = layout_text(
                         ui,
                         label,
@@ -1436,8 +1480,14 @@ pub(crate) fn message_bubble(
                 // Render-only location card: pin + name + coordinates.
                 let cy = y + 21.0;
                 painter.circle_filled(Pos2::new(x + 15.0, cy), 13.0, rgb(t.bg_panel_alt));
-                let g = layout_text(ui, "\u{1F4CD}", FontId::proportional(13.0), text_color, 26.0);
-                painter.galley(Pos2::new(x + 8.0, cy - 8.0), g, text_color);
+                crate::icons::draw(
+                    painter,
+                    crate::icons::Icon::LocationOn,
+                    Pos2::new(x + 15.0, cy),
+                    crate::icons::SIZE_MENU,
+                    text_color,
+                    rgb(t.bg_panel_alt),
+                );
                 let title = if name.is_empty() { "Location" } else { name.as_str() };
                 let g = layout_text(ui, title, body_font.clone(), text_color, inner_w - 34.0);
                 painter.galley(Pos2::new(x + 34.0, y + 2.0), g, text_color);
@@ -1550,7 +1600,7 @@ pub(crate) fn message_bubble(
                 painter,
                 crate::icons::Icon::Star,
                 Pos2::new(mx + 5.5, meta_y + 6.0),
-                11.0,
+                crate::icons::SIZE_BADGE,
                 rgb(t.text_faint),
                 bubble_color,
             );
@@ -1589,20 +1639,20 @@ pub(crate) fn message_bubble(
         // bubble's top-right corner while the pointer is over
         // the bubble; clicking it opens the context menu (the
         // dispatch sits with the click handling above). The
-        // chevron itself is two strokes, drawn, not a glyph.
+        // chevron is the icon font's glyph, the same one the
+        // scroll-to-bottom button draws.
         let chev = crate::anim::hover_factor(ui, ("bubble_chevron", msg.id), response.hovered());
         if chev > 0.01 {
             let cr = chevron_rect(rect);
             let center = cr.center();
             painter.circle_filled(center, 12.0, faded(rgb(t.bg_panel_alt), chev * 0.95));
-            let stroke = Stroke::new(1.6_f32, faded(rgb(t.text_secondary), chev));
-            painter.line_segment(
-                [Pos2::new(center.x - 5.5, center.y - 2.4), Pos2::new(center.x, center.y + 3.1)],
-                stroke,
-            );
-            painter.line_segment(
-                [Pos2::new(center.x, center.y + 3.1), Pos2::new(center.x + 5.5, center.y - 2.4)],
-                stroke,
+            crate::icons::draw(
+                painter,
+                crate::icons::Icon::ChevronDown,
+                center,
+                crate::icons::SIZE_ROW,
+                faded(rgb(t.text_secondary), chev),
+                faded(rgb(t.bg_panel_alt), chev),
             );
             if response.interact_pointer_pos().is_some_and(|p| cr.contains(p)) {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -1693,12 +1743,14 @@ pub(crate) fn message_album(
         if let MessageKind::Video { .. } = &item.kind {
             let c = rect.center();
             painter.circle_filled(c, 14.0, rgb(t.accent));
-            let tri = vec![
-                Pos2::new(c.x - 4.0, c.y - 6.0),
-                Pos2::new(c.x - 4.0, c.y + 6.0),
-                Pos2::new(c.x + 6.0, c.y),
-            ];
-            painter.add(egui::Shape::convex_polygon(tri, rgb(t.bg_panel), Stroke::NONE));
+            crate::icons::draw(
+                painter,
+                crate::icons::Icon::Play,
+                c,
+                crate::icons::SIZE_ROW,
+                rgb(t.bg_panel),
+                rgb(t.accent),
+            );
         }
         if i == shown - 1 && items.len() > shown {
             painter.rect_filled(

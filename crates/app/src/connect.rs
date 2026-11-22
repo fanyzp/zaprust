@@ -44,6 +44,31 @@ const QR_SLOT: f32 = 248.0;
 /// field, and the primary button all span exactly it.
 const FIELD_W: f32 = 258.0;
 
+/// The official brand mark (the bolt bubble of
+/// `packaging/icon.svg`, via its bundled PNG) as a GPU
+/// texture, decoded once and kept for the life of the app.
+/// A decode failure yields no mark rather than a substitute
+/// glyph: the brand is never improvised from the icon font.
+fn brand_texture(ctx: &egui::Context) -> Option<egui::TextureId> {
+    thread_local! {
+        static BRAND: std::cell::RefCell<Option<Option<egui::TextureHandle>>> =
+            const { std::cell::RefCell::new(None) };
+    }
+    BRAND.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        if slot.is_none() {
+            const BYTES: &[u8] = include_bytes!("../../../packaging/icons/zaprust-256.png");
+            *slot = Some(image::load_from_memory(BYTES).ok().map(|img| {
+                let rgba = img.to_rgba8();
+                let size = [rgba.width() as usize, rgba.height() as usize];
+                let color = egui::ColorImage::from_rgba_unmultiplied(size, rgba.as_raw());
+                ctx.load_texture("zaprust-brand", color, egui::TextureOptions::LINEAR)
+            }));
+        }
+        slot.as_ref().and_then(|inner| inner.as_ref().map(|h| h.id()))
+    })
+}
+
 impl App {
     /// Full-window connect screen (layout "C, centered minimal",
     /// chosen 2026-11-15): a slim topbar carrying the one brand
@@ -68,19 +93,20 @@ impl App {
                 // share the app ground, and a flat surface is
                 // separated by geometry and spacing, not a line
                 // (design standard, hairline discipline).
-                painter.circle_filled(
-                    Pos2::new(bar.left() + 30.0, bar.center().y),
-                    11.0,
-                    rgb(t.accent),
-                );
-                draw_icon(
-                    &painter,
-                    Icon::Chat,
-                    Pos2::new(bar.left() + 30.0, bar.center().y),
-                    13.0,
-                    rgb(t.bg_app),
-                    rgb(t.accent),
-                );
+                // The brand mark is the official bolt bubble
+                // artwork, the same mark as the window and
+                // desktop icons: it is the one brand glyph the
+                // app shows anywhere (design standard, icon
+                // discipline).
+                if let Some(tex) = brand_texture(ui.ctx()) {
+                    let center = Pos2::new(bar.left() + 30.0, bar.center().y);
+                    painter.image(
+                        tex,
+                        egui::Rect::from_center_size(center, Vec2::splat(crate::icons::SIZE_TAB)),
+                        egui::Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                        egui::Color32::WHITE,
+                    );
+                }
                 painter.text(
                     Pos2::new(bar.left() + 50.0, bar.center().y),
                     Align2::LEFT_CENTER,
@@ -684,7 +710,7 @@ impl App {
             painter,
             Icon::ChevronDown,
             Pos2::new(rect.right() - 18.0, rect.center().y),
-            18.0,
+            crate::icons::SIZE_MENU,
             rgb(t.text_secondary),
             rgb(t.bg_panel_alt),
         );
@@ -1018,7 +1044,7 @@ impl App {
                                                 ui.painter(),
                                                 Icon::Check,
                                                 crect.center(),
-                                                18.0,
+                                                crate::icons::SIZE_MENU,
                                                 rgb(t.accent),
                                                 rgb(t.bg_panel_alt),
                                             );
@@ -1070,7 +1096,7 @@ impl App {
                             ui.painter(),
                             Icon::Plus,
                             Pos2::new(rrect.left() + 26.0, rrect.center().y),
-                            18.0,
+                            crate::icons::SIZE_MENU,
                             rgb(t.accent),
                             rgb(t.bg_panel),
                         );
@@ -1114,7 +1140,7 @@ impl App {
                                 ui.painter(),
                                 Icon::LogOut,
                                 Pos2::new(lrect.left() + 26.0, lrect.center().y),
-                                18.0,
+                                crate::icons::SIZE_MENU,
                                 rgb(t.danger),
                                 rgb(t.bg_panel),
                             );
@@ -1170,7 +1196,14 @@ fn paint_step_disc(painter: &egui::Painter, t: Tokens, center: Pos2, index: usiz
     match mark {
         StepMark::Check => {
             painter.circle_filled(center, 10.5, rgb(t.accent));
-            draw_icon(painter, Icon::Check, center, 12.0, rgb(t.bg_app), rgb(t.accent));
+            draw_icon(
+                painter,
+                Icon::Check,
+                center,
+                crate::icons::SIZE_BADGE,
+                rgb(t.bg_app),
+                rgb(t.accent),
+            );
         }
         StepMark::Number => {
             painter.circle_filled(center, 10.5, rgb(t.bg_panel_alt));

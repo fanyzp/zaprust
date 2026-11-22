@@ -322,7 +322,7 @@ impl App {
                             painter,
                             crate::icons::Icon::Star,
                             Pos2::new(rect.right() - 15.0, line2_y),
-                            15.0,
+                            crate::icons::SIZE_ROW,
                             rgb(t.accent),
                             rgb(t.bg_panel),
                         );

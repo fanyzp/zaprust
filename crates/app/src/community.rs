@@ -655,7 +655,7 @@ impl App {
                         ui.painter(),
                         crate::icons::Icon::Plus,
                         thumb.center(),
-                        24.0,
+                        crate::icons::SIZE_TAB,
                         rgb(t.accent),
                         rgb(t.bg_panel_alt),
                     );
@@ -670,7 +670,7 @@ impl App {
                         ui.painter(),
                         crate::icons::Icon::ChevronRight,
                         Pos2::new(rect.right() - 18.0, rect.center().y),
-                        20.0,
+                        crate::icons::SIZE_CONTROL,
                         rgb(t.text_faint),
                         rgb(t.bg_panel),
                     );
@@ -751,7 +751,7 @@ impl App {
                             ui.painter(),
                             crate::icons::Icon::ChevronRight,
                             Pos2::new(rect.right() - 18.0, rect.center().y),
-                            20.0,
+                            crate::icons::SIZE_CONTROL,
                             rgb(t.text_faint),
                             rgb(t.bg_panel),
                         );

@@ -262,7 +262,7 @@ pub(super) fn dock_row(
             ui.painter(),
             Icon::ChevronRight,
             egui::pos2(rect.right() - 14.0, rect.center().y),
-            16.0,
+            crate::icons::SIZE_ROW,
             rgb(t.text_faint),
             rgb(t.bg_panel),
         );
@@ -345,7 +345,7 @@ pub(super) fn dock_action_row(
                 ui.painter(),
                 *icon,
                 disc_c,
-                22.0,
+                crate::icons::SIZE_CONTROL,
                 rgb(t.text_primary),
                 rgb(t.bg_panel_alt),
             );

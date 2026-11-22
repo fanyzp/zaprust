@@ -506,7 +506,7 @@ fn draw_editor_form(
             ui.painter(),
             Icon::Plus,
             badge_c,
-            15.0,
+            crate::icons::SIZE_ROW,
             rgb(t.on_accent()),
             rgb(t.accent),
         );

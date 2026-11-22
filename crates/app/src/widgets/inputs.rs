@@ -331,7 +331,7 @@ pub(crate) fn search_pill(
                         ui.painter(),
                         crate::icons::Icon::Search,
                         irect.center(),
-                        18.0,
+                        crate::icons::SIZE_MENU,
                         rgb(t.text_faint),
                         crate::theme::glass_tint(t, t.bg_panel_alt),
                     );

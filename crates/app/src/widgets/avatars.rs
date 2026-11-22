@@ -55,19 +55,11 @@ pub(crate) fn paint_avatar_disc(
         // The Material "groups" glyph, from the icon font.
         crate::icons::draw(painter, crate::icons::Icon::Group, center, radius * 1.3, fg, disc);
     } else {
-        person(painter, center, radius, fg);
+        // The Material "person" glyph, from the same font, at
+        // the same avatar-relative scale as the group branch:
+        // both avatar kinds speak the one icon language.
+        crate::icons::draw(painter, crate::icons::Icon::Person, center, radius * 1.3, fg, disc);
     }
-}
-
-/// One silhouette: head circle + shoulders ellipse, sized to fit a disc
-/// of radius `r` around `center`.
-fn person(painter: &egui::Painter, center: Pos2, r: f32, color: Color32) {
-    painter.circle_filled(center + Vec2::new(0.0, -r * 0.28), r * 0.30, color);
-    painter.add(egui::Shape::ellipse_filled(
-        center + Vec2::new(0.0, r * 0.52),
-        Vec2::new(r * 0.55, r * 0.36),
-        color,
-    ));
 }
 
 /// The avatar for AI chats (Meta AI): a tinted disc with the
@@ -188,12 +180,17 @@ pub(crate) fn verified_badge(painter: &egui::Painter, center: Pos2, radius: f32,
         pts.push(center + Vec2::new(angle.cos() * rr, angle.sin() * rr));
     }
     painter.add(egui::Shape::convex_polygon(pts, rgb(t.badge_bg), Stroke::NONE));
-    let check = vec![
-        center + Vec2::new(-radius * 0.52, radius * 0.02),
-        center + Vec2::new(-radius * 0.16, radius * 0.38),
-        center + Vec2::new(radius * 0.55, -radius * 0.34),
-    ];
-    painter.add(egui::Shape::line(check, Stroke::new(radius * 0.22, Color32::WHITE)));
+    // The check is the icon font's glyph, like every other
+    // check in the app; the scalloped disc stays, it is the
+    // badge's shape, not an icon.
+    crate::icons::draw(
+        painter,
+        crate::icons::Icon::Check,
+        center,
+        radius * 1.1,
+        Color32::WHITE,
+        rgb(t.badge_bg),
+    );
 }
 
 /// A small "AI" chip (used next to Meta AI's name).

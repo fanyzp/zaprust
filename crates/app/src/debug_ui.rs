@@ -261,8 +261,18 @@ impl App {
             .exact_size(30.0)
             .show(root, |ui| {
                 ui.horizontal(|ui| {
+                    // A painted dot, not a text bullet glyph.
+                    let (dot, _) = ui.allocate_exact_size(
+                        egui::Vec2::splat(8.0),
+                        egui::Sense::hover(),
+                    );
+                    ui.painter().circle_filled(
+                        dot.center(),
+                        4.0,
+                        egui::Color32::from_rgb(0xE0, 0x6C, 0x50),
+                    );
                     ui.label(
-                        RichText::new("● DEBUG MODE")
+                        RichText::new("DEBUG MODE")
                             .size(12.0)
                             .strong()
                             .color(egui::Color32::from_rgb(0xE0, 0x6C, 0x50)),

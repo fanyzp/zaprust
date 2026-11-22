@@ -2,6 +2,30 @@
 
 use super::*;
 
+/// One message-info state row: the receipt's glyph from the
+/// shared icon font beside its word, never a text checkmark.
+fn receipt_state_row(
+    ui: &mut egui::Ui,
+    t: core::theme::Tokens,
+    icon: crate::icons::Icon,
+    color: core::theme::Rgb,
+    text: &str,
+) {
+    ui.horizontal(|ui| {
+        let (rect, _) = ui
+            .allocate_exact_size(egui::Vec2::splat(crate::icons::SIZE_BADGE), egui::Sense::hover());
+        crate::icons::draw(
+            ui.painter(),
+            icon,
+            rect.center(),
+            crate::icons::SIZE_BADGE,
+            rgb(color),
+            rgb(t.bg_panel),
+        );
+        ui.label(RichText::new(text).size(12.5).color(rgb(t.text_secondary)));
+    });
+}
+
 impl App {
     pub(crate) fn draw_context_menu(&mut self, ctx: &egui::Context) {
         let t = self.tokens;
@@ -273,8 +297,15 @@ impl App {
                                     picked = Some(emoji.to_owned());
                                 }
                             }
-                            if crate::widgets::button(ui, t, "✕", crate::widgets::Btn::Secondary)
-                                .clicked()
+                            if crate::widgets::icon_button(
+                                ui,
+                                t,
+                                crate::icons::Icon::X,
+                                26.0,
+                                "Close",
+                                None,
+                            )
+                            .clicked()
                             {
                                 close = true;
                             }
@@ -332,15 +363,38 @@ impl App {
                         ui.label(RichText::new("Message info").size(14.0).strong());
                         ui.add_space(6.0);
                         if entries.is_empty() {
+                            // The state glyph comes from the icon
+                            // font, like the ticks in the bubble
+                            // meta row; the word beside it is
+                            // plain text, never a text checkmark.
                             let state = match delivery {
-                                Some(core::model::Delivery::Failed) => "Failed to send",
-                                Some(core::model::Delivery::Sending) => "Sending…",
-                                Some(core::model::Delivery::Sent) => "Sent ✓",
-                                Some(core::model::Delivery::Delivered) => "Delivered ✓✓",
-                                Some(core::model::Delivery::Read) => "Read ✓✓ (blue)",
-                                None => "-",
+                                Some(core::model::Delivery::Failed) => {
+                                    Some((crate::icons::Icon::X, t.danger, "Failed to send"))
+                                }
+                                Some(core::model::Delivery::Sending) => {
+                                    Some((crate::icons::Icon::Schedule, t.text_faint, "Sending…"))
+                                }
+                                Some(core::model::Delivery::Sent) => {
+                                    Some((crate::icons::Icon::Done, t.text_faint, "Sent"))
+                                }
+                                Some(core::model::Delivery::Delivered) => {
+                                    Some((crate::icons::Icon::DoneAll, t.text_faint, "Delivered"))
+                                }
+                                Some(core::model::Delivery::Read) => {
+                                    Some((crate::icons::Icon::DoneAll, t.tick_read, "Read"))
+                                }
+                                None => None,
                             };
-                            ui.label(RichText::new(state).size(12.5).color(rgb(t.text_secondary)));
+                            match state {
+                                Some((icon, color, word)) => {
+                                    receipt_state_row(ui, t, icon, color, word);
+                                }
+                                None => {
+                                    ui.label(
+                                        RichText::new("-").size(12.5).color(rgb(t.text_secondary)),
+                                    );
+                                }
+                            }
                             ui.label(
                                 RichText::new("Detailed receipt events appear here in live mode.")
                                     .size(11.5)
@@ -348,13 +402,21 @@ impl App {
                             );
                         } else {
                             for (kind, at) in &entries {
-                                let label = match kind {
-                                    backend::ReceiptKind::Sent => "Sent ✓",
-                                    backend::ReceiptKind::Delivered => "Delivered ✓✓",
-                                    backend::ReceiptKind::Read => "Read ✓✓ (blue)",
-                                    backend::ReceiptKind::Played => "Played ▶",
+                                let (icon, color, word) = match kind {
+                                    backend::ReceiptKind::Sent => {
+                                        (crate::icons::Icon::Done, t.text_faint, "Sent")
+                                    }
+                                    backend::ReceiptKind::Delivered => {
+                                        (crate::icons::Icon::DoneAll, t.text_faint, "Delivered")
+                                    }
+                                    backend::ReceiptKind::Read => {
+                                        (crate::icons::Icon::DoneAll, t.tick_read, "Read")
+                                    }
+                                    backend::ReceiptKind::Played => {
+                                        (crate::icons::Icon::Play, t.text_faint, "Played")
+                                    }
                                 };
-                                ui.label(RichText::new(format!("{label} · {at}")).size(12.5));
+                                receipt_state_row(ui, t, icon, color, &format!("{word} · {at}"));
                             }
                         }
                         if crate::widgets::menu_item_icon(

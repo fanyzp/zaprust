@@ -65,6 +65,42 @@ pub(crate) enum Icon {
     CallReceived,
     CallMissed,
     LogOut,
+    Schedule,
+    Send,
+    Lock,
+    Done,
+    DoneAll,
+}
+
+/// The icon size grid (design standard, icon discipline):
+/// every glyph drawn in the app takes one of these sizes, so
+/// the family reads at one scale language everywhere. Values
+/// are pre-optical; [`draw`] applies the per-glyph correction.
+/// Sizes derived from a control's hit box (icon buttons) or an
+/// avatar's radius are documented derived scales, not grid
+/// values, and say so at their call sites.
+pub(crate) const SIZE_BADGE: f32 = 12.0;
+/// Row and menu-item glyphs.
+pub(crate) const SIZE_ROW: f32 = 17.0;
+/// Menu and list-control glyphs.
+pub(crate) const SIZE_MENU: f32 = 18.0;
+/// Composer and bubble controls.
+pub(crate) const SIZE_CONTROL: f32 = 22.0;
+/// Rail, tab bar and floating action buttons.
+pub(crate) const SIZE_TAB: f32 = 24.0;
+/// Large placeholders on media.
+pub(crate) const SIZE_LARGE: f32 = 32.0;
+/// Empty-state and placeholder display glyphs.
+pub(crate) const SIZE_DISPLAY: f32 = 40.0;
+
+/// Snaps an arbitrary size to the nearest grid value. Icon
+/// buttons derive their glyph size from the hit box; snapping
+/// the result keeps those glyphs on the same grid as every
+/// directly drawn one.
+pub(crate) fn snap_size(v: f32) -> f32 {
+    const GRID: [f32; 7] =
+        [SIZE_BADGE, SIZE_ROW, SIZE_MENU, SIZE_CONTROL, SIZE_TAB, SIZE_LARGE, SIZE_DISPLAY];
+    GRID.iter().copied().min_by(|a, b| (a - v).abs().total_cmp(&(b - v).abs())).unwrap_or(SIZE_ROW)
 }
 
 /// The Material Symbols codepoint for `icon` in the bundled font.
@@ -122,6 +158,11 @@ pub(crate) fn glyph(icon: Icon) -> char {
         Icon::CallReceived => '\u{e0b5}', // call_received
         Icon::CallMissed => '\u{e0b4}',   // call_missed
         Icon::LogOut => '\u{e9ba}',       // logout
+        Icon::Schedule => '\u{efd6}',     // schedule
+        Icon::Send => '\u{e163}',         // send
+        Icon::Lock => '\u{e899}',         // lock
+        Icon::Done => '\u{e876}',         // done
+        Icon::DoneAll => '\u{e877}',      // done_all
     }
 }
 

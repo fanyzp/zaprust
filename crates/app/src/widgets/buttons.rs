@@ -183,7 +183,14 @@ pub(crate) fn rail_button(
         }
     }
     let color = if selected { accent } else { rgb(t.text_secondary) };
-    crate::icons::draw(ui.painter(), icon, rect.center(), 24.0, color, rgb(t.bg_panel));
+    crate::icons::draw(
+        ui.painter(),
+        icon,
+        rect.center(),
+        crate::icons::SIZE_TAB,
+        color,
+        rgb(t.bg_panel),
+    );
     if badge_count > 0 {
         // A count pill at the button's top-right, in the chat
         // row unread badge's language (badge fill, 11 px text,
@@ -402,6 +409,13 @@ pub(crate) fn icon_button_on(
         None if resp.hovered() => rgb(t.text_primary),
         None => rgb(t.text_secondary),
     };
-    crate::icons::draw(ui.painter(), icon, rect.center(), size * 0.58, color, rgb(t.bg_panel));
+    crate::icons::draw(
+        ui.painter(),
+        icon,
+        rect.center(),
+        crate::icons::snap_size(size * 0.58),
+        color,
+        rgb(t.bg_panel),
+    );
     resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(tooltip)
 }

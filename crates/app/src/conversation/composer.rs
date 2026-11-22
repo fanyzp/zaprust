@@ -275,7 +275,7 @@ impl App {
                                                     ui.painter(),
                                                     crate::icons::Icon::Document,
                                                     tile_rect.center(),
-                                                    20.0,
+                                                    crate::icons::SIZE_CONTROL,
                                                     rgb(t.text_secondary),
                                                     rgb(t.bg_panel_alt),
                                                 );
@@ -319,7 +319,7 @@ impl App {
                                                 ui.painter(),
                                                 crate::icons::Icon::X,
                                                 badge_c,
-                                                10.0,
+                                                crate::icons::SIZE_BADGE,
                                                 rgb(t.text_secondary),
                                                 rgb(t.bg_panel),
                                             );
@@ -375,7 +375,7 @@ impl App {
                                                         ui.painter(),
                                                         crate::icons::Icon::LooksOne,
                                                         tog.center(),
-                                                        18.0,
+                                                        crate::icons::SIZE_MENU,
                                                         col,
                                                         rgb(t.bg_panel_alt),
                                                     );
@@ -774,7 +774,7 @@ impl App {
                                     ui.painter(),
                                     crate::icons::Icon::Stop,
                                     sc,
-                                    22.0,
+                                    crate::icons::SIZE_CONTROL,
                                     Color32::WHITE,
                                     rgb(t.danger),
                                 );
@@ -828,7 +828,7 @@ impl App {
                                         ui.painter(),
                                         crate::icons::Icon::Mic,
                                         sc,
-                                        21.0 * (1.0 - 0.25 * swap),
+                                        crate::icons::SIZE_CONTROL * (1.0 - 0.25 * swap),
                                         Color32::from_rgba_unmultiplied(
                                             mic_col.r(),
                                             mic_col.g(),
@@ -845,11 +845,12 @@ impl App {
                                         t.accent
                                     };
                                     ui.painter().circle_filled(sc, pulse_r * swap, rgb(send_fill));
-                                    // The paper plane (drawn as
-                                    // vectors; the font's arrow
-                                    // glyphs look cheap) scales
-                                    // up from three-quarter size
-                                    // as it fades in.
+                                    // The paper plane is the icon
+                                    // font's send glyph, the same
+                                    // family as the mic it morphs
+                                    // with; it scales up from
+                                    // three-quarter size as it
+                                    // fades in.
                                     let gs = 0.7 + 0.3 * swap;
                                     let plane = Color32::from_rgba_unmultiplied(
                                         255,
@@ -857,20 +858,14 @@ impl App {
                                         255,
                                         (255.0 * swap) as u8,
                                     );
-                                    let nose = sc + Vec2::new(10.0 * gs, 0.0);
-                                    let tail_top = sc + Vec2::new(-8.0 * gs, -8.0 * gs);
-                                    let tail_bot = sc + Vec2::new(-8.0 * gs, 8.0 * gs);
-                                    let inner = sc + Vec2::new(-2.5 * gs, 0.0);
-                                    ui.painter().add(egui::Shape::convex_polygon(
-                                        vec![nose, tail_top, inner],
+                                    crate::icons::draw(
+                                        ui.painter(),
+                                        crate::icons::Icon::Send,
+                                        sc,
+                                        21.0 * gs,
                                         plane,
-                                        Stroke::NONE,
-                                    ));
-                                    ui.painter().add(egui::Shape::convex_polygon(
-                                        vec![nose, inner, tail_bot],
-                                        plane,
-                                        Stroke::NONE,
-                                    ));
+                                        rgb(send_fill),
+                                    );
                                 }
                             }
                             send_clicked = sresp.clicked();
@@ -1313,7 +1308,7 @@ fn draw_recording_bar(app: &mut App, ui: &mut egui::Ui, t: Tokens, now: f64, eng
                 ui.painter(),
                 crate::icons::Icon::Stop,
                 srect.center(),
-                18.0,
+                crate::icons::SIZE_MENU,
                 Color32::WHITE,
                 rgb(t.danger),
             );

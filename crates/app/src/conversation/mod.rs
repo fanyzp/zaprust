@@ -135,7 +135,7 @@ impl App {
                                 ui.painter(),
                                 icon,
                                 Pos2::new(rect.left() + 17.0, rect.center().y),
-                                17.0,
+                                crate::icons::SIZE_ROW,
                                 rgb(t.text_secondary),
                                 rgb(t.bg_panel),
                             );

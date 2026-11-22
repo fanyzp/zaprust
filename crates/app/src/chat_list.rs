@@ -296,7 +296,7 @@ impl App {
                             ui.painter(),
                             crate::icons::Icon::Archive,
                             Pos2::new(rect.left() + AVATAR_CX, rect.center().y),
-                            22.0,
+                            crate::icons::SIZE_CONTROL,
                             rgb(t.text_secondary),
                             rgb(t.bg_panel),
                         );
@@ -791,7 +791,7 @@ pub(crate) fn chat_row(
             painter,
             crate::icons::Icon::BellOff,
             Pos2::new(rect.right() - 11.0 - blocked_w, rect.top() + TITLE_DY),
-            14.0,
+            crate::icons::SIZE_ROW,
             rgb(t.text_faint),
             rgb(t.bg_panel),
         );

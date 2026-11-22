@@ -238,12 +238,15 @@ impl App {
     pub(crate) fn draw_message_strip(&self, ui: &mut egui::Ui, msg: &Message) {
         let t = self.tokens;
         let mine = msg.sender.is_none();
-        let mut texts: Vec<String> = Vec::new();
+        // Flag chips carry an icon-font glyph beside the word,
+        // never an emoji: the strip is permanent chrome, and
+        // chrome speaks the one icon language.
+        let mut texts: Vec<(crate::icons::Icon, &'static str)> = Vec::new();
         if msg.forwarded {
-            texts.push("➦ Forwarded".to_owned());
+            texts.push((crate::icons::Icon::Forward, "Forwarded"));
         }
         if msg.pinned {
-            texts.push("📌 Pinned".to_owned());
+            texts.push((crate::icons::Icon::Pin, "Pinned"));
         }
         if texts.is_empty() && !msg.deleted_by_sender {
             return;
@@ -256,20 +259,40 @@ impl App {
             },
             |ui| {
                 ui.vertical(|ui| {
-                    for text in texts {
+                    for (icon, text) in texts {
                         egui::Frame::new()
                             .fill(rgb(t.bg_panel_alt))
                             .corner_radius(CornerRadius::same(6))
                             .inner_margin(Margin::symmetric(8, 4))
                             .show(ui, |ui| {
-                                ui.label(
-                                    RichText::new(text).size(12.0).color(rgb(t.text_secondary)),
-                                );
+                                ui.horizontal(|ui| {
+                                    let (rect, _) = ui.allocate_exact_size(
+                                        egui::Vec2::splat(crate::icons::SIZE_BADGE),
+                                        egui::Sense::hover(),
+                                    );
+                                    crate::icons::draw(
+                                        ui.painter(),
+                                        icon,
+                                        rect.center(),
+                                        crate::icons::SIZE_BADGE,
+                                        rgb(t.text_secondary),
+                                        rgb(t.bg_panel_alt),
+                                    );
+                                    ui.label(
+                                        RichText::new(text).size(12.0).color(rgb(t.text_secondary)),
+                                    );
+                                });
                             });
                     }
                     ui.horizontal(|ui| {
                         if msg.deleted_by_sender {
-                            chip_label(ui, "🗑 deleted by sender, retained locally", t.danger, t);
+                            chip_label(
+                                ui,
+                                crate::icons::Icon::Delete,
+                                "deleted by sender, retained locally",
+                                t.danger,
+                                t,
+                            );
                         }
                     });
                 });
@@ -538,13 +561,33 @@ impl App {
     }
 }
 
-fn chip_label(ui: &mut egui::Ui, text: &str, color: core::theme::Rgb, t: core::theme::Tokens) {
+fn chip_label(
+    ui: &mut egui::Ui,
+    icon: crate::icons::Icon,
+    text: &str,
+    color: core::theme::Rgb,
+    t: core::theme::Tokens,
+) {
     egui::Frame::new()
         .fill(rgb(t.bg_panel_alt))
         .corner_radius(CornerRadius::same(7))
         .inner_margin(Margin::symmetric(6, 2))
         .show(ui, |ui| {
-            ui.label(RichText::new(text).size(10.5).color(rgb(color)));
+            ui.horizontal(|ui| {
+                let (rect, _) = ui.allocate_exact_size(
+                    egui::Vec2::splat(crate::icons::SIZE_BADGE),
+                    egui::Sense::hover(),
+                );
+                crate::icons::draw(
+                    ui.painter(),
+                    icon,
+                    rect.center(),
+                    crate::icons::SIZE_BADGE,
+                    rgb(color),
+                    rgb(t.bg_panel_alt),
+                );
+                ui.label(RichText::new(text).size(10.5).color(rgb(color)));
+            });
         });
 }
 

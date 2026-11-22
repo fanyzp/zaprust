@@ -473,7 +473,7 @@ impl App {
                             ui.painter(),
                             icon,
                             Pos2::new(rect.left() + 21.0, rect.center().y),
-                            17.0,
+                            crate::icons::SIZE_ROW,
                             if selected { rgb(t.accent) } else { rgb(t.text_secondary) },
                             rgb(t.bg_panel),
                         );
@@ -717,7 +717,7 @@ fn settings_nav_row(
         ui.painter(),
         settings_tab_icon(item),
         Pos2::new(rect.left() + 21.0, rect.center().y),
-        17.0,
+        crate::icons::SIZE_ROW,
         if selected { rgb(t.accent) } else { rgb(t.text_secondary) },
         rgb(t.bg_panel),
     );

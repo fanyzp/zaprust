@@ -275,7 +275,7 @@ fn draw_call_row(
         painter,
         direction_icon(entry),
         Pos2::new(text_left + 7.0, status_y),
-        15.0,
+        crate::icons::SIZE_ROW,
         glyph_color,
         rgb(t.bg_panel),
     );
@@ -302,7 +302,7 @@ fn draw_call_row(
         painter,
         call_back_icon(entry),
         back_rect.center(),
-        19.0,
+        crate::icons::SIZE_MENU,
         rgb(t.text_secondary),
         rgb(t.bg_panel),
     );
@@ -364,7 +364,7 @@ fn shortcut_circle(
             };
             ui.painter().circle_filled(center, D / 2.0, disc);
             let glyph = if active { rgb(t.accent) } else { rgb(t.text_primary) };
-            crate::icons::draw(ui.painter(), icon, center, 25.0, glyph, disc);
+            crate::icons::draw(ui.painter(), icon, center, crate::icons::SIZE_TAB, glyph, disc);
         }
         ShortcutFace::Photo { chat, photo } => {
             crate::widgets::paint_chat_avatar_photo(ui.painter(), center, D / 2.0, chat, photo);
@@ -451,7 +451,7 @@ fn calls_empty_state(ui: &mut egui::Ui, t: core::theme::Tokens) {
         painter,
         crate::icons::Icon::Phone,
         disc_center,
-        38.0,
+        crate::icons::SIZE_DISPLAY,
         rgb(t.accent),
         rgb(t.bg_panel_alt),
     );
@@ -1088,7 +1088,7 @@ impl App {
                                                 painter,
                                                 action.icon,
                                                 btn_rect.center(),
-                                                18.0,
+                                                crate::icons::SIZE_MENU,
                                                 rgb(t.text_secondary),
                                                 rgb(t.bg_panel_alt),
                                             );

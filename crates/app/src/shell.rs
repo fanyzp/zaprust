@@ -241,7 +241,7 @@ impl App {
                         ui.painter(),
                         crate::icons::Icon::Chat,
                         icon_rect.center(),
-                        40.0,
+                        crate::icons::SIZE_DISPLAY,
                         rgb(t.text_faint),
                         rgb(t.bg_chat),
                     );
@@ -425,7 +425,7 @@ impl App {
                         ui.painter(),
                         crate::icons::Icon::Menu,
                         mrect.center(),
-                        16.0,
+                        crate::icons::SIZE_ROW,
                         rgb(t.text_secondary),
                         rgb(t.bg_panel),
                     );
@@ -669,7 +669,7 @@ impl App {
                     ui.painter(),
                     crate::icons::Icon::X,
                     btn_rect.center() + egui::Vec2::new(-24.0, 0.0),
-                    16.0,
+                    crate::icons::SIZE_ROW,
                     egui::Color32::WHITE,
                     fill,
                 );
@@ -828,7 +828,7 @@ impl App {
                 &painter,
                 crate::icons::Icon::Video,
                 frame_rect.center(),
-                40.0,
+                crate::icons::SIZE_DISPLAY,
                 rgb(t.text_faint),
                 rgb(t.bg_panel_alt),
             );
@@ -856,7 +856,7 @@ impl App {
                 &painter,
                 if playing { crate::icons::Icon::Pause } else { crate::icons::Icon::Play },
                 frame_rect.center(),
-                26.0,
+                crate::icons::SIZE_TAB,
                 egui::Color32::WHITE,
                 rgb(t.accent),
             );

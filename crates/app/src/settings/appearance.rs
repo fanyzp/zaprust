@@ -66,7 +66,7 @@ impl App {
                                 ui.painter(),
                                 crate::icons::Icon::Check,
                                 center,
-                                15.0,
+                                crate::icons::SIZE_ROW,
                                 rgb(core::theme::on_color(seed)),
                                 rgb(seed),
                             );
@@ -123,7 +123,7 @@ impl App {
                 crate::icons::Icon::ChevronRight
             },
             egui::Pos2::new(header_rect.left() + 9.0, header_rect.center().y),
-            16.0,
+            crate::icons::SIZE_ROW,
             rgb(t.text_secondary),
             rgb(t.bg_app),
         );

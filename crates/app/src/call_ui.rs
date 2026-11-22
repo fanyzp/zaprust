@@ -466,7 +466,14 @@ impl App {
 fn call_button(ui: &mut egui::Ui, icon: Icon, bg: egui::Color32, tooltip: &str) -> bool {
     let (rect, response) = ui.allocate_exact_size(Vec2::splat(52.0), Sense::click());
     ui.painter().circle_filled(rect.center(), 26.0, bg);
-    icons::draw(ui.painter(), icon, rect.center(), 26.0, egui::Color32::WHITE, bg);
+    icons::draw(
+        ui.painter(),
+        icon,
+        rect.center(),
+        crate::icons::SIZE_TAB,
+        egui::Color32::WHITE,
+        bg,
+    );
     response.on_hover_text(tooltip).clicked()
 }
 
@@ -475,7 +482,14 @@ fn call_button_disabled(ui: &mut egui::Ui, t: core::theme::Tokens, icon: Icon, t
     let (rect, response) = ui.allocate_exact_size(Vec2::splat(52.0), Sense::hover());
     let bg = rgb(t.bg_panel_alt);
     ui.painter().circle_filled(rect.center(), 26.0, bg);
-    icons::draw(ui.painter(), icon, rect.center(), 26.0, rgb(t.text_secondary), bg);
+    icons::draw(
+        ui.painter(),
+        icon,
+        rect.center(),
+        crate::icons::SIZE_TAB,
+        rgb(t.text_secondary),
+        bg,
+    );
     response.on_hover_text(tooltip);
 }
 

@@ -95,7 +95,7 @@ impl App {
                 painter,
                 crate::icons::Icon::Plus,
                 badge_center,
-                13.0,
+                crate::icons::SIZE_BADGE,
                 rgb(t.on_accent()),
                 rgb(t.accent),
             );

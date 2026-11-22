@@ -104,7 +104,7 @@ fn menu_item_row(
             ui.painter(),
             icon,
             egui::pos2(rect.left() + 19.0, rect.center().y),
-            18.0,
+            crate::icons::SIZE_MENU,
             rgb(color),
             rgb(t.bg_panel),
         );

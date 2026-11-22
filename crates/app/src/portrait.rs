@@ -414,7 +414,14 @@ fn bottom_tab(
         }
     }
     let color = if selected { rgb(t.accent) } else { rgb(t.text_secondary) };
-    crate::icons::draw(ui.painter(), icon, icon_center, 24.0 * pop, color, rgb(t.bg_panel));
+    crate::icons::draw(
+        ui.painter(),
+        icon,
+        icon_center,
+        crate::icons::SIZE_TAB * pop,
+        color,
+        rgb(t.bg_panel),
+    );
     if badge_count > 0 {
         let text = badge_count.to_string();
         let font = FontId::proportional(11.0);

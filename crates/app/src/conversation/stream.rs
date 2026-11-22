@@ -572,7 +572,7 @@ impl App {
                         painter,
                         crate::icons::Icon::ChevronDown,
                         rect.center(),
-                        26.0,
+                        crate::icons::SIZE_TAB,
                         rgb(t.text_secondary),
                         rgb(t.bg_panel),
                     );
@@ -722,25 +722,15 @@ fn album_run_len(msgs: &[Message], start: usize) -> usize {
     n
 }
 
-/// A small padlock drawn from primitives (the bundled icon font
-/// carries no lock glyph): a shackle arc over a rounded body,
-/// with the keyhole punched in the surface's own color.
+/// The small padlock on the system pills: the icon font's lock
+/// glyph, centred in the pill's icon slot.
 fn paint_lock(painter: &egui::Painter, center: Pos2, color: Color32, bg: Color32) {
-    let c = Pos2::new(center.x, center.y - 1.5);
-    let r = 3.4;
-    let mut pts = Vec::with_capacity(9);
-    for i in 0..=8 {
-        let a = std::f32::consts::PI * (1.0 - i as f32 / 8.0);
-        pts.push(Pos2::new(c.x + r * a.cos(), c.y - r * a.sin()));
-    }
-    painter.add(egui::Shape::line(pts, Stroke::new(1.4_f32, color)));
-    let body =
-        egui::Rect::from_center_size(Pos2::new(center.x, center.y + 2.6), Vec2::new(10.5, 8.0));
-    painter.rect_filled(body, CornerRadius::same(2), color);
-    painter.circle_filled(body.center() + Vec2::new(0.0, -0.8), 1.5, bg);
-    painter.rect_filled(
-        egui::Rect::from_center_size(body.center() + Vec2::new(0.0, 1.2), Vec2::new(1.8, 3.0)),
-        CornerRadius::same(1),
+    crate::icons::draw(
+        painter,
+        crate::icons::Icon::Lock,
+        center,
+        crate::icons::SIZE_BADGE,
+        color,
         bg,
     );
 }

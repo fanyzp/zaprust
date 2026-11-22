@@ -348,6 +348,62 @@ pub fn expired_message_ids(messages: &[Message], now: u64) -> Vec<u64> {
     messages.iter().filter(|m| m.is_expired(now)).map(|m| m.id).collect()
 }
 
+/// The media, link and document counts the info dock shows for
+/// one conversation, counted from the conversation's own
+/// messages. A message counts once per category it belongs to:
+/// a photo with a link in its caption is both media and a link.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ConversationCounts {
+    /// Photo, video and carousel messages.
+    pub media: usize,
+    /// Messages carrying a link, in the body, a caption, a
+    /// carousel card, or an attached link preview.
+    pub links: usize,
+    /// Document messages.
+    pub docs: usize,
+}
+
+fn text_has_link(text: &str) -> bool {
+    text.contains("http://") || text.contains("https://")
+}
+
+fn message_has_link(message: &Message) -> bool {
+    if message.link_preview.is_some() || text_has_link(&message.body) {
+        return true;
+    }
+    match &message.kind {
+        MessageKind::Image { caption, .. } | MessageKind::Video { caption, .. } => {
+            text_has_link(caption)
+        }
+        MessageKind::Carousel { body, cards } => {
+            text_has_link(body)
+                || cards.iter().any(|c| text_has_link(&c.title) || text_has_link(&c.body))
+        }
+        _ => false,
+    }
+}
+
+/// Counts media, links and documents in `messages`. Pure, so
+/// the dock's numbers are testable without a window and can
+/// never drift from the conversation they describe.
+#[must_use]
+pub fn conversation_counts(messages: &[Message]) -> ConversationCounts {
+    let mut counts = ConversationCounts::default();
+    for message in messages {
+        match &message.kind {
+            MessageKind::Image { .. } | MessageKind::Video { .. } | MessageKind::Carousel { .. } => {
+                counts.media += 1;
+            }
+            MessageKind::Document { .. } => counts.docs += 1,
+            _ => {}
+        }
+        if message_has_link(message) {
+            counts.links += 1;
+        }
+    }
+    counts
+}
+
 /// A one-line summary of a chat's latest message when it is not
 /// plain text, carried on [`Chat`] so the chat row can label its
 /// snippet without loading the whole conversation.
@@ -1269,6 +1325,38 @@ mod tests {
         timed.expires_at = 1_000;
         assert_eq!(timed.preview_text(), "gone soon");
         assert_eq!(Message::theirs(5, "Sarah", "hello", "10:04").preview_text(), "hello");
+    }
+
+    #[test]
+    fn conversation_counts_cover_media_links_and_docs() {
+        let mut photo = Message::theirs(1, "Sarah", "", "10:00");
+        photo.kind =
+            MessageKind::Image { caption: "see https://example.com/x".to_owned(), view_once: false };
+        let mut doc = Message::theirs(2, "Sarah", "", "10:01");
+        doc.kind = MessageKind::Document { name: "notes.pdf".to_owned(), size_kib: 12 };
+        // A preview alone proves a link even when the body that
+        // carried the URL is not the visible text.
+        let mut preview_only = Message::theirs(3, "Sarah", "look at this", "10:02");
+        preview_only.link_preview = Some(LinkPreview {
+            title: "Example".to_owned(),
+            description: String::new(),
+            url: "https://example.com".to_owned(),
+            image: PreviewImage::None,
+        });
+        let plain = Message::theirs(4, "Sarah", "no link here", "10:03");
+        let counts = conversation_counts(&[photo, doc, preview_only, plain]);
+        assert_eq!(counts, ConversationCounts { media: 1, links: 2, docs: 1 });
+    }
+
+    #[test]
+    fn conversation_counts_of_the_demo_showcase_are_not_zero() {
+        // The showcase conversation visibly contains photos, a
+        // link and a document, so its dock counts must say so.
+        let counts = conversation_counts(&demo_conversation());
+        assert!(counts.media > 0, "showcase photos and view-once media count as media");
+        assert!(counts.links > 0, "the showcase link message counts as a link");
+        assert!(counts.docs > 0, "the showcase document counts as a doc");
+        assert_eq!(conversation_counts(&[]), ConversationCounts::default());
     }
 
     #[test]

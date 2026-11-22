@@ -835,6 +835,13 @@ fn divider_inset(ui: &mut egui::Ui, t: core::theme::Tokens, inset: f32) {
 /// A settings row: title + description on the left, control on
 /// the right. Returns the row's rect (the search highlight
 /// paints over it; see row_hl).
+///
+/// The row is laid out right-to-left: the control is placed
+/// first and reserves its own width at the right edge, and the
+/// label column gets only what remains. Laying the column out
+/// first (the naive left-to-right order) lets it claim the full
+/// row width, so a long description wraps at the full width and
+/// runs underneath the control, clipped mid-sentence.
 fn row_with(
     ui: &mut egui::Ui,
     _t: core::theme::Tokens,
@@ -842,15 +849,24 @@ fn row_with(
     desc: &str,
     control: impl FnOnce(&mut egui::Ui),
 ) -> egui::Rect {
-    let resp = ui.horizontal(|ui| {
-        ui.vertical(|ui| {
-            ui.label(RichText::new(title).size(14.0));
-            if !desc.is_empty() {
-                ui.label(RichText::new(desc).size(11.5).color(ui.visuals().weak_text_color()));
-            }
-        });
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+    let resp = ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        ui.scope(|ui| {
+            // A text control (the About status line, say) may
+            // wrap, but it may not claim the whole row and
+            // squeeze the title column out; real controls are
+            // far narrower than this cap.
+            ui.set_max_width(ui.available_width() * 0.62);
             control(ui);
+        });
+        ui.with_layout(egui::Layout::left_to_right(egui::Align::Min), |ui| {
+            ui.vertical(|ui| {
+                ui.label(RichText::new(title).size(14.0));
+                if !desc.is_empty() {
+                    ui.label(
+                        RichText::new(desc).size(11.5).color(ui.visuals().weak_text_color()),
+                    );
+                }
+            });
         });
     });
     resp.response.rect

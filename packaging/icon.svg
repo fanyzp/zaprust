@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <!-- Zaprust app icon master: green squircle field, white speech
+       bubble, lightning bolt cut out of the bubble as negative
+       space. Flat color only. Rasters are generated from this file
+       by packaging/zaprust-icon.py; never edit the PNGs directly. -->
+  <rect x="64" y="64" width="896" height="896" rx="224" fill="#00A884"/>
+  <path fill="#FFFFFF" d="M 512 200
+    C 664 200 784 322 784 472
+    C 784 622 664 742 512 742
+    C 460 742 414 724 372 698
+    L 280 800
+    L 255 560
+    C 246 532 242 502 242 470
+    C 242 320 360 200 512 200 Z"/>
+  <path fill="#00A884" d="M 565 315 L 425 525 L 500 525 L 450 650 L 595 440 L 518 440 Z"/>
+</svg>

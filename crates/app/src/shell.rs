@@ -261,6 +261,16 @@ impl App {
                             );
                             if resp.clicked() {
                                 self.account_menu_open = !self.account_menu_open;
+                                if self.account_menu_open {
+                                    // Record the opening frame:
+                                    // the account menu is drawn
+                                    // later in this same frame and
+                                    // its outside-click check must
+                                    // not read this click as a
+                                    // dismissal.
+                                    self.account_menu_open_frame =
+                                        Some(ui.ctx().cumulative_frame_nr());
+                                }
                             }
                             resp.on_hover_text("Accounts");
                         }
@@ -895,5 +905,162 @@ fn video_size(bytes: u64) -> String {
         format!("{} KB", bytes / 1024)
     } else {
         format!("{bytes} B")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::Args;
+
+    /// A demo-mode app with popup motion off, at the default
+    /// window size the real binary opens with (1180x760, so the
+    /// shell is in its two-pane arrangement with the rail).
+    fn shell_app(ctx: &egui::Context) -> App {
+        crate::theme::install_fonts(ctx);
+        let mut app = App::new(Args::parse(), ctx);
+        // App::new may have attempted a real live start against
+        // this machine's data dir; the test owns the state from
+        // here and wants the plain demo shell.
+        app.live = None;
+        app.live_mode = false;
+        app.screen = crate::state::Screen::Chats;
+        app.motion = crate::motion::MotionSetting::Off;
+        app.account_menu_open = false;
+        app
+    }
+
+    /// One real frame through the shell's root draw entry
+    /// (`eframe::App::ui`), with synthetic input.
+    fn run_frame(app: &mut App, ctx: &egui::Context, events: Vec<egui::Event>, time: f64) {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1180.0, 760.0),
+            )),
+            time: Some(time),
+            events,
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |ui| {
+            let mut frame = eframe::Frame::_new_kittest();
+            <App as eframe::App>::ui(app, ui, &mut frame);
+        });
+        out.textures_delta.clear();
+    }
+
+    fn run_empty(app: &mut App, ctx: &egui::Context, frames: usize, time: &mut f64) {
+        for _ in 0..frames {
+            *time += 0.05;
+            run_frame(app, ctx, Vec::new(), *time);
+        }
+    }
+
+    /// A full click (move, press in one frame, release in the
+    /// next) at `at`, the same split the context-menu tests use:
+    /// egui reports `clicked()` on the release frame.
+    fn click_at(app: &mut App, ctx: &egui::Context, at: egui::Pos2, time: &mut f64) {
+        *time += 0.05;
+        run_frame(
+            app,
+            ctx,
+            vec![
+                egui::Event::PointerMoved(at),
+                egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+            *time,
+        );
+        *time += 0.05;
+        run_frame(
+            app,
+            ctx,
+            vec![egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            *time,
+        );
+    }
+
+    /// Opens the account menu by clicking the rail avatar for
+    /// real and returns the avatar position the rail recorded.
+    fn open_via_avatar(app: &mut App, ctx: &egui::Context, time: &mut f64) -> egui::Pos2 {
+        run_empty(app, ctx, 3, time);
+        let avatar = app.profile_anchor.expect("the rail records the avatar centre");
+        click_at(app, ctx, avatar, time);
+        avatar
+    }
+
+    /// Board item 132: clicking the rail avatar opened the
+    /// account menu and closed it again in the same frame,
+    /// because the rail toggle runs before `draw_account_menu`
+    /// in the frame and the menu's outside-click check read
+    /// that same opening click (the avatar sits outside the
+    /// centred modal) as a dismissal.
+    #[test]
+    fn avatar_click_opens_account_menu_and_it_stays_open() {
+        let ctx = egui::Context::default();
+        let mut app = shell_app(&ctx);
+        let mut time = 0.0;
+        open_via_avatar(&mut app, &ctx, &mut time);
+        assert!(app.account_menu_open, "the avatar click opens the account menu");
+        run_empty(&mut app, &ctx, 3, &mut time);
+        assert!(app.account_menu_open, "the account menu stays open on later frames");
+    }
+
+    /// A genuine outside click (well away from both the avatar
+    /// and the centred modal) still dismisses the menu.
+    #[test]
+    fn outside_click_closes_the_account_menu() {
+        let ctx = egui::Context::default();
+        let mut app = shell_app(&ctx);
+        let mut time = 0.0;
+        open_via_avatar(&mut app, &ctx, &mut time);
+        assert!(app.account_menu_open, "precondition: the menu is open");
+        click_at(&mut app, &ctx, egui::pos2(1000.0, 650.0), &mut time);
+        assert!(!app.account_menu_open, "an outside click closes the account menu");
+    }
+
+    /// Escape still dismisses the menu.
+    #[test]
+    fn escape_closes_the_account_menu() {
+        let ctx = egui::Context::default();
+        let mut app = shell_app(&ctx);
+        let mut time = 0.0;
+        open_via_avatar(&mut app, &ctx, &mut time);
+        assert!(app.account_menu_open, "precondition: the menu is open");
+        time += 0.05;
+        run_frame(
+            &mut app,
+            &ctx,
+            vec![egui::Event::Key {
+                key: egui::Key::Escape,
+                physical_key: Some(egui::Key::Escape),
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            time,
+        );
+        assert!(!app.account_menu_open, "Escape closes the account menu");
+    }
+
+    /// Clicking the avatar again toggles the menu closed.
+    #[test]
+    fn avatar_click_again_toggles_the_account_menu_closed() {
+        let ctx = egui::Context::default();
+        let mut app = shell_app(&ctx);
+        let mut time = 0.0;
+        let avatar = open_via_avatar(&mut app, &ctx, &mut time);
+        assert!(app.account_menu_open, "precondition: the menu is open");
+        click_at(&mut app, &ctx, avatar, &mut time);
+        assert!(!app.account_menu_open, "a second avatar click toggles the menu closed");
     }
 }

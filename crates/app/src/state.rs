@@ -909,6 +909,13 @@ pub(crate) struct App {
     pub(crate) country_search: String,
     pub(crate) pair_code_shown: bool,
     pub(crate) account_menu_open: bool,
+    /// The egui frame on which the rail avatar toggle last
+    /// opened the account menu, if it was opened that way.
+    /// The menu's outside-click check runs later in that same
+    /// frame and would otherwise read the opening click itself
+    /// as a dismissal (the avatar sits outside the modal), so
+    /// the check skips the frame recorded here.
+    pub(crate) account_menu_open_frame: Option<u64>,
     pub(crate) profile_anchor: Option<egui::Pos2>,
     pub(crate) notify_messages: bool,
     pub(crate) notify_groups: bool,
@@ -1489,6 +1496,7 @@ impl App {
             country_search: String::new(),
             pair_code_shown: args.pair_code,
             account_menu_open: args.account_menu,
+            account_menu_open_frame: None,
             profile_anchor: None,
             notify_messages: true,
             notify_groups: true,

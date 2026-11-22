@@ -470,28 +470,35 @@ impl App {
         // Resolve the announcement chat: the chat store first
         // (live mode's stand-in is a real listed group), then the
         // detached slot (the demo announcement once it has been
-        // opened), then the demo data itself. It never resolves
-        // by joining the chat list.
+        // opened), then the session store (a created community's
+        // announcement), then the demo data itself. It never
+        // resolves by joining the chat list.
         let announcement: Chat = {
-            let from_store = self.chats.iter().find(|c| c.id == community.announcement_chat_id);
-            let from_detached = self
-                .detached_chat
-                .as_ref()
-                .filter(|c| c.id == community.announcement_chat_id);
-            let from_session = self
-                .session_announcements
+            let resolved = self
+                .chats
                 .iter()
-                .find(|c| c.id == community.announcement_chat_id);
-            match (from_store, from_detached, from_session) {
-                (Some(c), _, _) => c.clone(),
-                (_, Some(c), _) => c.clone(),
-                (_, _, Some(c)) => c.clone(),
-                _ if !self.live_mode
-                    && community.announcement_chat_id == demo_announcement_chat().id =>
-                {
-                    demo_announcement_chat()
-                }
-                _ => {
+                .find(|c| c.id == community.announcement_chat_id)
+                .cloned()
+                .or_else(|| {
+                    self.detached_chat
+                        .as_ref()
+                        .filter(|c| c.id == community.announcement_chat_id)
+                        .cloned()
+                })
+                .or_else(|| {
+                    self.session_announcements
+                        .iter()
+                        .find(|c| c.id == community.announcement_chat_id)
+                        .cloned()
+                })
+                .or_else(|| {
+                    (!self.live_mode
+                        && community.announcement_chat_id == demo_announcement_chat().id)
+                        .then(demo_announcement_chat)
+                });
+            match resolved {
+                Some(c) => c,
+                None => {
                     self.open_community = None;
                     self.community_home_from_overview = false;
                     self.draw_conversation(root);

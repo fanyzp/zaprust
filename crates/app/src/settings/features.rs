@@ -2,6 +2,20 @@
 
 use super::*;
 
+/// Display label for a stored GIPHY content rating value. The
+/// stored values stay the raw GIPHY codes (`giphy::fetch_params`
+/// validates and the API expects them); only the rendering is
+/// human. Unknown values fall back to the least permissive
+/// label, matching the stored default.
+pub(super) fn rating_label(stored: &str) -> &'static str {
+    match stored {
+        "pg" => "PG",
+        "pg-13" => "PG-13",
+        "r" => "R",
+        _ => "General",
+    }
+}
+
 impl App {
     /// The Features category: every former plugin is a native
     /// feature of the app now. The switches are the whole control
@@ -39,8 +53,9 @@ impl App {
         self.section_credentials(ui, t);
     }
 
-    /// GIF search preferences (content rating, results per fetch),
-    /// stored as the raw map `giphy::fetch_params` validates.
+    /// GIF search preferences (content rating, results per
+    /// search), stored as the raw map `giphy::fetch_params`
+    /// validates.
     fn section_gif(&mut self, ui: &mut egui::Ui, t: core::theme::Tokens) {
         ui.add_space(16.0);
         group_label(ui, t, "GIF search");
@@ -57,10 +72,9 @@ impl App {
                 "Content rating",
                 None,
                 |ui| {
-                    let label = new_rating.clone();
-                    select(ui, "giphy_rating", FORM_CONTROL_W, &label, |ui| {
+                    select(ui, "giphy_rating", FORM_CONTROL_W, rating_label(&new_rating), |ui| {
                         for r in ["g", "pg", "pg-13", "r"] {
-                            ui.selectable_value(&mut new_rating, r.to_owned(), r);
+                            ui.selectable_value(&mut new_rating, r.to_owned(), rating_label(r));
                         }
                     });
                 },
@@ -71,7 +85,7 @@ impl App {
                 self.motion,
                 "features.gif_limit",
                 t,
-                "Results per fetch",
+                &crate::i18n::t("features.results_per_search"),
                 None,
                 |ui| {
                     let mut v = f64::from(new_limit);
@@ -109,14 +123,9 @@ impl App {
             self.credentials.declared_slots().to_vec();
         settings_card(ui, t, |ui| {
             ui.label(
-                RichText::new(format!(
-                    "Stored in: {backend_name}.{storage_note} You can save several keys per \
-                     service and Zaprust takes turns using them. A key that is \
-                     rate limited rests for a while, and a rejected key is \
-                     skipped. Key values are never written to logs."
-                ))
-                .size(12.0)
-                .color(rgb(t.text_secondary)),
+                RichText::new(format!("Stored in: {backend_name}.{storage_note}"))
+                    .size(12.0)
+                    .color(rgb(t.text_secondary)),
             );
             if slots.is_empty() {
                 ui.label(RichText::new("No feature needs an API key.").size(12.0));

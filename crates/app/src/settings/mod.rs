@@ -189,9 +189,9 @@ const SETTINGS_REGISTRY: &[SettingEntry] = &[
     SettingEntry {
         id: "features.gif_limit",
         tab: "Features",
-        title_en: "Results per fetch",
-        title_id: "Results per fetch",
-        keywords: "giphy gif limit jumlah",
+        title_en: "Results per search",
+        title_id: "Hasil per pencarian",
+        keywords: "giphy gif limit search jumlah pencarian",
     },
     SettingEntry {
         id: "storage.archive",
@@ -1066,6 +1066,34 @@ mod tests {
         // the label is exactly the workspace version the
         // updater compares against.
         assert_eq!(version_label(), env!("CARGO_PKG_VERSION"));
+    }
+
+    #[test]
+    fn rating_labels_are_human_and_stored_values_unchanged() {
+        // The dropdown renders labels; the stored GIPHY codes
+        // are what `giphy::fetch_params` validates and what
+        // gets written back, so the mapping is display-only.
+        assert_eq!(super::features::rating_label("g"), "General");
+        assert_eq!(super::features::rating_label("pg"), "PG");
+        assert_eq!(super::features::rating_label("pg-13"), "PG-13");
+        assert_eq!(super::features::rating_label("r"), "R");
+        // An unknown stored value renders as the default's
+        // label, matching the fallback in fetch_params.
+        assert_eq!(super::features::rating_label("bogus"), "General");
+    }
+
+    #[test]
+    fn gif_limit_registry_entry_uses_the_search_name() {
+        // The row was renamed from "Results per fetch" to
+        // "Results per search"; the registry entry (the search
+        // index's single source of truth) carries the new title
+        // in both languages, and the old name finds nothing.
+        let entry = SETTINGS_REGISTRY.iter().find(|e| e.id == "features.gif_limit").unwrap();
+        assert_eq!(entry.title_en, "Results per search");
+        assert_eq!(entry.title_id, "Hasil per pencarian");
+        assert!(result_ids("results per search").contains(&("Features", "features.gif_limit")));
+        assert!(settings_search_results("results per fetch").is_empty());
+        assert!(result_ids("pencarian").contains(&("Features", "features.gif_limit")));
     }
 
     #[test]

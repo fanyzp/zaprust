@@ -270,6 +270,9 @@
 "conversation.mute_notifications" = "Bisukan notifikasi"
 "conversation.unmute_notifications" = "Bunyikan notifikasi"
 
+# ---- settings: features ----
+"features.results_per_search" = "Hasil per pencarian"
+
 # ---- settings: appearance ----
 "appearance.theme" = "Tema"
 "appearance.dynamic_color" = "Warna dinamis"

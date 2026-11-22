@@ -190,6 +190,9 @@
 "chats_page.enter_sends" = "Enter sends"
 "chats_page.enter_sends_caption" = "Off: Ctrl+Enter sends instead"
 
+# ---- settings: features ----
+"features.results_per_search" = "Results per search"
+
 # ---- settings: notifications ----
 "notifications.messages" = "Message notifications"
 "notifications.groups" = "Group notifications"

@@ -29,6 +29,11 @@ const WIDE_W: f32 = 720.0;
 /// The instruction pane's width inside the wide card; the code
 /// pane takes what remains after the card margins and the gap.
 const WIDE_STEPS_W: f32 = 296.0;
+/// The screen's one outer margin: the same 16 step as the
+/// list inset token (design standard, section 7). The header
+/// row, the card column, and the footer all respect it, so
+/// nothing sits in the raw window corners.
+const PAGE_MARGIN: f32 = 16.0;
 
 /// Whether a window of this width gets the wide two-part
 /// connect card. Below it the screen keeps the single centered
@@ -99,7 +104,10 @@ impl App {
                 // app shows anywhere (design standard, icon
                 // discipline).
                 if let Some(tex) = brand_texture(ui.ctx()) {
-                    let center = Pos2::new(bar.left() + 30.0, bar.center().y);
+                    let center = Pos2::new(
+                        area.left() + PAGE_MARGIN + crate::icons::SIZE_TAB / 2.0,
+                        bar.center().y,
+                    );
                     painter.image(
                         tex,
                         egui::Rect::from_center_size(center, Vec2::splat(crate::icons::SIZE_TAB)),
@@ -108,7 +116,10 @@ impl App {
                     );
                 }
                 painter.text(
-                    Pos2::new(bar.left() + 50.0, bar.center().y),
+                    Pos2::new(
+                        area.left() + PAGE_MARGIN + crate::icons::SIZE_TAB + 8.0,
+                        bar.center().y,
+                    ),
                     Align2::LEFT_CENTER,
                     "Zaprust",
                     FontId::proportional(14.5),
@@ -122,7 +133,7 @@ impl App {
                         .max_rect(bar)
                         .layout(egui::Layout::right_to_left(egui::Align::Center)),
                 );
-                bar_ui.add_space(12.0);
+                bar_ui.add_space(PAGE_MARGIN);
                 if crate::widgets::button(
                     &mut bar_ui,
                     t,
@@ -139,10 +150,14 @@ impl App {
                 );
                 // No line above the footer either, for the
                 // same reason: the strip's geometry and the
-                // faint disclaimer text delimit it.
+                // faint disclaimer text delimit it. The
+                // disclaimer centers on the screen's axis,
+                // because the whole screen is one centered
+                // column and a line parked in a corner would
+                // sit off that axis.
                 painter.text(
-                    Pos2::new(footer.left() + 20.0, footer.center().y),
-                    Align2::LEFT_CENTER,
+                    Pos2::new(area.center().x, footer.center().y),
+                    Align2::CENTER_CENTER,
                     "Unofficial client. Using it may be against WhatsApp's terms of service.",
                     FontId::proportional(11.5),
                     rgb(t.text_faint),

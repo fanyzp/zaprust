@@ -66,16 +66,20 @@ pub(crate) fn chat_preview_line(chat: &Chat) -> String {
 
 impl App {
     pub(crate) fn draw_chat_list(&mut self, root: &mut egui::Ui) {
-        // The Archived filter changes only which rows this list
-        // shows. Entering the view (rail button, filter chip, a
-        // startup screen) never touches the selection: the open
-        // conversation on the right stays exactly as it was, even
-        // when it is not an archived chat (owner's ruling; an
-        // earlier version force-opened the first archived chat
-        // here and that sync was removed on purpose, do not
-        // re-add it).
-        // Clicking an archived row below opens that chat
-        // through the normal row-click path.
+        // Channels, Groups and Archived are modes of this list,
+        // not separate screens: the header swaps to the filtered
+        // construction (back chevron plus the destination's own
+        // title, no chip row, no list actions) while the rows
+        // below are the same list narrowed by the destination's
+        // filter. Entering a filtered view never touches the
+        // selection (an earlier version force-opened the first
+        // matching chat and that sync was removed on purpose, do
+        // not re-add it); when the selected chat is not a member
+        // of the filter, the shell shows the empty conversation
+        // placeholder beside this list instead of the foreign
+        // chat (see shell.rs draw_content). Clicking a row below
+        // opens that chat through the normal row-click path.
+        let filtered = self.screen.is_filtered_list();
         let t = self.tokens();
         let panel = self
             .list_panel(root)
@@ -95,6 +99,38 @@ impl App {
                 // page's back header); see the helper below.
                 if self.portrait {
                     self.draw_chat_list_header_portrait(ui, t);
+                } else if filtered {
+                    // The filtered construction: a back chevron
+                    // returning to the plain Chats list and the
+                    // destination's own title, in the same header
+                    // frame the Chats title occupies. No actions
+                    // ride along: the list actions (new group,
+                    // collapse) belong to the Chats list itself,
+                    // not to a narrowed view of it.
+                    let mut back = false;
+                    ui.horizontal(|ui| {
+                        if crate::widgets::icon_button(
+                            ui,
+                            t,
+                            crate::icons::Icon::ChevronLeft,
+                            28.0,
+                            &crate::i18n::t("common.back"),
+                            None,
+                        )
+                        .clicked()
+                        {
+                            back = true;
+                        }
+                        ui.label(
+                            RichText::new(crate::i18n::t(self.screen.filtered_title_key()))
+                                .font(crate::theme::medium(16.0))
+                                .color(rgb(t.text_primary)),
+                        );
+                    });
+                    if back {
+                        self.screen = crate::state::Screen::Chats;
+                        self.filter = ChatFilter::All;
+                    }
                 } else {
                     ui.horizontal(|ui| {
                         ui.label(
@@ -151,68 +187,79 @@ impl App {
                 // the panel edge. The strip hides its scrollbar,
                 // fades the clipped edge, and scrolls the selected
                 // chip fully into view when the filter changes.
-                crate::widgets::chip_scroll_row(
-                    ui,
-                    "chat_filter_chips",
-                    t.bg_panel,
-                    self.filter,
-                    |ui| {
-                        let mut selected_resp = None;
-                        for f in [
-                            ChatFilter::All,
-                            ChatFilter::Unread,
-                            ChatFilter::Private,
-                            ChatFilter::Favorites,
-                            ChatFilter::Groups,
-                        ]
-                        .into_iter()
-                        .chain(
-                            self.chats.iter().any(|c| c.archived).then_some(ChatFilter::Archived),
-                        ) {
-                            let selected = self.filter == f;
-                            // Filter chips carry their counts, the
-                            // way mainstream chat clients show them
-                            // (Unread 6, Groups 3, and so on).
-                            let count = match f {
-                                ChatFilter::All | ChatFilter::Archived => 0,
-                                ChatFilter::Unread => self
-                                    .chats
+                // Filtered destinations show no chip row at all:
+                // the destination itself is the filter, and its
+                // header above already says which one.
+                if !filtered {
+                    crate::widgets::chip_scroll_row(
+                        ui,
+                        "chat_filter_chips",
+                        t.bg_panel,
+                        self.filter,
+                        |ui| {
+                            let mut selected_resp = None;
+                            for f in [
+                                ChatFilter::All,
+                                ChatFilter::Unread,
+                                ChatFilter::Private,
+                                ChatFilter::Favorites,
+                                ChatFilter::Groups,
+                            ]
+                            .into_iter()
+                            .chain(
+                                self.chats
                                     .iter()
-                                    .filter(|c| !c.archived && c.unread > 0)
-                                    .count(),
-                                ChatFilter::Private => self
-                                    .chats
-                                    .iter()
-                                    .filter(|c| !c.archived && c.kind == ChatKind::Dm)
-                                    .count(),
-                                ChatFilter::Favorites => {
-                                    self.chats.iter().filter(|c| !c.archived && c.favorite).count()
+                                    .any(|c| c.archived)
+                                    .then_some(ChatFilter::Archived),
+                            ) {
+                                let selected = self.filter == f;
+                                // Filter chips carry their counts, the
+                                // way mainstream chat clients show them
+                                // (Unread 6, Groups 3, and so on).
+                                let count = match f {
+                                    ChatFilter::All | ChatFilter::Archived => 0,
+                                    ChatFilter::Unread => self
+                                        .chats
+                                        .iter()
+                                        .filter(|c| !c.archived && c.unread > 0)
+                                        .count(),
+                                    ChatFilter::Private => self
+                                        .chats
+                                        .iter()
+                                        .filter(|c| !c.archived && c.kind == ChatKind::Dm)
+                                        .count(),
+                                    ChatFilter::Favorites => self
+                                        .chats
+                                        .iter()
+                                        .filter(|c| !c.archived && c.favorite)
+                                        .count(),
+                                    ChatFilter::Groups => self
+                                        .chats
+                                        .iter()
+                                        .filter(|c| !c.archived && c.kind == ChatKind::Group)
+                                        .count(),
+                                    ChatFilter::Channels => self
+                                        .chats
+                                        .iter()
+                                        .filter(|c| !c.archived && c.kind == ChatKind::Channel)
+                                        .count(),
+                                };
+                                let name = crate::i18n::t(filter_label_key(f));
+                                let label =
+                                    if count > 0 { format!("{name} {count}") } else { name };
+                                let resp = chip(ui, &label, selected, t);
+                                let clicked = resp.clicked();
+                                if selected {
+                                    selected_resp = Some(resp);
                                 }
-                                ChatFilter::Groups => self
-                                    .chats
-                                    .iter()
-                                    .filter(|c| !c.archived && c.kind == ChatKind::Group)
-                                    .count(),
-                                ChatFilter::Channels => self
-                                    .chats
-                                    .iter()
-                                    .filter(|c| !c.archived && c.kind == ChatKind::Channel)
-                                    .count(),
-                            };
-                            let name = crate::i18n::t(filter_label_key(f));
-                            let label = if count > 0 { format!("{name} {count}") } else { name };
-                            let resp = chip(ui, &label, selected, t);
-                            let clicked = resp.clicked();
-                            if selected {
-                                selected_resp = Some(resp);
+                                if clicked {
+                                    self.filter = f;
+                                }
                             }
-                            if clicked {
-                                self.filter = f;
-                            }
-                        }
-                        selected_resp
-                    },
-                );
+                            selected_resp
+                        },
+                    );
+                }
                 // Portrait: the archived entry row under the
                 // chips (the phone pattern), shown on the
                 // unfiltered, unsearched list while archived
@@ -436,15 +483,15 @@ impl App {
     /// and a kebab menu on the right carrying the destinations
     /// the rail holds in the other modes (New group, Starred,
     /// Settings), the phone pattern of one title and one menu.
-    /// On the archived page the header is instead a back
-    /// chevron and the page title: that page is full-screen,
-    /// entered from the archived row, and the chevron is the
-    /// way back to the chat list.
+    /// On a filtered page (Channels, Groups, Archived) the
+    /// header is instead a back chevron and the destination's
+    /// own title: those pages are full-screen here, and the
+    /// chevron is the way back to the chat list.
     fn draw_chat_list_header_portrait(&mut self, ui: &mut egui::Ui, t: Tokens) {
         let mut go: Option<crate::state::Screen> = None;
         let mut new_group = false;
         ui.horizontal(|ui| {
-            if self.screen == crate::state::Screen::Archived {
+            if self.screen.is_filtered_list() {
                 if crate::widgets::icon_button(
                     ui,
                     t,
@@ -458,7 +505,7 @@ impl App {
                     go = Some(crate::state::Screen::Chats);
                 }
                 ui.label(
-                    RichText::new(crate::i18n::t("nav.archived"))
+                    RichText::new(crate::i18n::t(self.screen.filtered_title_key()))
                         .font(crate::theme::medium(16.0))
                         .color(rgb(t.text_primary)),
                 );

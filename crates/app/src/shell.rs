@@ -5,7 +5,7 @@ use crate::state::{effective_pixels_per_point, layout_mode_for_content, App, Lay
 use crate::theme::{apply_visuals, rgb};
 use crate::widgets::rail_button;
 use core::filter::total_unread;
-use eframe::egui::{self, Align, Layout, Margin, Sense, Vec2};
+use eframe::egui::{self, Align, Layout, Margin, RichText, Sense, Vec2};
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -148,13 +148,70 @@ impl App {
 
     /// The content area next to the rail and chat list: the open
     /// community's home while one is open, otherwise the
-    /// conversation.
+    /// conversation. On a filtered list destination (Channels,
+    /// Groups, Archived) whose filter does not contain the
+    /// selected chat, the empty conversation placeholder takes
+    /// the conversation's place, so the two panes never disagree
+    /// about what is selected.
     fn draw_content(&mut self, root: &mut egui::Ui) {
         if self.open_community.is_some() {
             self.draw_community_home(root);
+        } else if !self.selection_in_current_filter() {
+            self.draw_conversation_placeholder(root);
         } else {
             self.draw_conversation(root);
         }
+    }
+
+    /// The empty conversation placeholder: the chat background
+    /// and one quiet centred line, the same presentation the
+    /// pane takes when no chat is selected at all. Shown on the
+    /// filtered list destinations while the selection sits
+    /// outside the filter; the selection is left untouched, so
+    /// it never opens, marks read, or disturbs the foreign chat.
+    /// In single-pane mode a back chevron at the top returns to
+    /// the filtered list, mirroring the conversation header.
+    fn draw_conversation_placeholder(&mut self, root: &mut egui::Ui) {
+        let t = self.tokens();
+        egui::CentralPanel::default().frame(egui::Frame::new().fill(rgb(t.bg_chat))).show(
+            root,
+            |ui| {
+                if self.single_pane {
+                    ui.horizontal(|ui| {
+                        if crate::widgets::icon_button(
+                            ui,
+                            t,
+                            crate::icons::Icon::ChevronLeft,
+                            32.0,
+                            &crate::i18n::t("common.back"),
+                            None,
+                        )
+                        .clicked()
+                        {
+                            self.conversation_open = false;
+                        }
+                    });
+                }
+                ui.vertical_centered(|ui| {
+                    ui.add_space((ui.available_height() * 0.36).max(0.0));
+                    let (icon_rect, _) = ui.allocate_exact_size(Vec2::splat(48.0), Sense::hover());
+                    crate::icons::draw(
+                        ui.painter(),
+                        crate::icons::Icon::Chat,
+                        icon_rect.center(),
+                        40.0,
+                        rgb(t.text_faint),
+                        rgb(t.bg_chat),
+                    );
+                    ui.add_space(10.0);
+                    ui.label(
+                        RichText::new(crate::i18n::t("conversation.select_chat"))
+                            .size(14.5)
+                            .color(rgb(t.text_secondary)),
+                    );
+                });
+            },
+        );
     }
 
     /// The "My profile" editor (account menu entry): drawn while
@@ -1055,6 +1112,28 @@ mod tests {
             time,
         );
         assert!(!app.account_menu_open, "Escape closes the account menu");
+    }
+
+    /// On a filtered destination the conversation pane shows
+    /// the placeholder while the selection is outside the
+    /// filter: frames run, the selection is never moved, and a
+    /// member selection takes the conversation back.
+    #[test]
+    fn filtered_screen_keeps_a_foreign_selection_untouched() {
+        let ctx = egui::Context::default();
+        let mut app = shell_app(&ctx);
+        app.screen = Screen::Channels;
+        app.filter = core::filter::ChatFilter::Channels;
+        // The shell app starts on chat 1, a group: foreign here.
+        assert_eq!(app.selected_chat, 1);
+        assert!(!app.selection_in_current_filter());
+        let mut time = 0.0;
+        run_empty(&mut app, &ctx, 3, &mut time);
+        assert_eq!(app.selected_chat, 1, "the placeholder never moves the selection");
+        app.selected_chat = 5;
+        assert!(app.selection_in_current_filter(), "chat 5 is a channel");
+        run_empty(&mut app, &ctx, 3, &mut time);
+        assert_eq!(app.selected_chat, 5);
     }
 
     /// Clicking the avatar again toggles the menu closed.

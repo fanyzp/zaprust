@@ -286,6 +286,26 @@ impl Screen {
         }
     }
 
+    /// The rail destinations that are modes of the chat list
+    /// rather than screens of their own: the plain list narrowed
+    /// to one kind of chat. A filtered destination carries its
+    /// own header identity (back chevron plus its own title, no
+    /// generic chip row) instead of rendering as the Chats list.
+    pub(crate) fn is_filtered_list(self) -> bool {
+        matches!(self, Self::Channels | Self::Groups | Self::Archived)
+    }
+
+    /// The locale key for a filtered destination's own header
+    /// title. Only meaningful when [`Self::is_filtered_list`].
+    pub(crate) fn filtered_title_key(self) -> &'static str {
+        match self {
+            Self::Channels => "nav.channels",
+            Self::Groups => "nav.groups",
+            Self::Archived => "nav.archived",
+            _ => "nav.chats",
+        }
+    }
+
     pub(crate) fn is_list_screen(self) -> bool {
         // Starred, Calls and Communities are list screens too:
         // their panels replace the chat list on the left while
@@ -1979,6 +1999,27 @@ impl App {
             .or_else(|| self.chats.first())
             .unwrap_or(&self.fallback_chat)
     }
+
+    /// Whether the selected chat is a member of the list the
+    /// current screen shows. Always true outside the filtered
+    /// list destinations; on Channels, Groups and Archived the
+    /// selected chat must pass that destination's filter. The
+    /// shell uses this to keep the two panes in agreement: a
+    /// selection outside the filter shows the empty conversation
+    /// placeholder instead of a foreign chat. The selection
+    /// itself is never changed by this check, so returning to
+    /// the plain Chats list reopens the same chat.
+    pub(crate) fn selection_in_current_filter(&self) -> bool {
+        if !self.screen.is_filtered_list() {
+            return true;
+        }
+        let filter = self.screen.filter();
+        self.chats.iter().find(|c| c.id == self.selected_chat).is_some_and(|c| filter.matches(c))
+            || self
+                .detached_chat
+                .as_ref()
+                .is_some_and(|c| c.id == self.selected_chat && filter.matches(c))
+    }
 }
 
 /// Where the conversation's unread divider sits: a snapshot
@@ -2267,6 +2308,39 @@ mod tests {
         app.screen = Screen::Communities;
         drive_frames(&mut app, &ctx, 3, &mut time);
         assert_eq!(conversation_snapshot(&app), before, "the overview detour disturbed state");
+    }
+
+    /// The filtered destinations gate the conversation pane by
+    /// membership: a selected chat outside the destination's
+    /// filter is not a member, one inside it is, and the plain
+    /// Chats screen (and the other list screens) never gate.
+    /// Demo data: chat 1 is a group, 2 an unarchived DM, 5 a
+    /// channel, 11 an archived DM.
+    #[test]
+    fn selection_membership_follows_the_filtered_screen() {
+        let mut app = demo_app();
+        app.screen = Screen::Chats;
+        app.selected_chat = 1;
+        assert!(app.selection_in_current_filter());
+        app.screen = Screen::Channels;
+        app.filter = ChatFilter::Channels;
+        assert!(!app.selection_in_current_filter(), "a group is not a channel");
+        app.selected_chat = 5;
+        assert!(app.selection_in_current_filter());
+        app.screen = Screen::Groups;
+        app.filter = ChatFilter::Groups;
+        assert!(!app.selection_in_current_filter(), "a channel is not a group");
+        app.selected_chat = 1;
+        assert!(app.selection_in_current_filter());
+        app.screen = Screen::Archived;
+        app.filter = ChatFilter::Archived;
+        app.selected_chat = 2;
+        assert!(!app.selection_in_current_filter(), "an unarchived chat is not archived");
+        app.selected_chat = 11;
+        assert!(app.selection_in_current_filter());
+        app.screen = Screen::Starred;
+        app.selected_chat = 2;
+        assert!(app.selection_in_current_filter());
     }
 
     /// Builds a demo-mode App on a default egui context.

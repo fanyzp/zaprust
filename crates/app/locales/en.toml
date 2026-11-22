@@ -54,6 +54,7 @@
 
 # ---- conversation ----
 "conversation.typing" = "typing..."
+"conversation.select_chat" = "Select a chat to start messaging"
 "conversation.member_count" = "{count} members"
 "presence.online" = "online"
 "presence.last_seen_today" = "last seen today at {time}"

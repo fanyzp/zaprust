@@ -54,6 +54,7 @@
 
 # ---- conversation ----
 "conversation.typing" = "mengetik..."
+"conversation.select_chat" = "Pilih chat untuk mulai berkirim pesan"
 "conversation.member_count" = "{count} anggota"
 "presence.online" = "online"
 "presence.last_seen_today" = "terakhir dilihat hari ini pukul {time}"

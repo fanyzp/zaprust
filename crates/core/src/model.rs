@@ -391,7 +391,9 @@ pub fn conversation_counts(messages: &[Message]) -> ConversationCounts {
     let mut counts = ConversationCounts::default();
     for message in messages {
         match &message.kind {
-            MessageKind::Image { .. } | MessageKind::Video { .. } | MessageKind::Carousel { .. } => {
+            MessageKind::Image { .. }
+            | MessageKind::Video { .. }
+            | MessageKind::Carousel { .. } => {
                 counts.media += 1;
             }
             MessageKind::Document { .. } => counts.docs += 1,
@@ -1330,8 +1332,10 @@ mod tests {
     #[test]
     fn conversation_counts_cover_media_links_and_docs() {
         let mut photo = Message::theirs(1, "Sarah", "", "10:00");
-        photo.kind =
-            MessageKind::Image { caption: "see https://example.com/x".to_owned(), view_once: false };
+        photo.kind = MessageKind::Image {
+            caption: "see https://example.com/x".to_owned(),
+            view_once: false,
+        };
         let mut doc = Message::theirs(2, "Sarah", "", "10:01");
         doc.kind = MessageKind::Document { name: "notes.pdf".to_owned(), size_kib: 12 };
         // A preview alone proves a link even when the body that

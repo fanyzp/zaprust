@@ -1428,7 +1428,7 @@ pub(crate) fn message_bubble(
                     painter.galley(Pos2::new(x, y + DOC_ROW_H + 4.0), g, text_color);
                 }
             }
-            MessageKind::Poll { question, options, my_votes } => {
+            MessageKind::Poll { question, options, my_votes, .. } => {
                 let g = layout_text(ui, question, body_font.clone(), text_color, inner_w);
                 painter.galley(Pos2::new(x, y), g, text_color);
                 let mut oy = y + body_galley.size().y + 8.0;

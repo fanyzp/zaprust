@@ -68,13 +68,13 @@ impl App {
         let underlay = egui::Rect::from_min_max(
             Pos2::new(
                 full_rect.left() + fmargin - 6.0,
-                full_rect.bottom() - 20.0 - self.composer.stack_h,
+                full_rect.bottom() - (COMPOSER_LIFT + 6.0) - self.composer.stack_h,
             ),
             Pos2::new(full_rect.right() - fmargin + 6.0, full_rect.bottom() - 8.0),
         );
         ui.painter().rect_filled(underlay, CornerRadius::same(30), crate::theme::glass_underlay(t));
         let composer_area = egui::Area::new(egui::Id::unique("composer_float"))
-            .fixed_pos(Pos2::new(full_rect.left() + fmargin, full_rect.bottom() - 14.0))
+            .fixed_pos(Pos2::new(full_rect.left() + fmargin, full_rect.bottom() - COMPOSER_LIFT))
             .pivot(egui::Align2::LEFT_BOTTOM)
             .order(egui::Order::Foreground)
             .show(ui.ctx(), |ui| {
@@ -785,19 +785,33 @@ impl App {
                                 );
                                 if swap < 0.999 {
                                     let mic_a = 1.0 - swap;
-                                    if sresp.is_pointer_button_down_on() {
-                                        ui.painter().circle_filled(
-                                            sc,
-                                            19.0,
-                                            fade(rgb(core::theme::pressed_step(t.border)), mic_a),
-                                        );
+                                    // The mic is a real button, not a
+                                    // bare glyph on the chat
+                                    // background: it rests on the same
+                                    // filled disc surface as the
+                                    // app's other round icon buttons
+                                    // (a panel-alt fill with a
+                                    // hairline edge), stepping to the
+                                    // hover and pressed fills under
+                                    // the pointer. The whole surface
+                                    // fades with the send morph.
+                                    let mic_fill = if sresp.is_pointer_button_down_on() {
+                                        core::theme::pressed_step(t.bg_panel_alt)
                                     } else if sresp.hovered() {
-                                        ui.painter().circle_filled(
-                                            sc,
-                                            19.0,
-                                            fade(rgb(t.border), mic_a),
-                                        );
-                                    }
+                                        core::theme::hover_step(t.bg_panel_alt)
+                                    } else {
+                                        t.bg_panel_alt
+                                    };
+                                    ui.painter().circle_filled(
+                                        sc,
+                                        19.0,
+                                        fade(rgb(mic_fill), mic_a),
+                                    );
+                                    ui.painter().circle_stroke(
+                                        sc,
+                                        19.0,
+                                        Stroke::new(1.0_f32, fade(rgb(t.border), mic_a)),
+                                    );
                                     let mic_col = rgb(t.text_secondary);
                                     crate::icons::draw(
                                         ui.painter(),

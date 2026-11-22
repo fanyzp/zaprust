@@ -21,21 +21,85 @@ pub(crate) fn card_shadow(t: Tokens) -> egui::Shadow {
     }
 }
 
-/// The whisper of depth under a message bubble: a 1 px drop with
-/// a tight blur, so bubbles sit on the chat background instead of
-/// being pasted onto it. Much softer than a card's shadow; the
-/// bubble fill itself stays flat.
+/// The depth under a message bubble: a short, soft drop (2 px
+/// offset, tight blur), so bubbles sit on the chat background
+/// instead of being pasted onto it. Present enough to read at a
+/// glance, still softer than a card's shadow; the bubble fill
+/// itself stays flat, and the hairline the bubble paints over
+/// the shadow does the rest of the separation.
 pub(crate) fn bubble_shadow(t: Tokens) -> egui::Shadow {
     if t.is_light() {
         egui::Shadow {
-            offset: [0, 1],
-            blur: 4,
+            offset: [0, 2],
+            blur: 6,
             spread: 0,
-            color: Color32::from_rgba_unmultiplied(17, 27, 33, 38),
+            color: Color32::from_rgba_unmultiplied(17, 27, 33, 56),
         }
     } else {
-        egui::Shadow { offset: [0, 1], blur: 4, spread: 0, color: Color32::from_black_alpha(56) }
+        egui::Shadow { offset: [0, 2], blur: 6, spread: 0, color: Color32::from_black_alpha(88) }
     }
+}
+
+/// The float shadow tier, as the composer wears it: the middle
+/// of the three shadow tiers (bubble, float, modal). The
+/// composer is the conversation's floating layer, so it lifts
+/// further than a card, with a longer, softer drop than
+/// [`card_shadow`] gives it when the glow treatment is off.
+/// With glow on it keeps the glass recipe's own shadow, so the
+/// two treatments never stack.
+pub(crate) fn composer_shadow(t: Tokens) -> egui::Shadow {
+    if t.glow {
+        return glass_shadow(t);
+    }
+    if t.is_light() {
+        egui::Shadow {
+            offset: [0, 4],
+            blur: 14,
+            spread: 0,
+            color: Color32::from_rgba_unmultiplied(17, 27, 33, 52),
+        }
+    } else {
+        egui::Shadow { offset: [0, 4], blur: 16, spread: 0, color: Color32::from_black_alpha(96) }
+    }
+}
+
+/// The modal shadow tier: the deepest of the three shadow tiers
+/// (bubble, float, modal). A modal sits over a dimmed app, so its
+/// drop is long and soft in both schemes and never degrades to
+/// the card shadow; the dim does the separating and the shadow
+/// grounds the sheet.
+pub(crate) fn modal_shadow(t: Tokens) -> egui::Shadow {
+    if t.is_light() {
+        egui::Shadow {
+            offset: [0, 12],
+            blur: 32,
+            spread: 0,
+            color: Color32::from_rgba_unmultiplied(17, 27, 33, 80),
+        }
+    } else {
+        egui::Shadow { offset: [0, 12], blur: 32, spread: 0, color: Color32::from_black_alpha(130) }
+    }
+}
+
+/// Paints the raised top edge of a solid raised surface: a 1 px
+/// line along the top of `rect`, inset by the corner radius so
+/// it stays on the flat span of the edge, in the core
+/// [`raised_edge`](core::theme::raised_edge) derivation for the
+/// surface's fill. Unlike [`paint_glass_edge`] it is not part of
+/// the glow treatment: solid surfaces (bubbles, the composer)
+/// wear it in both modes. A line, not a gradient.
+pub(crate) fn paint_raised_edge(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    radius: f32,
+    fill: Rgb,
+    t: Tokens,
+) {
+    let y = rect.top() + 0.5;
+    painter.line_segment(
+        [egui::Pos2::new(rect.left() + radius, y), egui::Pos2::new(rect.right() - radius, y)],
+        Stroke::new(1.0_f32, rgb(core::theme::raised_edge(fill, t.text_primary))),
+    );
 }
 
 /// The one backdrop dim for modal surfaces (account modal,
@@ -226,15 +290,15 @@ pub(crate) fn glass_shadow(t: Tokens) -> egui::Shadow {
 }
 
 /// A ready-made glass frame: tinted translucent fill, hairline
-/// border, glass shadow, the given corner radius. Callers paint
-/// the specular edge with [`paint_glass_edge`] once the frame's
-/// rect is known (after `Frame::show`).
+/// border, the modal shadow tier, the given corner radius.
+/// Callers paint the specular edge with [`paint_glass_edge`]
+/// once the frame's rect is known (after `Frame::show`).
 pub(crate) fn glass_frame(t: Tokens, radius: u8) -> egui::Frame {
     egui::Frame::new()
         .fill(glass_fill(t))
         .corner_radius(egui::CornerRadius::same(radius))
         .stroke(Stroke::new(1.0_f32, rgb(t.border)))
-        .shadow(glass_shadow(t))
+        .shadow(modal_shadow(t))
 }
 
 /// A text-bearing glass frame: the higher-alpha fill with the

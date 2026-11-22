@@ -882,11 +882,13 @@ pub(crate) fn message_bubble(
             }
         }
         let painter = ui.painter();
-        let bubble_color = rgb(if mine { t.bubble_out } else { t.bubble_in });
-        // Depth: a whisper of shadow under the bubble plus a
-        // hairline edge mixed from the theme border, so the flat
-        // fill still reads as a surface sitting on the chat
-        // background instead of a pasted rectangle.
+        let bubble_fill = if mine { t.bubble_out } else { t.bubble_in };
+        let bubble_color = rgb(bubble_fill);
+        // Depth: the bubble shadow tier under the bubble, a
+        // hairline edge mixed from the theme border, and the
+        // raised top edge, so the flat fill still reads as a
+        // surface sitting on the chat background instead of a
+        // pasted rectangle.
         painter.add(egui::Shape::Rect(
             crate::theme::bubble_shadow(t).as_shape(rect, CornerRadius::same(BUBBLE_RADIUS)),
         ));
@@ -894,16 +896,10 @@ pub(crate) fn message_bubble(
         painter.rect_stroke(
             rect,
             CornerRadius::same(BUBBLE_RADIUS),
-            Stroke::new(
-                1.0_f32,
-                rgb(core::theme::mix(
-                    if mine { t.bubble_out } else { t.bubble_in },
-                    t.border,
-                    0.45,
-                )),
-            ),
+            Stroke::new(1.0_f32, rgb(core::theme::mix(bubble_fill, t.border, 0.45))),
             egui::StrokeKind::Inside,
         );
+        crate::theme::paint_raised_edge(painter, rect, BUBBLE_RADIUS as f32, bubble_fill, t);
 
         // Group sender avatar: the column is reserved for every
         // incoming bubble of the run, but the disc paints only
@@ -1611,19 +1607,18 @@ pub(crate) fn message_album(
     let (alloc, _) = ui.allocate_exact_size(Vec2::new(grid_w, card_h), egui::Sense::hover());
     let painter = ui.painter();
     let card = alloc;
-    let bubble_color = rgb(if mine { t.bubble_out } else { t.bubble_in });
+    let bubble_fill = if mine { t.bubble_out } else { t.bubble_in };
+    let bubble_color = rgb(bubble_fill);
     painter
         .add(crate::theme::bubble_shadow(t).as_shape(card, eframe::egui::CornerRadius::same(14)));
     painter.rect_filled(card, eframe::egui::CornerRadius::same(14), bubble_color);
     painter.rect_stroke(
         card,
         eframe::egui::CornerRadius::same(14),
-        Stroke::new(
-            1.0_f32,
-            rgb(core::theme::mix(if mine { t.bubble_out } else { t.bubble_in }, t.border, 0.45)),
-        ),
+        Stroke::new(1.0_f32, rgb(core::theme::mix(bubble_fill, t.border, 0.45))),
         egui::StrokeKind::Inside,
     );
+    crate::theme::paint_raised_edge(painter, card, 14.0, bubble_fill, t);
     for (i, item) in items.iter().take(shown).enumerate() {
         let row = (i / 2) as f32;
         let col = (i % 2) as f32;

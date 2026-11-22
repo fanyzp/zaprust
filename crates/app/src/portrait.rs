@@ -65,6 +65,12 @@ fn nav_slot(bar: Rect, index: usize) -> Rect {
     )
 }
 
+/// The one floating action button shape: a 56 pt circle, the
+/// same shape as the conversation's scroll-to-bottom button.
+/// Every FAB on every tab uses this size and shape, so the
+/// floating action reads as one language across screens.
+const FAB_SIZE: f32 = 56.0;
+
 /// The floating action buttons' rect: bottom right, one gap
 /// above the floating bar's top edge (the gap the attached
 /// bar's FAB kept), the same side inset as the bar.
@@ -235,7 +241,7 @@ impl App {
     /// create-group dialog state), never a second flow.
     pub(crate) fn draw_new_chat_fab(&mut self, root: &mut egui::Ui) {
         let t = self.tokens();
-        let size = 56.0;
+        let size = FAB_SIZE;
         let rect = fab_rect(root.ctx().content_rect(), size);
         let mut clicked = false;
         egui::Area::new(egui::Id::unique("portrait_fab"))
@@ -244,7 +250,7 @@ impl App {
             .show(root.ctx(), |ui| {
                 let (r, resp) = ui.allocate_exact_size(Vec2::splat(size), Sense::click());
                 let fill = fab_fill(t, &resp);
-                ui.painter().rect_filled(r, CornerRadius::same(16), fill);
+                paint_fab(ui.painter(), t, r, fill);
                 crate::icons::draw(
                     ui.painter(),
                     crate::icons::Icon::Edit,
@@ -265,13 +271,13 @@ impl App {
     }
 
     /// The Calls tab's floating action button: the reference
-    /// phone log's green phone-plus square, floating where the
-    /// chat FAB floats on its tab. It opens the new call
-    /// contact picker, the same flow the Calls header's new
-    /// call button opens in the other modes.
+    /// phone log's green phone-plus action, floating where the
+    /// chat FAB floats on its tab, in the same circle shape and
+    /// size. It opens the new call contact picker, the same flow
+    /// the Calls header's new call button opens in the other modes.
     pub(crate) fn draw_calls_fab(&mut self, root: &mut egui::Ui) {
         let t = self.tokens();
-        let size = 56.0;
+        let size = FAB_SIZE;
         let rect = fab_rect(root.ctx().content_rect(), size);
         let mut clicked = false;
         egui::Area::new(egui::Id::unique("portrait_calls_fab"))
@@ -280,7 +286,7 @@ impl App {
             .show(root.ctx(), |ui| {
                 let (r, resp) = ui.allocate_exact_size(Vec2::splat(size), Sense::click());
                 let fill = fab_fill(t, &resp);
-                ui.painter().rect_filled(r, CornerRadius::same(16), fill);
+                paint_fab(ui.painter(), t, r, fill);
                 crate::icons::draw(
                     ui.painter(),
                     crate::icons::Icon::AddCall,
@@ -300,6 +306,15 @@ impl App {
             self.calls.picker_open = true;
         }
     }
+}
+
+/// Paints one FAB: the floating layer's soft card shadow under
+/// an accent circle. Shared by every FAB so shape, size and lift
+/// can never drift apart between tabs.
+fn paint_fab(painter: &egui::Painter, t: core::theme::Tokens, r: Rect, fill: egui::Color32) {
+    painter
+        .add(crate::theme::card_shadow(t).as_shape(r, CornerRadius::same((FAB_SIZE / 2.0) as u8)));
+    painter.circle_filled(r.center(), FAB_SIZE / 2.0, fill);
 }
 
 /// The FABs' shared fill steps: accent at rest, its hover and

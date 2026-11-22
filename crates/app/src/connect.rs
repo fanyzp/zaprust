@@ -23,6 +23,20 @@ use eframe::egui::{
 /// The centered column's width; the card, stepper, and status
 /// slot all span exactly it.
 const COL_W: f32 = 360.0;
+/// The wide card's width at desktop widths: instructions on the
+/// left, the QR or pairing code on the right, in one card.
+const WIDE_W: f32 = 720.0;
+/// The instruction pane's width inside the wide card; the code
+/// pane takes what remains after the card margins and the gap.
+const WIDE_STEPS_W: f32 = 296.0;
+
+/// Whether a window of this width gets the wide two-part
+/// connect card. Below it the screen keeps the single centered
+/// column, which is the only arrangement a portrait or narrow
+/// window can hold without crushing either part.
+fn connect_wide(width: f32) -> bool {
+    width >= 700.0
+}
 /// The QR slot's edge: a square that holds the plate, its 10pt
 /// margin, the quiet zone, and the code (see `qr_layout`).
 const QR_SLOT: f32 = 248.0;
@@ -32,13 +46,16 @@ const FIELD_W: f32 = 258.0;
 
 impl App {
     /// Full-window connect screen (layout "C, centered minimal",
-    /// chosen 2026-11-15): a slim topbar with Cancel, then ONE
-    /// centered column: the brand mark, the glass card holding
-    /// the QR (or the pairing entry), a horizontal 3-step stepper
-    /// that doubles as the reserved state slot, the status line,
-    /// and the pairing-mode switch as a real secondary button.
-    /// Every link state renders inside that same column, so the
-    /// layout never shifts while pairing progresses.
+    /// chosen 2026-11-15): a slim topbar carrying the one brand
+    /// mark and a real Cancel button, then the link flow. At
+    /// desktop widths the flow is one wide card, instructions on
+    /// the left and the QR (or pairing entry) on the right; at
+    /// narrower widths it is ONE centered column: the glass card,
+    /// a horizontal 3-step stepper that doubles as the reserved
+    /// state slot, the status line, and the pairing-mode switch
+    /// as a real secondary button. Every link state renders in
+    /// the same arrangement, so the layout never shifts while
+    /// pairing progresses.
     pub(crate) fn draw_connect(&mut self, root: &mut egui::Ui) {
         let t = self.tokens();
         egui::CentralPanel::default().frame(egui::Frame::new().fill(rgb(t.bg_app))).show(
@@ -71,21 +88,23 @@ impl App {
                     FontId::proportional(14.5),
                     rgb(t.text_primary),
                 );
-                let cancel_rect = egui::Rect::from_min_size(
-                    Pos2::new(bar.right() - 96.0, bar.top()),
-                    Vec2::new(96.0, 46.0),
+                // Cancel is the house button, not bare text, so
+                // the way out of the flow reads as an action with
+                // the same affordance as every other button.
+                let mut bar_ui = ui.new_child(
+                    egui::UiBuilder::new()
+                        .max_rect(bar)
+                        .layout(egui::Layout::right_to_left(egui::Align::Center)),
                 );
-                let cresp =
-                    ui.interact(cancel_rect, egui::Id::unique("connect_cancel"), Sense::click());
-                let cresp = cresp.on_hover_cursor(egui::CursorIcon::PointingHand);
-                painter.text(
-                    Pos2::new(bar.right() - 18.0, bar.center().y),
-                    Align2::RIGHT_CENTER,
-                    "Cancel",
-                    FontId::proportional(13.0),
-                    if cresp.hovered() { rgb(t.accent) } else { rgb(t.text_secondary) },
-                );
-                if cresp.clicked() {
+                bar_ui.add_space(12.0);
+                if crate::widgets::button(
+                    &mut bar_ui,
+                    t,
+                    &crate::i18n::t("connect.cancel"),
+                    crate::widgets::Btn::Secondary,
+                )
+                .clicked()
+                {
                     self.screen = Screen::Chats;
                 }
                 let footer = egui::Rect::from_min_size(
@@ -110,13 +129,18 @@ impl App {
                     Pos2::new(area.left(), bar.bottom()),
                     Pos2::new(area.right(), footer.top()),
                 );
-                let content_h = match self.pair_mode {
-                    PairMode::Qr => 560.0,
-                    PairMode::Code => 540.0,
+                let wide = connect_wide(area.width());
+                let content_h = if wide {
+                    360.0
+                } else {
+                    match self.pair_mode {
+                        PairMode::Qr => 560.0,
+                        PairMode::Code => 540.0,
+                    }
                 } + if self.crash_report.is_some() { 128.0 } else { 0.0 }
                     + if self.live_start_error.is_some() { 96.0 } else { 0.0 };
                 let top_pad = ((body.height() - content_h) * 0.5).clamp(0.0, 200.0);
-                let col_w = COL_W;
+                let col_w = if wide { WIDE_W } else { COL_W };
                 let col_rect = egui::Rect::from_min_size(
                     Pos2::new(area.center().x - col_w / 2.0, body.top() + top_pad),
                     Vec2::new(col_w, body.height() - top_pad),
@@ -126,22 +150,9 @@ impl App {
                         .max_rect(col_rect)
                         .layout(egui::Layout::top_down(egui::Align::Center)),
                 );
-                // Brand mark.
-                col.horizontal(|ui| {
-                    let (rect, _) = ui.allocate_exact_size(Vec2::splat(30.0), Sense::hover());
-                    ui.painter().circle_filled(rect.center(), 15.0, rgb(t.accent));
-                    draw_icon(
-                        ui.painter(),
-                        Icon::Chat,
-                        rect.center(),
-                        17.0,
-                        rgb(t.bg_app),
-                        rgb(t.accent),
-                    );
-                    ui.add_space(4.0);
-                    ui.label(RichText::new("Zaprust").font(crate::theme::semibold(20.0)));
-                });
-                col.add_space(20.0);
+                // No brand mark in the column: the top bar
+                // already carries it, and one brand per screen is
+                // enough (a second one here only duplicated it).
                 // The crash banner renders IN FLOW at the top of
                 // the column on this screen: as a fixed overlay it
                 // painted over the connect header and collided
@@ -153,80 +164,64 @@ impl App {
                     self.draw_crash_banner(&mut col, col_w);
                     col.add_space(16.0);
                 }
-                // The glass card: the one elevated surface on
-                // this screen, holding the QR or the pairing
-                // entry, so the code is what the eye lands on.
-                let card = crate::theme::glass_text_frame(t, 16)
-                    .inner_margin(Margin::symmetric(20, 18))
-                    .show(&mut col, |ui| {
-                        ui.set_width(col_w - 40.0);
-                        ui.with_layout(
-                            egui::Layout::top_down(egui::Align::Center),
-                            |ui| match self.pair_mode {
-                                PairMode::Qr => {
-                                    // The failed-start panel sizes
-                                    // by its content (the wrapped
-                                    // reason runs long), so it
-                                    // flows in the card instead of
-                                    // the fixed square slot: inside
-                                    // the slot its buttons spilled
-                                    // over the stepper below.
-                                    if let crate::live::ConnectQr::StartFailed(message) =
-                                        self.connect_qr()
-                                    {
-                                        let message = message.to_owned();
-                                        self.connect_start_failed_panel(ui, t, &message);
-                                    } else {
-                                        let (rect, _) = ui.allocate_exact_size(
-                                            Vec2::splat(QR_SLOT),
-                                            Sense::hover(),
-                                        );
-                                        // The pairing gate (live.rs): a
-                                        // matrix is painted only for the
-                                        // Live state, which requires a
-                                        // pairable session holding a
-                                        // current server-issued payload.
-                                        // Every other state renders
-                                        // words in this slot, never a
-                                        // code-shaped graphic.
-                                        match self.connect_qr() {
-                                            crate::live::ConnectQr::Live(matrix) => {
-                                                draw_qr_matrix(ui.painter(), rect, matrix);
-                                                ui.add_space(12.0);
-                                                let fake =
-                                                    self.live.as_ref().is_some_and(|s| s.fake);
-                                                ui.label(
-                                                    RichText::new(if fake {
-                                                        "Test mode code. WhatsApp cannot scan it."
-                                                    } else {
-                                                        "Live QR. Scan it with your phone."
-                                                    })
-                                                    .size(11.0)
-                                                    .color(rgb(t.text_faint)),
-                                                );
-                                            }
-                                            _ => self.connect_qr_placeholder(ui, rect, t),
-                                        }
-                                    }
-                                }
-                                PairMode::Code => self.connect_code_panel(ui, t),
-                            },
-                        );
-                    });
-                crate::theme::paint_glass_edge(col.painter(), card.response.rect, 16.0, t);
-                col.add_space(18.0);
-                // The stepper doubles as the state slot: steps
-                // complete as pairing progresses, and the status
-                // line under it names the current state, all in
-                // reserved space.
+                // The steps both arrangements show, named by the
+                // pairing path the user is on.
                 let steps: &[&str] = match self.pair_mode {
                     PairMode::Qr => &["Open WhatsApp", "Linked devices", "Scan the code"],
                     PairMode::Code => &["Open WhatsApp", "Linked devices", "Enter the code"],
                 };
-                steps_stepper(&mut col, t, steps, self.stepper_progress());
-                col.add_space(8.0);
-                self.connect_status_line(&mut col, t);
-                col.add_space(14.0);
+                let complete = self.stepper_complete();
+                // The glass card: the one elevated surface on
+                // this screen, holding the QR or the pairing
+                // entry, so the code is what the eye lands on.
+                // Wide, it also holds the instructions on its
+                // left; narrow, they sit under it as the stepper
+                // and status line.
+                let card = crate::theme::glass_text_frame(t, 16)
+                    .inner_margin(Margin::symmetric(20, 18))
+                    .show(&mut col, |ui| {
+                        ui.set_width(col_w - 40.0);
+                        if wide {
+                            ui.horizontal_top(|ui| {
+                                ui.vertical(|ui| {
+                                    ui.set_width(WIDE_STEPS_W);
+                                    ui.label(
+                                        RichText::new(crate::i18n::t("connect.title"))
+                                            .font(crate::theme::semibold(15.0)),
+                                    );
+                                    ui.add_space(14.0);
+                                    steps_column(ui, t, steps, complete);
+                                    ui.add_space(14.0);
+                                    self.connect_status_line(ui, t, WIDE_STEPS_W);
+                                });
+                                ui.add_space(24.0);
+                                ui.allocate_ui_with_layout(
+                                    Vec2::new(col_w - 40.0 - WIDE_STEPS_W - 24.0, 300.0),
+                                    egui::Layout::top_down(egui::Align::Center),
+                                    |ui| self.connect_card_main(ui, t),
+                                );
+                            });
+                        } else {
+                            ui.with_layout(
+                                egui::Layout::top_down(egui::Align::Center),
+                                |ui| self.connect_card_main(ui, t),
+                            );
+                        }
+                    });
+                // The country picker takes its width from this
+                // card, so it remembers the rect for next frame.
+                self.connect_card_rect = Some(card.response.rect);
+                crate::theme::paint_glass_edge(col.painter(), card.response.rect, 16.0, t);
+                col.add_space(18.0);
+                if !wide {
+                    // The stepper doubles as the state slot: the
+                    // status line under it names the current
+                    // state, all in reserved space.
+                    steps_stepper(&mut col, t, steps, complete);
+                    col.add_space(8.0);
+                    self.connect_status_line(&mut col, t, COL_W);
+                    col.add_space(14.0);
+                }
                 // The other pairing path, as a real secondary
                 // button under the status line.
                 let (label, target) = match self.pair_mode {
@@ -243,24 +238,68 @@ impl App {
         );
     }
 
-    /// How far the connect stepper has progressed: the first
-    /// two steps are the phone-side preparation (done by the
-    /// time the user reads this screen), the third completes
-    /// when the session links.
-    fn stepper_progress(&self) -> usize {
-        if let Some(session) = &self.live {
-            if matches!(session.status, crate::live::LinkStatus::Linked) {
-                return 3;
+    /// Whether the connect flow has actually finished: the
+    /// steps are actions the user takes on their phone, which
+    /// this screen cannot observe one by one, so no step is
+    /// marked done while pairing is still in progress. A linked
+    /// session is the one event that proves every step happened,
+    /// and only then do the steps wear checks (see
+    /// [`step_marks`]).
+    fn stepper_complete(&self) -> bool {
+        self.live.as_ref().is_some_and(|s| s.status.is_linked())
+    }
+
+    /// The card's main content: the QR side of the flow, or the
+    /// pairing entry in code mode. Shared by the narrow card and
+    /// the wide card's right pane, so both arrangements present
+    /// exactly the same states.
+    fn connect_card_main(&mut self, ui: &mut egui::Ui, t: Tokens) {
+        match self.pair_mode {
+            PairMode::Qr => {
+                // The failed-start panel sizes by its content
+                // (the wrapped reason runs long), so it flows in
+                // the card instead of the fixed square slot:
+                // inside the slot its buttons spilled over the
+                // stepper below.
+                if let crate::live::ConnectQr::StartFailed(message) = self.connect_qr() {
+                    let message = message.to_owned();
+                    self.connect_start_failed_panel(ui, t, &message);
+                } else {
+                    let (rect, _) = ui.allocate_exact_size(Vec2::splat(QR_SLOT), Sense::hover());
+                    // The pairing gate (live.rs): a matrix is
+                    // painted only for the Live state, which
+                    // requires a pairable session holding a
+                    // current server-issued payload. Every other
+                    // state renders words in this slot, never a
+                    // code-shaped graphic.
+                    match self.connect_qr() {
+                        crate::live::ConnectQr::Live(matrix) => {
+                            draw_qr_matrix(ui.painter(), rect, matrix);
+                            ui.add_space(12.0);
+                            let fake = self.live.as_ref().is_some_and(|s| s.fake);
+                            ui.label(
+                                RichText::new(if fake {
+                                    "Test mode code. WhatsApp cannot scan it."
+                                } else {
+                                    "Live QR. Scan it with your phone."
+                                })
+                                .size(11.0)
+                                .color(rgb(t.text_faint)),
+                            );
+                        }
+                        _ => self.connect_qr_placeholder(ui, rect, t),
+                    }
+                }
             }
+            PairMode::Code => self.connect_code_panel(ui, t),
         }
-        2
     }
 
     /// The status line under the stepper: a fixed-height slot,
     /// so waiting, confirming, linked and error states swap in
     /// place without moving anything around them.
-    fn connect_status_line(&mut self, ui: &mut egui::Ui, t: Tokens) {
-        let (rect, _) = ui.allocate_exact_size(Vec2::new(COL_W, 24.0), Sense::hover());
+    fn connect_status_line(&mut self, ui: &mut egui::Ui, t: Tokens, width: f32) {
+        let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 24.0), Sense::hover());
         let mut slot = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(
             egui::Layout::left_to_right(egui::Align::Center).with_main_align(egui::Align::Center),
         ));
@@ -279,24 +318,20 @@ impl App {
                         | crate::live::LinkStatus::Lost(_)
                         | crate::live::LinkStatus::Crashed(_)
                 );
-                // In code mode there is no QR on screen to scan:
-                // while the backend still waits, it is waiting for
-                // WhatsApp to send the pairing code, so the status
-                // line names that instead of the scan.
-                let status_label = if matches!(self.pair_mode, PairMode::Code)
-                    && matches!(session.status, crate::live::LinkStatus::WaitingQr)
-                {
-                    "Waiting for WhatsApp to send a code.".to_owned()
-                } else if matches!(self.pair_mode, PairMode::Qr)
-                    && matches!(session.status, crate::live::LinkStatus::WaitingQr)
-                    && session.qr.is_none()
-                {
-                    // No payload is painted (the gate shows a
-                    // connecting state), so the line must not claim
-                    // a scan is being awaited.
-                    "Waiting for WhatsApp to send a QR code.".to_owned()
-                } else {
-                    session.status.label()
+                // While the flow is still preparing, the line
+                // guides the user in one human sentence, the
+                // same one wherever the wait shows: preparing
+                // the QR code, or, in code mode, the pairing
+                // code. It never narrates the machinery behind
+                // the wait, and it never claims a scan is being
+                // awaited before a payload exists to scan.
+                let status_label = match waiting_line_key(
+                    self.pair_mode,
+                    &session.status,
+                    session.qr.is_some(),
+                ) {
+                    Some(key) => crate::i18n::t(key),
+                    None => session.status.label(),
                 };
                 let (status_text, color) = if session.fake {
                     (format!("Test mode (not WhatsApp): {status_label}"), t.text_faint)
@@ -380,7 +415,7 @@ impl App {
                 slot.add_space(96.0);
                 crate::widgets::loading_row(
                     &mut slot,
-                    "Waiting for WhatsApp to send a QR code\u{2026}",
+                    &crate::i18n::t("connect.waiting_qr"),
                     12.0,
                     t.text_secondary,
                 );
@@ -482,17 +517,22 @@ impl App {
         if self.pair_code_shown {
             ui.label(RichText::new("Enter this code on your phone").size(14.0).strong());
             ui.add_space(12.0);
+            // The tiles show a code only when a real one
+            // exists: while the flow is still waiting for one,
+            // the tiles stay empty, because a dotted tile reads
+            // as a masked code that has already arrived.
             let live_code = self.live.as_ref().and_then(|s| s.pair_code.clone());
-            let code = if self.live_mode {
-                live_code.unwrap_or_else(|| "········".to_owned())
+            let code: Option<String> = if self.live_mode {
+                live_code
             } else {
-                pairing_code(&self.pair_phone)
+                Some(pairing_code(&self.pair_phone))
             };
+            let tiles = pair_code_tiles(code.as_deref());
             ui.vertical_centered(|ui| {
                 for row in 0..2 {
                     ui.horizontal(|ui| {
                         for i in 0..4 {
-                            let ch = code.chars().nth(row * 4 + i).unwrap_or('·');
+                            let ch = tiles[row * 4 + i];
                             let (rect, _) =
                                 ui.allocate_exact_size(Vec2::splat(52.0), Sense::hover());
                             ui.painter().rect_filled(
@@ -506,13 +546,15 @@ impl App {
                                 Stroke::new(1.0_f32, rgb(t.border)),
                                 egui::StrokeKind::Inside,
                             );
-                            ui.painter().text(
-                                rect.center(),
-                                Align2::CENTER_CENTER,
-                                ch.to_string(),
-                                FontId::proportional(21.0),
-                                rgb(t.text_primary),
-                            );
+                            if let Some(ch) = ch {
+                                ui.painter().text(
+                                    rect.center(),
+                                    Align2::CENTER_CENTER,
+                                    ch.to_string(),
+                                    FontId::proportional(21.0),
+                                    rgb(t.text_primary),
+                                );
+                            }
                             // The gap lives between tiles only, so
                             // the row's outer edges stay flush.
                             if i < 3 {
@@ -533,7 +575,7 @@ impl App {
                             left.as_secs() % 60
                         )
                     }
-                    None => "Waiting for WhatsApp to send a code…".to_owned(),
+                    None => crate::i18n::t("connect.waiting_code"),
                 }
             } else {
                 "Demo code. The real one comes from WhatsApp when you link.".to_owned()
@@ -605,12 +647,15 @@ impl App {
     /// country name, dial code, chevron, at the form width and
     /// the shared field height. Returns whether it was clicked.
     fn country_selector(
-        &self,
+        &mut self,
         ui: &mut egui::Ui,
         t: Tokens,
         country: &'static crate::countries::Country,
     ) -> bool {
         let (rect, resp) = ui.allocate_exact_size(Vec2::new(FIELD_W, 40.0), Sense::click());
+        // The picker anchors to this rect (see
+        // draw_country_picker), so it is remembered each frame.
+        self.country_anchor = Some(rect);
         let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
         let painter = ui.painter();
         painter.rect_filled(rect, CornerRadius::same(8), crate::widgets::field_fill(t));
@@ -702,10 +747,13 @@ impl App {
     }
 
     /// The country picker popup: a search field over the full
-    /// country list (flag, name, dial code per row), centred
-    /// over the window like the account modal. Closes on a
-    /// selection, on Escape, or on a click outside it (a click
-    /// that opened it this frame does not count).
+    /// country list (flag, name, dial code per row), anchored to
+    /// the country selector: it drops from the selector's bottom
+    /// edge at the connect card's width, so it opens where the
+    /// control that summoned it sits instead of floating over
+    /// the card header. Closes on a selection, on Escape, or on
+    /// a click outside it (a click that opened it this frame
+    /// does not count).
     fn draw_country_picker(&mut self, ctx: &egui::Context) {
         // Whether the picker was already open when this frame
         // began: the click that opens it lands outside the
@@ -722,9 +770,8 @@ impl App {
         }
         let t = self.tokens();
         let area = ctx.content_rect();
-        let size = Vec2::new(320.0, 352.0);
-        let top = (area.top() + 110.0).min(area.bottom() - size.y - 8.0).max(area.top() + 8.0);
-        let rect = egui::Rect::from_min_size(Pos2::new(area.center().x - size.x / 2.0, top), size);
+        let rect = country_picker_rect(area, self.connect_card_rect, self.country_anchor);
+        let size = rect.size();
         if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             self.country_picker_open = false;
             return;
@@ -751,7 +798,7 @@ impl App {
                             t,
                             &mut self.country_search,
                             "Search country",
-                            252.0,
+                            size.x - 48.0,
                         );
                         ui.add_space(8.0);
                         // Only the visible rows are built
@@ -1111,11 +1158,55 @@ impl App {
     }
 }
 
+/// What one step's disc shows: its number, or a check once the
+/// flow has actually passed it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StepMark {
+    Number,
+    Check,
+}
+
+/// The marks for the connect steps. The steps are actions on
+/// the user's phone, which this screen cannot observe one by
+/// one, so while pairing is in progress every step is numbered
+/// and none is checked: a check would claim progress the flow
+/// has not seen. Only a linked session, which proves the whole
+/// sequence happened, turns all three into checks.
+fn step_marks(complete: bool) -> [StepMark; 3] {
+    if complete {
+        [StepMark::Check; 3]
+    } else {
+        [StepMark::Number; 3]
+    }
+}
+
+/// Paints one step disc: a check on the accent when the step is
+/// done, its number on a quiet disc while it is not.
+fn paint_step_disc(painter: &egui::Painter, t: Tokens, center: Pos2, index: usize, mark: StepMark) {
+    match mark {
+        StepMark::Check => {
+            painter.circle_filled(center, 10.5, rgb(t.accent));
+            draw_icon(painter, Icon::Check, center, 12.0, rgb(t.bg_app), rgb(t.accent));
+        }
+        StepMark::Number => {
+            painter.circle_filled(center, 10.5, rgb(t.bg_panel_alt));
+            painter.circle_stroke(center, 10.5, Stroke::new(1.0_f32, rgb(t.border)));
+            painter.text(
+                center,
+                Align2::CENTER_CENTER,
+                format!("{}", index + 1),
+                FontId::proportional(11.5),
+                rgb(t.text_secondary),
+            );
+        }
+    }
+}
+
 /// Horizontal stepper for the centered connect layout: one
 /// cell per step (disc over a short label), hairline connectors
-/// at disc height. Steps before `done` wear a check, step
-/// `done` is the current one, the rest wait in the border tone.
-fn steps_stepper(ui: &mut egui::Ui, t: Tokens, items: &[&str], done: usize) {
+/// at disc height.
+fn steps_stepper(ui: &mut egui::Ui, t: Tokens, items: &[&str], complete: bool) {
+    let marks = step_marks(complete);
     let (rect, _) = ui.allocate_exact_size(Vec2::new(COL_W, 46.0), Sense::hover());
     let painter = ui.painter();
     let cell_w = rect.width() / items.len() as f32;
@@ -1124,43 +1215,117 @@ fn steps_stepper(ui: &mut egui::Ui, t: Tokens, items: &[&str], done: usize) {
         if i > 0 {
             let from = Pos2::new(rect.left() + cell_w * (i as f32 - 0.5) + 14.0, cy);
             let to = Pos2::new(rect.left() + cell_w * (i as f32 + 0.5) - 14.0, cy);
-            let col = if i < done { rgb(t.accent) } else { rgb(t.border) };
+            let col = if complete { rgb(t.accent) } else { rgb(t.border) };
             painter.line_segment([from, to], Stroke::new(1.5_f32, col));
         }
     }
     for (i, text) in items.iter().enumerate() {
         let center = Pos2::new(rect.left() + cell_w * (i as f32 + 0.5), cy);
-        if i < done {
-            painter.circle_filled(center, 10.5, rgb(t.accent));
-            draw_icon(painter, Icon::Check, center, 12.0, rgb(t.bg_app), rgb(t.accent));
-        } else if i == done {
-            painter.circle_filled(center, 10.5, rgb(t.accent));
-            painter.text(
-                center,
-                Align2::CENTER_CENTER,
-                format!("{}", i + 1),
-                FontId::proportional(11.5),
-                rgb(t.bg_app),
-            );
-        } else {
-            painter.circle_filled(center, 10.5, rgb(t.bg_panel_alt));
-            painter.circle_stroke(center, 10.5, Stroke::new(1.0_f32, rgb(t.border)));
-            painter.text(
-                center,
-                Align2::CENTER_CENTER,
-                format!("{}", i + 1),
-                FontId::proportional(11.5),
-                rgb(t.text_faint),
-            );
-        }
+        paint_step_disc(painter, t, center, i, marks[i]);
         painter.text(
             Pos2::new(center.x, rect.top() + 36.0),
             Align2::CENTER_CENTER,
             *text,
             FontId::proportional(11.0),
-            if i <= done { rgb(t.text_secondary) } else { rgb(t.text_faint) },
+            rgb(t.text_secondary),
         );
     }
+}
+
+/// Vertical step list for the wide card's instruction pane: the
+/// same discs and marks as the horizontal stepper, one row per
+/// step, hairline connectors at disc height between rows.
+fn steps_column(ui: &mut egui::Ui, t: Tokens, items: &[&str], complete: bool) {
+    let marks = step_marks(complete);
+    let row_h = 34.0;
+    let (rect, _) =
+        ui.allocate_exact_size(Vec2::new(WIDE_STEPS_W, row_h * items.len() as f32), Sense::hover());
+    let painter = ui.painter();
+    let cx = rect.left() + 11.0;
+    for (i, _) in items.iter().enumerate() {
+        if i > 0 {
+            let from = Pos2::new(cx, rect.top() + row_h * (i as f32 - 0.5) + 14.0);
+            let to = Pos2::new(cx, rect.top() + row_h * (i as f32 + 0.5) - 14.0);
+            let col = if complete { rgb(t.accent) } else { rgb(t.border) };
+            painter.line_segment([from, to], Stroke::new(1.5_f32, col));
+        }
+    }
+    for (i, text) in items.iter().enumerate() {
+        let center = Pos2::new(cx, rect.top() + row_h * (i as f32 + 0.5));
+        paint_step_disc(painter, t, center, i, marks[i]);
+        painter.text(
+            Pos2::new(rect.left() + 30.0, center.y),
+            Align2::LEFT_CENTER,
+            *text,
+            FontId::proportional(12.0),
+            rgb(t.text_secondary),
+        );
+    }
+}
+
+/// The locale key for the connect screen's waiting line, when
+/// the flow is in a waiting state: one human sentence that
+/// guides the user while the code they need is being prepared.
+/// `None` for states the status enum already names in plain
+/// language (a code ready to scan or enter, a failure, a link).
+fn waiting_line_key(
+    mode: PairMode,
+    status: &crate::live::LinkStatus,
+    has_qr: bool,
+) -> Option<&'static str> {
+    use crate::live::LinkStatus;
+    match status {
+        LinkStatus::Starting => Some(match mode {
+            PairMode::Qr => "connect.waiting_qr",
+            PairMode::Code => "connect.waiting_code",
+        }),
+        // In code mode there is no QR on screen to scan: while
+        // the session waits, it is waiting for the pairing code.
+        LinkStatus::WaitingQr => match mode {
+            PairMode::Code => Some("connect.waiting_code"),
+            // No payload is painted yet, so the line must not
+            // claim a scan is being awaited.
+            PairMode::Qr if !has_qr => Some("connect.waiting_qr"),
+            PairMode::Qr => None,
+        },
+        _ => None,
+    }
+}
+
+/// The eight pairing tiles' contents: the code's characters
+/// when a real code exists, and empty tiles while the flow is
+/// still waiting for one, so nothing on screen pretends a code
+/// has arrived before it has.
+fn pair_code_tiles(code: Option<&str>) -> [Option<char>; 8] {
+    let mut tiles = [None; 8];
+    if let Some(code) = code {
+        for (tile, ch) in tiles.iter_mut().zip(code.chars()) {
+            *tile = Some(ch);
+        }
+    }
+    tiles
+}
+
+/// The country picker's rect: the connect card's width, its
+/// left edge aligned with the card, dropping 6pt below the
+/// country selector. The anchor rects are the previous frame's
+/// (the picker is drawn from inside the card, before this
+/// frame's card rect exists); before any frame has supplied
+/// them it falls back to the column width centred in the
+/// window, under the top bar. The rect is clamped on screen.
+fn country_picker_rect(
+    area: egui::Rect,
+    card: Option<egui::Rect>,
+    selector: Option<egui::Rect>,
+) -> egui::Rect {
+    let size = Vec2::new(card.map_or(COL_W, |r| r.width()), 352.0);
+    let (left, top) = match (card, selector) {
+        (Some(card), Some(selector)) => (card.left(), selector.bottom() + 6.0),
+        _ => (area.center().x - size.x / 2.0, area.top() + 110.0),
+    };
+    let top = top.min(area.bottom() - size.y - 8.0).max(area.top() + 8.0);
+    let left = left.min(area.right() - size.x - 8.0).max(area.left() + 8.0);
+    egui::Rect::from_min_size(Pos2::new(left, top), size)
 }
 
 /// A deterministic demo pairing code derived from the typed number,
@@ -1246,5 +1411,98 @@ mod qr_layout_tests {
         let rect = Rect::from_min_size(Pos2::ZERO, Vec2::splat(248.0));
         let (_, cell) = qr_layout(rect, 61);
         assert!(cell > 3.0, "cell was {cell}");
+    }
+}
+
+#[cfg(test)]
+mod connect_flow_tests {
+    use super::{
+        connect_wide, country_picker_rect, pair_code_tiles, step_marks, waiting_line_key, StepMark,
+    };
+    use crate::live::LinkStatus;
+    use crate::state::PairMode;
+    use egui::{Pos2, Rect, Vec2};
+
+    #[test]
+    fn steps_are_numbered_until_the_flow_actually_links() {
+        // In progress, no step may wear a check: the steps happen
+        // on the phone, where this screen cannot see them.
+        assert_eq!(step_marks(false), [StepMark::Number; 3]);
+        // A linked session proves the whole sequence happened.
+        assert_eq!(step_marks(true), [StepMark::Check; 3]);
+    }
+
+    #[test]
+    fn waiting_line_is_one_human_sentence_per_mode() {
+        // Starting and waiting-for-payload both read as the
+        // preparation line for the mode on screen, never as
+        // machinery narration.
+        assert_eq!(
+            waiting_line_key(PairMode::Qr, &LinkStatus::Starting, false),
+            Some("connect.waiting_qr")
+        );
+        assert_eq!(
+            waiting_line_key(PairMode::Qr, &LinkStatus::WaitingQr, false),
+            Some("connect.waiting_qr")
+        );
+        assert_eq!(
+            waiting_line_key(PairMode::Code, &LinkStatus::Starting, false),
+            Some("connect.waiting_code")
+        );
+        assert_eq!(
+            waiting_line_key(PairMode::Code, &LinkStatus::WaitingQr, false),
+            Some("connect.waiting_code")
+        );
+        // A payload on screen is named by the status itself (a
+        // scan is genuinely being awaited now), as are the
+        // terminal states.
+        assert_eq!(waiting_line_key(PairMode::Qr, &LinkStatus::WaitingQr, true), None);
+        assert_eq!(waiting_line_key(PairMode::Qr, &LinkStatus::CodeReady, false), None);
+        assert_eq!(waiting_line_key(PairMode::Code, &LinkStatus::Linked, false), None);
+    }
+
+    #[test]
+    fn pair_tiles_are_empty_while_waiting_and_filled_by_a_real_code() {
+        assert_eq!(pair_code_tiles(None), [None; 8]);
+        assert_eq!(
+            pair_code_tiles(Some("ABCD2345")),
+            [
+                Some('A'),
+                Some('B'),
+                Some('C'),
+                Some('D'),
+                Some('2'),
+                Some('3'),
+                Some('4'),
+                Some('5'),
+            ]
+        );
+    }
+
+    #[test]
+    fn picker_drops_from_the_selector_at_the_card_width() {
+        let area = Rect::from_min_size(Pos2::ZERO, Vec2::new(1440.0, 900.0));
+        let card = Rect::from_min_size(Pos2::new(360.0, 200.0), Vec2::new(720.0, 400.0));
+        let selector = Rect::from_min_size(Pos2::new(400.0, 300.0), Vec2::new(258.0, 40.0));
+        let rect = country_picker_rect(area, Some(card), Some(selector));
+        assert_eq!(rect.left(), card.left());
+        assert_eq!(rect.width(), card.width());
+        assert_eq!(rect.top(), selector.bottom() + 6.0);
+        // Without anchor rects it still lands on screen at the
+        // column width, centred under the top bar.
+        let fallback = country_picker_rect(area, None, None);
+        assert_eq!(fallback.width(), super::COL_W);
+        assert!(area.contains_rect(fallback));
+    }
+
+    #[test]
+    fn wide_card_only_at_desktop_widths() {
+        // The graded portrait and narrow sizes keep the column.
+        assert!(!connect_wide(360.0));
+        assert!(!connect_wide(390.0));
+        assert!(!connect_wide(600.0));
+        // Desktop sizes take the two-part card.
+        assert!(connect_wide(1180.0));
+        assert!(connect_wide(1440.0));
     }
 }

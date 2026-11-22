@@ -964,6 +964,14 @@ pub(crate) struct App {
     pub(crate) country_picker_open: bool,
     /// The country picker's search text.
     pub(crate) country_search: String,
+    /// The country selector's rect from the last drawn frame.
+    /// The picker anchors to it (dropping from the selector at
+    /// the connect card's width) instead of floating over the
+    /// window, so it needs the rect one frame after it is drawn.
+    pub(crate) country_anchor: Option<egui::Rect>,
+    /// The connect card's rect from the last drawn frame; the
+    /// country picker takes its width from it.
+    pub(crate) connect_card_rect: Option<egui::Rect>,
     pub(crate) pair_code_shown: bool,
     pub(crate) account_menu_open: bool,
     /// The egui frame on which the rail avatar toggle last
@@ -1560,6 +1568,8 @@ impl App {
             pair_national: String::new(),
             country_picker_open: args.country_picker,
             country_search: String::new(),
+            country_anchor: None,
+            connect_card_rect: None,
             pair_code_shown: args.pair_code,
             account_menu_open: args.account_menu,
             account_menu_open_frame: None,

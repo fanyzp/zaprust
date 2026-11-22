@@ -173,14 +173,23 @@ pub(crate) fn form_field<R>(
     (resp.inner, resp.response.rect)
 }
 
-/// A selectable radio row with an optional color dot (theme
-/// previews). Returns true when clicked. Moved here from settings.rs
-/// so every screen picks options the same way.
+/// A selectable radio row with an optional theme preview
+/// swatch: a tiny rounded window (the theme's app surface with
+/// its panel strip), drawn as a rectangle so it can never be
+/// misread as a second radio control. Returns true when
+/// clicked. Moved here from settings.rs so every screen picks
+/// options the same way.
+///
+/// Fill language: a resting row paints NO fill. Hover paints
+/// the panel-alt wash, a press paints the pressed step, and
+/// selection is carried by the radio ring and its filled
+/// center, never by a row fill, so a filled row always means
+/// the pointer is on it.
 pub(crate) fn radio_row(
     ui: &mut egui::Ui,
     t: Tokens,
     selected: bool,
-    dot: Option<Color32>,
+    swatch: Option<(Color32, Color32)>,
     label: &str,
     hint: &str,
 ) -> bool {
@@ -206,14 +215,21 @@ pub(crate) fn radio_row(
         ui.painter().circle_filled(ring_c, 4.5, rgb(t.accent));
     }
     let mut x = rect.left() + 34.0;
-    if let Some(d) = dot {
-        ui.painter().circle_filled(Pos2::new(x + 7.0, cy), 7.0, d);
-        ui.painter().circle_stroke(
-            Pos2::new(x + 7.0, cy),
-            7.0,
-            Stroke::new(1.0_f32, rgb(t.border)),
+    if let Some((surface, panel)) = swatch {
+        let sw = egui::Rect::from_min_size(Pos2::new(x, cy - 8.0), Vec2::new(24.0, 16.0));
+        ui.painter().rect_filled(sw, CornerRadius::same(4), surface);
+        let strip = egui::Rect::from_min_max(
+            Pos2::new(sw.left() + 1.0, sw.top() + 1.0),
+            Pos2::new(sw.left() + 7.0, sw.bottom() - 1.0),
         );
-        x += 26.0;
+        ui.painter().rect_filled(strip, CornerRadius::same(2), panel);
+        ui.painter().rect_stroke(
+            sw,
+            CornerRadius::same(4),
+            Stroke::new(1.0_f32, rgb(t.border)),
+            egui::StrokeKind::Inside,
+        );
+        x += 32.0;
     }
     ui.painter().text(
         Pos2::new(x, cy),

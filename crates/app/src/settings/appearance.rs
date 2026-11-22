@@ -11,13 +11,20 @@ impl App {
                 for (i, id) in ThemeId::ALL.iter().enumerate() {
                     let tokens = core::theme::Tokens::dynamic(self.seed, *id != ThemeId::Light);
                     let selected = self.theme_choice == *id;
-                    if radio_row(ui, t, selected, Some(rgb(tokens.bg_app)), id.label(), "") {
+                    if radio_row(
+                        ui,
+                        t,
+                        selected,
+                        Some((rgb(tokens.bg_app), rgb(tokens.bg_panel))),
+                        id.label(),
+                        "",
+                    ) {
                         self.theme_choice = *id;
                         self.apply_theme_choice(ui.ctx());
                         self.persist_settings();
                     }
                     if i + 1 < ThemeId::ALL.len() {
-                        divider_inset(ui, t, 60.0);
+                        divider_inset(ui, t, 66.0);
                     }
                 }
             })

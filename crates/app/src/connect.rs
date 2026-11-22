@@ -846,7 +846,11 @@ impl App {
             Pos2::new(area.center().x - size.x / 2.0, area.top() + 96.0),
             size,
         );
+        // The opening frame is exempt: the rail avatar toggle
+        // runs earlier in that frame, so the click visible here
+        // is the one that opened the menu, not a dismissal.
         if !exiting
+            && self.account_menu_open_frame != Some(ctx.cumulative_frame_nr())
             && ctx.input(|i| i.pointer.any_click())
             && !rect.contains(ctx.input(|i| i.pointer.interact_pos().unwrap_or(Pos2::ZERO)))
         {

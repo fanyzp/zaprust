@@ -261,6 +261,16 @@ impl App {
                             );
                             if resp.clicked() {
                                 self.account_menu_open = !self.account_menu_open;
+                                if self.account_menu_open {
+                                    // Record the opening frame:
+                                    // the account menu is drawn
+                                    // later in this same frame and
+                                    // its outside-click check must
+                                    // not read this click as a
+                                    // dismissal.
+                                    self.account_menu_open_frame =
+                                        Some(ui.ctx().cumulative_frame_nr());
+                                }
                             }
                             resp.on_hover_text("Accounts");
                         }

@@ -46,6 +46,7 @@ mod countries;
 mod crash_ui;
 mod debug_ui;
 mod demo_avatars;
+mod desktop_install;
 mod emoji_font;
 mod extras;
 mod i18n;
@@ -178,6 +179,11 @@ fn main() -> eframe::Result {
     install_panic_hook();
     #[cfg(unix)]
     harden_data_dir();
+    // Desktop integration (Wayland icon resolution) is
+    // user-level state the app maintains itself; see
+    // desktop_install for why a bare binary must.
+    #[cfg(target_os = "linux")]
+    desktop_install::ensure_desktop_integration();
     // Pasted-image temp files from earlier sessions are
     // orphans by construction (the stage is in-memory only);
     // clear them before anything can stage a new paste.

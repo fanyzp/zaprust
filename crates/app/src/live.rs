@@ -176,6 +176,18 @@ pub(crate) struct LiveSession {
     /// never raise an OS notification. `None` until the first
     /// connect completes; nothing is live before that either.
     pub(crate) connected_at: Option<i64>,
+    /// Catch-up sync state, fed by the backend's sync events:
+    /// `syncing` is true from a (re)connect until the backend
+    /// reports the sync complete, `sync_percent` is the latest
+    /// reported progress when the library provides one, and
+    /// `synced_once` records that at least one full catch-up has
+    /// completed this session (the chat list's status row reads
+    /// these; design standard section 14).
+    pub(crate) syncing: bool,
+    /// Latest sync progress, 0 to 100, when reported.
+    pub(crate) sync_percent: Option<u32>,
+    /// Whether a catch-up sync has completed this session.
+    pub(crate) synced_once: bool,
     /// The chat archive (write-through). `None` if it failed to open.
     pub(crate) store: Option<store::Store>,
     /// Numeric chat ID → JID.
@@ -855,6 +867,9 @@ impl crate::state::App {
             pair_code_at: None,
             account: String::new(),
             connected_at: None,
+            syncing: false,
+            sync_percent: None,
+            synced_once: false,
             store: store_opt,
             jids: HashMap::new(),
             messages: HashMap::new(),
@@ -1706,6 +1721,12 @@ impl crate::state::App {
                     // and on every reconnect alike.
                     session.connected_at =
                         Some(i64::try_from(crate::state::now_unix()).unwrap_or(0));
+                    // Every (re)connect starts a catch-up: the
+                    // backend reports progress and completion as
+                    // sync events, and the status row shows the
+                    // sync until it completes (audit S12).
+                    session.syncing = true;
+                    session.sync_percent = None;
                     session.clear_qr();
                     // A used code must never resurface on the
                     // connect screen (logic review F13).
@@ -2175,6 +2196,21 @@ impl crate::state::App {
             BackendEvent::JoinRequests { chat_jid, requests } => {
                 let rows = self.resolve_request_rows(requests);
                 self.groups.join_requests = Some((jid_id(&chat_jid), rows));
+            }
+            BackendEvent::SyncProgress { percent } => {
+                if let Some(session) = &mut self.live {
+                    session.syncing = true;
+                    if percent.is_some() {
+                        session.sync_percent = percent;
+                    }
+                }
+            }
+            BackendEvent::SyncCompleted => {
+                if let Some(session) = &mut self.live {
+                    session.syncing = false;
+                    session.sync_percent = None;
+                    session.synced_once = true;
+                }
             }
             BackendEvent::ConnectionLost { reason } => {
                 if let Some(session) = &mut self.live {
@@ -4642,6 +4678,9 @@ mod burst_drain_tests {
             pair_code_at: None,
             account: "Test account".to_owned(),
             connected_at: None,
+            syncing: false,
+            sync_percent: None,
+            synced_once: false,
             store: Some(store::Store::open_in_memory().unwrap()),
             jids: HashMap::new(),
             messages: HashMap::new(),
@@ -6595,6 +6634,9 @@ mod chat_state_routing_tests {
             pair_code_at: None,
             account: "Test account".to_owned(),
             connected_at: None,
+            syncing: false,
+            sync_percent: None,
+            synced_once: false,
             store: Some(store::Store::open_in_memory().unwrap()),
             jids: HashMap::new(),
             messages: HashMap::new(),
@@ -8147,6 +8189,9 @@ mod mirror_pruning_tests {
             pair_code_at: None,
             account: "Test account".to_owned(),
             connected_at: None,
+            syncing: false,
+            sync_percent: None,
+            synced_once: false,
             store: Some(store::Store::open_in_memory().unwrap()),
             jids: HashMap::new(),
             messages: HashMap::new(),
@@ -8688,6 +8733,9 @@ mod qr_gate_tests {
             pair_code_at: None,
             account: String::new(),
             connected_at: None,
+            syncing: false,
+            sync_percent: None,
+            synced_once: false,
             store: None,
             jids: HashMap::new(),
             messages: HashMap::new(),
@@ -8896,6 +8944,9 @@ mod logout_tests {
             pair_code_at: None,
             account: "Test account".to_owned(),
             connected_at: None,
+            syncing: false,
+            sync_percent: None,
+            synced_once: false,
             store: Some(store::Store::open_in_memory().unwrap()),
             jids: HashMap::new(),
             messages: HashMap::new(),
@@ -9113,6 +9164,9 @@ mod reaction_tests {
             pair_code_at: None,
             account: "Test account".to_owned(),
             connected_at: None,
+            syncing: false,
+            sync_percent: None,
+            synced_once: false,
             store: Some(store::Store::open_in_memory().unwrap()),
             jids: HashMap::new(),
             messages: HashMap::new(),
@@ -9433,6 +9487,9 @@ mod star_pin_tests {
             pair_code_at: None,
             account: "Test account".to_owned(),
             connected_at: None,
+            syncing: false,
+            sync_percent: None,
+            synced_once: false,
             store: Some(store::Store::open_in_memory().unwrap()),
             jids: HashMap::new(),
             messages: HashMap::new(),

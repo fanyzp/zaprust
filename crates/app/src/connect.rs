@@ -49,35 +49,11 @@ const QR_SLOT: f32 = 248.0;
 /// field, and the primary button all span exactly it.
 const FIELD_W: f32 = 258.0;
 
-/// The official brand mark (the bolt bubble of
-/// `packaging/icon.svg`, via its bundled PNG) as a GPU
-/// texture, decoded once and kept for the life of the app.
-/// A decode failure yields no mark rather than a substitute
-/// glyph: the brand is never improvised from the icon font.
-fn brand_texture(ctx: &egui::Context) -> Option<egui::TextureId> {
-    thread_local! {
-        static BRAND: std::cell::RefCell<Option<Option<egui::TextureHandle>>> =
-            const { std::cell::RefCell::new(None) };
-    }
-    BRAND.with(|cell| {
-        let mut slot = cell.borrow_mut();
-        if slot.is_none() {
-            const BYTES: &[u8] = include_bytes!("../../../packaging/icons/zaprust-256.png");
-            *slot = Some(image::load_from_memory(BYTES).ok().map(|img| {
-                let rgba = img.to_rgba8();
-                let size = [rgba.width() as usize, rgba.height() as usize];
-                let color = egui::ColorImage::from_rgba_unmultiplied(size, rgba.as_raw());
-                ctx.load_texture("zaprust-brand", color, egui::TextureOptions::LINEAR)
-            }));
-        }
-        slot.as_ref().and_then(|inner| inner.as_ref().map(|h| h.id()))
-    })
-}
-
 impl App {
     /// Full-window connect screen (layout "C, centered minimal",
-    /// chosen 2026-11-15): a slim topbar carrying the one brand
-    /// mark and a real Cancel button, then the link flow. At
+    /// chosen 2026-11-15): a slim topbar carrying a real Cancel
+    /// button (no brand row; the window chrome carries the
+    /// brand), then the link flow. At
     /// desktop widths the flow is one wide card, instructions on
     /// the left and the QR (or pairing entry) on the right; at
     /// narrower widths it is ONE centered column: the glass card,
@@ -98,33 +74,12 @@ impl App {
                 // share the app ground, and a flat surface is
                 // separated by geometry and spacing, not a line
                 // (design standard, hairline discipline).
-                // The brand mark is the official bolt bubble
-                // artwork, the same mark as the window and
-                // desktop icons: it is the one brand glyph the
-                // app shows anywhere (design standard, icon
-                // discipline).
-                if let Some(tex) = brand_texture(ui.ctx()) {
-                    let center = Pos2::new(
-                        area.left() + PAGE_MARGIN + crate::icons::SIZE_TAB / 2.0,
-                        bar.center().y,
-                    );
-                    painter.image(
-                        tex,
-                        egui::Rect::from_center_size(center, Vec2::splat(crate::icons::SIZE_TAB)),
-                        egui::Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
-                        egui::Color32::WHITE,
-                    );
-                }
-                painter.text(
-                    Pos2::new(
-                        area.left() + PAGE_MARGIN + crate::icons::SIZE_TAB + 8.0,
-                        bar.center().y,
-                    ),
-                    Align2::LEFT_CENTER,
-                    "Zaprust",
-                    FontId::proportional(14.5),
-                    rgb(t.text_primary),
-                );
+                // No brand row in the bar either: the window
+                // chrome above this screen already carries the
+                // app icon and name, and a screen does not repeat
+                // the brand the chrome shows (design standard,
+                // brand discipline). The brand mark's in-app home
+                // is the About page.
                 // Cancel is the house button, not bare text, so
                 // the way out of the flow reads as an action with
                 // the same affordance as every other button.

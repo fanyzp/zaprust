@@ -183,6 +183,33 @@ impl App {
                     &mut self.search,
                 );
                 ui.add_space(8.0);
+                // Session state row (design standard section 14;
+                // audit S11/S12): while linked, the list says what
+                // the session is doing, so an empty or stale list
+                // never reads as silently broken. Sync progress
+                // rides the shared loading row; a lost connection
+                // is a plain label in the same slot.
+                if let Some(session) = &self.live {
+                    if matches!(session.status, crate::live::LinkStatus::Lost(_)) {
+                        ui.label(
+                            RichText::new(crate::i18n::t("chats.connection_lost"))
+                                .size(12.5)
+                                .color(rgb(t.text_secondary)),
+                        );
+                        ui.add_space(8.0);
+                    } else if session.syncing {
+                        let label = match session.sync_percent {
+                            Some(p) => crate::i18n::tf(
+                                "chats.syncing_percent",
+                                "percent",
+                                &p.to_string(),
+                            ),
+                            None => crate::i18n::t("chats.syncing"),
+                        };
+                        crate::widgets::loading_row(ui, &label, 12.5, t.text_secondary);
+                        ui.add_space(8.0);
+                    }
+                }
                 // The filter chips live on the shared scrolling
                 // chip strip: a wrapped row squeezed the last chip
                 // until its label broke mid-word once the counts

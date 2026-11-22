@@ -2,6 +2,34 @@
 
 use super::*;
 
+/// The official brand mark (the bolt bubble of
+/// `packaging/icon.svg`, via its bundled PNG) as a GPU texture,
+/// decoded once and kept for the life of the app. About is the
+/// brand mark's one in-app home: screens do not repeat the brand
+/// the window chrome already shows (design standard, brand
+/// discipline). A decode failure yields no mark rather than a
+/// substitute glyph: the brand is never improvised from the
+/// icon font.
+fn brand_texture(ctx: &egui::Context) -> Option<egui::TextureId> {
+    thread_local! {
+        static BRAND: std::cell::RefCell<Option<Option<egui::TextureHandle>>> =
+            const { std::cell::RefCell::new(None) };
+    }
+    BRAND.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        if slot.is_none() {
+            const BYTES: &[u8] = include_bytes!("../../../../packaging/icons/zaprust-256.png");
+            *slot = Some(image::load_from_memory(BYTES).ok().map(|img| {
+                let rgba = img.to_rgba8();
+                let size = [rgba.width() as usize, rgba.height() as usize];
+                let color = egui::ColorImage::from_rgba_unmultiplied(size, rgba.as_raw());
+                ctx.load_texture("zaprust-brand", color, egui::TextureOptions::LINEAR)
+            }));
+        }
+        slot.as_ref().and_then(|inner| inner.as_ref().map(|h| h.id()))
+    })
+}
+
 impl App {
     /// The Updates group on the About page: current status, a
     /// manual check button, and the one-click update offer. System
@@ -178,6 +206,9 @@ impl App {
         group_label(ui, t, "App");
         settings_card(ui, t, |ui| {
             row_with_text_control(ui, t, "Zaprust", "", |ui| {
+                if let Some(tex) = brand_texture(ui.ctx()) {
+                    ui.image((tex, egui::Vec2::splat(crate::icons::SIZE_ROW)));
+                }
                 ui.label(
                     RichText::new(if self.live_mode {
                         if self.live.as_ref().is_some_and(|s| s.fake) {

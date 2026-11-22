@@ -1751,6 +1751,10 @@ fn emit_linked_script(
     own_profile: &OwnProfile,
 ) {
     events.emit(BackendEvent::Connected { account: "Fake account (not WhatsApp)".to_owned() });
+    // The fake has no catch-up to run: its scripted roster IS the
+    // synced state, so the sync completes immediately, the same
+    // contract the real backend's sync events give the app.
+    events.emit(BackendEvent::SyncCompleted);
     for chat in scripted_chats() {
         events.emit(BackendEvent::ChatUpsert(chat));
     }

@@ -48,6 +48,9 @@
 
 # ---- chat list ----
 "chats.search_hint" = "Cari"
+"chats.syncing" = "Menyinkronkan chat..."
+"chats.syncing_percent" = "Menyinkronkan chat... {percent}%"
+"chats.connection_lost" = "Koneksi terputus. Menyambung ulang..."
 "chats.new_group" = "Grup baru"
 "chats.no_match" = "Tidak ada obrolan yang cocok dengan filter ini."
 "chats.typing" = "mengetik..."

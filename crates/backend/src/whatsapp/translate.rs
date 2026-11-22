@@ -1284,3 +1284,135 @@ mod presence_translate_tests {
         ));
     }
 }
+
+#[cfg(test)]
+mod live_pairing_fix_tests {
+    use super::{body_for, classify_message, translate_history_sync};
+    use crate::{BackendEvent, EventSink, LiveMessageKind, MediaKind};
+    use whatsapp_rust::prelude::wa;
+    use whatsapp_rust::prelude::MessageField;
+
+    fn image_proto(caption: Option<&str>) -> wa::Message {
+        let mut image = wa::message::ImageMessage::default();
+        image.caption = caption.map(ToOwned::to_owned);
+        let mut msg = wa::Message::default();
+        msg.image_message = MessageField::some(image);
+        msg
+    }
+
+    fn wrap_device_sent(inner: wa::Message) -> wa::Message {
+        let mut dsm = wa::message::DeviceSentMessage::default();
+        dsm.message = MessageField::some(inner);
+        let mut msg = wa::Message::default();
+        msg.device_sent_message = MessageField::some(dsm);
+        msg
+    }
+
+    /// The owner's first live run: every message he had sent from
+    /// his phone arrived device-sent wrapped and rendered as a
+    /// literal placeholder text bubble, because the classifier
+    /// inspected the wrapper instead of the base message.
+    #[test]
+    fn device_sent_photo_classifies_as_media() {
+        let (kind, view_once) = classify_message(&wrap_device_sent(image_proto(None)));
+        assert!(!view_once);
+        assert!(matches!(
+            kind,
+            LiveMessageKind::Media { media: MediaKind::Photo, .. }
+        ));
+        assert_eq!(body_for(&kind, view_once, None), "Photo");
+    }
+
+    #[test]
+    fn device_sent_photo_caption_becomes_the_body() {
+        let (kind, view_once) =
+            classify_message(&wrap_device_sent(image_proto(Some("beach day"))));
+        assert_eq!(body_for(&kind, view_once, None), "beach day");
+    }
+
+    #[test]
+    fn view_once_caption_stays_sealed() {
+        let mut wrapper = wa::message::FutureProofMessage::default();
+        wrapper.message = MessageField::some(image_proto(Some("secret")));
+        let mut msg = wa::Message::default();
+        msg.view_once_message = MessageField::some(wrapper);
+        let (kind, view_once) = classify_message(&msg);
+        assert!(view_once);
+        assert_eq!(body_for(&kind, view_once, None), "Photo");
+    }
+
+    fn history_info(
+        id: &str,
+        from_me: bool,
+        ts: u64,
+        message: wa::Message,
+    ) -> wa::WebMessageInfo {
+        let mut key = wa::MessageKey::default();
+        key.id = Some(id.to_owned());
+        key.from_me = Some(from_me);
+        let mut info = wa::WebMessageInfo::default();
+        info.key = MessageField::some(key);
+        info.message = MessageField::some(message);
+        info.message_timestamp = Some(ts);
+        info
+    }
+
+    /// The roster path that was missing entirely: a history sync
+    /// payload must become a titled, unread-carrying chat upsert
+    /// plus typed message upserts, with no placeholder body
+    /// anywhere.
+    #[test]
+    fn history_sync_conversation_becomes_roster() {
+        let mut text = wa::Message::default();
+        text.conversation = Some("hello there".to_owned());
+        let mut conv = wa::Conversation::default();
+        conv.id = "12345@g.us".to_owned();
+        conv.name = Some("Weekend Hikers".to_owned());
+        conv.unread_count = Some(3);
+        conv.archived = Some(true);
+        conv.messages = vec![
+            {
+                let mut e = wa::HistorySyncMsg::default();
+                e.message = MessageField::some(history_info("m1", false, 100, text));
+                e
+            },
+            {
+                let mut e = wa::HistorySyncMsg::default();
+                e.message = MessageField::some(history_info(
+                    "m2",
+                    true,
+                    200,
+                    wrap_device_sent(image_proto(None)),
+                ));
+                e
+            },
+        ];
+        let mut sync = wa::HistorySync::default();
+        sync.conversations = vec![conv];
+
+        let (tx, rx) = std::sync::mpsc::sync_channel(16);
+        let sink = EventSink { tx, wake: std::sync::Arc::new(|| {}) };
+        translate_history_sync(&sync, &sink);
+        let events: Vec<BackendEvent> = rx.try_iter().collect();
+
+        let chat = events.iter().find_map(|e| match e {
+            BackendEvent::ChatUpsert(c) => Some(c),
+            _ => None,
+        });
+        let chat = chat.expect("a chat upsert is emitted");
+        assert_eq!(chat.title, "Weekend Hikers");
+        assert_eq!(chat.unread, 3);
+        assert!(chat.archived);
+        assert_eq!(chat.preview, "Photo");
+
+        let bodies: Vec<&str> = events
+            .iter()
+            .filter_map(|e| match e {
+                BackendEvent::MessageUpsert(m) => Some(m.body.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(bodies, vec!["hello there", "Photo"]);
+        assert!(bodies.iter().all(|b| *b != "[non-text message]"));
+    }
+}

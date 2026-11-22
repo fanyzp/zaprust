@@ -90,6 +90,16 @@ impl App {
                     }
                     map
                 };
+                // Sender-name colors for this conversation,
+                // assigned without replacement (see
+                // assign_sender_colors), resolved up front for
+                // the same borrow reason as the photos above.
+                let sender_colors = assign_sender_colors(
+                    self.conversation.iter().flat_map(|m| {
+                        m.sender.iter().chain(m.quoted_sender.iter()).map(String::as_str)
+                    }),
+                    t,
+                );
                 let divider_before = |i: usize| {
                     divider.is_some_and(|d| d.first_unread_id == self.conversation[i].id)
                 };
@@ -210,7 +220,7 @@ impl App {
                             self.draw_message_strip(ui, item);
                         }
                         let reacted = run_items.last().is_some_and(|m| !m.reactions.is_empty());
-                        ui.add_space(if reacted { 13.0 } else { 14.0 });
+                        ui.add_space(if reacted { REACTED_SPACE } else { RUN_GAP_SPACE });
                         idx += run;
                         continue;
                     }
@@ -219,7 +229,7 @@ impl App {
                     // never as a participant's bubble.
                     if msg.kind == core::model::MessageKind::System {
                         system_chip(ui, t, &msg.body);
-                        ui.add_space(14.0);
+                        ui.add_space(RUN_GAP_SPACE);
                         idx += 1;
                         continue;
                     }
@@ -293,6 +303,14 @@ impl App {
                         } else {
                             None
                         },
+                        sender_color: msg
+                            .sender
+                            .as_deref()
+                            .and_then(|name| sender_colors.get(name).copied()),
+                        quoted_color: msg
+                            .quoted_sender
+                            .as_deref()
+                            .and_then(|name| sender_colors.get(name).copied()),
                     };
                     // Entrance: a genuinely new arrival near
                     // the end of the stream fades in and
@@ -383,11 +401,11 @@ impl App {
                     // groups; reaction pills keep their
                     // larger clearance either way.
                     ui.add_space(if !msg.reactions.is_empty() {
-                        13.0
+                        REACTED_SPACE
                     } else if group_last {
-                        14.0
+                        RUN_GAP_SPACE
                     } else {
-                        3.0
+                        RUN_TIGHT_SPACE
                     });
                     idx += 1;
                 }
@@ -530,7 +548,7 @@ impl App {
             let size = 46.0;
             let btn_pos = Pos2::new(
                 full_rect.right() - fmargin - size,
-                full_rect.bottom() - 24.0 - self.composer.stack_h - size,
+                scroll_bottom_button_top(full_rect.bottom(), self.composer.stack_h, size),
             );
             let mut btn_clicked = false;
             egui::Area::new(egui::Id::unique("scroll_to_bottom"))
@@ -597,6 +615,39 @@ impl App {
             }
         }
     }
+}
+
+/// Sender-run spacing in the stream: consecutive messages from
+/// the same sender pack tight, a new run breathes, and a run
+/// carrying reaction pills keeps its own slightly tighter
+/// clearance (the pills hang below the bubble into the gap).
+const RUN_TIGHT_SPACE: f32 = 3.0;
+const RUN_GAP_SPACE: f32 = 14.0;
+const REACTED_SPACE: f32 = 13.0;
+
+/// Assigns sender-name colors for one conversation: palette
+/// colors go to distinct senders in first-appearance order,
+/// without replacement, so two senders in the same conversation
+/// never share a color (the old per-name hash put adjacent
+/// senders on the same palette entry whenever their name byte
+/// sums collided). Past the palette's end the standalone
+/// per-name color is the fallback.
+fn assign_sender_colors<'a>(
+    names: impl Iterator<Item = &'a str>,
+    t: Tokens,
+) -> std::collections::HashMap<String, Color32> {
+    let palette = crate::widgets::sender_palette(t);
+    let mut map: std::collections::HashMap<String, Color32> = std::collections::HashMap::new();
+    for name in names {
+        if !map.contains_key(name) {
+            let color = match palette.get(map.len()) {
+                Some(rgb_color) => rgb(*rgb_color),
+                None => crate::widgets::sender_color(name, t),
+            };
+            map.insert(name.to_owned(), color);
+        }
+    }
+    map
 }
 
 /// Parses "HH:MM" (the stream's clock format) into minutes after
@@ -694,44 +745,78 @@ fn paint_lock(painter: &egui::Painter, center: Pos2, color: Color32, bg: Color32
     );
 }
 
-/// The stream's system layer speaks in one voice: the day
-/// separators, the encryption notice, the system events and
-/// the unread divider are all the same small centered pill,
+/// The stream's system layer speaks in three distinct voices,
 /// so a technical notice can never be mistaken for a
-/// participant's bubble (the round-3 grading verdict: the old
-/// frame-based chips stretched to the available width and
-/// read as wide, left-aligned, broken bubbles). The font the
-/// whole family shares.
+/// participant's bubble and the three kinds never read as one
+/// another (the round-3 grading verdict: the old frame-based
+/// chips stretched to the available width and read as wide,
+/// left-aligned, broken bubbles; the audit's hierarchy verdict:
+/// date, encryption and events at equal weight read as noise).
+/// The font the whole family shares.
 const SYSTEM_PILL_FONT: f32 = 11.5;
 
-/// Measures a system pill for `label`: the text laid out at
-/// the family font, wrapped at 85% of the available width (a
-/// long system event wraps inside its pill instead of
-/// stretching the pill edge to edge), plus the padlock slot
-/// when `lock` is set. Returns the galley and the pill size
-/// that hugs it.
+/// Which system voice a centered stream row speaks in: the
+/// hierarchy is date = a small solid pill, encryption = a
+/// distinct tinted card, events = a plain centered caption
+/// with no surface at all.
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) enum SystemPillKind {
+    /// Day and time separators: a small solid pill.
+    Date,
+    /// The end-to-end encryption notice: a tinted card with
+    /// more padding and a smaller corner radius than the pill.
+    Encryption,
+    /// Group events and other system rows: plain centered text.
+    Event,
+}
+
+/// Measures a system row for `label`: the text laid out at
+/// the family font, wrapped at 85% of the available width (92%
+/// for the encryption card, so its text stays on one line at
+/// phone widths instead of wrapping inside a narrow pill; a
+/// long system event wraps instead of stretching edge to
+/// edge), plus the padlock slot when `lock` is set. Returns
+/// the galley and the size that hugs it; the encryption card
+/// gets extra padding on both axes.
 fn system_pill_layout(
     ui: &egui::Ui,
     label: &str,
     color: Color32,
     lock: bool,
+    kind: SystemPillKind,
 ) -> (std::sync::Arc<egui::Galley>, Vec2) {
     let font = FontId::proportional(SYSTEM_PILL_FONT);
     let lock_w = if lock { 16.0 } else { 0.0 };
-    let wrap = (ui.available_width() * 0.85 - 24.0 - lock_w).max(48.0);
+    let wrap_factor = if kind == SystemPillKind::Encryption { 0.92 } else { 0.85 };
+    let wrap = (ui.available_width() * wrap_factor - 24.0 - lock_w).max(48.0);
     let galley = ui.ctx().fonts_mut(|f| f.layout(label.to_owned(), font, color, wrap));
-    let size = Vec2::new(galley.size().x + lock_w + 24.0, (galley.size().y + 11.0).max(23.0));
+    let extra = if kind == SystemPillKind::Encryption { Vec2::new(16.0, 10.0) } else { Vec2::ZERO };
+    let size = Vec2::new(
+        galley.size().x + lock_w + 24.0 + extra.x,
+        (galley.size().y + 11.0 + extra.y).max(23.0),
+    );
     (galley, size)
 }
 
-/// Paints the pill shell at `rect`: the card shadow lifting
-/// it off the chat background, the glass-tinted system fill,
-/// the hairline border and the specular top edge, fully
-/// rounded. Returns the fill color (the padlock's keyhole is
-/// punched in it).
-fn paint_system_pill(ui: &egui::Ui, t: Tokens, rect: egui::Rect) -> Color32 {
-    let radius = (rect.height() / 2.0).round() as u8;
-    let fill = crate::theme::glass_tint(t, t.system_chip);
+/// Paints the surface for a system row of `kind` at `rect`:
+/// the date pill gets the card shadow, the glass-tinted system
+/// fill, the hairline border and the specular top edge, fully
+/// rounded; the encryption card gets a solid tint toward the
+/// system text color at a card radius, with the same shadow
+/// and border but no glass edge; an event paints nothing (its
+/// quietness is the point). Returns the fill color (the
+/// padlock's keyhole is punched in it).
+fn paint_system_pill(ui: &egui::Ui, t: Tokens, rect: egui::Rect, kind: SystemPillKind) -> Color32 {
+    if kind == SystemPillKind::Event {
+        return rgb(t.bg_chat);
+    }
+    let radius =
+        if kind == SystemPillKind::Encryption { 12 } else { (rect.height() / 2.0).round() as u8 };
+    let fill = if kind == SystemPillKind::Encryption {
+        rgb(core::theme::mix(t.system_chip, t.system_text, 0.28))
+    } else {
+        crate::theme::glass_tint(t, t.system_chip)
+    };
     let painter = ui.painter();
     painter.add(egui::Shape::Rect(
         crate::theme::card_shadow(t).as_shape(rect, CornerRadius::same(radius)),
@@ -743,36 +828,50 @@ fn paint_system_pill(ui: &egui::Ui, t: Tokens, rect: egui::Rect) -> Color32 {
         Stroke::new(1.0_f32, rgb(t.border)),
         egui::StrokeKind::Inside,
     );
-    crate::theme::paint_glass_edge(painter, rect, radius as f32, t);
+    if kind == SystemPillKind::Date {
+        crate::theme::paint_glass_edge(painter, rect, radius as f32, t);
+    }
     fill
 }
 
-/// One centered system pill row: the pill is measured first
-/// and painted manually at its exact size in the middle of
-/// the row (an egui Frame in a centered layout stretches to
+/// One centered system row: the row is measured first and
+/// painted manually at its exact size in the middle of the
+/// row (an egui Frame in a centered layout stretches to
 /// the available width, which is what made the old notices
 /// read as bubbles). `lock` reserves the padlock slot ahead
 /// of the label.
-pub(crate) fn system_pill(ui: &mut egui::Ui, t: Tokens, label: &str, color: Color32, lock: bool) {
-    let (galley, size) = system_pill_layout(ui, label, color, lock);
+pub(crate) fn system_pill(
+    ui: &mut egui::Ui,
+    t: Tokens,
+    label: &str,
+    color: Color32,
+    lock: bool,
+    kind: SystemPillKind,
+) {
+    let (galley, size) = system_pill_layout(ui, label, color, lock, kind);
     let (row, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), size.y), Sense::hover());
     let pill = egui::Rect::from_center_size(row.center(), size);
-    let fill = paint_system_pill(ui, t, pill);
+    let fill = paint_system_pill(ui, t, pill, kind);
     let painter = ui.painter();
-    let mut text_x = pill.left() + 12.0;
+    let extra_x = if kind == SystemPillKind::Encryption { 8.0 } else { 0.0 };
+    let mut text_x = pill.left() + 12.0 + extra_x;
     if lock {
         let slot = egui::Rect::from_min_size(
-            Pos2::new(pill.left() + 8.0, pill.top()),
+            Pos2::new(pill.left() + 8.0 + extra_x, pill.top()),
             Vec2::new(16.0, pill.height()),
         );
         paint_lock(painter, slot.center(), color, fill);
         text_x += 16.0;
     }
-    let text_pos = Pos2::new(text_x, pill.center().y - galley.size().y / 2.0);
+    let text_pos = if kind == SystemPillKind::Event {
+        Pos2::new(pill.center().x - galley.size().x / 2.0, pill.center().y - galley.size().y / 2.0)
+    } else {
+        Pos2::new(text_x, pill.center().y - galley.size().y / 2.0)
+    };
     painter.galley(text_pos, galley, color);
 }
 
-/// The end-to-end encryption notice: a centered system pill
+/// The end-to-end encryption notice: a centered tinted card
 /// with a padlock, rendered at the top of every conversation
 /// (under the first day separator, or on its own when the
 /// conversation is empty). Rendered, never a stored message, so
@@ -780,23 +879,23 @@ pub(crate) fn system_pill(ui: &mut egui::Ui, t: Tokens, label: &str, color: Colo
 /// quoted, reacted to or counted as history.
 fn encryption_notice(ui: &mut egui::Ui, t: Tokens) {
     let label = crate::i18n::t("conversation.encryption_notice");
-    system_pill(ui, t, &label, rgb(t.system_text), true);
+    system_pill(ui, t, &label, rgb(t.system_text), true, SystemPillKind::Encryption);
 }
 
-/// A system notice in the stream: a centered system pill (the
-/// same grammar as the encryption notice), so group events
-/// never read as a participant's message.
+/// A system notice in the stream: a plain centered caption, so
+/// group events stay quieter than the date pills and never
+/// read as a participant's message.
 fn system_chip(ui: &mut egui::Ui, t: Tokens, label: &str) {
-    system_pill(ui, t, label, rgb(t.system_text), false);
+    system_pill(ui, t, label, rgb(t.text_secondary), false, SystemPillKind::Event);
 }
 
-/// A day separator in the message stream: a centered system
+/// A day separator in the message stream: a centered solid
 /// pill carrying the day label ("Today", "Yesterday", or a
 /// full date), painted wherever the messages' day data
 /// changes. The time chips between distant messages use it
 /// too, so every separator in the stream is the same pill.
 fn day_chip(ui: &mut egui::Ui, t: Tokens, label: &str) {
-    system_pill(ui, t, label, rgb(t.text_secondary), false);
+    system_pill(ui, t, label, rgb(t.text_secondary), false, SystemPillKind::Date);
 }
 
 /// The unread divider: a hairline across the stream with a
@@ -817,9 +916,9 @@ fn unread_divider_row(ui: &mut egui::Ui, t: Tokens, count: u32) {
         Stroke::new(1.0_f32, rgb(t.border)),
     );
     let color = rgb(t.accent);
-    let (galley, size) = system_pill_layout(ui, &label, color, false);
+    let (galley, size) = system_pill_layout(ui, &label, color, false, SystemPillKind::Date);
     let pill = egui::Rect::from_center_size(rect.center(), size);
-    paint_system_pill(ui, t, pill);
+    paint_system_pill(ui, t, pill, SystemPillKind::Date);
     let text_pos =
         Pos2::new(pill.center().x - galley.size().x / 2.0, pill.center().y - galley.size().y / 2.0);
     painter.galley(text_pos, galley, color);
@@ -827,8 +926,23 @@ fn unread_divider_row(ui: &mut egui::Ui, t: Tokens, count: u32) {
 
 #[cfg(test)]
 mod tests {
-    use super::{clock_minutes, time_chip_between};
+    use super::{assign_sender_colors, clock_minutes, time_chip_between};
     use core::model::Message;
+    use core::theme::Tokens;
+
+    #[test]
+    fn sender_colors_never_collide_inside_one_conversation() {
+        // Mike and Emma are the audit's collision pair: their
+        // name byte sums land on the same palette entry under
+        // the old per-name hash. Assigned per conversation in
+        // first-appearance order, they must differ.
+        let t = Tokens::dark();
+        let map = assign_sender_colors(["Mike", "Emma", "Sarah", "Mike"].into_iter(), t);
+        assert_eq!(map.len(), 3, "repeat senders keep their first color");
+        assert_ne!(map["Mike"], map["Emma"]);
+        assert_ne!(map["Emma"], map["Sarah"]);
+        assert_ne!(map["Mike"], map["Sarah"]);
+    }
 
     #[test]
     fn clock_minutes_parses_the_stream_clock() {

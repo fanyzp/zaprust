@@ -227,10 +227,14 @@ impl App {
         }
     }
 
-    /// The under-bubble strip: the flag lines (forwarded, pinned,
-    /// starred) and the small flag chip (retained after delete).
+    /// The under-bubble strip: the flag lines (forwarded, pinned)
+    /// and the small flag chip (retained after delete).
     /// Rendered by the conversation under each
-    /// bubble; returns nothing but draws into `ui`.
+    /// bubble; returns nothing but draws into `ui`. Starred state
+    /// is deliberately not a strip line: it lives in the bubble's
+    /// own meta row (the small star beside the time) and in the
+    /// message menu, so a permanent pill under every starred
+    /// message would read as a debug annotation, not product UI.
     pub(crate) fn draw_message_strip(&self, ui: &mut egui::Ui, msg: &Message) {
         let t = self.tokens;
         let mine = msg.sender.is_none();
@@ -240,9 +244,6 @@ impl App {
         }
         if msg.pinned {
             texts.push("📌 Pinned".to_owned());
-        }
-        if msg.starred {
-            texts.push("★ Starred".to_owned());
         }
         if texts.is_empty() && !msg.deleted_by_sender {
             return;

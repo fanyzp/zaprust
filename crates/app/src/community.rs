@@ -342,45 +342,45 @@ pub fn community_home(
         egui::Frame::new()
             .inner_margin(egui::Margin::symmetric(crate::theme::LIST_PANEL_INSET_X, 0))
             .show(ui, |ui| {
-            // Announcement chat: the shared chat row with a
-            // megaphone avatar override, keeping its own unread
-            // badge.
-            section_label(ui, t, &crate::i18n::t("community.announcements"));
-            if crate::chat_list::chat_row(
-                ui,
-                announcement,
-                false,
-                false,
-                t,
-                None,
-                Some(crate::icons::Icon::Megaphone),
-                None,
-            )
-            .clicked()
-            {
-                intents.open_chat = Some(announcement.id);
-            }
-            ui.add_space(SP_SECTION);
-            // The groups the user is in.
-            section_label(ui, t, &crate::i18n::t("community.your_groups"));
-            for group in groups {
-                if crate::chat_list::chat_row(ui, group, false, false, t, None, None, None)
-                    .clicked()
+                // Announcement chat: the shared chat row with a
+                // megaphone avatar override, keeping its own unread
+                // badge.
+                section_label(ui, t, &crate::i18n::t("community.announcements"));
+                if crate::chat_list::chat_row(
+                    ui,
+                    announcement,
+                    false,
+                    false,
+                    t,
+                    None,
+                    Some(crate::icons::Icon::Megaphone),
+                    None,
+                )
+                .clicked()
                 {
-                    intents.open_chat = Some(group.id);
+                    intents.open_chat = Some(announcement.id);
                 }
-            }
-            // Groups of this community the user has not joined yet.
-            if !other_groups.is_empty() {
                 ui.add_space(SP_SECTION);
-                section_label(ui, t, &crate::i18n::t("community.other_groups"));
-                for group in other_groups {
-                    if other_group_row(ui, group, t) {
-                        intents.join_group = Some(group.id);
+                // The groups the user is in.
+                section_label(ui, t, &crate::i18n::t("community.your_groups"));
+                for group in groups {
+                    if crate::chat_list::chat_row(ui, group, false, false, t, None, None, None)
+                        .clicked()
+                    {
+                        intents.open_chat = Some(group.id);
                     }
                 }
-            }
-        });
+                // Groups of this community the user has not joined yet.
+                if !other_groups.is_empty() {
+                    ui.add_space(SP_SECTION);
+                    section_label(ui, t, &crate::i18n::t("community.other_groups"));
+                    for group in other_groups {
+                        if other_group_row(ui, group, t) {
+                            intents.join_group = Some(group.id);
+                        }
+                    }
+                }
+            });
     });
     intents
 }

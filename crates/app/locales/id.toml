@@ -44,6 +44,13 @@
 "chats.blocked" = "Diblokir"
 "chats.draft" = "Draf:"
 "chats.collapse" = "Tutup panel samping (Ctrl+B)"
+"chats.filter_all" = "Semua"
+"chats.filter_unread" = "Belum dibaca"
+"chats.filter_personal" = "Pribadi"
+"chats.filter_favorites" = "Favorit"
+"chats.filter_groups" = "Grup"
+"chats.filter_channels" = "Channel"
+"chats.filter_archived" = "Diarsipkan"
 
 # ---- conversation ----
 "conversation.typing" = "mengetik..."

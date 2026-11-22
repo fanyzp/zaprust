@@ -222,10 +222,16 @@ impl App {
                     ];
                     for (screen, icon, label) in &rail_labels {
                         let screen = *screen;
-                        let badge =
-                            screen == Screen::Chats && unread > 0 && self.screen != Screen::Chats;
-                        let count = if screen == Screen::Archived { archived_unread } else { 0 };
-                        if rail_button(ui, *icon, label, self.screen == screen, badge, count, t) {
+                        // One badge language: a numeric pill
+                        // wherever a count is known (Chats carries
+                        // the total unread, Archived its own unread
+                        // count), no marker anywhere else.
+                        let count = match screen {
+                            Screen::Chats => unread,
+                            Screen::Archived => archived_unread,
+                            _ => 0,
+                        };
+                        if rail_button(ui, *icon, label, self.screen == screen, count, t) {
                             self.screen = screen;
                             // Rail navigation lands on the new
                             // screen's list: in single-pane mode
@@ -281,7 +287,6 @@ impl App {
                             crate::icons::Icon::Sliders,
                             &settings_label,
                             self.screen == Screen::Settings,
-                            false,
                             0,
                             t,
                         ) {

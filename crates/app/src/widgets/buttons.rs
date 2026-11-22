@@ -138,17 +138,15 @@ fn button_impl(
 }
 
 /// A navigation rail button: icon in a 46 px square with the
-/// selected wash, plus an optional attention marker at the
-/// top-right anchor. `dot` and `badge_count` are mutually
-/// exclusive: both markers paint at the same anchor, so a caller
-/// passes at most one of them (a plain dot, or a count pill when
-/// `badge_count > 0`).
+/// selected wash, plus the one badge language every surface
+/// shares: a numeric count pill at the top-right anchor when
+/// `badge_count > 0`, and no marker at all when there is no
+/// count to show.
 pub(crate) fn rail_button(
     ui: &mut egui::Ui,
     icon: crate::icons::Icon,
     label: &str,
     selected: bool,
-    dot: bool,
     badge_count: u32,
     t: Tokens,
 ) -> bool {
@@ -175,9 +173,6 @@ pub(crate) fn rail_button(
     }
     let color = if selected { accent } else { rgb(t.text_secondary) };
     crate::icons::draw(ui.painter(), icon, rect.center(), 24.0, color, rgb(t.bg_panel));
-    if dot {
-        ui.painter().circle_filled(rect.right_top() + Vec2::new(-7.0, 7.0), 4.5, rgb(t.accent));
-    }
     if badge_count > 0 {
         // A count pill at the button's top-right, in the chat
         // row unread badge's language (badge fill, 11 px text,
@@ -242,6 +237,96 @@ pub(crate) fn chip(ui: &mut egui::Ui, label: &str, selected: bool, t: Tokens) ->
     let text = if selected { t.accent } else { t.text_secondary };
     ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, label, font, rgb(text));
     response.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// Paints the edge fade of a horizontally scrolling strip: a
+/// gradient from transparent to the surface colour `bg` at each
+/// edge where content is clipped, so a strip that continues past
+/// the panel edge says so instead of cutting a chip mid-label.
+/// Flat colour only at full opacity; the fade itself is a
+/// two-stop alpha ramp, the one sanctioned gradient in the app
+/// (it is a clipping cue, not a surface fill).
+pub(crate) fn strip_edge_fades(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    bg: Rgb,
+    fade_left: bool,
+    fade_right: bool,
+) {
+    const W: f32 = 28.0;
+    let base = rgb(bg);
+    let solid = Color32::from_rgba_unmultiplied(base.r(), base.g(), base.b(), 255);
+    let clear = Color32::from_rgba_unmultiplied(base.r(), base.g(), base.b(), 0);
+    let mut mesh = egui::Mesh::default();
+    let mut quad = |x0: f32, x1: f32, c0: Color32, c1: Color32| {
+        let base_idx = mesh.vertices.len() as u32;
+        mesh.colored_vertex(egui::Pos2::new(x0, rect.top()), c0);
+        mesh.colored_vertex(egui::Pos2::new(x1, rect.top()), c1);
+        mesh.colored_vertex(egui::Pos2::new(x0, rect.bottom()), c0);
+        mesh.colored_vertex(egui::Pos2::new(x1, rect.bottom()), c1);
+        mesh.indices.extend([
+            base_idx,
+            base_idx + 1,
+            base_idx + 2,
+            base_idx + 2,
+            base_idx + 1,
+            base_idx + 3,
+        ]);
+    };
+    if fade_left {
+        quad(rect.left(), rect.left() + W, solid, clear);
+    }
+    if fade_right {
+        quad(rect.right() - W, rect.right(), clear, solid);
+    }
+    if !mesh.is_empty() {
+        painter.add(egui::Shape::mesh(mesh));
+    }
+}
+
+/// The one horizontally scrolling chip strip: the scrollbar is
+/// always hidden, the wheel scrolls sideways, and the clipped
+/// edge(s) fade into the surface behind the strip (`bg`). The
+/// closure lays the chips out in a horizontal row and returns
+/// the selected chip's response; whenever `selected_key` changes
+/// (a screen is entered, the selection moves), the strip scrolls
+/// until the selected chip is fully inside the viewport, so the
+/// active chip is never the one cut off at the edge.
+pub(crate) fn chip_scroll_row(
+    ui: &mut egui::Ui,
+    id_salt: &'static str,
+    bg: Rgb,
+    selected_key: impl std::hash::Hash,
+    add_contents: impl FnOnce(&mut egui::Ui) -> Option<egui::Response>,
+) {
+    let key_id = ui.scope_id().with(("chip_strip_ensured", id_salt));
+    let key_hash = egui::util::hash(selected_key);
+    let ensured = ui.data(|d| d.get_temp::<u64>(key_id)) == Some(key_hash);
+    let out = egui::ScrollArea::horizontal()
+        .id_salt(id_salt)
+        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+        .scroll_source(egui::scroll_area::ScrollSource::ALL)
+        .show(ui, |ui| {
+            let selected = ui.horizontal(|ui| add_contents(ui)).inner;
+            if !ensured {
+                if let Some(resp) = &selected {
+                    let clip = ui.clip_rect();
+                    if resp.rect.left() >= clip.left() - 0.5
+                        && resp.rect.right() <= clip.right() + 0.5
+                    {
+                        ui.data_mut(|d| d.insert_temp(key_id, key_hash));
+                    } else {
+                        resp.scroll_to_me(None);
+                    }
+                } else {
+                    ui.data_mut(|d| d.insert_temp(key_id, key_hash));
+                }
+            }
+            selected
+        });
+    let offset = out.state.clamped_offset().x;
+    let max_offset = (out.content_size.x - out.inner_rect.width()).max(0.0);
+    strip_edge_fades(ui.painter(), out.inner_rect, bg, offset > 0.5, offset < max_offset - 0.5);
 }
 
 /// A two-option segmented control: a full-width pill track on

@@ -1,4 +1,4 @@
-//! The About settings page: version, updates, credits.
+//! The About settings page: version, updates and people.
 
 use super::*;
 
@@ -288,24 +288,5 @@ impl App {
             let url = core::crash::bug_issue_url();
             crate::crash_ui::open_or_copy(self, ui, &url);
         }
-        ui.add_space(16.0);
-        group_label(ui, t, "Third-party credits");
-        settings_card(ui, t, |ui| {
-            for line in [
-                "whatsapp-rust: the WhatsApp protocol library Zaprust links against.",
-                "SQLite: the archive database engine (public domain).",
-                "egui / eframe: immediate-mode GUI (MIT OR Apache-2.0).",
-                "Tokio: the async runtime (MIT).",
-                "Inter: the UI typeface (SIL Open Font License 1.1).",
-                "Icons: Material Symbols Rounded, Google's icon typeface (Apache-2.0).",
-                "Theming: dynamic color, generated in the app from a single seed color.",
-                "And heartfelt thanks to every other open-source maintainer whose \
-                 work Zaprust builds on, the full list lives in CREDITS.md in \
-                 the repository.",
-            ] {
-                ui.label(RichText::new(line).size(12.5).color(rgb(t.text_secondary)));
-                ui.add_space(4.0);
-            }
-        });
     }
 }

@@ -270,6 +270,53 @@ fn call_log_source<'a>(
     }
 }
 
+/// The composed empty state for a call history with no calls
+/// at all: a soft disc with the phone glyph, a title and a
+/// supporting line, centred in the space the panel hands it.
+/// The search and filter no-match case keeps the plain
+/// `widgets::empty_state` label; this one is only for a truly
+/// empty history, so it can afford to be a small illustration.
+fn calls_empty_state(ui: &mut egui::Ui, t: core::theme::Tokens) {
+    let width = ui.available_width();
+    let height = ui.available_height().max(220.0);
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
+    let painter = ui.painter();
+    let title = crate::i18n::t("calls.empty");
+    let hint = crate::i18n::t("calls.empty_hint");
+    // The supporting line is wrapped to a comfortable measure
+    // first, because its height decides where the block starts.
+    let hint_galley =
+        painter.layout(hint, FontId::proportional(13.0), rgb(t.text_secondary), 280.0);
+    const DISC_D: f32 = 72.0;
+    let total_h = DISC_D + 16.0 + 22.0 + 6.0 + hint_galley.size().y;
+    let mut y = rect.top() + ((height - total_h) / 2.0).max(0.0);
+    let cx = rect.center().x;
+    let disc_center = Pos2::new(cx, y + DISC_D / 2.0);
+    painter.circle_filled(disc_center, DISC_D / 2.0, rgb(t.bg_panel_alt));
+    crate::icons::draw(
+        painter,
+        crate::icons::Icon::Phone,
+        disc_center,
+        38.0,
+        rgb(t.accent),
+        rgb(t.bg_panel_alt),
+    );
+    y += DISC_D + 16.0;
+    painter.text(
+        Pos2::new(cx, y + 11.0),
+        Align2::CENTER_CENTER,
+        title,
+        crate::theme::semibold(16.0),
+        rgb(t.text_primary),
+    );
+    y += 22.0 + 6.0;
+    let hint_rect = egui::Rect::from_min_size(
+        Pos2::new(cx - hint_galley.size().x / 2.0, y),
+        hint_galley.size(),
+    );
+    painter.galley(hint_rect.min, hint_galley, rgb(t.text_secondary));
+}
+
 impl App {
     /// The call log's display rows under the panel's current
     /// filters (Missed, the portrait favorites filter, search),
@@ -390,7 +437,7 @@ impl App {
                     egui::Layout::top_down(egui::Align::Min),
                     |ui| {
                         if source_empty {
-                            crate::widgets::empty_state(ui, t, &crate::i18n::t("calls.empty"));
+                            calls_empty_state(ui, t);
                         } else if rows.is_empty() {
                             crate::widgets::empty_state(ui, t, &crate::i18n::t("calls.no_match"));
                         } else {
@@ -823,7 +870,7 @@ impl App {
                     });
                 ui.add_space(14.0);
                 if source_empty {
-                    crate::widgets::empty_state(ui, t, &crate::i18n::t("calls.empty"));
+                    calls_empty_state(ui, t);
                 } else if rows.is_empty() {
                     crate::widgets::empty_state(ui, t, &crate::i18n::t("calls.no_match"));
                 } else {

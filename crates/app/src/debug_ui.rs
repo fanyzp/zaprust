@@ -44,6 +44,15 @@ impl App {
                 ("backend", "PairCode ready (code redacted)".to_owned(), None)
             }
             BackendEvent::Connected { .. } => ("backend", "Connected".to_owned(), None),
+            BackendEvent::SyncProgress { percent } => (
+                "backend",
+                match percent {
+                    Some(p) => format!("SyncProgress {p}%"),
+                    None => "SyncProgress".to_owned(),
+                },
+                None,
+            ),
+            BackendEvent::SyncCompleted => ("backend", "SyncCompleted".to_owned(), None),
             BackendEvent::OwnProfile(_) => {
                 ("backend", "OwnProfile received (values redacted)".to_owned(), None)
             }

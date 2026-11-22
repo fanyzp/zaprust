@@ -230,7 +230,8 @@ pub(crate) fn glass_panel_fill(t: Tokens) -> Color32 {
 /// sections). Panel frames take their inner margin from this
 /// constant so list text never sits flush against the rail or
 /// the panel edge, and every list breathes by the same amount.
-pub(crate) const LIST_PANEL_INSET_X: f32 = 16.0;
+/// Whole pixels: egui margins are i8 in this version.
+pub(crate) const LIST_PANEL_INSET_X: i8 = 16;
 
 /// A ready-made stacked-panel glass frame: the near-opaque fill
 /// with the hairline border and glass shadow. Used by every

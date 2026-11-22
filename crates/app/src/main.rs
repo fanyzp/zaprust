@@ -192,7 +192,13 @@ fn main() -> eframe::Result {
         // sits under the narrowest of those sizes instead of
         // forbidding them outright.
         .with_min_inner_size([320.0, 480.0])
-        .with_title("Zaprust");
+        .with_title("Zaprust")
+        // The app id must match the desktop file basename
+        // (packaging/zaprust.desktop): on Wayland the shell
+        // resolves the running window's icon and grouping
+        // through that file, not through the window icon, so
+        // without it the dock shows a generic placeholder.
+        .with_app_id("zaprust");
     if let Some(icon) = window_icon() {
         viewport = viewport.with_icon(icon);
     }

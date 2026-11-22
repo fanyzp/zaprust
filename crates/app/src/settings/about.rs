@@ -159,7 +159,7 @@ impl App {
         let repo = core::crash::GITHUB_REPO;
         let repo_url = format!("https://github.com/{repo}");
         let mut report_bug = false;
-        group_label(ui, t, "App & build");
+        group_label(ui, t, "App");
         settings_card(ui, t, |ui| {
             row_with(ui, t, "Zaprust", "", |ui| {
                 ui.label(
@@ -193,27 +193,6 @@ impl App {
                 ui,
                 &mut self.settings_highlight,
                 self.motion,
-                "about.build",
-                t,
-                "Build",
-                "",
-                |ui| {
-                    ui.label(
-                        RichText::new(format!(
-                            "{} · local · {}",
-                            env!("ZAPRUST_GIT_HASH"),
-                            env!("ZAPRUST_TARGET")
-                        ))
-                        .size(12.0)
-                        .color(rgb(t.text_secondary)),
-                    );
-                },
-            );
-            divider(ui, t);
-            row_hl(
-                ui,
-                &mut self.settings_highlight,
-                self.motion,
                 "about.license",
                 t,
                 "License",
@@ -230,9 +209,9 @@ impl App {
                 "about.repository",
                 t,
                 "Repository",
-                &format!("github.com/{repo}"),
+                "",
                 |ui| {
-                    ui.hyperlink_to("github.com/…", &repo_url);
+                    ui.hyperlink_to(format!("github.com/{repo}"), &repo_url);
                 },
             );
         });

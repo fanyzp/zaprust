@@ -222,13 +222,6 @@ const SETTINGS_REGISTRY: &[SettingEntry] = &[
         keywords: "build version versi",
     },
     SettingEntry {
-        id: "about.build",
-        tab: "About",
-        title_en: "Build",
-        title_id: "Build",
-        keywords: "git commit channel platform",
-    },
-    SettingEntry {
         id: "about.license",
         tab: "About",
         title_en: "License",
@@ -743,25 +736,13 @@ fn settings_nav_row(
     response.on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
 }
 
-/// The About page version label: `<major>.<minor>.<build code>`, where
-/// the build code is the short SHA of the commit the binary was built
-/// from (embedded by build.rs). The updater keeps comparing the plain
-/// semantic version; this label is for traceability only. When no
-/// build code is available (source tarball builds), the plain full
-/// version is shown instead.
+/// The About page version label: the release version only (the
+/// workspace version). Build detail (commit, target) is not
+/// permanent UI; it stays available in the debug bundle export
+/// and in the version and OS context the bug-report and
+/// crash-report flows already carry.
 pub(crate) fn version_label() -> String {
-    format_version_label(env!("CARGO_PKG_VERSION"), env!("ZAPRUST_GIT_HASH"))
-}
-
-fn format_version_label(version: &str, build_code: &str) -> String {
-    if build_code.is_empty() || build_code == "unknown" {
-        return version.to_owned();
-    }
-    let mut parts = version.split('.');
-    match (parts.next(), parts.next()) {
-        (Some(major), Some(minor)) => format!("{major}.{minor}.{build_code}"),
-        _ => version.to_owned(),
-    }
+    env!("CARGO_PKG_VERSION").to_owned()
 }
 
 /// Display label for a settings tab id (the ids stay English
@@ -1080,17 +1061,25 @@ mod tests {
     }
 
     #[test]
-    fn version_label_combines_version_and_build_code() {
-        assert_eq!(format_version_label("1.5.0", "d3c2dd0"), "1.5.d3c2dd0");
-        assert_eq!(format_version_label("1.5.0", ""), "1.5.0");
-        assert_eq!(format_version_label("1.5.0", "unknown"), "1.5.0");
-        // The page's own label: the crate version, with the
-        // build code folded into the patch slot when the
-        // build stamped one.
-        let version = env!("CARGO_PKG_VERSION");
-        let label = version_label();
-        let mut parts = version.split('.');
-        let prefix = format!("{}.{}.", parts.next().unwrap(), parts.next().unwrap());
-        assert!(label == version || label.starts_with(&prefix), "label {label} for {version}");
+    fn version_label_is_the_release_version_only() {
+        // No build code folded into the patch slot, no hash:
+        // the label is exactly the workspace version the
+        // updater compares against.
+        assert_eq!(version_label(), env!("CARGO_PKG_VERSION"));
+    }
+
+    #[test]
+    fn removed_build_row_is_not_searchable() {
+        // The permanent Build row (commit, build kind, target
+        // triple) was removed from the About page; build detail
+        // lives in the debug bundle export and the report
+        // flows. Its registry entry went with it, so the
+        // queries that used to find it find nothing.
+        for query in ["build", "git commit", "channel platform"] {
+            assert!(
+                !result_ids(query).iter().any(|(_, id)| *id == "about.build"),
+                "the removed row must not surface for {query:?}"
+            );
+        }
     }
 }

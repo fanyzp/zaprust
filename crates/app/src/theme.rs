@@ -224,6 +224,14 @@ pub(crate) fn glass_panel_fill(t: Tokens) -> Color32 {
     glass_tint_alpha(t, core::theme::elevated_step(t.bg_panel), glass_panel_alpha(t))
 }
 
+/// The one horizontal inset for left list panels (Chats and its
+/// filtered modes, Calls, Starred, Updates, Communities) and for
+/// list content panes that share their axis (community home
+/// sections). Panel frames take their inner margin from this
+/// constant so list text never sits flush against the rail or
+/// the panel edge, and every list breathes by the same amount.
+pub(crate) const LIST_PANEL_INSET_X: f32 = 16.0;
+
 /// A ready-made stacked-panel glass frame: the near-opaque fill
 /// with the hairline border and glass shadow. Used by every
 /// surface that floats over the message stream; centered modals

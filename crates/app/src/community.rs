@@ -334,12 +334,14 @@ pub fn community_home(
         });
         ui.add_space(SP_SECTION);
         // The sections share one inset axis with the chat list:
-        // the frame's 10 px inner margin is the list panel's own
-        // margin, so section labels start where chat row text
+        // the frame's inner margin is the shared list panel
+        // inset, so section labels start where chat row text
         // starts and row timestamps and badges end the same
         // distance from the pane edge as they do in the list,
         // instead of running to the edge of the content area.
-        egui::Frame::new().inner_margin(egui::Margin::symmetric(10, 0)).show(ui, |ui| {
+        egui::Frame::new()
+            .inner_margin(egui::Margin::symmetric(crate::theme::LIST_PANEL_INSET_X, 0))
+            .show(ui, |ui| {
             // Announcement chat: the shared chat row with a
             // megaphone avatar override, keeping its own unread
             // badge.
@@ -599,7 +601,7 @@ impl App {
             .frame(
                 egui::Frame::new()
                     .fill(rgb(t.bg_panel))
-                    .inner_margin(egui::Margin::symmetric(10, 8)),
+                    .inner_margin(egui::Margin::symmetric(crate::theme::LIST_PANEL_INSET_X, 8)),
             )
             .show(root, |ui| {
                 ui.horizontal(|ui| {

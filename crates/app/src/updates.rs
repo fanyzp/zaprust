@@ -44,7 +44,11 @@ impl App {
         }
         let panel = self.list_panel(root);
         let panel = panel
-            .frame(egui::Frame::new().fill(rgb(t.bg_panel)).inner_margin(Margin::symmetric(10, 8)))
+            .frame(
+                egui::Frame::new()
+                    .fill(rgb(t.bg_panel))
+                    .inner_margin(Margin::symmetric(crate::theme::LIST_PANEL_INSET_X, 8)),
+            )
             .show(root, |ui| self.updates_content(ui));
         crate::widgets::soft_right_edge(root, panel.response.rect, t);
         self.draw_conversation_placeholder(root);

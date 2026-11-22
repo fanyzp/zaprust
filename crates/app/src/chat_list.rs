@@ -83,7 +83,11 @@ impl App {
         let t = self.tokens();
         let panel = self
             .list_panel(root)
-            .frame(egui::Frame::new().fill(rgb(t.bg_panel)).inner_margin(Margin::symmetric(10, 8)))
+            .frame(
+                egui::Frame::new()
+                    .fill(rgb(t.bg_panel))
+                    .inner_margin(Margin::symmetric(crate::theme::LIST_PANEL_INSET_X, 8)),
+            )
             .show(root, |ui| {
                 // Header row: the "Chats" title, then the list
                 // actions on the right (collapse, new group).

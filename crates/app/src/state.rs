@@ -497,10 +497,9 @@ pub(crate) struct CallsState {
     pub(crate) search: String,
     /// The Calls panel's Missed chip state.
     pub(crate) missed_only: bool,
-    /// The portrait Calls screen's favorites filter: only
-    /// entries whose chat is marked favorite. Toggled by the
-    /// shortcut row's favorites circle (portrait only; the
-    /// filter itself applies wherever it is set).
+    /// The Calls favorites filter: only entries whose chat is
+    /// marked favorite. Toggled by the shortcut row's favorites
+    /// circle, which both the panel and portrait carry.
     pub(crate) favorites_only: bool,
     /// The portrait Calls screen's search field is expanded
     /// (its header carries a search icon, the phone pattern,
@@ -509,6 +508,12 @@ pub(crate) struct CallsState {
     pub(crate) search_open: bool,
     /// The Calls panel's new call contact picker is open.
     pub(crate) picker_open: bool,
+    /// The kind of the outgoing call most recently started from
+    /// the app, remembered until the backend's first Ringing
+    /// event adopts it: that event carries no kind of its own,
+    /// so without this the adopted call UI would always claim
+    /// the call is a voice call.
+    pub(crate) outgoing_video: bool,
     /// The new call picker's own search text.
     pub(crate) picker_search: String,
     /// The one live call's UI state, if any (see call_ui.rs).
@@ -1485,6 +1490,7 @@ impl App {
                 favorites_only: false,
                 search_open: false,
                 picker_open: args.calls_picker,
+                outgoing_video: false,
                 picker_search: String::new(),
                 active: None,
             },

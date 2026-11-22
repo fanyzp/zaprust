@@ -117,6 +117,16 @@ impl App {
     /// The header phone button: starts a voice call to the open
     /// chat (live and test mode only).
     pub(crate) fn start_call_from_header(&mut self) {
+        self.start_call_kind(false);
+    }
+
+    /// Starts a call of the given kind to the open chat (live
+    /// and test mode only). The one start path every call entry
+    /// point shares: the conversation header, the call log's
+    /// call-back action and the new call picker's per-row voice
+    /// and video actions all land here, so the kind the user
+    /// picked is the kind the backend is asked for.
+    pub(crate) fn start_call_kind(&mut self, video: bool) {
         if !self.live_mode {
             self.notice =
                 Some("Calls work in live mode and test mode, not in the offline demo.".to_owned());
@@ -128,7 +138,8 @@ impl App {
         }
         match self.live_jid(self.selected_chat) {
             Some(jid) => {
-                self.send_backend(BackendCommand::StartCall { chat_jid: jid, video: false });
+                self.calls.outgoing_video = video;
+                self.send_backend(BackendCommand::StartCall { chat_jid: jid, video });
             }
             None => {
                 self.notice = Some("Open a real chat to start a call.".to_owned());
@@ -224,7 +235,7 @@ impl App {
                 call_id: call_id.to_owned(),
                 chat_id,
                 title,
-                video: false,
+                video: self.calls.outgoing_video,
                 phase: CallUiPhase::Ringing,
                 seconds: 0,
                 muted: false,
@@ -238,6 +249,9 @@ impl App {
                 ended_elsewhere: false,
                 action_pending: false,
             });
+            // The remembered kind has been adopted; the next
+            // outgoing call sets it again when it starts.
+            self.calls.outgoing_video = false;
             return;
         }
         let Some(call) = &mut self.calls.active else {

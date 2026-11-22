@@ -560,6 +560,15 @@ impl App {
             }
         } else if let Some(name) = self.typing_names.get(&chat.id) {
             return Some(RowState::Typing(Some(name.clone())));
+        } else if chat.subtitle == "typing…" {
+            // Demo data records a typing contact in the subtitle
+            // (the model's typing exception, where the preview is
+            // the typing label instead of the last message). The
+            // row takes the typing state like any other typing
+            // chat, so the localized typing line replaces the
+            // snippet and no delivery ticks paint beside it: a
+            // receipt glyph has no meaning next to a typing state.
+            return Some(RowState::Typing(None));
         }
         if chat.id == self.selected_chat {
             if !self.composer.draft.trim().is_empty() {

@@ -843,9 +843,7 @@ fn row_with(
             ui.vertical(|ui| {
                 ui.label(RichText::new(title).size(14.0));
                 if !desc.is_empty() {
-                    ui.label(
-                        RichText::new(desc).size(11.5).color(ui.visuals().weak_text_color()),
-                    );
+                    ui.label(RichText::new(desc).size(11.5).color(ui.visuals().weak_text_color()));
                 }
             });
         });

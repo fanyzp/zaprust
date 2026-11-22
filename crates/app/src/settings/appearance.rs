@@ -113,11 +113,7 @@ impl App {
         let (header_rect, header_resp) =
             ui.allocate_exact_size(egui::vec2(ui.available_width(), 30.0), egui::Sense::click());
         if header_resp.hovered() {
-            ui.painter().rect_filled(
-                header_rect,
-                egui::CornerRadius::same(8),
-                rgb(t.bg_panel_alt),
-            );
+            ui.painter().rect_filled(header_rect, egui::CornerRadius::same(8), rgb(t.bg_panel_alt));
         }
         crate::icons::draw(
             ui.painter(),

@@ -150,12 +150,6 @@ impl App {
                                 action = Some(key);
                             }
                         };
-                        let caption = |ui: &mut egui::Ui, label: &str| {
-                            ui.label(
-                                RichText::new(label).size(10.5).strong().color(rgb(t.text_faint)),
-                            );
-                            ui.add_space(2.0);
-                        };
                         row(
                             ui,
                             crate::icons::Icon::Person,
@@ -163,7 +157,6 @@ impl App {
                             "profile",
                         );
                         ui.add_space(4.0);
-                        caption(ui, &crate::i18n::t("conversation.chat_actions").to_uppercase());
                         if export_active {
                             row(
                                 ui,
@@ -179,7 +172,6 @@ impl App {
                         };
                         row(ui, crate::icons::Icon::Pin, &pin_label, "pinchat");
                         ui.add_space(4.0);
-                        caption(ui, &crate::i18n::t("conversation.this_chat").to_uppercase());
                         let mute_label = if chat.muted {
                             crate::i18n::t("conversation.unmute_notifications")
                         } else {

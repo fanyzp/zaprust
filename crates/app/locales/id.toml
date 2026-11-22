@@ -261,8 +261,6 @@
 "connect.start_fresh" = "Mulai dari awal"
 "connect.start_fresh_title" = "Mulai dari awal?"
 "connect.start_fresh_body" = "Kunci yang membuka obrolan tersimpan Anda tidak dapat dibaca, jadi obrolan dan akun yang tertaut di komputer ini tidak dapat dibuka. Memulai dari awal akan menyisihkannya ke folder cadangan di dalam folder data Zaprust dan memulai ulang seperti pertama kali. Anda perlu menautkan ponsel lagi."
-"conversation.chat_actions" = "Aksi obrolan"
-"conversation.this_chat" = "Obrolan ini"
 "conversation.archive" = "Arsipkan obrolan"
 "conversation.unarchive" = "Batalkan arsip"
 "conversation.add_favorite" = "Tambahkan ke favorit"

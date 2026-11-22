@@ -1090,14 +1090,30 @@ pub(crate) fn message_bubble(
                         rgb(t.bg_panel_alt),
                     );
                     let center = img_rect.center();
-                    crate::icons::draw(
-                        painter,
-                        crate::icons::Icon::Image,
-                        Pos2::new(center.x, center.y - 8.0),
-                        crate::icons::SIZE_LARGE,
-                        rgb(t.text_faint),
-                        rgb(t.bg_panel_alt),
-                    );
+                    if media.photo_tile == crate::media::PhotoTile::Loading {
+                        // A fetch in flight must read as waiting,
+                        // never as the idle placeholder: the shared
+                        // spinner sits in the tile instead of the
+                        // glyph the idle tile wears.
+                        let spinner_rect = Rect::from_center_size(center, Vec2::splat(20.0));
+                        let mut slot = ui.new_child(
+                            egui::UiBuilder::new()
+                                .max_rect(spinner_rect)
+                                .layout(Layout::centered_and_justified(
+                                    egui::Direction::TopDown,
+                                )),
+                        );
+                        crate::widgets::spinner(&mut slot, 20.0);
+                    } else {
+                        crate::icons::draw(
+                            painter,
+                            crate::icons::Icon::Image,
+                            Pos2::new(center.x, center.y - 8.0),
+                            crate::icons::SIZE_LARGE,
+                            rgb(t.text_faint),
+                            rgb(t.bg_panel_alt),
+                        );
+                    }
                     if media.photo_tile == crate::media::PhotoTile::Failed {
                         let g = layout_text(
                             ui,
@@ -1227,18 +1243,34 @@ pub(crate) fn message_bubble(
                     Some(state) => {
                         let fill = rgb(t.bg_panel_alt);
                         painter.circle_filled(disc, 19.0, fill);
-                        let icon = match state {
-                            crate::state::VoiceFetchState::Loading => crate::icons::Icon::Play,
-                            crate::state::VoiceFetchState::Failed => crate::icons::Icon::Info,
-                        };
-                        crate::icons::draw(
-                            painter,
-                            icon,
-                            disc,
-                            crate::icons::SIZE_CONTROL,
-                            rgb(t.text_faint),
-                            fill,
-                        );
+                        if state == crate::state::VoiceFetchState::Loading {
+                            // The muted disc alone reads as
+                            // disabled, not as working: the shared
+                            // spinner rides on the disc while the
+                            // bytes are in flight, so the wait
+                            // reads as a wait.
+                            let disc_rect = Rect::from_center_size(disc, Vec2::splat(38.0));
+                            let mut slot = ui.new_child(
+                                egui::UiBuilder::new()
+                                    .max_rect(disc_rect)
+                                    .layout(Layout::centered_and_justified(
+                                        egui::Direction::TopDown,
+                                    )),
+                            );
+                            crate::widgets::spinner(&mut slot, 17.0);
+                        } else {
+                            // Failed is the only other fetch state:
+                            // the glyph swap to Info is its signal,
+                            // and clicking the disc retries.
+                            crate::icons::draw(
+                                painter,
+                                crate::icons::Icon::Info,
+                                disc,
+                                crate::icons::SIZE_CONTROL,
+                                rgb(t.text_faint),
+                                fill,
+                            );
+                        }
                     }
                     None => {
                         painter.circle_filled(disc, 19.0, rgb(t.accent));

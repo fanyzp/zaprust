@@ -560,12 +560,12 @@ impl App {
                         egui::Pos2::new(rect.center().x, rect.center().y - 24.0),
                         egui::Vec2::splat(40.0),
                     );
-                    ui.new_child(
+                    let mut slot = ui.new_child(
                         egui::UiBuilder::new()
                             .max_rect(spinner_rect)
                             .layout(egui::Layout::top_down(egui::Align::Center)),
-                    )
-                    .add(egui::Spinner::new().size(30.0));
+                    );
+                    crate::widgets::spinner(&mut slot, 28.0);
                     ui.set_opacity(view_p);
                 }
                 // The photo's own pixels: the decoded real bytes,
@@ -776,6 +776,17 @@ impl App {
                 ui.ctx().request_repaint_after(std::time::Duration::from_millis(30));
             }
         }
+        // A player that exists but has presented no frame and
+        // has not failed is still decoding its first frame: a
+        // wait the body must show, not a silent neutral tile.
+        let player_waiting_frame = has_player
+            && player_failed.is_none()
+            && self
+                .media
+                .video_player
+                .as_ref()
+                .filter(|p| p.key == id)
+                .is_some_and(|p| p.current.is_none());
         let frame_aspect = self
             .media
             .video_player
@@ -843,6 +854,19 @@ impl App {
                 egui::FontId::proportional(13.0),
                 note_color,
             );
+        } else if player_waiting_frame {
+            // The first frame is still decoding: the same shared
+            // spinner the byte-loading state uses, in the frame
+            // centre, instead of transport controls for a frame
+            // that is not on screen yet.
+            let spinner_rect =
+                egui::Rect::from_center_size(frame_rect.center(), egui::Vec2::splat(36.0));
+            let mut slot = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(spinner_rect)
+                    .layout(egui::Layout::top_down(egui::Align::Center)),
+            );
+            crate::widgets::spinner(&mut slot, 28.0);
         } else if has_player {
             // Transport: a play/pause disc over the frame, and a
             // seek bar with real positions under it.
@@ -950,12 +974,12 @@ impl App {
                     // without waiting for input.
                     let spinner_rect =
                         egui::Rect::from_center_size(frame_rect.center(), egui::Vec2::splat(36.0));
-                    ui.new_child(
+                    let mut slot = ui.new_child(
                         egui::UiBuilder::new()
                             .max_rect(spinner_rect)
                             .layout(egui::Layout::top_down(egui::Align::Center)),
-                    )
-                    .add(egui::Spinner::new().size(28.0));
+                    );
+                    crate::widgets::spinner(&mut slot, 28.0);
                     ui.ctx().request_repaint_after(std::time::Duration::from_millis(60));
                 }
                 crate::media::VideoPlayRoute::Ready => {}

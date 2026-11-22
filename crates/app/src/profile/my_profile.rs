@@ -452,10 +452,11 @@ pub fn draw_my_profile_panel(
                     });
                 }
                 MyProfileMode::Live if state.account.is_none() => {
-                    ui.label(
-                        RichText::new(crate::i18n::t("profile.my_loading"))
-                            .size(13.0)
-                            .color(rgb(t.text_secondary)),
+                    crate::widgets::loading_row(
+                        ui,
+                        &crate::i18n::t("profile.my_loading"),
+                        13.0,
+                        t.text_secondary,
                     );
                     ui.add_space(16.0);
                     ui.horizontal(|ui| {
@@ -618,10 +619,11 @@ fn draw_editor_form(
         match &state.save_phase {
             SavePhase::Saving => {
                 ui.add_space(10.0);
-                ui.label(
-                    RichText::new(crate::i18n::t("profile.my_saving"))
-                        .size(12.0)
-                        .color(rgb(t.text_secondary)),
+                crate::widgets::loading_row(
+                    ui,
+                    &crate::i18n::t("profile.my_saving"),
+                    12.0,
+                    t.text_secondary,
                 );
             }
             SavePhase::Failed(message) => {

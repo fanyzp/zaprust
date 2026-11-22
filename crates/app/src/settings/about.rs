@@ -44,6 +44,12 @@ impl App {
                 }
                 UpdatePhase::Failed(e) => e.user_message(),
             };
+            // The busy phases render through the shared loading
+            // row, so a check or download in flight reads as
+            // waiting like every other wait in the app instead of
+            // as static status text.
+            let waiting =
+                matches!(self.update.phase, UpdatePhase::Checking | UpdatePhase::Downloading);
             row_hl(
                 ui,
                 &mut self.settings_highlight,
@@ -53,7 +59,11 @@ impl App {
                 "Status",
                 "",
                 |ui| {
-                    ui.label(RichText::new(status).color(rgb(t.text_secondary)));
+                    if waiting {
+                        crate::widgets::loading_row(ui, &status, 14.0, t.text_secondary);
+                    } else {
+                        ui.label(RichText::new(status).color(rgb(t.text_secondary)));
+                    }
                 },
             );
             if let (UpdatePhase::Available, Some(r)) = (&self.update.phase, &self.update.release) {

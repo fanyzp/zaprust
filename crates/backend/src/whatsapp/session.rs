@@ -264,6 +264,16 @@ pub(super) async fn run_async(
 
     let bot = match Bot::builder()
         .with_backend(store)
+        // The linked-device identity the phone shows in its
+        // Linked devices list. Without this override the library
+        // presents its own defaults (os "rust", platform Unknown)
+        // and the account owner sees an unknown device; the
+        // documented mechanism is DevicePropsOverride (library
+        // bot.rs, `with_device_props`). Applied at pairing time
+        // only, which is the library's contract.
+        .with_device_props(
+            whatsapp_rust::wacore::store::DevicePropsOverride::new().with_os("ZapRust".to_owned()),
+        )
         // Arrival order matters here: the callbacks below upsert
         // messages and apply their receipts, and a receipt that
         // overtakes its upsert lands on a message that does not

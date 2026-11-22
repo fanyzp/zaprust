@@ -116,6 +116,7 @@ impl eframe::App for App {
         crate::profile::my_profile_sync_photo(&ctx, &mut self.my_profile, profile_mode);
         self.draw_account_menu(ui);
         self.draw_my_profile(&ctx);
+        self.draw_status_composer(&ctx);
         self.draw_photo_viewer(ui);
         self.draw_call_overlay(&ctx);
         self.draw_banners(ui);
@@ -171,7 +172,7 @@ impl App {
     /// it never opens, marks read, or disturbs the foreign chat.
     /// In single-pane mode a back chevron at the top returns to
     /// the filtered list, mirroring the conversation header.
-    fn draw_conversation_placeholder(&mut self, root: &mut egui::Ui) {
+    pub(crate) fn draw_conversation_placeholder(&mut self, root: &mut egui::Ui) {
         let t = self.tokens();
         egui::CentralPanel::default().frame(egui::Frame::new().fill(rgb(t.bg_chat))).show(
             root,

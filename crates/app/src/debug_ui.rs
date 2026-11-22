@@ -90,6 +90,12 @@ impl App {
             BackendEvent::PinFailed { message, .. } => {
                 ("message", format!("PinFailed {message}"), None)
             }
+            BackendEvent::StatusPosted { .. } => {
+                ("message", "StatusPosted (text redacted)".to_owned(), None)
+            }
+            BackendEvent::StatusPostFailed { message, .. } => {
+                ("message", format!("StatusPostFailed {message}"), None)
+            }
             BackendEvent::PollVote { chat_jid, selected, .. } => (
                 "message",
                 format!("PollVote in {chat_jid}: {} option(s) selected", selected.len()),

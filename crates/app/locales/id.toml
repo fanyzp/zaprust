@@ -34,6 +34,17 @@
 
 # ---- updates (status) ----
 "updates.empty" = "Belum ada pembaruan status"
+"updates.my_status" = "Status saya"
+"updates.add_prompt" = "Tambahkan pembaruan status"
+"updates.recent" = "Pembaruan terkini"
+"updates.composer_title" = "Status baru"
+"updates.composer_hint" = "Ketik status"
+"updates.post" = "Posting"
+"updates.posted" = "Status terkirim."
+"updates.posting" = "Memposting..."
+"updates.empty_error" = "Ketik status terlebih dahulu."
+"updates.no_recipients" = "Belum ada kontak untuk diposting. Status dibagikan ke orang yang mengobrol dengan Anda."
+"updates.demo_note" = "Mode uji: status hanya disimpan di perangkat ini."
 
 # ---- chat list ----
 "chats.search_hint" = "Cari"

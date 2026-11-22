@@ -1935,6 +1935,12 @@ impl crate::state::App {
                 }
                 self.notice = Some(human_error(&message));
             }
+            BackendEvent::StatusPosted { text } => {
+                self.apply_status_posted(text);
+            }
+            BackendEvent::StatusPostFailed { message } => {
+                self.apply_status_post_failed(message);
+            }
             BackendEvent::PollVote { chat_jid, message_id: pid, voter_jid, from_me, selected } => {
                 self.apply_poll_vote(&chat_jid, &pid, &voter_jid, from_me, &selected);
             }

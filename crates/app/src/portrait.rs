@@ -216,25 +216,6 @@ impl App {
         }
     }
 
-    /// The Updates page: the bottom bar's second tab. Status
-    /// is an unbuilt parity feature, so the page is honest
-    /// about that: the localized title and the empty state, no
-    /// fabricated statuses. It fills the content area in every
-    /// layout mode (on desktop the rail keeps it company).
-    pub(crate) fn draw_updates(&mut self, root: &mut egui::Ui) {
-        let t = self.tokens();
-        egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(rgb(t.bg_panel)).inner_margin(Margin::symmetric(16, 14)))
-            .show(root, |ui| {
-                ui.label(
-                    egui::RichText::new(crate::i18n::t("nav.updates"))
-                        .font(crate::theme::semibold(20.0))
-                        .color(rgb(t.text_primary)),
-                );
-                crate::widgets::empty_state(ui, t, &crate::i18n::t("updates.empty"));
-            });
-    }
-
     /// The new-chat floating action button: floats at the chat
     /// list's bottom right, above the floating bar. It triggers
     /// the chat list header's own compose action (the

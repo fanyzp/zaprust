@@ -539,6 +539,31 @@ pub(crate) enum VoiceFetchState {
     Failed,
 }
 
+/// Updates (status) state: my own posted status for this
+/// session, and the status composer modal's form state. Other
+/// people's statuses are not part of this state: the pinned
+/// library cannot fetch them, so the screen renders an honest
+/// empty state for the feed instead (see updates.rs).
+pub(crate) struct UpdatesState {
+    /// The text status I posted this session, once a post has
+    /// succeeded (through the backend, or locally in demo
+    /// mode). Session-scoped on purpose: nothing persists it,
+    /// so a restart starts from the add prompt again.
+    pub(crate) my_status: Option<String>,
+    /// The status composer modal is open.
+    pub(crate) composer_open: bool,
+    /// The status composer modal's text field.
+    pub(crate) draft: String,
+    /// The status composer modal's inline error: a validation
+    /// refusal, or the backend's answer after a failed live post.
+    pub(crate) error: Option<String>,
+    /// A live post is in flight: the command was sent and its
+    /// result event has not landed yet. The composer stays open
+    /// and inert meanwhile, so a failure lands inside it instead
+    /// of behind a closed dialog.
+    pub(crate) posting: bool,
+}
+
 pub(crate) struct MediaState {
     /// Lazily-created demo photo texture.
     pub(crate) photo_texture: Option<egui::TextureHandle>,
@@ -863,6 +888,8 @@ pub(crate) struct App {
     pub(crate) starred_search: String,
     /// Calls state: the call log behind the Calls panel, its search and filters, the new-call picker, and the one live call's UI state.
     pub(crate) calls: CallsState,
+    /// Updates state: my posted status for the session and the status composer modal's form state.
+    pub(crate) updates: UpdatesState,
     /// Composer state: the draft and parked per-chat drafts, staged media and captions, the poll and location drafts, quote and edit targets, and the composer's measured stack heights.
     pub(crate) composer: ComposerState,
     /// The Settings search text (the registry and results live
@@ -1460,6 +1487,13 @@ impl App {
                 picker_open: args.calls_picker,
                 picker_search: String::new(),
                 active: None,
+            },
+            updates: UpdatesState {
+                my_status: None,
+                composer_open: false,
+                draft: String::new(),
+                error: None,
+                posting: false,
             },
             composer: ComposerState {
                 draft: if args.demo_draft {

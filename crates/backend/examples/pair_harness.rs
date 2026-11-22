@@ -33,6 +33,10 @@ fn summarize(event: &BackendEvent) -> String {
         }
         BackendEvent::StarFailed { message, .. } => format!("StarFailed {message}"),
         BackendEvent::PinFailed { message, .. } => format!("PinFailed {message}"),
+        BackendEvent::StatusPosted { .. } => "StatusPosted".to_owned(),
+        BackendEvent::StatusPostFailed { message, .. } => {
+            format!("StatusPostFailed {message}")
+        }
         BackendEvent::PollVote { selected, .. } => {
             format!("PollVote {} option(s)", selected.len())
         }

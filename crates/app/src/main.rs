@@ -66,6 +66,7 @@ mod starred;
 mod state;
 mod theme;
 mod update;
+mod updates;
 mod video;
 mod widgets;
 

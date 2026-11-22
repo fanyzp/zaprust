@@ -34,6 +34,17 @@
 
 # ---- updates (status) ----
 "updates.empty" = "No status updates yet"
+"updates.my_status" = "My status"
+"updates.add_prompt" = "Add a status update"
+"updates.recent" = "Recent updates"
+"updates.composer_title" = "New status"
+"updates.composer_hint" = "Type a status"
+"updates.post" = "Post"
+"updates.posted" = "Status posted."
+"updates.posting" = "Posting..."
+"updates.empty_error" = "Type a status first."
+"updates.no_recipients" = "No contacts to post to yet. A status goes to the people you have chats with."
+"updates.demo_note" = "Test mode: the status is kept on this device only."
 
 # ---- chat list ----
 "chats.search_hint" = "Search"

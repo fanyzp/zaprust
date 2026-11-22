@@ -336,7 +336,11 @@ impl App {
 
     /// The status line under the stepper: a fixed-height slot,
     /// so waiting, confirming, linked and error states swap in
-    /// place without moving anything around them.
+    /// place without moving anything around them. The slot is
+    /// fixed-width for the same reason, and its labels
+    /// truncate to the slot instead of overflowing it: a long
+    /// line once ran past the wide card's steps pane and slid
+    /// under the QR plate.
     fn connect_status_line(&mut self, ui: &mut egui::Ui, t: Tokens, width: f32) {
         let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 24.0), Sense::hover());
         let mut slot = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(
@@ -384,38 +388,53 @@ impl App {
                     crate::widgets::spinner(&mut slot, 14.0);
                     slot.add_space(6.0);
                 }
-                slot.label(RichText::new(status_text).size(12.5).color(rgb(color)));
+                slot.add(
+                    egui::Label::new(RichText::new(status_text).size(12.5).color(rgb(color)))
+                        .wrap_mode(egui::TextWrapMode::Truncate),
+                );
             } else if self.logged_out {
-                slot.label(
-                    RichText::new("Logged out. Link again to continue.")
-                        .size(12.5)
-                        .color(rgb(t.accent)),
+                slot.add(
+                    egui::Label::new(
+                        RichText::new("Logged out. Link again to continue.")
+                            .size(12.5)
+                            .color(rgb(t.accent)),
+                    )
+                    .wrap_mode(egui::TextWrapMode::Truncate),
                 );
             }
             return;
         }
         match self.pair_mode {
             PairMode::Qr => {
-                slot.label(
-                    RichText::new("Demo mode. There is no code to scan here.")
-                        .size(12.5)
-                        .color(rgb(t.text_secondary)),
+                slot.add(
+                    egui::Label::new(
+                        RichText::new("Demo mode. There is no code to scan here.")
+                            .size(12.5)
+                            .color(rgb(t.text_secondary)),
+                    )
+                    .wrap_mode(egui::TextWrapMode::Truncate),
                 );
             }
             PairMode::Code if self.pair_code_shown => {
                 crate::widgets::spinner(&mut slot, 14.0);
                 slot.add_space(6.0);
-                slot.label(
-                    RichText::new("Waiting for the code to be entered on your phone\u{2026}")
-                        .size(12.5)
-                        .color(rgb(t.text_secondary)),
+                slot.add(
+                    egui::Label::new(
+                        RichText::new("Waiting for the code to be entered on your phone\u{2026}")
+                            .size(12.5)
+                            .color(rgb(t.text_secondary)),
+                    )
+                    .wrap_mode(egui::TextWrapMode::Truncate),
                 );
             }
             PairMode::Code => {
-                slot.label(
-                    RichText::new("Enter your phone number to get a pairing code.")
-                        .size(12.5)
-                        .color(rgb(t.text_secondary)),
+                slot.add(
+                    egui::Label::new(
+                        RichText::new("Enter your phone number to get a pairing code.")
+                            .size(12.5)
+                            .color(rgb(t.text_secondary)),
+                    )
+                    .wrap_mode(egui::TextWrapMode::Truncate),
                 );
             }
         }

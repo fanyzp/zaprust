@@ -926,7 +926,10 @@ pub(crate) fn message_bubble(
                 };
             }
         }
-        let painter = ui.painter();
+        // The painter is cloned, not borrowed: the media
+        // tiles below hand the ui to a child for the shared
+        // loading spinner while the painter is still in use.
+        let painter = ui.painter().clone();
         let bubble_fill = if mine { t.bubble_out } else { t.bubble_in };
         let bubble_color = rgb(bubble_fill);
         // Depth: the bubble shadow tier under the bubble, a

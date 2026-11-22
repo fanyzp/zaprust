@@ -654,9 +654,7 @@ pub(super) fn classify_message(
 }
 
 /// Classifies one already-unwrapped protocol message.
-fn classify_unwrapped(
-    msg: &whatsapp_rust::prelude::wa::Message,
-) -> (LiveMessageKind, bool) {
+fn classify_unwrapped(msg: &whatsapp_rust::prelude::wa::Message) -> (LiveMessageKind, bool) {
     if let Some(poll) =
         msg.poll_creation_message.as_option().or_else(|| msg.poll_creation_message_v3.as_option())
     {
@@ -1316,17 +1314,13 @@ mod live_pairing_fix_tests {
     fn device_sent_photo_classifies_as_media() {
         let (kind, view_once) = classify_message(&wrap_device_sent(image_proto(None)));
         assert!(!view_once);
-        assert!(matches!(
-            kind,
-            LiveMessageKind::Media { media: MediaKind::Photo, .. }
-        ));
+        assert!(matches!(kind, LiveMessageKind::Media { media: MediaKind::Photo, .. }));
         assert_eq!(body_for(&kind, view_once, None), "Photo");
     }
 
     #[test]
     fn device_sent_photo_caption_becomes_the_body() {
-        let (kind, view_once) =
-            classify_message(&wrap_device_sent(image_proto(Some("beach day"))));
+        let (kind, view_once) = classify_message(&wrap_device_sent(image_proto(Some("beach day"))));
         assert_eq!(body_for(&kind, view_once, None), "beach day");
     }
 
@@ -1341,12 +1335,7 @@ mod live_pairing_fix_tests {
         assert_eq!(body_for(&kind, view_once, None), "Photo");
     }
 
-    fn history_info(
-        id: &str,
-        from_me: bool,
-        ts: u64,
-        message: wa::Message,
-    ) -> wa::WebMessageInfo {
+    fn history_info(id: &str, from_me: bool, ts: u64, message: wa::Message) -> wa::WebMessageInfo {
         let mut key = wa::MessageKey::default();
         key.id = Some(id.to_owned());
         key.from_me = Some(from_me);

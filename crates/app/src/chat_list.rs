@@ -199,11 +199,9 @@ impl App {
                         ui.add_space(8.0);
                     } else if session.syncing {
                         let label = match session.sync_percent {
-                            Some(p) => crate::i18n::tf(
-                                "chats.syncing_percent",
-                                "percent",
-                                &p.to_string(),
-                            ),
+                            Some(p) => {
+                                crate::i18n::tf("chats.syncing_percent", "percent", &p.to_string())
+                            }
                             None => crate::i18n::t("chats.syncing"),
                         };
                         crate::widgets::loading_row(ui, &label, 12.5, t.text_secondary);

@@ -72,8 +72,7 @@ pub(crate) fn ensure_desktop_integration() {
     let entry = desktop_entry(&exec_path);
     let _ = write_if_changed(&data.join("applications/zaprust.desktop"), entry.as_bytes());
     for (size, bytes) in icon_payloads() {
-        let path = data
-            .join(format!("icons/hicolor/{size}x{size}/apps/zaprust.png"));
+        let path = data.join(format!("icons/hicolor/{size}x{size}/apps/zaprust.png"));
         let _ = write_if_changed(&path, bytes);
     }
 }

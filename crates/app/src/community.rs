@@ -543,7 +543,7 @@ impl App {
                     }
                     ui.label(
                         RichText::new(crate::i18n::t("communities.title"))
-                            .font(crate::theme::semibold(17.0))
+                            .font(crate::theme::medium(16.0))
                             .color(rgb(t.text_primary)),
                     );
                 });

@@ -744,9 +744,7 @@ impl App {
                                     bottom: self.nav_scroll_inset() as i8,
                                     ..Default::default()
                                 })
-                                .show(
-                                ui,
-                                |ui| {
+                                .show(ui, |ui| {
                                     for row in &rows {
                                         let entry = row.entry;
                                         let chat: Option<&Chat> =
@@ -762,8 +760,7 @@ impl App {
                                             open = Some((entry.chat_id, entry.kind));
                                         }
                                     }
-                                },
-                            );
+                                });
                         }
                     },
                 );
@@ -902,22 +899,22 @@ impl App {
                             ..Default::default()
                         })
                         .show(ui, |ui| {
-                        for row in &rows {
-                            let entry = row.entry;
-                            let chat: Option<&Chat> =
-                                self.chats.iter().find(|c| c.id == entry.chat_id);
-                            if draw_call_row(
-                                ui,
-                                t,
-                                entry,
-                                row.count,
-                                chat,
-                                chat.and_then(|c| photos.get(&c.id).copied()),
-                            ) {
-                                open = Some((entry.chat_id, entry.kind));
+                            for row in &rows {
+                                let entry = row.entry;
+                                let chat: Option<&Chat> =
+                                    self.chats.iter().find(|c| c.id == entry.chat_id);
+                                if draw_call_row(
+                                    ui,
+                                    t,
+                                    entry,
+                                    row.count,
+                                    chat,
+                                    chat.and_then(|c| photos.get(&c.id).copied()),
+                                ) {
+                                    open = Some((entry.chat_id, entry.kind));
+                                }
                             }
-                        }
-                    });
+                        });
                 }
             });
         crate::widgets::soft_right_edge(root, panel.response.rect, t);

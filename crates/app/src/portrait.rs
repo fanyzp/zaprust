@@ -119,7 +119,11 @@ impl App {
     /// it is hidden, so full-screen pages keep their full
     /// scrollable extent.
     pub(crate) fn nav_scroll_inset(&self) -> f32 {
-        if self.bottom_nav_visible() { NAV_SCROLL_INSET } else { 0.0 }
+        if self.bottom_nav_visible() {
+            NAV_SCROLL_INSET
+        } else {
+            0.0
+        }
     }
 
     /// Whether the new-chat FAB floats over the chat list:

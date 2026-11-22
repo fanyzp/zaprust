@@ -635,74 +635,19 @@ impl App {
                         ..Default::default()
                     })
                     .show(ui, |ui| {
-                    // The lead row: New community, in the same row
-                    // language as the community rows below it (a
-                    // squircle where their cover thumbs sit, the
-                    // same label position, the same chevron). It
-                    // opens the create form; the backend exposes a
-                    // real creation command, so the row is a working
-                    // entry, not a placeholder.
-                    let (rect, resp) = ui
-                        .allocate_exact_size(Vec2::new(ui.available_width(), 62.0), Sense::click());
-                    let hov = crate::anim::hover_factor(ui, "community_new_row", resp.hovered());
-                    if hov > 0.001 {
-                        ui.painter().rect_filled(
-                            rect,
-                            CornerRadius::same(10),
-                            crate::theme::glass_wash(t, t.bg_panel_alt, (hov * 115.0) as u8),
-                        );
-                    }
-                    let thumb = egui::Rect::from_min_size(
-                        Pos2::new(rect.left() + 8.0, rect.center().y - 24.0),
-                        Vec2::splat(48.0),
-                    );
-                    ui.painter().rect_filled(thumb, CornerRadius::same(10), rgb(t.bg_panel_alt));
-                    crate::icons::draw(
-                        ui.painter(),
-                        crate::icons::Icon::Plus,
-                        thumb.center(),
-                        crate::icons::SIZE_TAB,
-                        rgb(t.accent),
-                        rgb(t.bg_panel_alt),
-                    );
-                    ui.painter().text(
-                        Pos2::new(thumb.right() + 12.0, rect.center().y),
-                        egui::Align2::LEFT_CENTER,
-                        crate::i18n::t("community.new"),
-                        crate::theme::semibold(15.0),
-                        rgb(t.text_primary),
-                    );
-                    crate::icons::draw(
-                        ui.painter(),
-                        crate::icons::Icon::ChevronRight,
-                        Pos2::new(rect.right() - 18.0, rect.center().y),
-                        crate::icons::SIZE_CONTROL,
-                        rgb(t.text_faint),
-                        rgb(t.bg_panel),
-                    );
-                    if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-                        create_new = true;
-                    }
-                    if communities.is_empty() {
-                        ui.add_space(24.0);
-                        ui.label(
-                            RichText::new(crate::i18n::t("communities.empty"))
-                                .size(13.5)
-                                .color(rgb(t.text_secondary)),
-                        );
-                    }
-                    for community in &communities {
-                        let total =
-                            community.group_chat_ids.len() + community.other_group_ids.len();
+                        // The lead row: New community, in the same row
+                        // language as the community rows below it (a
+                        // squircle where their cover thumbs sit, the
+                        // same label position, the same chevron). It
+                        // opens the create form; the backend exposes a
+                        // real creation command, so the row is a working
+                        // entry, not a placeholder.
                         let (rect, resp) = ui.allocate_exact_size(
                             Vec2::new(ui.available_width(), 62.0),
                             Sense::click(),
                         );
-                        let hov = crate::anim::hover_factor(
-                            ui,
-                            ("community_overview_row", community.id),
-                            resp.hovered(),
-                        );
+                        let hov =
+                            crate::anim::hover_factor(ui, "community_new_row", resp.hovered());
                         if hov > 0.001 {
                             ui.painter().rect_filled(
                                 rect,
@@ -710,48 +655,29 @@ impl App {
                                 crate::theme::glass_wash(t, t.bg_panel_alt, (hov * 115.0) as u8),
                             );
                         }
-                        // Cover thumb: the demo photo center-cropped
-                        // into a small rounded rect, or the seed color.
                         let thumb = egui::Rect::from_min_size(
                             Pos2::new(rect.left() + 8.0, rect.center().y - 24.0),
                             Vec2::splat(48.0),
                         );
-                        match &cover {
-                            Some(tex) => {
-                                egui::Image::new(tex)
-                                    .uv(center_crop_uv(thumb.size()))
-                                    .corner_radius(10)
-                                    .paint_at(ui, thumb);
-                            }
-                            None => {
-                                ui.painter().rect_filled(
-                                    thumb,
-                                    CornerRadius::same(10),
-                                    crate::widgets::avatar_color(community.avatar_seed),
-                                );
-                            }
-                        }
-                        let text_left = thumb.right() + 12.0;
-                        let name_budget = (rect.right() - 40.0 - text_left).max(0.0);
-                        let name_text = crate::widgets::ellipsize(
-                            ui,
-                            &community.name,
-                            crate::theme::semibold(15.0),
-                            name_budget,
+                        ui.painter().rect_filled(
+                            thumb,
+                            CornerRadius::same(10),
+                            rgb(t.bg_panel_alt),
+                        );
+                        crate::icons::draw(
+                            ui.painter(),
+                            crate::icons::Icon::Plus,
+                            thumb.center(),
+                            crate::icons::SIZE_TAB,
+                            rgb(t.accent),
+                            rgb(t.bg_panel_alt),
                         );
                         ui.painter().text(
-                            Pos2::new(text_left, rect.center().y - 10.0),
+                            Pos2::new(thumb.right() + 12.0, rect.center().y),
                             egui::Align2::LEFT_CENTER,
-                            name_text,
+                            crate::i18n::t("community.new"),
                             crate::theme::semibold(15.0),
                             rgb(t.text_primary),
-                        );
-                        ui.painter().text(
-                            Pos2::new(text_left, rect.center().y + 12.0),
-                            egui::Align2::LEFT_CENTER,
-                            crate::i18n::tf("community.groups_count", "count", &total.to_string()),
-                            FontId::proportional(12.5),
-                            rgb(t.text_faint),
                         );
                         crate::icons::draw(
                             ui.painter(),
@@ -762,10 +688,99 @@ impl App {
                             rgb(t.bg_panel),
                         );
                         if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-                            open = Some(community.id);
+                            create_new = true;
                         }
-                    }
-                });
+                        if communities.is_empty() {
+                            ui.add_space(24.0);
+                            ui.label(
+                                RichText::new(crate::i18n::t("communities.empty"))
+                                    .size(13.5)
+                                    .color(rgb(t.text_secondary)),
+                            );
+                        }
+                        for community in &communities {
+                            let total =
+                                community.group_chat_ids.len() + community.other_group_ids.len();
+                            let (rect, resp) = ui.allocate_exact_size(
+                                Vec2::new(ui.available_width(), 62.0),
+                                Sense::click(),
+                            );
+                            let hov = crate::anim::hover_factor(
+                                ui,
+                                ("community_overview_row", community.id),
+                                resp.hovered(),
+                            );
+                            if hov > 0.001 {
+                                ui.painter().rect_filled(
+                                    rect,
+                                    CornerRadius::same(10),
+                                    crate::theme::glass_wash(
+                                        t,
+                                        t.bg_panel_alt,
+                                        (hov * 115.0) as u8,
+                                    ),
+                                );
+                            }
+                            // Cover thumb: the demo photo center-cropped
+                            // into a small rounded rect, or the seed color.
+                            let thumb = egui::Rect::from_min_size(
+                                Pos2::new(rect.left() + 8.0, rect.center().y - 24.0),
+                                Vec2::splat(48.0),
+                            );
+                            match &cover {
+                                Some(tex) => {
+                                    egui::Image::new(tex)
+                                        .uv(center_crop_uv(thumb.size()))
+                                        .corner_radius(10)
+                                        .paint_at(ui, thumb);
+                                }
+                                None => {
+                                    ui.painter().rect_filled(
+                                        thumb,
+                                        CornerRadius::same(10),
+                                        crate::widgets::avatar_color(community.avatar_seed),
+                                    );
+                                }
+                            }
+                            let text_left = thumb.right() + 12.0;
+                            let name_budget = (rect.right() - 40.0 - text_left).max(0.0);
+                            let name_text = crate::widgets::ellipsize(
+                                ui,
+                                &community.name,
+                                crate::theme::semibold(15.0),
+                                name_budget,
+                            );
+                            ui.painter().text(
+                                Pos2::new(text_left, rect.center().y - 10.0),
+                                egui::Align2::LEFT_CENTER,
+                                name_text,
+                                crate::theme::semibold(15.0),
+                                rgb(t.text_primary),
+                            );
+                            ui.painter().text(
+                                Pos2::new(text_left, rect.center().y + 12.0),
+                                egui::Align2::LEFT_CENTER,
+                                crate::i18n::tf(
+                                    "community.groups_count",
+                                    "count",
+                                    &total.to_string(),
+                                ),
+                                FontId::proportional(12.5),
+                                rgb(t.text_faint),
+                            );
+                            crate::icons::draw(
+                                ui.painter(),
+                                crate::icons::Icon::ChevronRight,
+                                Pos2::new(rect.right() - 18.0, rect.center().y),
+                                crate::icons::SIZE_CONTROL,
+                                rgb(t.text_faint),
+                                rgb(t.bg_panel),
+                            );
+                            if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                                open = Some(community.id);
+                            }
+                        }
+                    });
             });
         crate::widgets::soft_right_edge(root, panel.response.rect, t);
         if create_new {

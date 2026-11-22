@@ -337,11 +337,7 @@ impl App {
                         bottom: self.nav_scroll_inset() as i8,
                         ..Default::default()
                     })
-                    .show_rows(
-                    ui,
-                    64.0,
-                    visible.len(),
-                    |ui, range| {
+                    .show_rows(ui, 64.0, visible.len(), |ui, range| {
                         for idx in range {
                             let chat = visible[idx];
                             let state = self.row_state_for(chat);
@@ -398,8 +394,7 @@ impl App {
                                 }
                             });
                         }
-                    },
-                );
+                    });
                 let no_visible = visible.is_empty();
                 // End the immutable borrow of `self.chats` held by
                 // `visible` before mutating selection state below.

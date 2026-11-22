@@ -1256,7 +1256,7 @@ fn draw_recording_bar(app: &mut App, ui: &mut egui::Ui, t: Tokens, now: f64, eng
         // The pulsing red dot: a soft two-beat breathing alpha so
         // the bar reads as live without any hard blink.
         let (dot, _) = ui.allocate_exact_size(Vec2::splat(16.0), Sense::hover());
-        let pulse = 0.55 + 0.45 * f32::sin((now * 2.4) as f32);
+        let pulse = 0.55 + 0.45 * f32::sin((now * crate::motion::RECORDING_PULSE_RATE) as f32);
         let red = rgb(t.danger);
         ui.painter().circle_filled(dot.center(), 5.5, fade(red, pulse));
         let label = format!("{:02}:{:02}", secs / 60, secs % 60);

@@ -108,6 +108,18 @@ pub(crate) mod dur {
     pub(crate) const VIEWER: f64 = 280.0;
 }
 
+/// Pulse rates for the continuous sine pulses: the multiplier on
+/// the egui clock (seconds) inside `sin`, so a larger value
+/// breathes faster. They live here like every other motion
+/// parameter, so a surface never invents its own tempo.
+/// The recording bar's live dot: a soft two-beat breathing pace
+/// that reads as recording without a hard blink.
+pub(crate) const RECORDING_PULSE_RATE: f64 = 2.4;
+/// The GIF picker's pending-preview skeleton tiles: a slightly
+/// slower breath than the recording dot, so a grid of tiles reads
+/// as quietly loading rather than blinking in chorus.
+pub(crate) const SKELETON_PULSE_RATE: f64 = 2.2;
+
 /// Ease-out cubic: fast start, gentle landing. `t` is clamped to
 /// [0, 1]; the endpoints are exact.
 #[must_use]

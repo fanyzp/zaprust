@@ -312,7 +312,8 @@ impl App {
                                 // tile (the pulse breathes on a slow
                                 // sine so the grid reads as loading,
                                 // not as broken buttons).
-                                let pulse = 0.55 + 0.3 * f32::sin((now * 2.2) as f32);
+                                let pulse =
+                                    0.55 + 0.3 * f32::sin((now * crate::motion::SKELETON_PULSE_RATE) as f32);
                                 let (rect, _) = ui.allocate_exact_size(
                                     Vec2::new(76.0, 56.0),
                                     egui::Sense::hover(),

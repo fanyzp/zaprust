@@ -6,9 +6,9 @@
 //! [`crate::state::App::draw_profile_dock`] picks a [`ProfileKind`] and renders
 //! the matching body into it.
 //!
-//! Layout language (WhatsApp contact/group info): a large centered
-//! avatar, the name with its badges, a status line, then cards and
-//! full-width rows. The AI variant swaps the rows for a capability
+//! Layout language: a large centered avatar, the name with its
+//! badges, a status line, then flat sections of full-width rows
+//! separated by hairlines. The AI variant swaps the rows for a capability
 //! description and suggestion chips, the way Meta AI presents
 //! itself. Only actions that do something real in the app are
 //! wired; the audio/video rows render because the layout calls for

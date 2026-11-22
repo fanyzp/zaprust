@@ -1187,6 +1187,24 @@ pub(super) async fn run_async(
                         message: format!("Invalid chat address: {e}"),
                     }),
                 },
+                BackendCommand::CreateCommunity { name } => {
+                    match whatsapp_rust::CreateCommunityOptions::new(name.clone()) {
+                        Ok(options) => match client.community().create(options).await {
+                            Ok(result) => {
+                                events.emit(BackendEvent::CommunityCreated {
+                                    jid: result.metadata.id.to_string(),
+                                    name,
+                                });
+                            }
+                            Err(e) => events.emit(BackendEvent::Error {
+                                message: format!("Creating the community failed: {e}"),
+                            }),
+                        },
+                        Err(e) => events.emit(BackendEvent::Error {
+                            message: format!("Creating the community failed: {e}"),
+                        }),
+                    }
+                }
                 BackendCommand::CreateGroup { name, participants } => {
                     let jids: Result<Vec<Jid>, String> =
                         participants.iter().map(|p| parse_address(p)).collect();

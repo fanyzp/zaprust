@@ -633,6 +633,14 @@ pub enum BackendCommand {
         /// True to block, false to unblock.
         block: bool,
     },
+    /// Create a community with the given name. The result comes
+    /// back as a [`BackendEvent::CommunityCreated`] event carrying
+    /// the new community's JID; failures surface as an `Error`
+    /// event.
+    CreateCommunity {
+        /// Community name.
+        name: String,
+    },
     /// Create a group with the given name and participant JIDs (or
     /// bare phone numbers, which the backend normalises).
     CreateGroup {
@@ -1302,6 +1310,16 @@ pub enum BackendEvent {
     },
     /// A chat appeared or changed.
     ChatUpsert(LiveChat),
+    /// A community was created by this client (the answer to
+    /// [`BackendCommand::CreateCommunity`]). The community's
+    /// announcement group shares the community JID, so the JID
+    /// doubles as the announcement chat's address.
+    CommunityCreated {
+        /// JID of the new community (also its announcement group).
+        jid: String,
+        /// The community's name, as created.
+        name: String,
+    },
     /// A message appeared or changed.
     MessageUpsert(LiveMessage),
     /// A message this client sent was accepted by the server, with

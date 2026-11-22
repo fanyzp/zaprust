@@ -606,6 +606,7 @@ impl Backend for FakeBackend {
         // like archive-then-pin compose instead of restarting from
         // the script on every command.
         let mut group_counter: u32 = 0;
+        let mut community_counter: u32 = 0;
         let mut group_state: std::collections::HashMap<String, Vec<(String, String, bool)>> =
             std::collections::HashMap::new();
         // Group invite, approval and join-request state. The
@@ -1335,6 +1336,16 @@ impl Backend for FakeBackend {
                         ephemeral_secs: 0,
                         muted: false,
                     }));
+                }
+                BackendCommand::CreateCommunity { name } => {
+                    if let Some(log) = &command_log {
+                        log.lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .push(format!("create_community:{name}"));
+                    }
+                    community_counter += 1;
+                    let new_jid = format!("300000000{community_counter}@g.us");
+                    events.emit(BackendEvent::CommunityCreated { jid: new_jid, name });
                 }
                 BackendCommand::GroupParticipants { chat_jid, participants, op } => {
                     if let Some(log) = &command_log {

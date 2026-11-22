@@ -5,7 +5,7 @@
 use crate::model::{Chat, ChatKind};
 
 /// A chat-list filter.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum ChatFilter {
     /// Everything except archived chats.
     #[default]
@@ -25,20 +25,6 @@ pub enum ChatFilter {
 }
 
 impl ChatFilter {
-    /// Display label for the filter chip.
-    #[must_use]
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::All => "All",
-            Self::Unread => "Unread",
-            Self::Private => "Private",
-            Self::Favorites => "Favorites",
-            Self::Groups => "Groups",
-            Self::Channels => "Channels",
-            Self::Archived => "Archived",
-        }
-    }
-
     /// Whether a chat passes this filter.
     #[must_use]
     pub fn matches(self, chat: &Chat) -> bool {

@@ -41,6 +41,22 @@ enum RowPick {
 /// prefixes the preview ("Sender: text"); everywhere else the
 /// preview stands alone. Shared by the chat row and the
 /// community home's other-group rows.
+/// The filter chip's label key in the locale system. Chip
+/// labels are interface vocabulary, so they live with the other
+/// interface strings rather than in the data model: the one-to-one
+/// filter reads "Personal", not the model's "Private".
+fn filter_label_key(f: ChatFilter) -> &'static str {
+    match f {
+        ChatFilter::All => "chats.filter_all",
+        ChatFilter::Unread => "chats.filter_unread",
+        ChatFilter::Private => "chats.filter_personal",
+        ChatFilter::Favorites => "chats.filter_favorites",
+        ChatFilter::Groups => "chats.filter_groups",
+        ChatFilter::Channels => "chats.filter_channels",
+        ChatFilter::Archived => "chats.filter_archived",
+    }
+}
+
 pub(crate) fn chat_preview_line(chat: &Chat) -> String {
     match (&chat.preview_sender, chat.kind) {
         (Some(s), ChatKind::Group) => format!("{s}: {}", chat.preview),
@@ -65,12 +81,15 @@ impl App {
             .list_panel(root)
             .frame(egui::Frame::new().fill(rgb(t.bg_panel)).inner_margin(Margin::symmetric(10, 8)))
             .show(root, |ui| {
-                // Header row: the "Chats" title, then the panel
-                // controls on the right (collapse, compose,
-                // settings). No profile avatar here: the rail's
-                // bottom avatar is the single profile entry and
-                // the account menu's only anchor (owner's ruling:
-                // a second one above the search was redundant).
+                // Header row: the "Chats" title, then the list
+                // actions on the right (collapse, new group).
+                // Settings is not here: the rail's Settings entry
+                // is the single entry point, and a second sliders
+                // button in this header duplicated it. No profile
+                // avatar here either: the rail's bottom avatar is
+                // the single profile entry and the account menu's
+                // only anchor (owner's ruling: a second one above
+                // the search was redundant).
                 // Portrait mode swaps the whole row for the phone
                 // header (app name + kebab, or the archived
                 // page's back header); see the helper below.
@@ -80,22 +99,10 @@ impl App {
                     ui.horizontal(|ui| {
                         ui.label(
                             RichText::new(crate::i18n::t("nav.chats"))
-                                .font(crate::theme::semibold(17.0))
+                                .font(crate::theme::medium(16.0))
                                 .color(rgb(t.text_primary)),
                         );
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if crate::widgets::icon_button(
-                                ui,
-                                t,
-                                crate::icons::Icon::Sliders,
-                                28.0,
-                                &crate::i18n::t("nav.settings"),
-                                None,
-                            )
-                            .clicked()
-                            {
-                                self.screen = crate::state::Screen::Settings;
-                            }
                             if crate::widgets::icon_button(
                                 ui,
                                 t,
@@ -136,73 +143,76 @@ impl App {
                     &mut self.search,
                 );
                 ui.add_space(8.0);
-                // The filter chips live on a horizontally scrolling
-                // strip (the Telegram folder pattern): a wrapped row
-                // squeezed the last chip until its label broke
-                // mid-word once the counts made the row too wide.
-                egui::ScrollArea::horizontal()
-                    .id_salt("chat_filter_chips")
-                    .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
-                    .scroll_source(egui::scroll_area::ScrollSource::ALL)
-                    .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            for f in [
-                                ChatFilter::All,
-                                ChatFilter::Unread,
-                                ChatFilter::Private,
-                                ChatFilter::Favorites,
-                                ChatFilter::Groups,
-                            ]
-                            .into_iter()
-                            .chain(
-                                self.chats
+                // The filter chips live on the shared scrolling
+                // chip strip: a wrapped row squeezed the last chip
+                // until its label broke mid-word once the counts
+                // made the row too wide, and a plain clipped row
+                // could leave the selected chip itself cut off at
+                // the panel edge. The strip hides its scrollbar,
+                // fades the clipped edge, and scrolls the selected
+                // chip fully into view when the filter changes.
+                crate::widgets::chip_scroll_row(
+                    ui,
+                    "chat_filter_chips",
+                    t.bg_panel,
+                    self.filter,
+                    |ui| {
+                        let mut selected_resp = None;
+                        for f in [
+                            ChatFilter::All,
+                            ChatFilter::Unread,
+                            ChatFilter::Private,
+                            ChatFilter::Favorites,
+                            ChatFilter::Groups,
+                        ]
+                        .into_iter()
+                        .chain(
+                            self.chats.iter().any(|c| c.archived).then_some(ChatFilter::Archived),
+                        ) {
+                            let selected = self.filter == f;
+                            // Filter chips carry their counts, the
+                            // way mainstream chat clients show them
+                            // (Unread 6, Groups 3, and so on).
+                            let count = match f {
+                                ChatFilter::All | ChatFilter::Archived => 0,
+                                ChatFilter::Unread => self
+                                    .chats
                                     .iter()
-                                    .any(|c| c.archived)
-                                    .then_some(ChatFilter::Archived),
-                            ) {
-                                let selected = self.filter == f;
-                                // Filter chips carry their counts, the
-                                // way mainstream chat clients show them
-                                // (Unread 6, Groups 3, and so on).
-                                let count = match f {
-                                    ChatFilter::All | ChatFilter::Archived => 0,
-                                    ChatFilter::Unread => self
-                                        .chats
-                                        .iter()
-                                        .filter(|c| !c.archived && c.unread > 0)
-                                        .count(),
-                                    ChatFilter::Private => self
-                                        .chats
-                                        .iter()
-                                        .filter(|c| !c.archived && c.kind == ChatKind::Dm)
-                                        .count(),
-                                    ChatFilter::Favorites => self
-                                        .chats
-                                        .iter()
-                                        .filter(|c| !c.archived && c.favorite)
-                                        .count(),
-                                    ChatFilter::Groups => self
-                                        .chats
-                                        .iter()
-                                        .filter(|c| !c.archived && c.kind == ChatKind::Group)
-                                        .count(),
-                                    ChatFilter::Channels => self
-                                        .chats
-                                        .iter()
-                                        .filter(|c| !c.archived && c.kind == ChatKind::Channel)
-                                        .count(),
-                                };
-                                let label = if count > 0 {
-                                    format!("{} {count}", f.label())
-                                } else {
-                                    f.label().to_owned()
-                                };
-                                if chip(ui, &label, selected, t).clicked() {
-                                    self.filter = f;
+                                    .filter(|c| !c.archived && c.unread > 0)
+                                    .count(),
+                                ChatFilter::Private => self
+                                    .chats
+                                    .iter()
+                                    .filter(|c| !c.archived && c.kind == ChatKind::Dm)
+                                    .count(),
+                                ChatFilter::Favorites => {
+                                    self.chats.iter().filter(|c| !c.archived && c.favorite).count()
                                 }
+                                ChatFilter::Groups => self
+                                    .chats
+                                    .iter()
+                                    .filter(|c| !c.archived && c.kind == ChatKind::Group)
+                                    .count(),
+                                ChatFilter::Channels => self
+                                    .chats
+                                    .iter()
+                                    .filter(|c| !c.archived && c.kind == ChatKind::Channel)
+                                    .count(),
+                            };
+                            let name = crate::i18n::t(filter_label_key(f));
+                            let label = if count > 0 { format!("{name} {count}") } else { name };
+                            let resp = chip(ui, &label, selected, t);
+                            let clicked = resp.clicked();
+                            if selected {
+                                selected_resp = Some(resp);
                             }
-                        });
-                    });
+                            if clicked {
+                                self.filter = f;
+                            }
+                        }
+                        selected_resp
+                    },
+                );
                 // Portrait: the archived entry row under the
                 // chips (the phone pattern), shown on the
                 // unfiltered, unsearched list while archived
@@ -449,7 +459,7 @@ impl App {
                 }
                 ui.label(
                     RichText::new(crate::i18n::t("nav.archived"))
-                        .font(crate::theme::semibold(17.0))
+                        .font(crate::theme::medium(16.0))
                         .color(rgb(t.text_primary)),
                 );
                 return;
@@ -550,6 +560,15 @@ impl App {
             }
         } else if let Some(name) = self.typing_names.get(&chat.id) {
             return Some(RowState::Typing(Some(name.clone())));
+        } else if chat.subtitle == "typing…" {
+            // Demo data records a typing contact in the subtitle
+            // (the model's typing exception, where the preview is
+            // the typing label instead of the last message). The
+            // row takes the typing state like any other typing
+            // chat, so the localized typing line replaces the
+            // snippet and no delivery ticks paint beside it: a
+            // receipt glyph has no meaning next to a typing state.
+            return Some(RowState::Typing(None));
         }
         if chat.id == self.selected_chat {
             if !self.composer.draft.trim().is_empty() {
@@ -579,10 +598,11 @@ pub(crate) fn chat_row(
         ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_H), Sense::click());
     // Hover and press washes crossfade through the animation
     // helpers (about 130 ms in, 90 ms press) instead of snapping
-    // between fills. The washes are glass: a translucent tint
-    // over the panel instead of a flat fill swap, deepening from
-    // hover to the pressed step while the pointer is down. The
-    // selected row keeps a steady, stronger wash.
+    // between fills. The fills are the theme's step derivations
+    // off the panel surface, the same language the shared button
+    // uses: hover is one value step up from rest, pressed one
+    // step the other way while the pointer is down. The selected
+    // row keeps its steady, stronger wash, unchanged.
     if selected {
         ui.painter().rect_filled(
             rect,
@@ -597,22 +617,12 @@ pub(crate) fn chat_row(
             response.is_pointer_button_down_on(),
         );
         if hov > 0.001 {
-            ui.painter().rect_filled(
-                rect,
-                CornerRadius::same(10),
-                crate::theme::glass_wash(t, t.bg_panel_alt, (hov * 115.0) as u8),
-            );
+            let fill = core::theme::mix(t.bg_panel, core::theme::hover_step(t.bg_panel), hov);
+            ui.painter().rect_filled(rect, CornerRadius::same(10), rgb(fill));
         }
         if press > 0.001 {
-            ui.painter().rect_filled(
-                rect,
-                CornerRadius::same(10),
-                crate::theme::glass_wash(
-                    t,
-                    core::theme::pressed_step(t.bg_panel_alt),
-                    (press * 80.0) as u8,
-                ),
-            );
+            let fill = core::theme::mix(t.bg_panel, core::theme::pressed_step(t.bg_panel), press);
+            ui.painter().rect_filled(rect, CornerRadius::same(10), rgb(fill));
         }
     }
     let painter = ui.painter();

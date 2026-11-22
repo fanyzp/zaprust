@@ -388,7 +388,7 @@ impl App {
                     }
                     ui.label(
                         RichText::new(crate::i18n::t("nav.calls"))
-                            .font(crate::theme::semibold(17.0))
+                            .font(crate::theme::medium(16.0))
                             .color(rgb(t.text_primary)),
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -797,33 +797,48 @@ impl App {
                 // The All / Missed filter as a chip row: the
                 // reference has no segmented track, so the
                 // filter takes the app's chip shape and sits
-                // subordinate under the header.
-                ui.horizontal(|ui| {
-                    if crate::widgets::chip(
-                        ui,
-                        &crate::i18n::t("calls.all"),
-                        !self.calls.missed_only,
-                        t,
-                    )
-                    .clicked()
-                    {
-                        self.calls.missed_only = false;
-                    }
-                    if crate::widgets::chip(
-                        ui,
-                        &crate::i18n::t("calls.missed"),
-                        self.calls.missed_only,
-                        t,
-                    )
-                    .clicked()
-                    {
-                        self.calls.missed_only = true;
-                    }
-                });
+                // subordinate under the header. It rides the
+                // shared chip strip, like every chip row.
+                crate::widgets::chip_scroll_row(
+                    ui,
+                    "calls_filter_chips",
+                    t.bg_panel,
+                    self.calls.missed_only,
+                    |ui| {
+                        let mut selected_resp = None;
+                        let all = crate::widgets::chip(
+                            ui,
+                            &crate::i18n::t("calls.all"),
+                            !self.calls.missed_only,
+                            t,
+                        );
+                        if !self.calls.missed_only {
+                            selected_resp = Some(all.clone());
+                        }
+                        if all.clicked() {
+                            self.calls.missed_only = false;
+                        }
+                        let missed = crate::widgets::chip(
+                            ui,
+                            &crate::i18n::t("calls.missed"),
+                            self.calls.missed_only,
+                            t,
+                        );
+                        if self.calls.missed_only {
+                            selected_resp = Some(missed.clone());
+                        }
+                        if missed.clicked() {
+                            self.calls.missed_only = true;
+                        }
+                        selected_resp
+                    },
+                );
                 ui.add_space(12.0);
                 // Shortcut circles, scrolling horizontally
-                // past the right edge like the reference row.
-                egui::ScrollArea::horizontal()
+                // past the right edge like the reference row,
+                // with the shared strip edge fade where the row
+                // is clipped instead of a circle cut in half.
+                let shortcuts = egui::ScrollArea::horizontal()
                     .id_salt("calls_shortcuts")
                     .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
                     .show(ui, |ui| {
@@ -868,6 +883,18 @@ impl App {
                             }
                         });
                     });
+                {
+                    let offset = shortcuts.state.clamped_offset().x;
+                    let max_offset =
+                        (shortcuts.content_size.x - shortcuts.inner_rect.width()).max(0.0);
+                    crate::widgets::strip_edge_fades(
+                        ui.painter(),
+                        shortcuts.inner_rect,
+                        t.bg_panel,
+                        offset > 0.5,
+                        offset < max_offset - 0.5,
+                    );
+                }
                 ui.add_space(14.0);
                 if source_empty {
                     calls_empty_state(ui, t);

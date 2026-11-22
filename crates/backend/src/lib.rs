@@ -2029,7 +2029,7 @@ fn supervise<F>(
         });
     if pump.is_err() {
         sink.emit(BackendEvent::Error {
-            message: "The connection worker could not start. Restart Zaprust.".to_owned(),
+            message: "The connection could not start. Restart Zaprust.".to_owned(),
         });
         return;
     }
@@ -2144,7 +2144,7 @@ fn supervise<F>(
             }
             sink.emit(BackendEvent::Crashed { summary, restarted: false });
             sink.emit(BackendEvent::Error {
-                message: "The connection worker failed twice and stopped. \
+                message: "The connection failed twice and stopped. \
                           Restart Zaprust to reconnect."
                     .to_owned(),
             });

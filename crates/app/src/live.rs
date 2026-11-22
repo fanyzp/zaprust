@@ -50,7 +50,7 @@ impl LinkStatus {
     /// Short status line for the connect screen.
     pub(crate) fn label(&self) -> String {
         match self {
-            Self::Starting => "Starting the connection worker…".to_owned(),
+            Self::Starting => "Connecting…".to_owned(),
             Self::WaitingQr => "Waiting for scan, point your phone at the code.".to_owned(),
             Self::CodeReady => "Code ready, enter it on your phone.".to_owned(),
             Self::Linked => "Linked, this computer is connected.".to_owned(),
@@ -60,7 +60,7 @@ impl LinkStatus {
                 format!("This account is temporarily banned (reason {code}).")
             }
             Self::Lost(reason) => reason.clone(),
-            Self::Crashed(summary) => format!("Connection worker crashed: {summary}"),
+            Self::Crashed(summary) => format!("The connection stopped: {summary}"),
             Self::Failed(message) => message.clone(),
         }
     }
@@ -4565,6 +4565,35 @@ pub(crate) fn chat_to_live(chat: &Chat, jid: &str, timestamp: i64) -> LiveChat {
 }
 
 #[cfg(test)]
+mod link_status_label_tests {
+    use super::LinkStatus;
+
+    #[test]
+    fn status_labels_never_narrate_the_machinery() {
+        // The connect screen's status line is user guidance, not
+        // a log: no label may name the connection worker or any
+        // other implementation part.
+        let statuses = [
+            LinkStatus::Starting,
+            LinkStatus::WaitingQr,
+            LinkStatus::CodeReady,
+            LinkStatus::Linked,
+            LinkStatus::LoggingOut,
+            LinkStatus::LoggedOut,
+            LinkStatus::Banned(401),
+            LinkStatus::Lost("Connection lost.".to_owned()),
+            LinkStatus::Crashed("summary".to_owned()),
+            LinkStatus::Failed("message".to_owned()),
+        ];
+        for status in statuses {
+            let label = status.label();
+            assert!(!label.to_lowercase().contains("worker"), "label: {label}");
+        }
+        assert_eq!(LinkStatus::Starting.label(), "Connecting…");
+    }
+}
+
+#[cfg(test)]
 mod day_label_tests {
     use super::civil_from_days;
 
@@ -9040,7 +9069,7 @@ mod logout_tests {
         let (mut app, tx, ctx, _cmd_rx) = live_app();
         app.live.as_mut().unwrap().fake = false;
         app.live.as_mut().unwrap().status =
-            LinkStatus::Failed("The connection worker failed twice and stopped.".to_owned());
+            LinkStatus::Failed("The connection failed twice and stopped.".to_owned());
         drop(tx);
         app.poll_backend(&ctx);
         assert!(app.live.is_some(), "the failure state is kept");

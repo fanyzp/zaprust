@@ -232,7 +232,8 @@
 "connect.scan" = "Scan to link your account"
 "connect.use_code" = "Use a pairing code instead"
 "connect.use_qr" = "Use a QR code instead"
-"connect.waiting_qr" = "Waiting for WhatsApp to send a QR code…"
+"connect.waiting_qr" = "Preparing your QR code…"
+"connect.waiting_code" = "Preparing your pairing code…"
 "connect.cancel" = "Cancel"
 
 # ---- profile panel ----

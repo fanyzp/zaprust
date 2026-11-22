@@ -64,10 +64,10 @@ impl App {
                 let area = ui.max_rect();
                 let painter = ui.painter().clone();
                 let bar = egui::Rect::from_min_size(area.min, Vec2::new(area.width(), 46.0));
-                painter.line_segment(
-                    [Pos2::new(bar.left(), bar.bottom()), Pos2::new(bar.right(), bar.bottom())],
-                    Stroke::new(1.0_f32, rgb(t.border)),
-                );
+                // No divider under the bar: the bar and the body
+                // share the app ground, and a flat surface is
+                // separated by geometry and spacing, not a line
+                // (design standard, hairline discipline).
                 painter.circle_filled(
                     Pos2::new(bar.left() + 30.0, bar.center().y),
                     11.0,
@@ -111,10 +111,9 @@ impl App {
                     Pos2::new(area.left(), area.bottom() - 38.0),
                     Vec2::new(area.width(), 38.0),
                 );
-                painter.line_segment(
-                    [footer.left_top(), footer.right_top()],
-                    Stroke::new(1.0_f32, rgb(t.border)),
-                );
+                // No line above the footer either, for the
+                // same reason: the strip's geometry and the
+                // faint disclaimer text delimit it.
                 painter.text(
                     Pos2::new(footer.left() + 20.0, footer.center().y),
                     Align2::LEFT_CENTER,
@@ -1201,7 +1200,7 @@ fn steps_stepper(ui: &mut egui::Ui, t: Tokens, items: &[&str], complete: bool) {
             let from = Pos2::new(rect.left() + cell_w * (i as f32 - 0.5) + 14.0, cy);
             let to = Pos2::new(rect.left() + cell_w * (i as f32 + 0.5) - 14.0, cy);
             let col = if complete { rgb(t.accent) } else { rgb(t.border) };
-            painter.line_segment([from, to], Stroke::new(1.5_f32, col));
+            painter.line_segment([from, to], Stroke::new(1.0_f32, col));
         }
     }
     for (i, text) in items.iter().enumerate() {
@@ -1232,7 +1231,7 @@ fn steps_column(ui: &mut egui::Ui, t: Tokens, items: &[&str], complete: bool) {
             let from = Pos2::new(cx, rect.top() + row_h * (i as f32 - 0.5) + 14.0);
             let to = Pos2::new(cx, rect.top() + row_h * (i as f32 + 0.5) - 14.0);
             let col = if complete { rgb(t.accent) } else { rgb(t.border) };
-            painter.line_segment([from, to], Stroke::new(1.5_f32, col));
+            painter.line_segment([from, to], Stroke::new(1.0_f32, col));
         }
     }
     for (i, text) in items.iter().enumerate() {

@@ -209,10 +209,9 @@ impl App {
                     // metrics): avatar, title line with the date at
                     // the right inset, snippet line, and a star
                     // marker where the chat row keeps its badges.
-                    // A hairline divider under the text column
-                    // separates consecutive rows.
-                    let last = visible.len() - 1;
-                    for (idx, (chat_id, title, msg)) in visible.iter().enumerate() {
+                    // Rows separate by spacing and hover fill
+                    // alone, like every other flat list.
+                    for (chat_id, title, msg) in visible.iter() {
                         let (rect, resp) = ui.allocate_exact_size(
                             Vec2::new(ui.available_width(), crate::chat_list::ROW_H),
                             Sense::click(),
@@ -327,13 +326,7 @@ impl App {
                             rgb(t.accent),
                             rgb(t.bg_panel),
                         );
-                        if idx < last {
-                            painter.hline(
-                                text_left..=(rect.right() - 6.0),
-                                rect.bottom() - 0.5,
-                                egui::Stroke::new(1.0, rgb(t.border)),
-                            );
-                        }
+
                         if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                             open = Some((*chat_id, msg.id));
                         }

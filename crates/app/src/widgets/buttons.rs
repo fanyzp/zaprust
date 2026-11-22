@@ -10,7 +10,8 @@ use eframe::egui::{self, Color32, CornerRadius, FontId, Sense, Stroke, Vec2};
 pub(crate) enum Btn {
     /// Accent fill, used for the primary action of a surface.
     Primary,
-    /// Outline/ghost, for secondary actions.
+    /// Quiet filled surface, for secondary actions. Never an
+    /// outline or ghost style (design standard, button language).
     Secondary,
     /// Danger fill, for destructive actions.
     Danger,
@@ -63,7 +64,7 @@ fn button_impl(
             t.bg_panel_alt,
             core::theme::hover_step(t.bg_panel_alt),
             core::theme::pressed_step(t.bg_panel_alt),
-            Stroke::new(1.0_f32, rgb(t.border)),
+            Stroke::NONE,
             t.text_primary,
         ),
         Btn::Danger => (

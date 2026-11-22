@@ -74,12 +74,12 @@ impl App {
                     match self.picker.tab.as_str() {
                         "gif" => {
                             self.picker_tab_row(ui, t, "gif");
-                            ui.separator();
+                            ui.add_space(6.0);
                             self.picker_gif_tab(ui);
                         }
                         "stickers" => {
                             self.picker_tab_row(ui, t, "stickers");
-                            ui.separator();
+                            ui.add_space(6.0);
                             self.picker_stickers_tab(ui);
                         }
                         _ => self.picker_emoji_tab(ui, t),
@@ -177,7 +177,7 @@ impl App {
                 self.composer.draft.push_str(&emoji);
             }
         });
-        ui.separator();
+        crate::widgets::soft_separator(ui, t);
         // Bottom tab row: Emoji, then the feature-owned tabs, and
         // the close button pinned right.
         ui.horizontal(|ui| {
@@ -407,7 +407,7 @@ impl App {
             });
         }
         self.request_sticker_previews(missing);
-        ui.separator();
+        ui.add_space(10.0);
         ui.label(RichText::new("New pack name").size(11.5).color(rgb(t.text_secondary)));
         ui.horizontal(|ui| {
             crate::widgets::text_field(ui, t, &mut self.picker.sticker_new_pack, "", 220.0);
@@ -512,7 +512,7 @@ impl App {
                                     });
                                 }
                             });
-                        ui.separator();
+                        crate::widgets::soft_separator(ui, t);
                         if crate::widgets::menu_item(ui, t, &crate::i18n::t("common.cancel"))
                             .clicked()
                         {

@@ -3,7 +3,7 @@
 
 use crate::theme::rgb;
 use core::theme::{Rgb, Tokens};
-use eframe::egui::{self, Color32, FontId, RichText, Stroke};
+use eframe::egui::{self, Color32, FontId, Pos2, RichText, Stroke};
 
 /// Shortens `text` to fit `max_w` at `font`, cutting on a char
 /// boundary and appending an ellipsis. The fit is measured with
@@ -75,4 +75,25 @@ pub(crate) fn soft_right_edge(ui: &egui::Ui, rect: egui::Rect, t: Tokens) {
         ],
         Stroke::new(1.0_f32, egui::Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), 100)),
     );
+}
+
+/// A softened, inset horizontal separator for the rare split
+/// that survives inside one surface (a menu's action groups, a
+/// list against its dismiss action): the border token at the
+/// soft_right_edge alpha, inset by the shared list inset on
+/// both sides, with breathing space above and below. Flat
+/// same-surface content is separated by spacing alone (design
+/// standard, hairline discipline); this helper exists so the
+/// surviving splits all take this one quiet form instead of
+/// egui's full-contrast, full-width separator.
+pub(crate) fn soft_separator(ui: &mut egui::Ui, t: Tokens) {
+    let c = rgb(t.border);
+    let inset = crate::theme::LIST_PANEL_INSET_X as f32;
+    ui.add_space(6.0);
+    let rect = ui.available_rect_before_wrap();
+    ui.painter().line_segment(
+        [Pos2::new(rect.left() + inset, rect.top()), Pos2::new(rect.right() - inset, rect.top())],
+        Stroke::new(1.0_f32, egui::Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), 100)),
+    );
+    ui.add_space(6.0);
 }

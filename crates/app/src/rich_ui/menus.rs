@@ -203,7 +203,7 @@ impl App {
                             self.download_media(msg.id);
                             close = true;
                         }
-                        ui.separator();
+                        crate::widgets::soft_separator(ui, t);
                         if crate::widgets::menu_item_icon(
                             ui,
                             t,
@@ -330,7 +330,7 @@ impl App {
                     ui.set_width(240.0);
                     ui.add_enabled_ui(!exiting, |ui| {
                         ui.label(RichText::new("Message info").size(14.0).strong());
-                        ui.separator();
+                        ui.add_space(6.0);
                         if entries.is_empty() {
                             let state = match delivery {
                                 Some(core::model::Delivery::Failed) => "Failed to send",
@@ -488,7 +488,7 @@ impl App {
                             });
                             close = true;
                         }
-                        ui.separator();
+                        crate::widgets::soft_separator(ui, t);
                         if crate::widgets::menu_item_icon(
                             ui,
                             t,

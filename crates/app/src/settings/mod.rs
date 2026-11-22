@@ -450,9 +450,11 @@ impl App {
                             );
                         });
                     });
-                    ui.add_space(12.0);
-                    ui.separator();
-                    ui.add_space(6.0);
+                    // No separator under the profile header:
+                    // header and list share one flat panel, and
+                    // spacing separates them (design standard,
+                    // hairline discipline).
+                    ui.add_space(18.0);
                 }
                 for item in panel_items(title) {
                     let selected = title == "Settings" && self.settings_tab == item;
@@ -794,23 +796,21 @@ fn settings_card(ui: &mut egui::Ui, t: core::theme::Tokens, body: impl FnOnce(&m
     });
 }
 
-/// Hairline divider between rows inside a card.
-fn divider(ui: &mut egui::Ui, t: core::theme::Tokens) {
-    divider_inset(ui, t, 0.0);
+/// Group break between rows inside a card. Rows on one flat
+/// card are separated by spacing alone, never a hairline
+/// (design standard, hairline discipline): the helper keeps
+/// its call sites and their rhythm, and paints no line. The
+/// tokens argument stays so call sites read uniformly with
+/// the row helpers around them.
+fn divider(ui: &mut egui::Ui, _t: core::theme::Tokens) {
+    divider_inset(ui, _t, 0.0);
 }
 
-/// Hairline divider, optionally inset so it starts under the row text
-/// (the iOS/macOS settings look) instead of running edge to edge.
-fn divider_inset(ui: &mut egui::Ui, t: core::theme::Tokens, inset: f32) {
-    ui.add_space(8.0);
-    let avail = ui.available_width();
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(avail, 1.0), Sense::hover());
-    let line = egui::Rect::from_min_max(
-        Pos2::new(rect.left() + inset, rect.top()),
-        Pos2::new(rect.right(), rect.bottom()),
-    );
-    ui.painter().rect_filled(line, CornerRadius::ZERO, rgb(t.border));
-    ui.add_space(8.0);
+/// Inset variant of the group break; the inset no longer
+/// applies without a line, and is kept for the one call site
+/// that names it so its grouping rhythm is unchanged.
+fn divider_inset(ui: &mut egui::Ui, _t: core::theme::Tokens, _inset: f32) {
+    ui.add_space(16.0);
 }
 
 /// A settings row: title + description on the left, control on

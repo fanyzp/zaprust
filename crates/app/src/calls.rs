@@ -1111,7 +1111,7 @@ impl App {
                                     }
                                 });
                         }
-                        ui.separator();
+                        crate::widgets::soft_separator(ui, t);
                         if crate::widgets::menu_item(ui, t, &crate::i18n::t("common.cancel"))
                             .clicked()
                         {

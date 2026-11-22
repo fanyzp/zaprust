@@ -328,7 +328,7 @@ impl App {
                         self.debug.reveal_bodies = v;
                     }
                 });
-                ui.separator();
+                ui.add_space(10.0);
                 self.trace_section(ui, "Event stream", &["backend", "archive", "ui"]);
                 self.trace_section(ui, "Messages & receipts", &["message", "receipt"]);
                 self.trace_section(ui, "Gate & tool calls", &["gate"]);

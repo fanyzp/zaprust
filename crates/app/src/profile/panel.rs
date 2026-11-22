@@ -784,16 +784,35 @@ impl App {
                                                     ui.close();
                                                 }
                                                 // A painted hairline, not
-                                                // ui.separator(): its stroke
-                                                // is too faint on the glass
-                                                // fill for the split before
-                                                // the danger item to read.
+                                                // ui.separator(): the split
+                                                // before the danger item
+                                                // takes the standard soft
+                                                // form, inset to the item
+                                                // text line at the soft
+                                                // alpha (design standard,
+                                                // hairline discipline).
                                                 ui.add_space(4.0);
                                                 let (line, _) = ui.allocate_exact_size(
                                                     egui::vec2(ui.available_width(), 1.0),
                                                     egui::Sense::hover(),
                                                 );
-                                                ui.painter().rect_filled(line, 0.0, rgb(t.border));
+                                                let inset =
+                                                    crate::theme::LIST_PANEL_INSET_X as f32;
+                                                let c = rgb(t.border);
+                                                ui.painter().hline(
+                                                    (line.left() + inset)
+                                                        ..=(line.right() - inset),
+                                                    line.center().y,
+                                                    egui::Stroke::new(
+                                                        1.0_f32,
+                                                        egui::Color32::from_rgba_unmultiplied(
+                                                            c.r(),
+                                                            c.g(),
+                                                            c.b(),
+                                                            100,
+                                                        ),
+                                                    ),
+                                                );
                                                 ui.add_space(4.0);
                                                 if crate::widgets::menu_item_danger(
                                                     ui,

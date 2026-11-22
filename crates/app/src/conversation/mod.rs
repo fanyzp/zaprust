@@ -295,12 +295,17 @@ impl App {
                 .show(root, |ui| {
                     self.draw_profile_dock(ui, dock_exiting);
                 });
-            // The hairline separating the dock from the
-            // conversation column it narrows.
+            // The seam separating the dock from the
+            // conversation column it narrows, at the standard
+            // soft alpha like every panel seam.
+            let seam = rgb(t.border);
             root.painter().vline(
                 panel.response.rect.left() + 0.5,
                 panel.response.rect.y_range(),
-                Stroke::new(1.0_f32, rgb(t.border)),
+                Stroke::new(
+                    1.0_f32,
+                    egui::Color32::from_rgba_unmultiplied(seam.r(), seam.g(), seam.b(), 100),
+                ),
             );
         }
         egui::CentralPanel::default().frame(egui::Frame::new().fill(rgb(t.bg_chat))).show(

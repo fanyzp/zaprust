@@ -133,15 +133,19 @@ pub(super) fn dock_card_fill(t: Tokens) -> core::theme::Rgb {
 }
 
 /// A hairline between two rows of one section, inset to the
-/// label line so it runs under the row text, the same divider
-/// the settings pages draw between rows.
+/// label line so it runs under the row text, painted at the
+/// standard soft alpha (the soft_right_edge recipe): dock
+/// sections are long and flat, so their row splits survive,
+/// but never at full border contrast (design standard,
+/// hairline discipline).
 pub(super) fn dock_separator(ui: &mut egui::Ui, t: Tokens) {
     let width = ui.available_width();
     let (rect, _) = ui.allocate_exact_size(egui::vec2(width, 1.0), egui::Sense::hover());
+    let c = rgb(t.border);
     ui.painter().hline(
         (rect.left() + DOCK_LABEL_X)..=rect.right(),
         rect.center().y,
-        Stroke::new(1.0_f32, rgb(t.border)),
+        Stroke::new(1.0_f32, egui::Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), 100)),
     );
 }
 
@@ -293,10 +297,11 @@ pub(super) fn dock_stat_row(
         rgb(t.text_secondary),
     );
     if separator {
+        let c = rgb(t.border);
         ui.painter().hline(
             (rect.left() + DOCK_LABEL_X)..=rect.right(),
             rect.bottom() - 0.5,
-            Stroke::new(1.0_f32, rgb(t.border)),
+            Stroke::new(1.0_f32, egui::Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), 100)),
         );
     }
 }

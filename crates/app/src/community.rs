@@ -473,8 +473,7 @@ impl App {
         // opened), then the demo data itself. It never resolves
         // by joining the chat list.
         let announcement: Chat = {
-            let from_store =
-                self.chats.iter().find(|c| c.id == community.announcement_chat_id);
+            let from_store = self.chats.iter().find(|c| c.id == community.announcement_chat_id);
             let from_detached = self
                 .detached_chat
                 .as_ref()
@@ -636,8 +635,7 @@ impl App {
                         Vec2::new(ui.available_width(), 62.0),
                         Sense::click(),
                     );
-                    let hov =
-                        crate::anim::hover_factor(ui, "community_new_row", resp.hovered());
+                    let hov = crate::anim::hover_factor(ui, "community_new_row", resp.hovered());
                     if hov > 0.001 {
                         ui.painter().rect_filled(
                             rect,
@@ -891,8 +889,7 @@ impl App {
     pub(crate) fn do_create_community(&mut self) -> bool {
         let name = self.community_create_name.trim().to_owned();
         if name.is_empty() {
-            self.community_create_error =
-                Some(crate::i18n::t("community.name_required").clone());
+            self.community_create_error = Some(crate::i18n::t("community.name_required").clone());
             return false;
         }
         self.community_create_error = None;

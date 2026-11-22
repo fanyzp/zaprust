@@ -1020,9 +1020,11 @@ fn create_community_answers_with_the_created_event() {
         |e| matches!(e, BackendEvent::CommunityCreated { name, .. } if name == "Harbor Community"),
     );
     assert!(
-        events.iter().any(
-            |e| matches!(e, BackendEvent::CommunityCreated { jid, name } if name == "Harbor Community" && jid.ends_with("@g.us"))
-        ),
+        events.iter().any(|e| matches!(
+            e,
+            BackendEvent::CommunityCreated { jid, name }
+                if name == "Harbor Community" && jid.ends_with("@g.us")
+        )),
         "create community answers with its event and JID"
     );
     let log = log.lock().unwrap();

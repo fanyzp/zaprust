@@ -93,6 +93,11 @@ fn summarize(event: &BackendEvent) -> String {
         BackendEvent::GroupModesState { .. } => "GroupModesState".to_owned(),
         BackendEvent::JoinRequests { .. } => "JoinRequests".to_owned(),
         BackendEvent::ConnectionLost { reason } => format!("ConnectionLost {reason}"),
+        BackendEvent::SyncProgress { percent } => match percent {
+            Some(p) => format!("SyncProgress {p}%"),
+            None => "SyncProgress".to_owned(),
+        },
+        BackendEvent::SyncCompleted => "SyncCompleted".to_owned(),
         BackendEvent::Crashed { summary, restarted } => {
             format!("Crashed restarted={restarted} {summary}")
         }

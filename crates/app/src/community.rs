@@ -397,7 +397,9 @@ impl App {
     /// nothing is tagged, which hides the chat-list entry.
     pub(crate) fn communities(&self) -> Vec<Community> {
         if !self.live_mode {
-            return demo_communities();
+            let mut all = demo_communities();
+            all.extend(self.session_communities.iter().cloned());
+            return all;
         }
         let mut names: Vec<&str> = Vec::new();
         for chat in &self.chats {
@@ -410,7 +412,7 @@ impl App {
             }
         }
         names.sort_unstable();
-        names
+        let mut derived: Vec<Community> = names
             .into_iter()
             .enumerate()
             .map(|(i, name)| {
@@ -432,7 +434,15 @@ impl App {
                     other_group_ids: Vec::new(),
                 }
             })
-            .collect()
+            .collect();
+        // Session-created communities merge in unless the tagged
+        // chats already derive one under the same name.
+        for created in &self.session_communities {
+            if !derived.iter().any(|c| c.name == created.name) {
+                derived.push(created.clone());
+            }
+        }
+        derived
     }
 
     /// Draws the open community's home into the content area
@@ -462,28 +472,34 @@ impl App {
         // detached slot (the demo announcement once it has been
         // opened), then the demo data itself. It never resolves
         // by joining the chat list.
-        let announcement: Chat =
-            match self.chats.iter().find(|c| c.id == community.announcement_chat_id) {
-                Some(c) => c.clone(),
-                None => match self
-                    .detached_chat
-                    .as_ref()
-                    .filter(|c| c.id == community.announcement_chat_id)
+        let announcement: Chat = {
+            let from_store =
+                self.chats.iter().find(|c| c.id == community.announcement_chat_id);
+            let from_detached = self
+                .detached_chat
+                .as_ref()
+                .filter(|c| c.id == community.announcement_chat_id);
+            let from_session = self
+                .session_announcements
+                .iter()
+                .find(|c| c.id == community.announcement_chat_id);
+            match (from_store, from_detached, from_session) {
+                (Some(c), _, _) => c.clone(),
+                (_, Some(c), _) => c.clone(),
+                (_, _, Some(c)) => c.clone(),
+                _ if !self.live_mode
+                    && community.announcement_chat_id == demo_announcement_chat().id =>
                 {
-                    Some(c) => c.clone(),
-                    None if !self.live_mode
-                        && community.announcement_chat_id == demo_announcement_chat().id =>
-                    {
-                        demo_announcement_chat()
-                    }
-                    None => {
-                        self.open_community = None;
-                        self.community_home_from_overview = false;
-                        self.draw_conversation(root);
-                        return;
-                    }
-                },
-            };
+                    demo_announcement_chat()
+                }
+                _ => {
+                    self.open_community = None;
+                    self.community_home_from_overview = false;
+                    self.draw_conversation(root);
+                    return;
+                }
+            }
+        };
         // Groups you're in: the community's listed groups plus
         // any other groups joined this session, all resolved
         // from the chat store.
@@ -575,6 +591,7 @@ impl App {
         let cover = if self.live_mode { None } else { self.media.photo_texture.clone() };
         let mut open: Option<u64> = None;
         let mut back = false;
+        let mut create_new = false;
         let panel = self
             .list_panel(root)
             .frame(
@@ -607,16 +624,67 @@ impl App {
                     );
                 });
                 ui.add_space(SP_3);
-                if communities.is_empty() {
-                    ui.add_space(24.0);
-                    ui.label(
-                        RichText::new(crate::i18n::t("communities.empty"))
-                            .size(13.5)
-                            .color(rgb(t.text_secondary)),
-                    );
-                    return;
-                }
                 egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                    // The lead row: New community, in the same row
+                    // language as the community rows below it (a
+                    // squircle where their cover thumbs sit, the
+                    // same label position, the same chevron). It
+                    // opens the create form; the backend exposes a
+                    // real creation command, so the row is a working
+                    // entry, not a placeholder.
+                    let (rect, resp) = ui.allocate_exact_size(
+                        Vec2::new(ui.available_width(), 62.0),
+                        Sense::click(),
+                    );
+                    let hov =
+                        crate::anim::hover_factor(ui, "community_new_row", resp.hovered());
+                    if hov > 0.001 {
+                        ui.painter().rect_filled(
+                            rect,
+                            CornerRadius::same(10),
+                            crate::theme::glass_wash(t, t.bg_panel_alt, (hov * 115.0) as u8),
+                        );
+                    }
+                    let thumb = egui::Rect::from_min_size(
+                        Pos2::new(rect.left() + 8.0, rect.center().y - 24.0),
+                        Vec2::splat(48.0),
+                    );
+                    ui.painter()
+                        .rect_filled(thumb, CornerRadius::same(10), rgb(t.bg_panel_alt));
+                    crate::icons::draw(
+                        ui.painter(),
+                        crate::icons::Icon::Plus,
+                        thumb.center(),
+                        24.0,
+                        rgb(t.accent),
+                        rgb(t.bg_panel_alt),
+                    );
+                    ui.painter().text(
+                        Pos2::new(thumb.right() + 12.0, rect.center().y),
+                        egui::Align2::LEFT_CENTER,
+                        crate::i18n::t("community.new"),
+                        crate::theme::semibold(15.0),
+                        rgb(t.text_primary),
+                    );
+                    crate::icons::draw(
+                        ui.painter(),
+                        crate::icons::Icon::ChevronRight,
+                        Pos2::new(rect.right() - 18.0, rect.center().y),
+                        20.0,
+                        rgb(t.text_faint),
+                        rgb(t.bg_panel),
+                    );
+                    if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                        create_new = true;
+                    }
+                    if communities.is_empty() {
+                        ui.add_space(24.0);
+                        ui.label(
+                            RichText::new(crate::i18n::t("communities.empty"))
+                                .size(13.5)
+                                .color(rgb(t.text_secondary)),
+                        );
+                    }
                     for community in &communities {
                         let total =
                             community.group_chat_ids.len() + community.other_group_ids.len();
@@ -694,6 +762,10 @@ impl App {
                 });
             });
         crate::widgets::soft_right_edge(root, panel.response.rect, t);
+        if create_new {
+            self.community_create_open = true;
+        }
+        self.draw_create_community_dialog(root.ctx());
         if back {
             self.screen = crate::state::Screen::Chats;
             self.filter = core::filter::ChatFilter::All;
@@ -722,16 +794,228 @@ impl App {
         self.community_origin = self.open_community;
         self.open_community = None;
         self.community_home_from_overview = false;
-        if !self.live_mode
-            && id == demo_announcement_chat().id
-            && !self.chats.iter().any(|c| c.id == id)
+        if !self.chats.iter().any(|c| c.id == id)
             && self.detached_chat.as_ref().is_none_or(|c| c.id != id)
         {
-            let mut announcement = demo_announcement_chat();
-            announcement.messages = demo_announcement_messages();
-            self.detached_chat = Some(announcement);
+            if !self.live_mode && id == demo_announcement_chat().id {
+                let mut announcement = demo_announcement_chat();
+                announcement.messages = demo_announcement_messages();
+                self.detached_chat = Some(announcement);
+            } else if let Some(chat) =
+                self.session_announcements.iter().find(|c| c.id == id).cloned()
+            {
+                // A session-created community's announcement chat
+                // loads into the detached slot the same way, so it
+                // can be read and posted to without ever joining
+                // the chat list.
+                self.detached_chat = Some(chat);
+            }
         }
         self.select_chat_now(id);
+    }
+
+    /// Registers a community created this session: the community
+    /// joins the session list (so the overview shows it and its
+    /// home resolves) together with its announcement chat, which
+    /// is stored outside the chat list under the announcement
+    /// rule. `announcement_chat_id` is the chat's numeric id: in
+    /// live mode the JID hash of the community JID (the
+    /// announcement group shares that JID), in demo mode a fresh
+    /// local id.
+    fn add_session_community(&mut self, name: String, announcement_chat_id: u64) {
+        let avatar_seed = name.bytes().fold(0u8, u8::wrapping_add);
+        let id = self
+            .communities()
+            .iter()
+            .map(|c| c.id)
+            .max()
+            .unwrap_or(0)
+            + 1;
+        self.session_announcements.push(Chat {
+            id: announcement_chat_id,
+            kind: ChatKind::Group,
+            title: crate::i18n::t("community.announcements"),
+            subtitle: "Community announcements".to_owned(),
+            preview: String::new(),
+            preview_sender: None,
+            preview_mine: false,
+            preview_delivery: None,
+            preview_media: None,
+            time: String::new(),
+            unread: 0,
+            mentions: 0,
+            pinned: false,
+            muted: false,
+            favorite: false,
+            avatar_seed,
+            verified: false,
+            meta_ai: false,
+            community: Some(name.clone()),
+            archived: false,
+            ephemeral_secs: 0,
+            messages: Vec::new(),
+        });
+        self.session_communities.push(Community {
+            id,
+            name,
+            description: None,
+            avatar_seed,
+            announcement_chat_id,
+            group_chat_ids: Vec::new(),
+            other_group_ids: Vec::new(),
+        });
+    }
+
+    /// Applies the backend's CommunityCreated event: the new
+    /// community is registered under the JID hash the live layer
+    /// uses for chat ids, and the JID is recorded so opening its
+    /// announcement chat resolves and sends against the real
+    /// community JID.
+    pub(crate) fn register_created_community(&mut self, jid: &str, name: &str) {
+        let chat_id = crate::live::jid_id(jid);
+        if let Some(session) = &mut self.live {
+            session.jids.insert(chat_id, jid.to_owned());
+        }
+        if self.session_communities.iter().any(|c| c.name == name) {
+            return;
+        }
+        self.add_session_community(name.to_owned(), chat_id);
+        self.notice = Some(crate::i18n::tf("community.created_notice", "name", name));
+    }
+
+    /// Executes the "New community" form. Returns false when
+    /// validation fails; the dialog then stays open with the error
+    /// shown inline. Live mode sends the backend command and the
+    /// community lands when its CommunityCreated event arrives;
+    /// demo mode creates the community locally, right away.
+    pub(crate) fn do_create_community(&mut self) -> bool {
+        let name = self.community_create_name.trim().to_owned();
+        if name.is_empty() {
+            self.community_create_error =
+                Some(crate::i18n::t("community.name_required").clone());
+            return false;
+        }
+        self.community_create_error = None;
+        self.community_create_name.clear();
+        if self.live.is_some() {
+            self.send_backend(backend::BackendCommand::CreateCommunity { name: name.clone() });
+            self.notice = Some(crate::i18n::tf("community.creating", "name", &name));
+            return true;
+        }
+        // Demo: a local community at the end of the overview list.
+        let announcement_chat_id = self
+            .chats
+            .iter()
+            .map(|c| c.id)
+            .chain(self.session_announcements.iter().map(|c| c.id))
+            .max()
+            .unwrap_or(0)
+            + 1;
+        self.add_session_community(name.clone(), announcement_chat_id);
+        self.notice = Some(crate::i18n::tf("community.created_notice", "name", &name));
+        true
+    }
+
+    /// The "New community" dialog: a name field and Create/Cancel,
+    /// mirroring the create-group dialog's shape and motion. Demo
+    /// mode labels the local creation honestly, like the group
+    /// form does.
+    pub(crate) fn draw_create_community_dialog(&mut self, ctx: &egui::Context) {
+        let Some(p) = crate::anim::popup_phase(
+            ctx,
+            "create_community",
+            self.community_create_open,
+            self.motion,
+        ) else {
+            return;
+        };
+        let exiting = !self.community_create_open;
+        let t = self.tokens();
+        let mut create = false;
+        let mut close = false;
+        egui::Area::new(egui::Id::unique("create_community"))
+            .pivot(egui::Align2::CENTER_CENTER)
+            .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                if p < 0.999 {
+                    ui.set_opacity(p);
+                }
+                let frame = crate::theme::glass_panel_frame(t, 14)
+                    .inner_margin(egui::Margin::symmetric(12, 10));
+                let inner = frame.show(ui, |ui| {
+                    ui.set_width(300.0);
+                    ui.add_enabled_ui(!exiting, |ui| {
+                        ui.label(
+                            RichText::new(crate::i18n::t("community.new"))
+                                .size(15.0)
+                                .strong()
+                                .color(rgb(t.text_primary)),
+                        );
+                        ui.add_space(6.0);
+                        ui.label(
+                            RichText::new(crate::i18n::t("community.name_label"))
+                                .size(11.5)
+                                .color(rgb(t.text_secondary)),
+                        );
+                        crate::widgets::text_field(
+                            ui,
+                            t,
+                            &mut self.community_create_name,
+                            "",
+                            280.0,
+                        );
+                        if !self.live_mode {
+                            ui.label(
+                                RichText::new(crate::i18n::t("community.demo_note"))
+                                    .size(11.0)
+                                    .color(rgb(t.text_faint)),
+                            );
+                        }
+                        if let Some(error) = &self.community_create_error {
+                            ui.add_space(4.0);
+                            ui.label(RichText::new(error.clone()).size(11.5).color(rgb(t.danger)));
+                        }
+                        ui.add_space(8.0);
+                        ui.horizontal(|ui| {
+                            if crate::widgets::button(
+                                ui,
+                                t,
+                                &crate::i18n::t("common.cancel"),
+                                crate::widgets::Btn::Secondary,
+                            )
+                            .clicked()
+                            {
+                                close = true;
+                            }
+                            if crate::widgets::button(
+                                ui,
+                                t,
+                                &crate::i18n::t("community.create"),
+                                crate::widgets::Btn::Primary,
+                            )
+                            .clicked()
+                            {
+                                create = true;
+                            }
+                        });
+                    });
+                });
+                crate::theme::paint_glass_edge(ui.painter(), inner.response.rect, 14.0, t);
+            });
+        crate::anim::popup_transform(
+            ctx,
+            egui::Id::unique("create_community"),
+            ctx.content_rect().center(),
+            p,
+        );
+        if create && self.do_create_community() {
+            close = true;
+        }
+        if close {
+            self.community_create_open = false;
+            self.community_create_error = None;
+        }
     }
 }
 

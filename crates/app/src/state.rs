@@ -1228,6 +1228,25 @@ pub(crate) struct App {
     /// back to that home while it is set and the open chat still
     /// belongs to the community.
     pub(crate) community_origin: Option<u64>,
+    /// The "New community" form is open (the Communities overview
+    /// panel's lead row opens it).
+    pub(crate) community_create_open: bool,
+    /// The "New community" form's name field.
+    pub(crate) community_create_name: String,
+    /// The "New community" form's inline validation error.
+    pub(crate) community_create_error: Option<String>,
+    /// Communities created during this session, through the
+    /// "New community" form: demo mode creates them locally, live
+    /// mode appends them when the backend's CommunityCreated
+    /// event lands. They merge into the overview list and their
+    /// homes resolve like any other community's.
+    pub(crate) session_communities: Vec<core::model::Community>,
+    /// The announcement chats of the session-created communities,
+    /// kept outside `chats` under the same rule as the demo
+    /// announcement chat: the chat list never renders them as
+    /// regular rows, and opening one loads it into the detached
+    /// slot.
+    pub(crate) session_announcements: Vec<Chat>,
     pub(crate) header_menu_open: bool,
     /// OS notification requests queued by the upsert path for new
     /// incoming messages; drained per frame by the notify module.
@@ -1715,6 +1734,11 @@ impl App {
             highlight_started: None,
             detached_chat: None,
             community_origin: None,
+            community_create_open: false,
+            community_create_name: String::new(),
+            community_create_error: None,
+            session_communities: Vec::new(),
+            session_announcements: Vec::new(),
             header_menu_open: args.header_menu,
             pending_notifications: Vec::new(),
             event_queue: std::collections::VecDeque::new(),
@@ -2673,6 +2697,36 @@ mod tests {
         assert!(app.do_create_group());
         let created = app.chats.iter().find(|c| c.title == "Plain Group").unwrap();
         assert_eq!(created.ephemeral_secs, 0);
+    }
+
+    #[test]
+    fn create_community_in_demo_registers_a_resolvable_community() {
+        let mut app = demo_app();
+        // An empty name is refused and the form keeps its error.
+        app.community_create_name = "   ".to_owned();
+        assert!(!app.do_create_community());
+        assert!(app.community_create_error.is_some());
+        // A named community is created locally: it appears in the
+        // overview list, and its announcement chat resolves from
+        // the session store without joining the chat list.
+        app.community_create_name = "Harbor Community".to_owned();
+        assert!(app.do_create_community());
+        let created = app
+            .communities()
+            .into_iter()
+            .find(|c| c.name == "Harbor Community")
+            .expect("the created community is listed");
+        assert!(created.group_chat_ids.is_empty());
+        let announcement = app
+            .session_announcements
+            .iter()
+            .find(|c| c.id == created.announcement_chat_id)
+            .expect("the announcement chat is stored");
+        assert_eq!(announcement.community.as_deref(), Some("Harbor Community"));
+        assert!(
+            !app.chats.iter().any(|c| c.id == created.announcement_chat_id),
+            "the announcement chat must not join the chat list"
+        );
     }
 
     #[test]

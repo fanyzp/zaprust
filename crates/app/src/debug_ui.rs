@@ -60,6 +60,9 @@ impl App {
             BackendEvent::ChatUpsert(chat) => {
                 ("archive", format!("ChatUpsert {}", chat.jid), None)
             }
+            BackendEvent::CommunityCreated { jid, .. } => {
+                ("backend", format!("CommunityCreated {jid} (name redacted)"), None)
+            }
             BackendEvent::MessageUpsert(message) => (
                 "message",
                 format!(

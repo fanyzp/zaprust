@@ -1749,6 +1749,9 @@ impl crate::state::App {
                 }
             }
             BackendEvent::ChatUpsert(chat) => self.apply_chat_upsert(&chat),
+            BackendEvent::CommunityCreated { jid, name } => {
+                self.register_created_community(&jid, &name);
+            }
             BackendEvent::MessageUpsert(msg) => {
                 // Applying an upsert never triggers a network
                 // fetch: a link preview renders only when the

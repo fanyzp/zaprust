@@ -1009,6 +1009,30 @@ fn chat_action_commands_update_the_chat_row() {
 }
 
 #[test]
+fn create_community_answers_with_the_created_event() {
+    let (ch, log) = linked_backend();
+    ch.commands
+        .send(BackendCommand::CreateCommunity { name: "Harbor Community".to_owned() })
+        .unwrap();
+    let events = collect_until(
+        &ch.events,
+        5,
+        |e| matches!(e, BackendEvent::CommunityCreated { name, .. } if name == "Harbor Community"),
+    );
+    assert!(
+        events.iter().any(
+            |e| matches!(e, BackendEvent::CommunityCreated { jid, name } if name == "Harbor Community" && jid.ends_with("@g.us"))
+        ),
+        "create community answers with its event and JID"
+    );
+    let log = log.lock().unwrap();
+    assert!(
+        log.iter().any(|entry| entry == "create_community:Harbor Community"),
+        "the command is logged"
+    );
+}
+
+#[test]
 fn create_group_fetch_members_and_download_honesty() {
     let (ch, _log) = linked_backend();
     let _ = collect_until(

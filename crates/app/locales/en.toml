@@ -307,6 +307,13 @@
 "community.read_more" = "Read more"
 "community.show_less" = "Show less"
 "community.subtitle" = "Community · {count} groups"
+"community.new" = "New community"
+"community.name_label" = "Community name"
+"community.create" = "Create community"
+"community.name_required" = "Give the community a name first."
+"community.demo_note" = "Demo mode: the community is created locally."
+"community.created_notice" = "Community created: {name}"
+"community.creating" = "Creating community {name}"
 
 # ---- communities overview ----
 "communities.title" = "Communities"

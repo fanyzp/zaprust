@@ -14,6 +14,9 @@ impl eframe::App for App {
             self.sidebar_collapsed = !self.sidebar_collapsed;
         }
         apply_visuals(&ctx, self.tokens);
+        // The shared wash helpers read the Motion setting from
+        // the frame (they are free functions without App access).
+        crate::anim::publish_motion(&ctx, self.motion);
         // The layout mode follows the window's PHYSICAL size:
         // below the breakpoint the panes take turns
         // (single-pane), above it they share the width

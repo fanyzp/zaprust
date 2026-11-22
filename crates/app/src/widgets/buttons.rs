@@ -162,14 +162,24 @@ pub(crate) fn rail_button(
             CornerRadius::same(14),
             crate::theme::glass_wash(t, t.bg_panel_alt, 150),
         );
-    } else if response.is_pointer_button_down_on() {
-        ui.painter().rect_filled(
-            rect,
-            CornerRadius::same(14),
-            rgb(core::theme::pressed_step(t.bg_panel_alt)),
+    } else {
+        // Unselected hover and pressed washes run through the
+        // shared factors, crossfading on HOVER and PRESS like
+        // every other row and button instead of snapping.
+        let hov = crate::anim::hover_factor(ui, ("rail_button", label), response.hovered());
+        let press = crate::anim::press_factor(
+            ui,
+            ("rail_button", label),
+            response.is_pointer_button_down_on(),
         );
-    } else if response.hovered() {
-        ui.painter().rect_filled(rect, CornerRadius::same(14), rgb(t.bg_panel_alt));
+        if press > 0.001 {
+            let pressed = core::theme::pressed_step(t.bg_panel_alt);
+            let fill = core::theme::mix(t.bg_panel_alt, pressed, press);
+            ui.painter().rect_filled(rect, CornerRadius::same(14), rgb(fill));
+        } else if hov > 0.001 {
+            let fill = core::theme::mix(t.bg_panel, t.bg_panel_alt, hov);
+            ui.painter().rect_filled(rect, CornerRadius::same(14), rgb(fill));
+        }
     }
     let color = if selected { accent } else { rgb(t.text_secondary) };
     crate::icons::draw(ui.painter(), icon, rect.center(), 24.0, color, rgb(t.bg_panel));
@@ -369,10 +379,25 @@ pub(crate) fn icon_button_on(
     pressed: Rgb,
 ) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(Vec2::splat(size), Sense::click());
-    if resp.is_pointer_button_down_on() {
-        ui.painter().circle_filled(rect.center(), size / 2.0, rgb(pressed));
-    } else if resp.hovered() {
-        ui.painter().circle_filled(rect.center(), size / 2.0, rgb(hover));
+    // The wash crossfades through the shared hover and press
+    // factors (HOVER and PRESS durations, Motion Off snaps), so
+    // icon buttons ease like the rows instead of snapping
+    // between hard fills. The resting surface under the button
+    // is the caller's hover fill stepped back toward the panel;
+    // mixing from the panel keeps the wash's endpoints exact.
+    let hov = crate::anim::hover_factor(ui, ("icon_button", tooltip), resp.hovered());
+    let press = crate::anim::press_factor(
+        ui,
+        ("icon_button", tooltip),
+        resp.is_pointer_button_down_on(),
+    );
+    if press > 0.001 {
+        let base = core::theme::mix(t.bg_panel, hover, hov);
+        let fill = core::theme::mix(base, pressed, press);
+        ui.painter().circle_filled(rect.center(), size / 2.0, rgb(fill));
+    } else if hov > 0.001 {
+        let fill = core::theme::mix(t.bg_panel, hover, hov);
+        ui.painter().circle_filled(rect.center(), size / 2.0, rgb(fill));
     }
     let color = match fg {
         Some(c) => rgb(c),

@@ -195,14 +195,22 @@ pub(crate) fn radio_row(
 ) -> bool {
     let (rect, response) =
         ui.allocate_exact_size(Vec2::new(ui.available_width(), 44.0), Sense::click());
-    if response.is_pointer_button_down_on() {
-        ui.painter().rect_filled(
-            rect,
-            CornerRadius::same(8),
-            rgb(core::theme::pressed_step(t.bg_panel_alt)),
-        );
-    } else if response.hovered() {
-        ui.painter().rect_filled(rect, CornerRadius::same(8), rgb(t.bg_panel_alt));
+    // The row wash runs through the shared hover and press
+    // factors, crossfading on HOVER and PRESS (instant under
+    // Motion Off) instead of snapping between hard fills.
+    let hov = crate::anim::hover_factor(ui, ("radio_row", label), response.hovered());
+    let press = crate::anim::press_factor(
+        ui,
+        ("radio_row", label),
+        response.is_pointer_button_down_on(),
+    );
+    if press > 0.001 {
+        let pressed = core::theme::pressed_step(t.bg_panel_alt);
+        let fill = core::theme::mix(t.bg_panel_alt, pressed, press);
+        ui.painter().rect_filled(rect, CornerRadius::same(8), rgb(fill));
+    } else if hov > 0.001 {
+        let fill = core::theme::mix(t.bg_panel, t.bg_panel_alt, hov);
+        ui.painter().rect_filled(rect, CornerRadius::same(8), rgb(fill));
     }
     let cy = rect.center().y;
     let ring_c = Pos2::new(rect.left() + 14.0, cy);
@@ -268,13 +276,20 @@ pub(crate) fn switch(ui: &mut egui::Ui, on: &mut bool, t: Tokens) {
     let k = ui.ctx().animate_bool_with_time(response.id, *on, 0.14);
     let off_fill = core::theme::mix(t.bg_panel_alt, t.bg_app, 0.4);
     let base = if *on { t.accent } else { off_fill };
-    let track = if response.is_pointer_button_down_on() {
-        core::theme::pressed_step(base)
-    } else if response.hovered() {
-        core::theme::hover_step(base)
-    } else {
-        base
-    };
+    // The track's hover and pressed steps run through the shared
+    // factors, so the wash crossfades on HOVER and PRESS (and
+    // snaps under Motion Off) instead of jumping between steps.
+    let hov = crate::anim::hover_factor(ui, ("switch", response.id), response.hovered());
+    let press = crate::anim::press_factor(
+        ui,
+        ("switch", response.id),
+        response.is_pointer_button_down_on(),
+    );
+    let track = core::theme::mix(
+        core::theme::mix(base, core::theme::hover_step(base), hov),
+        core::theme::pressed_step(base),
+        press,
+    );
     ui.painter().rect_filled(rect, CornerRadius::same(11), rgb(track));
     if !*on {
         ui.painter().rect_stroke(

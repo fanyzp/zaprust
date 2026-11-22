@@ -67,11 +67,38 @@ fn bump(p: f32) -> f32 {
     (p.clamp(0.0, 1.0) * std::f32::consts::PI).sin()
 }
 
+/// Publishes the frame's Motion setting for the wash helpers
+/// below. The shared widgets (buttons, menu rows, icon buttons)
+/// are free functions that receive theme tokens but not the
+/// App, so they cannot be handed the setting directly; the
+/// shell publishes it once per frame instead, and the helpers
+/// read it back. Anything drawn outside a shell frame (unit
+/// tests, one-off tools) sees the Full default.
+pub(crate) fn publish_motion(ctx: &egui::Context, motion: crate::motion::MotionSetting) {
+    ctx.data_mut(|d| d.insert_temp(Id::unique("anim_motion_setting"), motion));
+}
+
+/// The Motion setting published for this frame, or Full when
+/// none was published (see [`publish_motion`]).
+fn current_motion(ui: &egui::Ui) -> crate::motion::MotionSetting {
+    ui.ctx()
+        .data(|d| d.get_temp::<crate::motion::MotionSetting>(Id::unique("anim_motion_setting")))
+        .unwrap_or_default()
+}
+
 /// Smooth 0..1 factor for a boolean state (hovered, pressed,
 /// selected) using egui's animation manager: it eases over `secs`
-/// and egui repaints only while the value is still moving.
+/// and egui repaints only while the value is still moving. The
+/// run is scaled by the frame's Motion setting like every other
+/// animation: Reduced shortens it, and Off snaps the factor to
+/// its resting value instantly, so a wash under Motion Off is a
+/// plain instant fill, never a tween the user asked to disable.
 fn bool_factor(ui: &egui::Ui, id: Id, on: bool, secs: f32) -> f32 {
-    ui.ctx().animate_bool_with_time_and_easing(id, on, secs, ease_out)
+    let scaled = (current_motion(ui).duration(f64::from(secs) * 1000.0) / 1000.0) as f32;
+    if scaled <= 0.0 {
+        return if on { 1.0 } else { 0.0 };
+    }
+    ui.ctx().animate_bool_with_time_and_easing(id, on, scaled, ease_out)
 }
 
 /// Eased hover factor for the widget identified by `key`:

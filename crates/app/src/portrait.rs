@@ -232,7 +232,7 @@ impl App {
             .order(egui::Order::Foreground)
             .show(root.ctx(), |ui| {
                 let (r, resp) = ui.allocate_exact_size(Vec2::splat(size), Sense::click());
-                let fill = fab_fill(t, &resp);
+                let fill = fab_fill_animated(ui, t, "portrait_fab", &resp);
                 // The activation pop, on the painted body only:
                 // the allocation never moves, so nothing around
                 // the button shifts while it swells.
@@ -275,7 +275,7 @@ impl App {
             .order(egui::Order::Foreground)
             .show(root.ctx(), |ui| {
                 let (r, resp) = ui.allocate_exact_size(Vec2::splat(size), Sense::click());
-                let fill = fab_fill(t, &resp);
+                let fill = fab_fill_animated(ui, t, "portrait_calls_fab", &resp);
                 // The activation pop, on the painted body only:
                 // the allocation never moves, so nothing around
                 // the button shifts while it swells.
@@ -321,17 +321,21 @@ fn paint_fab(painter: &egui::Painter, t: core::theme::Tokens, r: Rect, fill: egu
     painter.circle_filled(r.center(), radius, fill);
 }
 
-/// The FABs' shared fill steps: accent at rest, its hover and
-/// pressed steps under the pointer, like the surfaces they
-/// float over.
-fn fab_fill(t: core::theme::Tokens, resp: &egui::Response) -> egui::Color32 {
-    if resp.is_pointer_button_down_on() {
-        rgb(core::theme::pressed_step(t.accent))
-    } else if resp.hovered() {
-        rgb(core::theme::hover_step(t.accent))
-    } else {
-        rgb(t.accent)
-    }
+/// The FABs' shared fill: accent at rest, crossfading toward
+/// its hover and pressed steps through the shared factors, so
+/// the wash eases on HOVER and PRESS (and snaps under Motion
+/// Off) like the surfaces the buttons float over, instead of
+/// jumping between hard steps.
+fn fab_fill_animated(
+    ui: &egui::Ui,
+    t: core::theme::Tokens,
+    key: &'static str,
+    resp: &egui::Response,
+) -> egui::Color32 {
+    let hov = crate::anim::hover_factor(ui, ("fab", key), resp.hovered());
+    let press = crate::anim::press_factor(ui, ("fab", key), resp.is_pointer_button_down_on());
+    let hovered = core::theme::mix(t.accent, core::theme::hover_step(t.accent), hov);
+    rgb(core::theme::mix(hovered, core::theme::pressed_step(t.accent), press))
 }
 
 /// One bottom navigation tab's content: its identity for the
@@ -385,14 +389,24 @@ fn bottom_tab(
             CornerRadius::same(15),
             rgb(core::theme::mix(t.accent, t.bg_panel, 0.70)),
         );
-    } else if response.is_pointer_button_down_on() {
-        ui.painter().rect_filled(
-            pill,
-            CornerRadius::same(15),
-            rgb(core::theme::pressed_step(t.bg_panel_alt)),
+    } else {
+        // Unselected hover and pressed washes run through the
+        // shared factors, crossfading on HOVER and PRESS like
+        // the rail buttons instead of snapping between fills.
+        let hov = crate::anim::hover_factor(ui, ("portrait_tab", key), response.hovered());
+        let press = crate::anim::press_factor(
+            ui,
+            ("portrait_tab", key),
+            response.is_pointer_button_down_on(),
         );
-    } else if response.hovered() {
-        ui.painter().rect_filled(pill, CornerRadius::same(15), rgb(t.bg_panel_alt));
+        if press > 0.001 {
+            let pressed = core::theme::pressed_step(t.bg_panel_alt);
+            let fill = core::theme::mix(t.bg_panel_alt, pressed, press);
+            ui.painter().rect_filled(pill, CornerRadius::same(15), rgb(fill));
+        } else if hov > 0.001 {
+            let fill = core::theme::mix(t.bg_panel, t.bg_panel_alt, hov);
+            ui.painter().rect_filled(pill, CornerRadius::same(15), rgb(fill));
+        }
     }
     let color = if selected { rgb(t.accent) } else { rgb(t.text_secondary) };
     crate::icons::draw(ui.painter(), icon, icon_center, 24.0 * pop, color, rgb(t.bg_panel));

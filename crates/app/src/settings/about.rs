@@ -288,14 +288,5 @@ impl App {
             let url = core::crash::bug_issue_url();
             crate::crash_ui::open_or_copy(self, ui, &url);
         }
-        ui.add_space(16.0);
-        settings_card(ui, t, |ui| {
-            row_with(ui, t, "Contributors", "", |ui| {
-                ui.hyperlink_to(
-                    crate::i18n::t("about.contributors_link"),
-                    format!("{repo_url}/graphs/contributors"),
-                );
-            });
-        });
     }
 }

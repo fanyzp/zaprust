@@ -3,7 +3,7 @@
 
 use crate::theme::rgb;
 use core::theme::{Rgb, Tokens};
-use eframe::egui::{self, Color32, CornerRadius, FontId, Pos2, Sense, Stroke, Vec2};
+use eframe::egui::{self, Color32, CornerRadius, FontId, Sense, Stroke, Vec2};
 
 /// Button variants for the one app button component.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

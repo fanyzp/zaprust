@@ -881,7 +881,7 @@ impl App {
         root.painter().rect_filled(area, CornerRadius::ZERO, crate::theme::modal_dim(menu_p));
         // The modal grows by one row while a linked session can
         // be logged out.
-        let size = Vec2::new(430.0, if self.can_log_out() { 352.0 } else { 302.0 });
+        let size = Vec2::new(430.0, if self.can_log_out() { 271.0 } else { 221.0 });
         let rect = egui::Rect::from_min_size(
             Pos2::new(area.center().x - size.x / 2.0, area.top() + 96.0),
             size,
@@ -912,19 +912,6 @@ impl App {
                     .inner_margin(Margin::symmetric(14, 12))
                     .show(ui, |ui| {
                         ui.set_width(size.x - 28.0);
-                        egui::Frame::new()
-                            .fill(rgb(t.bg_panel_alt))
-                            .corner_radius(CornerRadius::same(10))
-                            .inner_margin(Margin::symmetric(12, 10))
-                            .show(ui, |ui| {
-                                ui.set_width(size.x - 52.0);
-                                ui.label(
-                                    RichText::new("Switch account…")
-                                        .size(13.5)
-                                        .color(rgb(t.text_faint)),
-                                );
-                            });
-                        ui.add_space(10.0);
                         egui::Frame::new()
                             .fill(rgb(t.bg_panel_alt))
                             .corner_radius(CornerRadius::same(12))
@@ -1129,16 +1116,6 @@ impl App {
                                 self.ui_confirm = Some(crate::state::UiConfirm::LogOut);
                             }
                         }
-                        ui.add_space(8.0);
-                        let (drect, _) =
-                            ui.allocate_exact_size(Vec2::new(size.x - 28.0, 1.0), Sense::hover());
-                        ui.painter().rect_filled(drect, CornerRadius::ZERO, rgb(t.border));
-                        ui.add_space(8.0);
-                        ui.label(
-                            RichText::new("Enter select  ·  Esc close")
-                                .size(11.5)
-                                .color(rgb(t.text_faint)),
-                        );
                     });
                 crate::theme::paint_glass_edge(ui.painter(), modal.response.rect, 16.0, t);
             });

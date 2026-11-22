@@ -118,6 +118,7 @@
 "emoji.flags" = "Bendera"
 "picker.title" = "Emoji, GIF dan stiker"
 "picker.loading" = "Memuat GIF…"
+"picker.empty" = "Tidak ada GIF yang ditemukan."
 
 # ---- photo viewer ----
 "viewer.photo" = "Foto"

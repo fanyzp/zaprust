@@ -126,6 +126,7 @@
 "emoji.flags" = "Flags"
 "picker.title" = "Emoji, GIFs and stickers"
 "picker.loading" = "Loading GIFs…"
+"picker.empty" = "No GIFs found."
 
 # ---- photo viewer ----
 "viewer.photo" = "Photo"

@@ -556,10 +556,16 @@ impl App {
                 match msg {
                     GiphyMsg::Items(Ok(items)) => {
                         self.picker.giphy_items = items;
+                        // A result has arrived, even an empty
+                        // one: the tab stops reading as loading.
+                        self.picker.giphy_responded = true;
                         self.picker.giphy_rejected = false;
                         replaced = self.load_visible_giphy_previews(ctx);
                     }
                     GiphyMsg::Items(Err(e)) => {
+                        // An error is a response too: the wait
+                        // is over, whatever it brought.
+                        self.picker.giphy_responded = true;
                         if e.contains("401") || e.contains("403") {
                             self.picker.giphy_rejected = true;
                         }
@@ -670,6 +676,9 @@ impl App {
         if self.picker.giphy_rx.is_some() {
             return;
         }
+        // A new fetch is in flight: until its result lands, an
+        // empty item list reads as loading again.
+        self.picker.giphy_responded = false;
         let mut pool = self.credentials.pool_for(giphy::KEY_SLOT);
         let stored = self.giphy_prefs.clone();
         let (limit, rating) = giphy::fetch_params(&stored);

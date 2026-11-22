@@ -282,14 +282,26 @@ impl App {
                     }
                 });
                 if self.picker.giphy_items.is_empty() {
-                    // The fetch-in-flight row: the shared loading
-                    // row, so waiting reads as waiting.
-                    crate::widgets::loading_row(
-                        ui,
-                        &crate::i18n::t("picker.loading"),
-                        12.0,
-                        t.text_secondary,
-                    );
+                    if self.picker.giphy_responded {
+                        // A result arrived and it was empty: that
+                        // is an answer, not a wait, so it gets the
+                        // plain empty text instead of a spinner
+                        // that would promise more is coming.
+                        ui.label(
+                            RichText::new(crate::i18n::t("picker.empty"))
+                                .size(12.0)
+                                .color(rgb(t.text_secondary)),
+                        );
+                    } else {
+                        // The fetch-in-flight row: the shared
+                        // loading row, so waiting reads as waiting.
+                        crate::widgets::loading_row(
+                            ui,
+                            &crate::i18n::t("picker.loading"),
+                            12.0,
+                            t.text_secondary,
+                        );
+                    }
                 }
                 let items = self.picker.giphy_items.clone();
                 let now = ui.ctx().input(|i| i.time);

@@ -95,8 +95,8 @@ impl CallUi {
                     "Incoming voice call".to_owned()
                 }
             }
-            CallUiPhase::Ringing => "Ringing...".to_owned(),
-            CallUiPhase::Connecting => "Connecting...".to_owned(),
+            CallUiPhase::Ringing => "Ringing…".to_owned(),
+            CallUiPhase::Connecting => "Connecting…".to_owned(),
             CallUiPhase::Active => format_duration(self.seconds),
             CallUiPhase::Ended => self.reason.clone().unwrap_or_else(|| "Call ended".to_owned()),
         }
@@ -380,11 +380,23 @@ impl App {
                             ui.horizontal(|ui| {
                                 match call.phase {
                                     CallUiPhase::Incoming => {
-                                        if call_button(ui, Icon::Phone, rgb(t.danger), "Decline") {
+                                        if call_button(
+                                            ui,
+                                            Icon::Phone,
+                                            rgb(t.danger),
+                                            "Decline",
+                                            call.action_pending,
+                                        ) {
                                             action = Some("reject");
                                         }
                                         ui.add_space(18.0);
-                                        if call_button(ui, Icon::Phone, rgb(t.accent), "Accept") {
+                                        if call_button(
+                                            ui,
+                                            Icon::Phone,
+                                            rgb(t.accent),
+                                            "Accept",
+                                            call.action_pending,
+                                        ) {
                                             action = Some("accept");
                                         }
                                     }
@@ -408,6 +420,7 @@ impl App {
                                             mute_icon,
                                             rgb(t.bg_panel_alt),
                                             if call.muted { "Unmute" } else { "Mute" },
+                                            call.action_pending,
                                         ) {
                                             action = Some("mute");
                                         }
@@ -417,6 +430,7 @@ impl App {
                                             Icon::Megaphone,
                                             rgb(t.bg_panel_alt),
                                             if call.speaker { "Speaker on" } else { "Speaker off" },
+                                            call.action_pending,
                                         ) {
                                             action = Some("speaker");
                                         }
@@ -431,7 +445,13 @@ impl App {
                                             "Video calls are not available yet",
                                         );
                                         ui.add_space(10.0);
-                                        if call_button(ui, Icon::Phone, rgb(t.danger), "End call") {
+                                        if call_button(
+                                            ui,
+                                            Icon::Phone,
+                                            rgb(t.danger),
+                                            "End call",
+                                            call.action_pending,
+                                        ) {
                                             action = Some("end");
                                         }
                                     }
@@ -466,18 +486,31 @@ impl App {
     }
 }
 
-/// One round call-control button; returns true on click.
-fn call_button(ui: &mut egui::Ui, icon: Icon, bg: egui::Color32, tooltip: &str) -> bool {
+/// One round call-control button; returns true on click. While
+/// an action is latched (the `pending` argument, fed from the
+/// call's action_pending flag) the disc and its glyph paint
+/// dimmed, so the latch the click handling enforces is visible
+/// instead of silently swallowing further clicks.
+fn call_button(
+    ui: &mut egui::Ui,
+    icon: Icon,
+    bg: egui::Color32,
+    tooltip: &str,
+    pending: bool,
+) -> bool {
     let (rect, response) = ui.allocate_exact_size(Vec2::splat(52.0), Sense::click());
+    let dim = |c: egui::Color32| {
+        egui::Color32::from_rgba_unmultiplied(
+            c.r(),
+            c.g(),
+            c.b(),
+            (f32::from(c.a()) * 0.55) as u8,
+        )
+    };
+    let (bg, glyph) =
+        if pending { (dim(bg), dim(egui::Color32::WHITE)) } else { (bg, egui::Color32::WHITE) };
     ui.painter().circle_filled(rect.center(), 26.0, bg);
-    icons::draw(
-        ui.painter(),
-        icon,
-        rect.center(),
-        crate::icons::SIZE_TAB,
-        egui::Color32::WHITE,
-        bg,
-    );
+    icons::draw(ui.painter(), icon, rect.center(), crate::icons::SIZE_TAB, glyph, bg);
     response.on_hover_text(tooltip).clicked()
 }
 

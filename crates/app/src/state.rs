@@ -786,6 +786,12 @@ pub(crate) struct PickerState {
     pub(crate) giphy_query: String,
     /// Current GIF results (GIPHY tab).
     pub(crate) giphy_items: Vec<giphy::GifItem>,
+    /// Whether any GIPHY result has arrived for the current
+    /// fetch: an empty result set is a real answer ("no GIFs"),
+    /// not a wait, so the tab only reads as loading while this
+    /// is false. Set on every result message, including an empty
+    /// one; cleared when a new fetch starts.
+    pub(crate) giphy_responded: bool,
     /// Whether the GIPHY key was rejected (bad-key state).
     pub(crate) giphy_rejected: bool,
     /// Decoded GIF preview textures by preview URL. Bounded (see
@@ -1716,6 +1722,7 @@ impl App {
                 sticker_new_text: String::new(),
                 giphy_query: String::new(),
                 giphy_items: Vec::new(),
+                giphy_responded: false,
                 giphy_rejected: false,
                 giphy_textures: crate::extras::TextureCache::new(crate::extras::MAX_GIPHY_TEXTURES),
                 sticker_textures: crate::extras::TextureCache::new(

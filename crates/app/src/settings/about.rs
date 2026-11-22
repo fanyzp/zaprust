@@ -50,6 +50,10 @@ impl App {
             // as static status text.
             let waiting =
                 matches!(self.update.phase, UpdatePhase::Checking | UpdatePhase::Downloading);
+            // A failure speaks in the danger token like every
+            // other failure in the app, not in the secondary voice
+            // of an ordinary status.
+            let failed = matches!(self.update.phase, UpdatePhase::Failed(_));
             row_hl(
                 ui,
                 &mut self.settings_highlight,
@@ -61,6 +65,8 @@ impl App {
                 |ui| {
                     if waiting {
                         crate::widgets::loading_row(ui, &status, 14.0, t.text_secondary);
+                    } else if failed {
+                        ui.label(RichText::new(status).color(rgb(t.danger)));
                     } else {
                         ui.label(RichText::new(status).color(rgb(t.text_secondary)));
                     }

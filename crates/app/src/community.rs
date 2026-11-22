@@ -295,8 +295,10 @@ pub fn community_home(
                         // the same layout job), not on its own line
                         // below it; the whole label is the toggle's
                         // click target.
-                        let mut job = egui::text::LayoutJob::default();
-                        job.halign = egui::Align::Center;
+                        let mut job = egui::text::LayoutJob {
+                            halign: egui::Align::Center,
+                            ..Default::default()
+                        };
                         job.append(
                             &shown,
                             0.0,
@@ -1060,9 +1062,9 @@ mod tests {
         // Ten-letter words separated by spaces: the raw char cut
         // would land inside the thirteenth word, so the collapsed
         // text backs up to the end of the twelfth word instead.
-        let desc = vec!["abcdefghij"; 20].join(" ");
+        let desc = ["abcdefghij"; 20].join(" ");
         let out = collapsed_description(&desc);
-        let words = vec!["abcdefghij"; 12].join(" ");
+        let words = ["abcdefghij"; 12].join(" ");
         assert_eq!(out, format!("{words}..."));
     }
 

@@ -172,7 +172,7 @@ impl App {
         let unread = total_unread(&self.chats);
         let mut go: Option<Screen> = None;
         let bar = nav_bar_rect(root.ctx().content_rect());
-        egui::Area::new(egui::Id::new("bottom_nav"))
+        egui::Area::new(egui::Id::unique("bottom_nav"))
             .fixed_pos(bar.min)
             .order(egui::Order::Foreground)
             .movable(false)

@@ -15,7 +15,7 @@
 use crate::state::{App, Screen};
 use crate::theme::rgb;
 use core::filter::total_unread;
-use eframe::egui::{self, Align2, CornerRadius, FontId, Margin, Pos2, Rect, Sense, Stroke, Vec2};
+use eframe::egui::{self, Align2, CornerRadius, FontId, Margin, Pos2, Rect, Sense, Vec2};
 
 /// The height the bottom strip reserves at the window's foot:
 /// the floating bar, its margin from the window's bottom edge
@@ -37,15 +37,24 @@ const NAV_BAR_BOTTOM: f32 = 14.0;
 /// The bar's margin from the window's side edges.
 const NAV_BAR_SIDE: f32 = 16.0;
 
-/// The floating bar's rect inside the reserved strip: inset
-/// by the side margins, resting on the bottom margin, the
-/// strip's remainder above it is the shadow's room. Pure
-/// geometry, so the graded sizes can pin it in tests: the bar
-/// is always fully inside the window, at any width.
+/// The pill's maximum width: the bar hugs its four tabs instead
+/// of stretching across the window, so on any window wider than
+/// the cap it sits centered with growing side margins, the way
+/// a floating pill reads. Narrower windows keep the plain side
+/// margins.
+const NAV_BAR_MAX_W: f32 = 320.0;
+
+/// The floating bar's rect inside the reserved strip: width
+/// capped at NAV_BAR_MAX_W and centered, resting on the bottom
+/// margin, the strip's remainder above it is the shadow's room.
+/// Pure geometry, so the graded sizes can pin it in tests: the
+/// bar is always fully inside the window, at any width.
 fn nav_bar_rect(strip: Rect) -> Rect {
+    let width = (strip.width() - 2.0 * NAV_BAR_SIDE).min(NAV_BAR_MAX_W);
+    let left = strip.left() + (strip.width() - width) / 2.0;
     Rect::from_min_max(
-        Pos2::new(strip.left() + NAV_BAR_SIDE, strip.bottom() - NAV_BAR_BOTTOM - NAV_BAR_H),
-        Pos2::new(strip.right() - NAV_BAR_SIDE, strip.bottom() - NAV_BAR_BOTTOM),
+        Pos2::new(left, strip.bottom() - NAV_BAR_BOTTOM - NAV_BAR_H),
+        Pos2::new(left + width, strip.bottom() - NAV_BAR_BOTTOM),
     )
 }
 
@@ -136,11 +145,13 @@ impl App {
     /// (Chat, Updates, Communities, Calls) on a floating pill.
     /// A bottom panel reserves the strip (its own fill is the
     /// plain panel ground the screens behind use, so the strip
-    /// reads as more of the screen), and the bar is painted
-    /// inside it as an elevated rounded rect with margins from
-    /// every window edge, in the theme's floating-surface
-    /// language (glass panel fill, hairline border, soft
-    /// shadow, specular top edge).
+    /// reads as more of the screen), and the pill is painted
+    /// inside it: a content-hugging capsule (width capped and
+    /// centered, full-round ends) filled a full ladder rung
+    /// above the ground, carried by its soft shadow and the
+    /// specular top edge alone. No hairline ring: the design
+    /// standard gives floating surfaces their edge from value
+    /// and shadow, not from an outline.
     pub(crate) fn draw_bottom_nav(&mut self, root: &mut egui::Ui) {
         let t = self.tokens();
         let motion = self.motion;
@@ -154,13 +165,7 @@ impl App {
                 let painter = ui.painter();
                 let radius = CornerRadius::same((NAV_BAR_H / 2.0) as u8);
                 painter.add(crate::theme::glass_shadow(t).as_shape(bar, radius));
-                painter.rect_filled(bar, radius, crate::theme::glass_panel_fill(t));
-                painter.rect_stroke(
-                    bar,
-                    radius,
-                    Stroke::new(1.0_f32, rgb(t.border)),
-                    egui::StrokeKind::Inside,
-                );
+                painter.rect_filled(bar, radius, crate::theme::glass_bar_fill(t));
                 crate::theme::paint_glass_edge(painter, bar, NAV_BAR_H / 2.0, t);
                 let chats_selected =
                     matches!(self.screen, Screen::Chats | Screen::Channels | Screen::Groups);
@@ -440,7 +445,9 @@ fn bottom_tab(
 
 #[cfg(test)]
 mod tests {
-    use super::{fab_rect, nav_bar_rect, nav_slot, BOTTOM_NAV_H, NAV_BAR_BOTTOM, NAV_BAR_SIDE};
+    use super::{
+        fab_rect, nav_bar_rect, nav_slot, BOTTOM_NAV_H, NAV_BAR_BOTTOM, NAV_BAR_MAX_W, NAV_BAR_SIDE,
+    };
     use eframe::egui::{Pos2, Rect, Vec2};
 
     /// The strip a window of the given physical width reserves
@@ -453,15 +460,22 @@ mod tests {
     #[test]
     fn floating_bar_stays_inside_the_window() {
         // The graded portrait widths, in points at the portrait
-        // density: the bar keeps its side and bottom margins
+        // density: the pill hugs its tabs at the capped width,
+        // sits centered with side margins at least the minimum,
         // and never reaches a window edge.
         for width in [400.0, 433.3] {
             let bar = nav_bar_rect(strip(width));
-            assert_eq!(bar.left(), NAV_BAR_SIDE);
-            assert_eq!(bar.right(), width - NAV_BAR_SIDE);
+            assert_eq!(bar.width(), NAV_BAR_MAX_W);
+            assert!((bar.left() - (width - bar.right())).abs() < 1e-4);
+            assert!(bar.left() >= NAV_BAR_SIDE);
             assert_eq!(strip(width).bottom() - bar.bottom(), NAV_BAR_BOTTOM);
             assert!(bar.width() < width);
         }
+        // A window narrower than the cap plus margins: the
+        // pill takes the width the side margins leave.
+        let bar = nav_bar_rect(strip(360.0));
+        assert_eq!(bar.left(), NAV_BAR_SIDE);
+        assert_eq!(bar.width(), 360.0 - 2.0 * NAV_BAR_SIDE);
     }
 
     #[test]

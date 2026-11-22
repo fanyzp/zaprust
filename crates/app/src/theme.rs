@@ -224,6 +224,15 @@ pub(crate) fn glass_panel_fill(t: Tokens) -> Color32 {
     glass_tint_alpha(t, core::theme::elevated_step(t.bg_panel), glass_panel_alpha(t))
 }
 
+/// The portrait pill bar's fill: a full ladder rung above the
+/// panel ground it floats over (bg_panel_alt, not the half step
+/// the stacked panels use), so the pill reads as a bright
+/// capsule hovering over the screen instead of a wide slab of
+/// the panel itself. Same near-opaque alpha as the panels.
+pub(crate) fn glass_bar_fill(t: Tokens) -> Color32 {
+    glass_tint_alpha(t, t.bg_panel_alt, glass_panel_alpha(t))
+}
+
 /// The one horizontal inset for left list panels (Chats and its
 /// filtered modes, Calls, Starred, Updates, Communities) and for
 /// list content panes that share their axis (community home

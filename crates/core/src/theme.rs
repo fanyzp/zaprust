@@ -324,10 +324,13 @@ impl Tokens {
     ///   51% dark, 10% / 32% / 47% light), which is what keeps body
     ///   text at WCAG AA on every surface, bubbles included.
     /// - The accent keeps the seed hue with its saturation floored
-    ///   at 45%: lightness 62% in the dark scheme, 42% in the light
-    ///   scheme, stepped down in the light scheme when a naturally
-    ///   bright hue (greens, ambers) needs the help to stay legible
-    ///   on light panels. `bubble_out` is a deep tint of the accent
+    ///   at 45%: in the dark scheme it keeps the seed's own
+    ///   lightness, so the dark accent is the seed color itself
+    ///   rather than a brightened mint, stepping up only as far as
+    ///   a dark custom seed needs to stay legible on dark panels;
+    ///   in the light scheme it starts at lightness 42% and steps
+    ///   down when a naturally bright hue (greens, ambers) needs
+    ///   the help to stay legible on light panels. `bubble_out` is a deep tint of the accent
     ///   (dark) or a pale tint (light). `tick_read` ignores the
     ///   seed: it is a fixed blue (hue 199) in both schemes, the
     ///   read-tick color users recognize.
@@ -349,7 +352,7 @@ impl Tokens {
         /// mean "read" whatever color the user picked.
         const READ_HUE: f32 = 199.0 / 360.0;
 
-        let (h, seed_s, _) = rgb_to_hsl(seed);
+        let (h, seed_s, seed_l) = rgb_to_hsl(seed);
         // Surface tint: only a hint of the seed hue in the
         // neutrals (see the scheme notes above).
         let s_surf = (seed_s * 0.10).clamp(0.02, 0.06);
@@ -360,11 +363,27 @@ impl Tokens {
         let at = |s: f32, l: f32| hsl_to_rgb(h, s, l);
 
         if dark {
+            let bg_panel = at(s_surf, 0.088);
             let bg_panel_alt = at(s_surf, 0.128);
+            // The dark accent is the seed itself: its own hue,
+            // saturation and lightness, so the accent family is
+            // the seed's family at full strength instead of a
+            // lightness-pushed mint. The only adjustment is a
+            // legibility guard for dark custom seeds, mirroring
+            // the light scheme's: step up only until the accent
+            // clears 3.2:1 on the panel (the suite's AA floor for
+            // UI colors is 3:1). Every preset seed clears it at
+            // its own lightness and never steps.
+            let mut accent_l = seed_l;
+            let mut accent = at(s_acc, accent_l);
+            while contrast_ratio(accent, bg_panel) < 3.2 && accent_l < 0.62 {
+                accent_l += 0.02;
+                accent = at(s_acc, accent_l);
+            }
             let badge_bg = hsl_to_rgb(SUCCESS_HUE, 0.55, 0.55);
             Tokens {
                 bg_app: at(s_surf, 0.058),
-                bg_panel: at(s_surf, 0.088),
+                bg_panel,
                 bg_panel_alt,
                 bg_chat: at(s_surf, 0.04),
                 // Soft off-whites, not pure white: full-brightness
@@ -376,7 +395,7 @@ impl Tokens {
                 text_primary: at(s_surf, 0.82),
                 text_secondary: at(s_surf, 0.64),
                 text_faint: at(s_surf, 0.51),
-                accent: at(s_acc, 0.62),
+                accent,
                 bubble_in: bg_panel_alt,
                 bubble_out: hsl_to_rgb(h, seed_s.clamp(0.35, 0.60), 0.15),
                 badge_bg,
@@ -541,6 +560,25 @@ pub fn pressed_step(fill: Rgb) -> Rgb {
         mix(fill, BLACK, 0.12)
     } else {
         mix(fill, WHITE, 0.12)
+    }
+}
+
+/// The raised top edge for a solid raised surface (a bubble, the
+/// composer, a selected row): the fill stepped a small way toward
+/// the scheme's text color on dark fills, toward white on light
+/// fills, painted as a 1 px line along the surface's top. It is
+/// what gives solid surfaces the lifted read the glass treatment
+/// gives floating ones, in the glow-off path too. A derivation
+/// like [`hover_step`], not a token, so custom themes get it from
+/// their own colors.
+#[must_use]
+pub fn raised_edge(fill: Rgb, text: Rgb) -> Rgb {
+    if relative_luminance(text) > relative_luminance(fill) {
+        // Dark scheme: the text color is the light anchor.
+        mix(fill, text, 0.128)
+    } else {
+        // Light scheme: white is the light anchor.
+        mix(fill, WHITE, 0.48)
     }
 }
 
@@ -986,6 +1024,46 @@ mod tests {
         }
     }
 
+    /// The dark accent must stay in the seed's color family: the
+    /// same hue (within rounding) and the seed's own lightness,
+    /// instead of the old forced 0.62 step that rendered the
+    /// default green as neon mint. This is the regression pin for
+    /// that drift: hue family plus closeness to the seed's
+    /// lightness, for every preset seed (none of them needs the
+    /// legibility step-up), and the accent always darker than the
+    /// primary text it shares screens with.
+    #[test]
+    fn dark_accent_stays_in_the_seed_family() {
+        let hue_gap = |a: f32, b: f32| {
+            let d = (a - b).abs();
+            d.min(1.0 - d)
+        };
+        for (name, seed) in SEED_PRESETS {
+            let (seed_h, _, seed_l) = rgb_to_hsl(seed);
+            let t = Tokens::dynamic(seed, true);
+            let (h, _, l) = rgb_to_hsl(t.accent);
+            assert!(
+                hue_gap(h, seed_h) <= 0.03,
+                "{name}: dark accent hue {h:.3} drifted from seed hue {seed_h:.3}"
+            );
+            assert!(
+                (l - seed_l).abs() <= 0.04,
+                "{name}: dark accent lightness {l:.2} drifted from the seed's {seed_l:.2}"
+            );
+            let (_, _, text_l) = rgb_to_hsl(t.text_primary);
+            assert!(l < text_l, "{name}: dark accent must stay darker than the text");
+        }
+        // And the light accent keeps the seed hue too.
+        for (name, seed) in SEED_PRESETS {
+            let (seed_h, _, _) = rgb_to_hsl(seed);
+            let (h, _, _) = rgb_to_hsl(Tokens::dynamic(seed, false).accent);
+            assert!(
+                hue_gap(h, seed_h) <= 0.03,
+                "{name}: light accent hue {h:.3} drifted from seed hue {seed_h:.3}"
+            );
+        }
+    }
+
     /// The surface value ladder must separate at a glance: in
     /// dark schemes each resting surface is at least 1.4x the
     /// luminance of the one below it, in light schemes each step
@@ -1039,6 +1117,31 @@ mod tests {
                 "{name}: elevated card must sit above the panel"
             );
             assert_ne!(elevated_step(t.bg_panel), t.bg_panel, "{name}: elevated step must move");
+        }
+    }
+
+    /// The state steps and the raised edge must actually read:
+    /// hover and pressed move every surface fill, differ from
+    /// each other, and the raised edge moves a surface toward
+    /// the light (up in luminance) in both schemes.
+    #[test]
+    fn state_steps_and_raised_edge_move_visibly() {
+        for (name, t) in all_generated_tokens() {
+            for fill in [t.accent, t.bg_panel_alt, t.bubble_in, t.bubble_out] {
+                assert_ne!(hover_step(fill), fill, "{name}: hover must move {fill:?}");
+                assert_ne!(pressed_step(fill), fill, "{name}: pressed must move {fill:?}");
+                assert_ne!(
+                    hover_step(fill),
+                    pressed_step(fill),
+                    "{name}: hover and pressed must differ on {fill:?}"
+                );
+                let edge = raised_edge(fill, t.text_primary);
+                assert_ne!(edge, fill, "{name}: raised edge must move {fill:?}");
+                assert!(
+                    relative_luminance(edge) > relative_luminance(fill),
+                    "{name}: raised edge must lighten {fill:?}"
+                );
+            }
         }
     }
 

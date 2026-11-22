@@ -189,11 +189,15 @@
 # ---- settings: chats ----
 "chats_page.enter_sends" = "Enter sends"
 "chats_page.enter_sends_caption" = "Off: Ctrl+Enter sends instead"
+"chats_page.sending" = "Sending"
+"chats_page.archiving" = "Archiving"
 
 # ---- settings: features ----
 "features.results_per_search" = "Results per search"
 
 # ---- settings: notifications ----
+"notifications.alerts" = "Alerts"
+"notifications.sound_preview" = "Sound & preview"
 "notifications.messages" = "Message notifications"
 "notifications.groups" = "Group notifications"
 "notifications.sound" = "Notification sound"
@@ -221,6 +225,7 @@
 "storage.linked_data" = "Linked account data"
 "storage.archive" = "Chat archive"
 "storage.clear_caches" = "Clear in-memory caches"
+"storage.caches" = "Caches"
 
 # ---- connect ----
 "connect.title" = "Link this computer"

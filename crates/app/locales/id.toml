@@ -273,6 +273,17 @@
 # ---- settings: features ----
 "features.results_per_search" = "Hasil per pencarian"
 
+# ---- settings: chats ----
+"chats_page.sending" = "Pengiriman"
+"chats_page.archiving" = "Pengarsipan"
+
+# ---- settings: notifications ----
+"notifications.alerts" = "Peringatan"
+"notifications.sound_preview" = "Suara & pratinjau"
+
+# ---- settings: storage ----
+"storage.caches" = "Cache"
+
 # ---- settings: appearance ----
 "appearance.theme" = "Tema"
 "appearance.dynamic_color" = "Warna dinamis"

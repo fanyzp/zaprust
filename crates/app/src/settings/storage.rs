@@ -92,7 +92,11 @@ impl App {
                 .size(12.0)
                 .color(rgb(t.text_secondary)),
             );
-            ui.add_space(8.0);
+            ui.add_space(4.0);
+        });
+        ui.add_space(16.0);
+        group_label(ui, t, &crate::i18n::t("storage.caches"));
+        settings_card(ui, t, |ui| {
             if self.cache_cleared {
                 ui.label(
                     RichText::new(
@@ -112,7 +116,6 @@ impl App {
             {
                 clear = true;
             }
-            ui.add_space(4.0);
         });
         if clear {
             self.clear_in_memory_caches();

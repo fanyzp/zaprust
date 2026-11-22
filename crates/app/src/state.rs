@@ -476,6 +476,14 @@ pub(crate) struct AnimState {
     /// The photo viewer's reveal run: spinner while loading, then
     /// the photo crossfades in. Restarted on every open.
     pub(crate) viewer_reveal: Option<crate::motion::Anim>,
+    /// Running shell screen-switch fade (rail and bottom-tab
+    /// switches), on the motion system's SWITCH duration.
+    pub(crate) screen_fade: Option<crate::motion::Anim>,
+    /// The shell key the last frame drew, as (screen, the
+    /// single-pane content pane is showing): a change between
+    /// frames is what arms [`Self::screen_fade`]. `None` until
+    /// the first frame, which never fades.
+    pub(crate) screen_key: Option<(Screen, bool)>,
 }
 
 /// Calls state: the call log behind the Calls panel, its search and filters, the new-call picker, and the one live call's UI state.
@@ -1690,6 +1698,8 @@ impl App {
                 chat_fade_pending: false,
                 started: 0,
                 viewer_reveal: None,
+                screen_fade: None,
+                screen_key: None,
             },
             reaction_actors: std::collections::HashMap::new(),
             my_reactions: std::collections::HashMap::new(),

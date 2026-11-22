@@ -100,6 +100,12 @@ pub(crate) mod dur {
     pub(crate) const TAB_POP: f64 = 160.0;
     /// The scroll-to-bottom button fading in or out.
     pub(crate) const REVEAL: f64 = 150.0;
+    /// The photo viewer's reveal: a brief loading phase, then
+    /// the photo crossfades in. It used to run 700 ms, far
+    /// outside the band every other surface obeys; at this
+    /// length the loading phase still reads, and the crossfade
+    /// lands without feeling like lag.
+    pub(crate) const VIEWER: f64 = 280.0;
 }
 
 /// Ease-out cubic: fast start, gentle landing. `t` is clamped to
@@ -249,6 +255,20 @@ mod tests {
         for s in [MotionSetting::Full, MotionSetting::Reduced, MotionSetting::Off] {
             assert_eq!(MotionSetting::from_str_or_full(s.as_str()), s, "persistence round-trip");
         }
+    }
+
+    #[test]
+    fn tab_pop_and_viewer_durations_follow_the_tiers() {
+        // The activation pop's frozen numbers: Full runs the
+        // full 160 ms, Reduced lands exactly on 96 ms through
+        // the tier mapping, and Off collapses to zero.
+        assert_eq!(MotionSetting::Full.duration(dur::TAB_POP), 160.0);
+        assert_eq!(MotionSetting::Reduced.duration(dur::TAB_POP), 96.0);
+        assert_eq!(MotionSetting::Off.duration(dur::TAB_POP), 0.0);
+        // The photo viewer reveal sits inside the house band at
+        // full length, and every tier stays inside it too.
+        assert!((90.0..=300.0).contains(&dur::VIEWER));
+        assert!((90.0..=300.0).contains(&MotionSetting::Reduced.duration(dur::VIEWER)));
     }
 
     #[test]

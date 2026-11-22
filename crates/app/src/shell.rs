@@ -70,6 +70,7 @@ impl eframe::App for App {
             if self.sidebar_collapsed && self.screen.is_list_screen() {
                 self.draw_collapsed_strip(ui);
                 self.draw_content(ui);
+                self.paint_screen_fade(&ctx);
                 return;
             }
         }
@@ -111,6 +112,7 @@ impl eframe::App for App {
             self.draw_simple_list_panel(ui, "Debug");
             self.draw_debug_screen(ui);
         }
+        self.paint_screen_fade(&ctx);
         // The account surfaces (menu header, rail button) paint
         // the signed-in user's photo from the same state the
         // profile editor maintains; keep its texture current
@@ -132,6 +134,45 @@ impl App {
     /// mode: a chat was opened, or a community home is up.
     pub(crate) fn content_visible(&self) -> bool {
         self.conversation_open || self.open_community.is_some()
+    }
+
+    /// The shell screen-switch fade: rail and bottom-tab
+    /// switches (and, in single-pane mode, the list giving way
+    /// to an open conversation) crossfade on the motion
+    /// system's SWITCH duration, the conversation switch fade's
+    /// language one level up. The key is compared at the end of
+    /// the frame, after every switch site has run, so the first
+    /// frame of the new screen is already covered by the
+    /// overlay and never flashes uncovered. The first frame of
+    /// the app only records the key: opening never fades.
+    /// Motion Off collapses the run to zero duration, so the
+    /// switch is instant and no overlay is painted.
+    fn paint_screen_fade(&mut self, ctx: &egui::Context) {
+        let key = (self.screen, self.single_pane && self.content_visible());
+        match self.anim.screen_key {
+            None => self.anim.screen_key = Some(key),
+            Some(prev) if prev != key => {
+                self.anim.screen_key = Some(key);
+                self.anim.screen_fade =
+                    Some(self.fresh_anim(crate::motion::dur::SWITCH, ctx));
+            }
+            _ => {}
+        }
+        let now = ctx.input(|i| i.time);
+        let p = crate::motion::Anim::drive(&mut self.anim.screen_fade, ctx, now);
+        if p < 1.0 {
+            let t = self.tokens();
+            let alpha = ((1.0 - p) * 220.0) as u8;
+            let layer = egui::LayerId::new(
+                egui::Order::Foreground,
+                egui::Id::unique("screen_fade_layer"),
+            );
+            ctx.layer_painter(layer).rect_filled(
+                ctx.content_rect(),
+                egui::CornerRadius::ZERO,
+                egui::Color32::from_rgba_unmultiplied(t.bg_app.0, t.bg_app.1, t.bg_app.2, alpha),
+            );
+        }
     }
 
     /// The left list panel in the shape the layout mode needs:
@@ -432,8 +473,7 @@ impl App {
         let was_open: bool =
             root.ctx().data(|d| d.get_temp(egui::Id::unique("viewer_was_open"))).unwrap_or(false);
         if open_now && !was_open {
-            self.anim.viewer_reveal =
-                Some(self.fresh_anim(self.motion.duration(700.0), root.ctx()));
+            self.anim.viewer_reveal = Some(self.fresh_anim(crate::motion::dur::VIEWER, root.ctx()));
         }
         root.ctx().data_mut(|d| d.insert_temp(egui::Id::unique("viewer_was_open"), open_now));
         let now = root.ctx().input(|i| i.time);

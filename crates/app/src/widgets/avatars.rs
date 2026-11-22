@@ -213,10 +213,14 @@ pub(crate) fn ai_chip(painter: &egui::Painter, left_center: Pos2, t: Tokens) -> 
     22.0
 }
 
-/// Deterministic per-person color for group sender names.
-/// Real WhatsApp colors each member's name; so do we.
-pub(crate) fn sender_color(name: &str, t: Tokens) -> Color32 {
-    let palette = if t.is_light() {
+/// The sender-name palette for the scheme: six colors chosen
+/// for contrast on the bubble background. The stream assigns
+/// them per conversation without replacement (see
+/// `assign_sender_colors` in the conversation stream); the
+/// standalone `sender_color` below is the fallback for surfaces
+/// that name a sender outside a conversation.
+pub(crate) fn sender_palette(t: Tokens) -> [Rgb; 6] {
+    if t.is_light() {
         [
             Rgb(0xD9, 0x2B, 0x2B),
             Rgb(0x00, 0x80, 0x69),
@@ -234,7 +238,13 @@ pub(crate) fn sender_color(name: &str, t: Tokens) -> Color32 {
             Rgb(0xA7, 0xFF, 0xEB),
             Rgb(0xCC, 0xFF, 0x90),
         ]
-    };
+    }
+}
+
+/// Deterministic per-person color for group sender names.
+/// Real WhatsApp colors each member's name; so do we.
+pub(crate) fn sender_color(name: &str, t: Tokens) -> Color32 {
+    let palette = sender_palette(t);
     let hash: usize = name.bytes().map(usize::from).sum();
     rgb(palette[hash % palette.len()])
 }

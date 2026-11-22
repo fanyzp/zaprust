@@ -1,5 +1,5 @@
 //! Buttons and button-like controls: the app button, rail buttons,
-//! icon buttons, chips and the segmented control.
+//! icon buttons and chips.
 
 use crate::theme::rgb;
 use core::theme::{Rgb, Tokens};
@@ -327,72 +327,6 @@ pub(crate) fn chip_scroll_row(
     let offset = out.state.clamped_offset().x;
     let max_offset = (out.content_size.x - out.inner_rect.width()).max(0.0);
     strip_edge_fades(ui.painter(), out.inner_rect, bg, offset > 0.5, offset < max_offset - 0.5);
-}
-
-/// A two-option segmented control: a full-width pill track on
-/// the panel-alt rung with the selected option riding the
-/// elevated step inside it, the shape the Calls panel's All /
-/// Missed filter takes. Hand-painted like the chip so the fills
-/// come from the surface ladder. Returns the index of the
-/// option a click chose, or `None` when the click landed on
-/// the already-selected option or missed the control.
-pub(crate) fn segmented(
-    ui: &mut egui::Ui,
-    labels: [&str; 2],
-    selected: usize,
-    t: Tokens,
-) -> Option<usize> {
-    let (rect, response) =
-        ui.allocate_exact_size(Vec2::new(ui.available_width(), 34.0), Sense::click());
-    let radius = CornerRadius::same((rect.height() / 2.0).round() as u8);
-    ui.painter().rect_filled(rect, radius, rgb(t.bg_panel_alt));
-    let half = rect.width() / 2.0;
-    let seg_rect = |i: usize| {
-        egui::Rect::from_min_size(
-            Pos2::new(rect.left() + half * i as f32, rect.top()),
-            Vec2::new(half, rect.height()),
-        )
-        .shrink(3.0)
-    };
-    // Hover wash on the unselected segment under the pointer.
-    if let Some(pos) = response.hover_pos() {
-        let hovered = if pos.x < rect.center().x { 0 } else { 1 };
-        if hovered != selected {
-            ui.painter().rect_filled(
-                seg_rect(hovered),
-                radius,
-                rgb(core::theme::hover_step(t.bg_panel_alt)),
-            );
-        }
-    }
-    // The selected segment rides two steps up: one step read
-    // as a hover, not a selection, at a glance.
-    ui.painter().rect_filled(
-        seg_rect(selected),
-        radius,
-        rgb(core::theme::hover_step(core::theme::elevated_step(t.bg_panel_alt))),
-    );
-    let font = FontId::proportional(13.0);
-    for (i, label) in labels.iter().enumerate() {
-        let color = if i == selected { t.text_primary } else { t.text_secondary };
-        ui.painter().text(
-            seg_rect(i).center(),
-            egui::Align2::CENTER_CENTER,
-            *label,
-            font.clone(),
-            rgb(color),
-        );
-    }
-    let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
-    if response.clicked() {
-        if let Some(pos) = response.interact_pointer_pos() {
-            let idx = if pos.x < rect.center().x { 0 } else { 1 };
-            if idx != selected {
-                return Some(idx);
-            }
-        }
-    }
-    None
 }
 
 /// The one icon button: a square hit area with a circular hover

@@ -1,19 +1,23 @@
 //! Calls panel: the call history as a LEFT panel (the WhatsApp
 //! / Telegram pattern for secondary lists), while the
-//! conversation stays on the right. The anatomy follows the
-//! reference call log: a header with a back chevron, the title
-//! and a new call button; a segmented All / Missed control; the
-//! panel's search; a "Recent" section label; and rows with the
-//! contact's avatar and name (missed calls in the danger
-//! color), a direction glyph with the type and duration line, a
-//! date, and an info button that opens the contact's info dock.
+//! conversation stays on the right. One row paradigm serves
+//! the panel and portrait alike: a header with a back chevron,
+//! the title and a labelled New call primary button; the All /
+//! Missed chip strip; the panel's search; the shortcut circles
+//! row (recent contacts and the favorites filter); a "Recent"
+//! section label; and rows with the contact's avatar and name
+//! (missed calls in the danger color), a direction glyph with
+//! the day, time and duration in the subtitle line, and a
+//! call-back action at the trailing edge whose glyph matches
+//! the entry's kind. A row carries no permanent info button:
+//! opening the row's chat puts the contact's info one tap away
+//! in the conversation header, the surface that owns it.
 //!
 //! Portrait mode draws its own slice of the same data, cut to
 //! the owner's phone reference (the native dialer's log): big
-//! title and search icon, All / Missed chips, a shortcut
-//! circles row, a bold "Recent" header, day-and-time rows with
-//! a call-back icon, and the new call action on the tab's FAB
-//! (see `draw_calls_panel_portrait`).
+//! title and search icon, the same chips, shortcut row and
+//! rows, a bold "Recent" header, and the new call action on
+//! the tab's FAB (see `draw_calls_panel_portrait`).
 //!
 //! Clicks are wired honestly: Zaprust's call flow is
 //! backend-driven and exists only in live mode (the offline
@@ -89,24 +93,6 @@ fn format_duration_label(secs: u32) -> String {
     }
 }
 
-/// The row's status line: "Missed voice call", "Voice call ·
-/// 2 min 11 s". Missed calls never carry a duration, and a
-/// connected call whose duration the source did not record
-/// shows no suffix either.
-fn status_line(entry: &CallEntry) -> String {
-    let base = crate::i18n::t(match (entry.missed, entry.kind) {
-        (true, CallKind::Voice) => "calls.missed_voice",
-        (true, CallKind::Video) => "calls.missed_video",
-        (false, CallKind::Voice) => "calls.voice",
-        (false, CallKind::Video) => "calls.video",
-    });
-    if !entry.missed && entry.duration_secs > 0 {
-        format!("{base} · {}", format_duration_label(entry.duration_secs))
-    } else {
-        base
-    }
-}
-
 /// The row's right-aligned day: "Today" or "Yesterday" while
 /// the day formatter says so, the weekday name after that (the
 /// formatter's full-date labels resolve back to their weekday
@@ -157,6 +143,176 @@ fn day_time_line(entry: &CallEntry) -> String {
         line.push_str(&format!(" · {}", format_duration_label(entry.duration_secs)));
     }
     line
+}
+
+/// The glyph a row's call-back action carries: the camera for
+/// a video entry, the handset for a voice one, so the action
+/// restarts the kind of call the entry records.
+fn call_back_icon(entry: &CallEntry) -> crate::icons::Icon {
+    if entry.kind == CallKind::Video {
+        crate::icons::Icon::Video
+    } else {
+        crate::icons::Icon::Phone
+    }
+}
+
+/// One trailing action on a new call picker row: the call kind
+/// it starts, the glyph it draws and the locale key that names
+/// it. The picker renders exactly this list per row, so a row
+/// can never offer one kind without the other.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct PickerAction {
+    video: bool,
+    icon: crate::icons::Icon,
+    label_key: &'static str,
+}
+
+/// The two call actions every picker row carries, voice first.
+fn picker_call_actions() -> [PickerAction; 2] {
+    [
+        PickerAction { video: false, icon: crate::icons::Icon::Phone, label_key: "calls.voice" },
+        PickerAction { video: true, icon: crate::icons::Icon::Video, label_key: "calls.video" },
+    ]
+}
+
+/// The one call log row, shared by the desktop panel and the
+/// portrait screen so the two layouts can never drift into
+/// different paradigms: avatar, name (missed in the danger
+/// color, the grouped count after it), the direction glyph
+/// with the day, time and duration in the subtitle line, and
+/// the call-back action at the trailing edge. Returns true
+/// when the row or its call-back action was clicked; both
+/// perform the same call-back. There is deliberately no info
+/// action here: the chat the click opens carries the contact
+/// info affordance in its header.
+fn draw_call_row(
+    ui: &mut egui::Ui,
+    t: core::theme::Tokens,
+    entry: &CallEntry,
+    count: usize,
+    chat: Option<&Chat>,
+    photo: Option<egui::TextureId>,
+) -> bool {
+    let (rect, resp) = ui.allocate_exact_size(
+        Vec2::new(ui.available_width(), crate::chat_list::ROW_H),
+        Sense::click(),
+    );
+    let hov = crate::anim::hover_factor(ui, ("call_row", entry.id), resp.hovered());
+    if hov > 0.001 {
+        ui.painter().rect_filled(
+            rect,
+            CornerRadius::same(10),
+            crate::theme::glass_wash(t, t.bg_panel_alt, (hov * 115.0) as u8),
+        );
+    }
+    let painter = ui.painter();
+    let avatar_center = Pos2::new(rect.left() + crate::chat_list::AVATAR_CX, rect.center().y);
+    match chat {
+        Some(chat) => {
+            crate::widgets::paint_chat_avatar_photo(
+                painter,
+                avatar_center,
+                crate::chat_list::AVATAR_R,
+                chat,
+                photo,
+            );
+        }
+        None => {
+            let disc = crate::widgets::avatar_color((entry.chat_id % 251) as u8);
+            painter.circle_filled(avatar_center, crate::chat_list::AVATAR_R, disc);
+            crate::icons::draw(
+                painter,
+                crate::icons::Icon::Person,
+                avatar_center,
+                crate::chat_list::AVATAR_R * 1.15,
+                egui::Color32::from_rgba_unmultiplied(255, 255, 255, 235),
+                disc,
+            );
+        }
+    }
+    let text_left = rect.left() + crate::chat_list::TEXT_X;
+    let name = chat.map_or("", |c| c.title.as_str());
+    let name_color = if entry.missed { rgb(t.danger) } else { rgb(t.text_primary) };
+    // The grouped count rides after the name in the secondary
+    // color, and its width comes out of the name budget, which
+    // ends at the call-back button's zone at the right edge.
+    let count_text = if count > 1 { format!(" ({count})") } else { String::new() };
+    let count_font = crate::theme::medium(15.5);
+    let count_w = if count_text.is_empty() {
+        0.0
+    } else {
+        ui.ctx().fonts_mut(|f| {
+            f.layout_no_wrap(count_text.clone(), count_font.clone(), rgb(t.text_secondary))
+                .size()
+                .x
+        })
+    };
+    let name_budget = (rect.right() - 52.0 - count_w - text_left).max(0.0);
+    let name_text = crate::widgets::ellipsize(ui, name, crate::theme::medium(15.5), name_budget);
+    let name_pos = Pos2::new(text_left, rect.top() + crate::chat_list::TITLE_DY);
+    let name_w = ui.ctx().fonts_mut(|f| {
+        f.layout_no_wrap(name_text.clone(), crate::theme::medium(15.5), name_color).size().x
+    });
+    painter.text(
+        name_pos,
+        egui::Align2::LEFT_CENTER,
+        name_text,
+        crate::theme::medium(15.5),
+        name_color,
+    );
+    if !count_text.is_empty() {
+        painter.text(
+            Pos2::new(name_pos.x + name_w, name_pos.y),
+            egui::Align2::LEFT_CENTER,
+            count_text,
+            count_font,
+            rgb(t.text_secondary),
+        );
+    }
+    // Subtitle: the direction glyph (danger for missed, the
+    // accent for connected), then the day, time and duration.
+    let status_y = rect.top() + crate::chat_list::SNIPPET_DY;
+    let glyph_color = if entry.missed { rgb(t.danger) } else { rgb(t.accent) };
+    crate::icons::draw(
+        painter,
+        direction_icon(entry),
+        Pos2::new(text_left + 7.0, status_y),
+        15.0,
+        glyph_color,
+        rgb(t.bg_panel),
+    );
+    painter.text(
+        Pos2::new(text_left + 18.0, status_y),
+        egui::Align2::LEFT_CENTER,
+        day_time_line(entry),
+        FontId::proportional(12.5),
+        rgb(t.text_secondary),
+    );
+    // Call-back button at the right edge, centered on the row.
+    // Its own click zone sits over the row's, and both clicks
+    // land on the same action below.
+    let back_rect = egui::Rect::from_center_size(
+        Pos2::new(rect.right() - 22.0, rect.center().y),
+        Vec2::splat(34.0),
+    );
+    let back_resp =
+        ui.interact(back_rect, egui::Id::unique(("call_back", entry.id)), Sense::click());
+    if back_resp.hovered() {
+        painter.circle_filled(back_rect.center(), 17.0, rgb(t.bg_panel_alt));
+    }
+    crate::icons::draw(
+        painter,
+        call_back_icon(entry),
+        back_rect.center(),
+        19.0,
+        rgb(t.text_secondary),
+        rgb(t.bg_panel),
+    );
+    let back_resp = back_resp
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text(crate::i18n::t("calls.call_back"));
+    let row_clicked = resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked();
+    back_resp.clicked() || row_clicked
 }
 
 /// The shortcut row's contact circles: the distinct chats of
@@ -341,13 +497,136 @@ impl App {
             .collect();
         group_calls(&visible)
     }
+}
+
+/// The All / Missed filter as a chip row, shared by the
+/// panel and portrait: the reference has no segmented track,
+/// so the filter takes the app's chip shape and rides the
+/// shared chip strip, like every chip row. A free function
+/// over the filter flag: the panels call it inside closures
+/// that already hold other pieces of the app state.
+fn calls_filter_chips(ui: &mut egui::Ui, t: core::theme::Tokens, missed_only: &mut bool) {
+    crate::widgets::chip_scroll_row(ui, "calls_filter_chips", t.bg_panel, *missed_only, |ui| {
+        let mut selected_resp = None;
+        let all = crate::widgets::chip(ui, &crate::i18n::t("calls.all"), !*missed_only, t);
+        if !*missed_only {
+            selected_resp = Some(all.clone());
+        }
+        if all.clicked() {
+            *missed_only = false;
+        }
+        let missed = crate::widgets::chip(ui, &crate::i18n::t("calls.missed"), *missed_only, t);
+        if *missed_only {
+            selected_resp = Some(missed.clone());
+        }
+        if missed.clicked() {
+            *missed_only = true;
+        }
+        selected_resp
+    });
+}
+
+/// The shortcut circles row, shared by the panel and
+/// portrait: the phone circle opens the new call contact
+/// picker, the photo circles are the log's own recent
+/// contacts and call that contact, and the favorites circle
+/// toggles the favorites filter over the log. Returns the
+/// contact a photo circle picked, and whether the phone
+/// circle asked for the picker. The reference's schedule and
+/// keypad circles have no counterpart in the app (no call
+/// scheduling and no dialpad exist), so they are omitted
+/// rather than drawn as decoration that does nothing.
+fn calls_shortcut_strip(
+    ui: &mut egui::Ui,
+    t: core::theme::Tokens,
+    chats: &[Chat],
+    photos: &std::collections::HashMap<u64, egui::TextureId>,
+    favorites_only: &mut bool,
+    source: &[CallEntry],
+) -> (Option<u64>, bool) {
+    let contacts = recent_call_contacts(source, 6);
+    let mut open: Option<u64> = None;
+    let mut new_call = false;
+    let shortcuts = egui::ScrollArea::horizontal()
+        .id_salt("calls_shortcuts")
+        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                if shortcut_circle(
+                    ui,
+                    t,
+                    ShortcutFace::Icon(crate::icons::Icon::Phone),
+                    &crate::i18n::t("calls.shortcut_phone"),
+                    false,
+                ) {
+                    new_call = true;
+                }
+                for chat_id in &contacts {
+                    let Some(chat) = chats.iter().find(|c| c.id == *chat_id) else {
+                        continue;
+                    };
+                    let first = chat.title.split_whitespace().next().unwrap_or(&chat.title);
+                    if shortcut_circle(
+                        ui,
+                        t,
+                        ShortcutFace::Photo { chat, photo: photos.get(&chat.id).copied() },
+                        first,
+                        false,
+                    ) {
+                        open = Some(*chat_id);
+                    }
+                }
+                if shortcut_circle(
+                    ui,
+                    t,
+                    ShortcutFace::Icon(crate::icons::Icon::Star),
+                    &crate::i18n::t("calls.shortcut_favorites"),
+                    *favorites_only,
+                ) {
+                    *favorites_only = !*favorites_only;
+                }
+            });
+        });
+    let offset = shortcuts.state.clamped_offset().x;
+    let max_offset = (shortcuts.content_size.x - shortcuts.inner_rect.width()).max(0.0);
+    crate::widgets::strip_edge_fades(
+        ui.painter(),
+        shortcuts.inner_rect,
+        t.bg_panel,
+        offset > 0.5,
+        offset < max_offset - 0.5,
+    );
+    (open, new_call)
+}
+
+impl App {
+    /// Calls a chat back in the kind the picked entry or
+    /// action carries: the chat opens, and in live mode the
+    /// call starts through the shared start path (the demo has
+    /// no call path, so opening the chat is the whole action
+    /// there, never a fake call).
+    pub(crate) fn call_chat(&mut self, chat_id: u64, kind: CallKind) {
+        self.call_chat_kind(chat_id, kind == CallKind::Video);
+    }
+
+    /// [`App::call_chat`] with the kind as the backend's video
+    /// flag: the new call picker's voice and video actions land
+    /// here directly.
+    pub(crate) fn call_chat_kind(&mut self, chat_id: u64, video: bool) {
+        self.open_call_target(chat_id);
+        if self.live_mode {
+            self.start_call_kind(video);
+        }
+    }
 
     /// Draws the Calls panel in place of the chat list and
-    /// applies row, info and header clicks. Entering the panel
-    /// never touches the open conversation; a row click calls
-    /// the entry's chat (opens it, and starts the call in live
-    /// mode), the info button opens its info dock. Portrait
-    /// mode draws the phone slice instead (see
+    /// applies row and header clicks. Entering the panel never
+    /// touches the open conversation; a row click calls the
+    /// entry's chat back in the entry's kind (opens it, and
+    /// starts the call in live mode). The contact's info dock
+    /// stays reachable from the opened chat's header, the
+    /// surface that owns it, so the row needs no info button.
+    /// Portrait mode draws the phone slice instead (see
     /// [`App::draw_calls_panel_portrait`]).
     pub(crate) fn draw_calls_panel(&mut self, root: &mut egui::Ui) {
         if self.portrait {
@@ -360,8 +639,8 @@ impl App {
             call_log_source(self.live_mode, &self.calls.live_entries, &self.calls.entries);
         let rows = self.visible_call_rows(source);
         let source_empty = source.is_empty();
-        let mut open: Option<u64> = None;
-        let mut info: Option<u64> = None;
+        let mut open: Option<(u64, CallKind)> = None;
+        let mut shortcut_open: Option<u64> = None;
         let mut back = false;
         let mut new_call = false;
         let panel = self
@@ -369,9 +648,12 @@ impl App {
             .frame(egui::Frame::new().fill(rgb(t.bg_panel)).inner_margin(Margin::symmetric(10, 8)))
             .show(root, |ui| {
                 // Header: back to the chat list, the title, and
-                // the new call button at the right edge. In
-                // portrait mode the back chevron goes away: the
-                // bottom navigation bar is the way between tabs.
+                // the New call primary button at the right edge:
+                // the screen's primary action takes the house
+                // primary button language with its label showing,
+                // not a bare glyph. In portrait mode the back
+                // chevron goes away: the bottom navigation bar
+                // is the way between tabs.
                 ui.horizontal(|ui| {
                     if !self.portrait
                         && crate::widgets::icon_button(
@@ -392,13 +674,11 @@ impl App {
                             .color(rgb(t.text_primary)),
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if crate::widgets::icon_button(
+                        if crate::widgets::button(
                             ui,
                             t,
-                            crate::icons::Icon::AddCall,
-                            32.0,
                             &crate::i18n::t("calls.new_call"),
-                            Some(t.accent),
+                            crate::widgets::Btn::Primary,
                         )
                         .clicked()
                         {
@@ -407,16 +687,9 @@ impl App {
                     });
                 });
                 ui.add_space(10.0);
-                // Segmented All / Missed control, full width.
-                let selected = usize::from(self.calls.missed_only);
-                if let Some(idx) = crate::widgets::segmented(
-                    ui,
-                    [&crate::i18n::t("calls.all"), &crate::i18n::t("calls.missed")],
-                    selected,
-                    t,
-                ) {
-                    self.calls.missed_only = idx == 1;
-                }
+                // The All / Missed filter as a chip row, the
+                // same strip portrait uses.
+                calls_filter_chips(ui, t, &mut self.calls.missed_only);
                 ui.add_space(8.0);
                 // Search pill, the shared list-panel component.
                 crate::widgets::search_pill(
@@ -426,6 +699,22 @@ impl App {
                     &crate::i18n::t("calls.search_hint"),
                     &mut self.calls.search,
                 );
+                ui.add_space(10.0);
+                // Shortcut circles at panel width, the same row
+                // portrait carries: recent contacts and the
+                // favorites filter over the log.
+                let (picked, picker) = calls_shortcut_strip(
+                    ui,
+                    t,
+                    &self.chats,
+                    &photos,
+                    &mut self.calls.favorites_only,
+                    source,
+                );
+                shortcut_open = picked;
+                if picker {
+                    new_call = true;
+                }
                 ui.add_space(10.0);
                 // The content region takes the rest of the
                 // panel; there is no footer text under it (the
@@ -454,235 +743,15 @@ impl App {
                                         let entry = row.entry;
                                         let chat: Option<&Chat> =
                                             self.chats.iter().find(|c| c.id == entry.chat_id);
-                                        let (rect, resp) = ui.allocate_exact_size(
-                                            Vec2::new(
-                                                ui.available_width(),
-                                                crate::chat_list::ROW_H,
-                                            ),
-                                            Sense::click(),
-                                        );
-                                        let hov = crate::anim::hover_factor(
+                                        if draw_call_row(
                                             ui,
-                                            ("call_row", entry.id),
-                                            resp.hovered(),
-                                        );
-                                        if hov > 0.001 {
-                                            ui.painter().rect_filled(
-                                                rect,
-                                                CornerRadius::same(10),
-                                                crate::theme::glass_wash(
-                                                    t,
-                                                    t.bg_panel_alt,
-                                                    (hov * 115.0) as u8,
-                                                ),
-                                            );
-                                        }
-                                        let painter = ui.painter();
-                                        // Avatar: the chat's own avatar when
-                                        // the chat is in the list, a seed disc
-                                        // with a person glyph when it is not.
-                                        let avatar_center = Pos2::new(
-                                            rect.left() + crate::chat_list::AVATAR_CX,
-                                            rect.center().y,
-                                        );
-                                        match chat {
-                                            Some(chat) => {
-                                                crate::widgets::paint_chat_avatar_photo(
-                                                    painter,
-                                                    avatar_center,
-                                                    crate::chat_list::AVATAR_R,
-                                                    chat,
-                                                    photos.get(&chat.id).copied(),
-                                                );
-                                            }
-                                            None => {
-                                                let disc = crate::widgets::avatar_color(
-                                                    (entry.chat_id % 251) as u8,
-                                                );
-                                                painter.circle_filled(
-                                                    avatar_center,
-                                                    crate::chat_list::AVATAR_R,
-                                                    disc,
-                                                );
-                                                crate::icons::draw(
-                                                    painter,
-                                                    crate::icons::Icon::Person,
-                                                    avatar_center,
-                                                    crate::chat_list::AVATAR_R * 1.15,
-                                                    egui::Color32::from_rgba_unmultiplied(
-                                                        255, 255, 255, 235,
-                                                    ),
-                                                    disc,
-                                                );
-                                            }
-                                        }
-                                        let text_left = rect.left() + crate::chat_list::TEXT_X;
-                                        let name = chat.map_or("", |c| c.title.as_str());
-                                        let name_color = if entry.missed {
-                                            rgb(t.danger)
-                                        } else {
-                                            rgb(t.text_primary)
-                                        };
-                                        // The relative day sits right of the
-                                        // name, its right edge sharing the
-                                        // info glyph's right margin below
-                                        // it, so the row's two right-hand
-                                        // elements sit on one line.
-                                        let day = relative_day(entry.timestamp);
-                                        let day_font = FontId::proportional(11.5);
-                                        let day_w = ui.ctx().fonts_mut(|f| {
-                                            f.layout_no_wrap(
-                                                day.clone(),
-                                                day_font.clone(),
-                                                rgb(t.text_faint),
-                                            )
-                                            .size()
-                                            .x
-                                        });
-                                        painter.text(
-                                            Pos2::new(
-                                                rect.right() - 10.0,
-                                                rect.top() + crate::chat_list::TITLE_DY,
-                                            ),
-                                            egui::Align2::RIGHT_CENTER,
-                                            day,
-                                            day_font,
-                                            rgb(t.text_faint),
-                                        );
-                                        // The grouped count rides after the
-                                        // name in the secondary color, and its
-                                        // width comes out of the name budget.
-                                        let count_text = if row.count > 1 {
-                                            format!(" ({})", row.count)
-                                        } else {
-                                            String::new()
-                                        };
-                                        let count_font = crate::theme::medium(15.5);
-                                        let count_w = if count_text.is_empty() {
-                                            0.0
-                                        } else {
-                                            ui.ctx().fonts_mut(|f| {
-                                                f.layout_no_wrap(
-                                                    count_text.clone(),
-                                                    count_font.clone(),
-                                                    rgb(t.text_secondary),
-                                                )
-                                                .size()
-                                                .x
-                                            })
-                                        };
-                                        let name_budget =
-                                            (rect.right() - 18.0 - day_w - count_w - text_left)
-                                                .max(0.0);
-                                        let name_text = crate::widgets::ellipsize(
-                                            ui,
-                                            name,
-                                            crate::theme::medium(15.5),
-                                            name_budget,
-                                        );
-                                        let name_pos = Pos2::new(
-                                            text_left,
-                                            rect.top() + crate::chat_list::TITLE_DY,
-                                        );
-                                        let name_w = ui.ctx().fonts_mut(|f| {
-                                            f.layout_no_wrap(
-                                                name_text.clone(),
-                                                crate::theme::medium(15.5),
-                                                name_color,
-                                            )
-                                            .size()
-                                            .x
-                                        });
-                                        painter.text(
-                                            name_pos,
-                                            egui::Align2::LEFT_CENTER,
-                                            name_text,
-                                            crate::theme::medium(15.5),
-                                            name_color,
-                                        );
-                                        if !count_text.is_empty() {
-                                            painter.text(
-                                                Pos2::new(name_pos.x + name_w, name_pos.y),
-                                                egui::Align2::LEFT_CENTER,
-                                                count_text,
-                                                count_font,
-                                                rgb(t.text_secondary),
-                                            );
-                                        }
-                                        // Status line: the direction glyph,
-                                        // then the type and duration text.
-                                        // Missed paints both in the danger
-                                        // color, connected calls take the
-                                        // accent for the glyph.
-                                        let status_y = rect.top() + crate::chat_list::SNIPPET_DY;
-                                        let glyph_color = if entry.missed {
-                                            rgb(t.danger)
-                                        } else {
-                                            rgb(t.accent)
-                                        };
-                                        crate::icons::draw(
-                                            painter,
-                                            direction_icon(entry),
-                                            Pos2::new(text_left + 7.0, status_y),
-                                            15.0,
-                                            glyph_color,
-                                            rgb(t.bg_panel),
-                                        );
-                                        let status_color = if entry.missed {
-                                            rgb(t.danger)
-                                        } else {
-                                            rgb(t.text_secondary)
-                                        };
-                                        painter.text(
-                                            Pos2::new(text_left + 18.0, status_y),
-                                            egui::Align2::LEFT_CENTER,
-                                            status_line(entry),
-                                            FontId::proportional(12.5),
-                                            status_color,
-                                        );
-                                        // Info button at the right edge, on
-                                        // the status line: opens the chat's
-                                        // info dock. Its own click zone over
-                                        // the row's, checked first below.
-                                        let info_rect = egui::Rect::from_center_size(
-                                            Pos2::new(rect.right() - 18.0, status_y),
-                                            Vec2::splat(28.0),
-                                        );
-                                        let info_resp = ui.interact(
-                                            info_rect,
-                                            egui::Id::unique(("call_info", entry.id)),
-                                            Sense::click(),
-                                        );
-                                        if info_resp.hovered() {
-                                            painter.circle_filled(
-                                                info_rect.center(),
-                                                14.0,
-                                                rgb(t.bg_panel_alt),
-                                            );
-                                        }
-                                        crate::icons::draw(
-                                            painter,
-                                            crate::icons::Icon::Info,
-                                            info_rect.center(),
-                                            17.0,
-                                            rgb(t.text_secondary),
-                                            rgb(t.bg_panel),
-                                        );
-                                        let info_key = match chat.map(|c| c.kind) {
-                                            Some(ChatKind::Group) => "profile.group_info",
-                                            Some(ChatKind::Channel) => "profile.channel_info",
-                                            _ => "profile.contact_info",
-                                        };
-                                        let info_resp = info_resp
-                                            .on_hover_cursor(egui::CursorIcon::PointingHand)
-                                            .on_hover_text(crate::i18n::t(info_key));
-                                        if info_resp.clicked() {
-                                            info = Some(entry.chat_id);
-                                        } else if resp
-                                            .on_hover_cursor(egui::CursorIcon::PointingHand)
-                                            .clicked()
-                                        {
-                                            open = Some(entry.chat_id);
+                                            t,
+                                            entry,
+                                            row.count,
+                                            chat,
+                                            chat.and_then(|c| photos.get(&c.id).copied()),
+                                        ) {
+                                            open = Some((entry.chat_id, entry.kind));
                                         }
                                     }
                                 },
@@ -700,24 +769,16 @@ impl App {
             self.calls.picker_search.clear();
             self.calls.picker_open = true;
         }
-        if let Some(id) = info {
-            // The info dock belongs to the selected chat, so
-            // opening the chat is part of opening its info.
-            self.open_call_target(id);
-            self.profile_open = true;
-        } else if let Some(id) = open {
-            // A row click calls the chat: it opens the chat,
-            // and in live mode starts the call through the real
-            // backend path (the demo has no call path, so
-            // opening the chat is the whole action there, never
-            // a fake call).
-            self.open_call_target(id);
-            if self.live_mode {
-                self.start_call_from_header();
-            }
+        if let Some(id) = shortcut_open {
+            // A shortcut circle calls its contact with a voice
+            // call, the circle's own meaning.
+            self.call_chat(id, CallKind::Voice);
+        }
+        if let Some((id, kind)) = open {
+            self.call_chat(id, kind);
         }
         let ctx = root.ctx().clone();
-        self.draw_call_picker(&ctx);
+        self.draw_call_picker(&ctx, panel.response.rect);
     }
 
     /// The portrait Calls screen, sliced from the owner's
@@ -750,8 +811,8 @@ impl App {
             call_log_source(self.live_mode, &self.calls.live_entries, &self.calls.entries);
         let rows = self.visible_call_rows(source);
         let source_empty = source.is_empty();
-        let contacts = recent_call_contacts(source, 6);
-        let mut open: Option<u64> = None;
+        let mut open: Option<(u64, CallKind)> = None;
+        let mut shortcut_open: Option<u64> = None;
         let mut new_call = false;
         let panel = self
             .list_panel(root)
@@ -794,106 +855,23 @@ impl App {
                     );
                 }
                 ui.add_space(10.0);
-                // The All / Missed filter as a chip row: the
-                // reference has no segmented track, so the
-                // filter takes the app's chip shape and sits
-                // subordinate under the header. It rides the
-                // shared chip strip, like every chip row.
-                crate::widgets::chip_scroll_row(
-                    ui,
-                    "calls_filter_chips",
-                    t.bg_panel,
-                    self.calls.missed_only,
-                    |ui| {
-                        let mut selected_resp = None;
-                        let all = crate::widgets::chip(
-                            ui,
-                            &crate::i18n::t("calls.all"),
-                            !self.calls.missed_only,
-                            t,
-                        );
-                        if !self.calls.missed_only {
-                            selected_resp = Some(all.clone());
-                        }
-                        if all.clicked() {
-                            self.calls.missed_only = false;
-                        }
-                        let missed = crate::widgets::chip(
-                            ui,
-                            &crate::i18n::t("calls.missed"),
-                            self.calls.missed_only,
-                            t,
-                        );
-                        if self.calls.missed_only {
-                            selected_resp = Some(missed.clone());
-                        }
-                        if missed.clicked() {
-                            self.calls.missed_only = true;
-                        }
-                        selected_resp
-                    },
-                );
+                // The All / Missed filter as a chip row, the
+                // same strip the desktop panel uses.
+                calls_filter_chips(ui, t, &mut self.calls.missed_only);
                 ui.add_space(12.0);
-                // Shortcut circles, scrolling horizontally
-                // past the right edge like the reference row,
-                // with the shared strip edge fade where the row
-                // is clipped instead of a circle cut in half.
-                let shortcuts = egui::ScrollArea::horizontal()
-                    .id_salt("calls_shortcuts")
-                    .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
-                    .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            if shortcut_circle(
-                                ui,
-                                t,
-                                ShortcutFace::Icon(crate::icons::Icon::Phone),
-                                &crate::i18n::t("calls.shortcut_phone"),
-                                false,
-                            ) {
-                                new_call = true;
-                            }
-                            for chat_id in &contacts {
-                                let Some(chat) = self.chats.iter().find(|c| c.id == *chat_id)
-                                else {
-                                    continue;
-                                };
-                                let first =
-                                    chat.title.split_whitespace().next().unwrap_or(&chat.title);
-                                if shortcut_circle(
-                                    ui,
-                                    t,
-                                    ShortcutFace::Photo {
-                                        chat,
-                                        photo: photos.get(&chat.id).copied(),
-                                    },
-                                    first,
-                                    false,
-                                ) {
-                                    open = Some(*chat_id);
-                                }
-                            }
-                            if shortcut_circle(
-                                ui,
-                                t,
-                                ShortcutFace::Icon(crate::icons::Icon::Star),
-                                &crate::i18n::t("calls.shortcut_favorites"),
-                                self.calls.favorites_only,
-                            ) {
-                                self.calls.favorites_only = !self.calls.favorites_only;
-                            }
-                        });
-                    });
-                {
-                    let offset = shortcuts.state.clamped_offset().x;
-                    let max_offset =
-                        (shortcuts.content_size.x - shortcuts.inner_rect.width()).max(0.0);
-                    crate::widgets::strip_edge_fades(
-                        ui.painter(),
-                        shortcuts.inner_rect,
-                        t.bg_panel,
-                        offset > 0.5,
-                        offset < max_offset - 0.5,
-                    );
+                // Shortcut circles, the same row the desktop
+                // panel carries at panel width.
+                let (picked, picker) = calls_shortcut_strip(
+                    ui,
+                    t,
+                    &self.chats,
+                    &photos,
+                    &mut self.calls.favorites_only,
+                    source,
+                );
+                shortcut_open = picked;
+                if picker {
+                    new_call = true;
                 }
                 ui.add_space(14.0);
                 if source_empty {
@@ -914,189 +892,15 @@ impl App {
                             let entry = row.entry;
                             let chat: Option<&Chat> =
                                 self.chats.iter().find(|c| c.id == entry.chat_id);
-                            let (rect, resp) = ui.allocate_exact_size(
-                                Vec2::new(ui.available_width(), crate::chat_list::ROW_H),
-                                Sense::click(),
-                            );
-                            let hov = crate::anim::hover_factor(
+                            if draw_call_row(
                                 ui,
-                                ("call_row", entry.id),
-                                resp.hovered(),
-                            );
-                            if hov > 0.001 {
-                                ui.painter().rect_filled(
-                                    rect,
-                                    CornerRadius::same(10),
-                                    crate::theme::glass_wash(
-                                        t,
-                                        t.bg_panel_alt,
-                                        (hov * 115.0) as u8,
-                                    ),
-                                );
-                            }
-                            let painter = ui.painter();
-                            // Avatar: the chat's own avatar when
-                            // the chat is in the list, a seed disc
-                            // with a person glyph when it is not.
-                            let avatar_center = Pos2::new(
-                                rect.left() + crate::chat_list::AVATAR_CX,
-                                rect.center().y,
-                            );
-                            match chat {
-                                Some(chat) => {
-                                    crate::widgets::paint_chat_avatar_photo(
-                                        painter,
-                                        avatar_center,
-                                        crate::chat_list::AVATAR_R,
-                                        chat,
-                                        photos.get(&chat.id).copied(),
-                                    );
-                                }
-                                None => {
-                                    let disc =
-                                        crate::widgets::avatar_color((entry.chat_id % 251) as u8);
-                                    painter.circle_filled(
-                                        avatar_center,
-                                        crate::chat_list::AVATAR_R,
-                                        disc,
-                                    );
-                                    crate::icons::draw(
-                                        painter,
-                                        crate::icons::Icon::Person,
-                                        avatar_center,
-                                        crate::chat_list::AVATAR_R * 1.15,
-                                        egui::Color32::from_rgba_unmultiplied(255, 255, 255, 235),
-                                        disc,
-                                    );
-                                }
-                            }
-                            let text_left = rect.left() + crate::chat_list::TEXT_X;
-                            let name = chat.map_or("", |c| c.title.as_str());
-                            let name_color =
-                                if entry.missed { rgb(t.danger) } else { rgb(t.text_primary) };
-                            // The grouped count rides after the
-                            // name in the secondary color, and its
-                            // width comes out of the name budget,
-                            // which ends at the call-back button's
-                            // zone at the right edge.
-                            let count_text = if row.count > 1 {
-                                format!(" ({})", row.count)
-                            } else {
-                                String::new()
-                            };
-                            let count_font = crate::theme::medium(15.5);
-                            let count_w = if count_text.is_empty() {
-                                0.0
-                            } else {
-                                ui.ctx().fonts_mut(|f| {
-                                    f.layout_no_wrap(
-                                        count_text.clone(),
-                                        count_font.clone(),
-                                        rgb(t.text_secondary),
-                                    )
-                                    .size()
-                                    .x
-                                })
-                            };
-                            let name_budget = (rect.right() - 52.0 - count_w - text_left).max(0.0);
-                            let name_text = crate::widgets::ellipsize(
-                                ui,
-                                name,
-                                crate::theme::medium(15.5),
-                                name_budget,
-                            );
-                            let name_pos =
-                                Pos2::new(text_left, rect.top() + crate::chat_list::TITLE_DY);
-                            let name_w = ui.ctx().fonts_mut(|f| {
-                                f.layout_no_wrap(
-                                    name_text.clone(),
-                                    crate::theme::medium(15.5),
-                                    name_color,
-                                )
-                                .size()
-                                .x
-                            });
-                            painter.text(
-                                name_pos,
-                                egui::Align2::LEFT_CENTER,
-                                name_text,
-                                crate::theme::medium(15.5),
-                                name_color,
-                            );
-                            if !count_text.is_empty() {
-                                painter.text(
-                                    Pos2::new(name_pos.x + name_w, name_pos.y),
-                                    egui::Align2::LEFT_CENTER,
-                                    count_text,
-                                    count_font,
-                                    rgb(t.text_secondary),
-                                );
-                            }
-                            // Second line: the direction glyph
-                            // (danger for missed, the accent for
-                            // connected, the reference's colors),
-                            // then the day and time in the muted
-                            // color for every outcome, again the
-                            // reference's split.
-                            let status_y = rect.top() + crate::chat_list::SNIPPET_DY;
-                            let glyph_color =
-                                if entry.missed { rgb(t.danger) } else { rgb(t.accent) };
-                            crate::icons::draw(
-                                painter,
-                                direction_icon(entry),
-                                Pos2::new(text_left + 7.0, status_y),
-                                15.0,
-                                glyph_color,
-                                rgb(t.bg_panel),
-                            );
-                            painter.text(
-                                Pos2::new(text_left + 18.0, status_y),
-                                egui::Align2::LEFT_CENTER,
-                                day_time_line(entry),
-                                FontId::proportional(12.5),
-                                rgb(t.text_secondary),
-                            );
-                            // Call-back button at the right edge,
-                            // centered on the row: a handset for a
-                            // voice entry, the camera for a video
-                            // one. It performs the row click's
-                            // action (call the contact), like the
-                            // reference's per-row call icon.
-                            let back_rect = egui::Rect::from_center_size(
-                                Pos2::new(rect.right() - 22.0, rect.center().y),
-                                Vec2::splat(34.0),
-                            );
-                            let back_resp = ui.interact(
-                                back_rect,
-                                egui::Id::unique(("call_back", entry.id)),
-                                Sense::click(),
-                            );
-                            if back_resp.hovered() {
-                                painter.circle_filled(
-                                    back_rect.center(),
-                                    17.0,
-                                    rgb(t.bg_panel_alt),
-                                );
-                            }
-                            crate::icons::draw(
-                                painter,
-                                if entry.kind == CallKind::Video {
-                                    crate::icons::Icon::Video
-                                } else {
-                                    crate::icons::Icon::Phone
-                                },
-                                back_rect.center(),
-                                19.0,
-                                rgb(t.text_secondary),
-                                rgb(t.bg_panel),
-                            );
-                            let back_resp = back_resp
-                                .on_hover_cursor(egui::CursorIcon::PointingHand)
-                                .on_hover_text(crate::i18n::t("calls.new_call"));
-                            let row_clicked =
-                                resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked();
-                            if back_resp.clicked() || row_clicked {
-                                open = Some(entry.chat_id);
+                                t,
+                                entry,
+                                row.count,
+                                chat,
+                                chat.and_then(|c| photos.get(&c.id).copied()),
+                            ) {
+                                open = Some((entry.chat_id, entry.kind));
                             }
                         }
                     });
@@ -1107,28 +911,28 @@ impl App {
             self.calls.picker_search.clear();
             self.calls.picker_open = true;
         }
-        if let Some(id) = open {
-            // A circle or row click calls the chat: it opens
-            // the chat, and in live mode starts the call through
-            // the real backend path (the demo has no call path,
-            // so opening the chat is the whole action there,
-            // never a fake call).
-            self.open_call_target(id);
-            if self.live_mode {
-                self.start_call_from_header();
-            }
+        if let Some(id) = shortcut_open {
+            // A shortcut circle calls its contact with a voice
+            // call, the circle's own meaning.
+            self.call_chat(id, CallKind::Voice);
+        }
+        if let Some((id, kind)) = open {
+            self.call_chat(id, kind);
         }
         let ctx = root.ctx().clone();
-        self.draw_call_picker(&ctx);
+        self.draw_call_picker(&ctx, panel.response.rect);
     }
 
-    /// The new call contact picker: a centered popup in the
-    /// forward picker's shape, listing the DM chats with a
-    /// search field. Choosing one performs the row click's
-    /// action: the chat opens, and in live mode the call starts
-    /// through the header path. Works in both modes because it
-    /// lists chats, not call history.
-    fn draw_call_picker(&mut self, ctx: &egui::Context) {
+    /// The new call contact picker: a sheet anchored to the
+    /// Calls panel's top edge, listing the DM chats with a
+    /// search field. Every row carries trailing voice and
+    /// video actions that start that kind of call through the
+    /// shared start path; the row body itself starts a voice
+    /// call, the picker's original choice. No row is
+    /// pre-highlighted: a row paints a fill only while the
+    /// pointer is over it, never at rest. Works in both modes
+    /// because it lists chats, not call history.
+    fn draw_call_picker(&mut self, ctx: &egui::Context, panel_rect: egui::Rect) {
         let t = self.tokens;
         let Some(p) =
             crate::anim::popup_phase(ctx, "call_picker", self.calls.picker_open, self.motion)
@@ -1148,14 +952,20 @@ impl App {
             .collect();
         let no_targets = targets.is_empty();
         let photos = self.demo_photos(ctx);
-        let mut chosen: Option<u64> = None;
+        let mut chosen: Option<(u64, bool)> = None;
         let mut close = false;
         if !exiting && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             close = true;
         }
+        // The sheet hangs from the panel's top edge, inset by
+        // the panel's own margin, at the panel's width up to a
+        // comfortable measure: it belongs to the Calls panel
+        // and its New call trigger, not to the conversation
+        // pane behind it.
+        let sheet_pos = Pos2::new(panel_rect.left() + 10.0, panel_rect.top() + 10.0);
+        let sheet_w = (panel_rect.width() - 20.0).clamp(260.0, 340.0);
         egui::Area::new(egui::Id::unique("call_picker"))
-            .pivot(Align2::CENTER_CENTER)
-            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
+            .fixed_pos(sheet_pos)
             .order(egui::Order::Foreground)
             .show(ctx, |ui| {
                 if p < 0.999 {
@@ -1171,7 +981,7 @@ impl App {
                     .fill(rgb(core::theme::elevated_step(t.bg_panel)))
                     .inner_margin(Margin::symmetric(12, 10));
                 let inner = frame.show(ui, |ui| {
-                    ui.set_width(280.0);
+                    ui.set_width(sheet_w - 24.0);
                     ui.add_enabled_ui(!exiting, |ui| {
                         ui.label(
                             RichText::new(crate::i18n::t("calls.new_call")).size(13.0).strong(),
@@ -1182,7 +992,7 @@ impl App {
                             t,
                             &mut self.calls.picker_search,
                             &crate::i18n::t("calls.search_hint"),
-                            256.0,
+                            sheet_w - 48.0,
                         );
                         ui.add_space(6.0);
                         if no_targets {
@@ -1197,24 +1007,106 @@ impl App {
                                 .auto_shrink([false, true])
                                 .show(ui, |ui| {
                                     for chat in &targets {
-                                        ui.horizontal(|ui| {
-                                            let (rect, _) = ui.allocate_exact_size(
-                                                Vec2::splat(26.0),
-                                                Sense::hover(),
+                                        // One row per contact: avatar,
+                                        // name, and the trailing voice
+                                        // and video actions from
+                                        // `picker_call_actions`. The
+                                        // fill is hover-only, so no
+                                        // row reads as selected at
+                                        // rest.
+                                        let (rect, resp) = ui.allocate_exact_size(
+                                            Vec2::new(ui.available_width(), 44.0),
+                                            Sense::click(),
+                                        );
+                                        let painter = ui.painter();
+                                        if resp.hovered() {
+                                            painter.rect_filled(
+                                                rect,
+                                                CornerRadius::same(8),
+                                                rgb(t.bg_panel_alt),
                                             );
-                                            crate::widgets::paint_chat_avatar_photo(
-                                                ui.painter(),
-                                                rect.center(),
-                                                13.0,
-                                                chat,
-                                                photos.get(&chat.id).copied(),
+                                        }
+                                        let avatar_center =
+                                            Pos2::new(rect.left() + 20.0, rect.center().y);
+                                        crate::widgets::paint_chat_avatar_photo(
+                                            painter,
+                                            avatar_center,
+                                            13.0,
+                                            chat,
+                                            photos.get(&chat.id).copied(),
+                                        );
+                                        let name_budget =
+                                            (rect.right() - 76.0 - (rect.left() + 44.0)).max(0.0);
+                                        let name_text = crate::widgets::ellipsize(
+                                            ui,
+                                            &chat.title,
+                                            crate::theme::medium(13.0),
+                                            name_budget,
+                                        );
+                                        painter.text(
+                                            Pos2::new(rect.left() + 44.0, rect.center().y),
+                                            egui::Align2::LEFT_CENTER,
+                                            name_text,
+                                            crate::theme::medium(13.0),
+                                            rgb(t.text_primary),
+                                        );
+                                        // The trailing actions, in
+                                        // the list's own order (voice,
+                                        // then video). Their click
+                                        // zones sit over the row's and
+                                        // are checked first, like the
+                                        // row paradigm's call-back.
+                                        let mut action_chosen: Option<bool> = None;
+                                        for (i, action) in
+                                            picker_call_actions().iter().enumerate()
+                                        {
+                                            let btn_rect = egui::Rect::from_center_size(
+                                                Pos2::new(
+                                                    rect.right() - 56.0 + 34.0 * i as f32,
+                                                    rect.center().y,
+                                                ),
+                                                Vec2::splat(32.0),
                                             );
-                                            if crate::widgets::menu_item(ui, t, &chat.title)
+                                            let btn_resp = ui.interact(
+                                                btn_rect,
+                                                egui::Id::unique((
+                                                    "picker_call",
+                                                    chat.id,
+                                                    action.video,
+                                                )),
+                                                Sense::click(),
+                                            );
+                                            if btn_resp.hovered() {
+                                                painter.circle_filled(
+                                                    btn_rect.center(),
+                                                    16.0,
+                                                    rgb(t.bg_panel),
+                                                );
+                                            }
+                                            crate::icons::draw(
+                                                painter,
+                                                action.icon,
+                                                btn_rect.center(),
+                                                18.0,
+                                                rgb(t.text_secondary),
+                                                rgb(t.bg_panel_alt),
+                                            );
+                                            if btn_resp
+                                                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                                .on_hover_text(crate::i18n::t(action.label_key))
                                                 .clicked()
                                             {
-                                                chosen = Some(chat.id);
+                                                action_chosen = Some(action.video);
                                             }
-                                        });
+                                        }
+                                        if let Some(video) = action_chosen {
+                                            chosen = Some((chat.id, video));
+                                        } else if resp
+                                            .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                            .clicked()
+                                        {
+                                            chosen = Some((chat.id, false));
+                                        }
                                     }
                                 });
                         }
@@ -1228,17 +1120,9 @@ impl App {
                 });
                 crate::theme::paint_glass_edge(ui.painter(), inner.response.rect, 14.0, t);
             });
-        crate::anim::popup_transform(
-            ctx,
-            egui::Id::unique("call_picker"),
-            ctx.content_rect().center(),
-            p,
-        );
-        if let Some(id) = chosen {
-            self.open_call_target(id);
-            if self.live_mode {
-                self.start_call_from_header();
-            }
+        crate::anim::popup_transform(ctx, egui::Id::unique("call_picker"), sheet_pos, p);
+        if let Some((id, video)) = chosen {
+            self.call_chat_kind(id, video);
             close = true;
         }
         if close {
@@ -1268,8 +1152,8 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::{
-        call_log_source, day_time_line, format_duration_label, group_calls, recent_call_contacts,
-        relative_day,
+        call_back_icon, call_log_source, day_time_line, format_duration_label, group_calls,
+        picker_call_actions, recent_call_contacts, relative_day,
     };
     use crate::state::{App, Args};
     use core::model::{CallDirection, CallEntry, CallKind};
@@ -1433,5 +1317,134 @@ mod tests {
         assert_eq!((rows[1].entry.id, rows[1].count), (3, 1));
         assert_eq!((rows[2].entry.id, rows[2].count), (4, 1));
         assert_eq!((rows[3].entry.id, rows[3].count), (5, 1));
+    }
+
+    /// Batch 6: the row's trailing call-back action carries the
+    /// entry's own kind, so calling back a video entry starts a
+    /// video call and a voice entry a voice call.
+    #[test]
+    fn call_back_icon_matches_the_entry_kind() {
+        let mut video = entry(1, 4, CallDirection::Incoming, false, 0);
+        video.kind = CallKind::Video;
+        assert_eq!(call_back_icon(&video), crate::icons::Icon::Video);
+        let voice = entry(2, 4, CallDirection::Outgoing, false, 0);
+        assert_eq!(call_back_icon(&voice), crate::icons::Icon::Phone);
+    }
+
+    /// Batch 6: every new call picker row carries both call
+    /// actions, voice and video, each with its own glyph and
+    /// locale label.
+    #[test]
+    fn picker_rows_carry_voice_and_video_actions() {
+        let actions = picker_call_actions();
+        assert_eq!(actions.len(), 2);
+        assert!(!actions[0].video);
+        assert_eq!(actions[0].icon, crate::icons::Icon::Phone);
+        assert_eq!(actions[0].label_key, "calls.voice");
+        assert!(actions[1].video);
+        assert_eq!(actions[1].icon, crate::icons::Icon::Video);
+        assert_eq!(actions[1].label_key, "calls.video");
+    }
+
+    /// Batch 6: the unified row has no per-row info button left
+    /// in either layout: the info dock is reached from the
+    /// opened chat's header instead. This reads the module's
+    /// own source because the button was a hand-painted click
+    /// zone, not a widget a frame test can query.
+    #[test]
+    fn no_per_row_info_button_remains() {
+        let source = include_str!("calls.rs");
+        // The searched spellings are assembled in pieces so
+        // this test's own text cannot satisfy them.
+        let zone = concat!("call", "_info");
+        let glyph = concat!("Icon::", "Info");
+        assert!(!source.contains(zone), "the info click zone is gone");
+        assert!(!source.contains(glyph), "the info glyph is gone");
+    }
+
+    /// An app in live mode over a hand-fed fake session: the
+    /// command receiver stands in for the fake backend, so a
+    /// call the UI starts is observed as the exact backend
+    /// command it sends.
+    fn fake_call_app(
+        ctx: &eframe::egui::Context,
+    ) -> (App, std::sync::mpsc::Receiver<backend::BackendCommand>) {
+        crate::theme::install_fonts(ctx);
+        let mut app = App::new(Args::parse(), ctx);
+        let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<backend::BackendCommand>();
+        let (_evt_tx, evt_rx) = std::sync::mpsc::channel::<backend::BackendEvent>();
+        let mut jids = std::collections::HashMap::new();
+        jids.insert(4, "6281234567890@s.whatsapp.net".to_owned());
+        app.live = Some(crate::live::LiveSession {
+            channels: backend::BackendChannels { commands: cmd_tx, events: evt_rx },
+            status: crate::live::LinkStatus::Linked,
+            qr: None,
+            qr_expires_at: None,
+            pair_code: None,
+            pair_code_at: None,
+            account: "Test account".to_owned(),
+            connected_at: None,
+            store: None,
+            jids,
+            messages: std::collections::HashMap::new(),
+            times: std::collections::HashMap::new(),
+            fake: true,
+            logout_requested: false,
+            flags: std::collections::HashMap::new(),
+            engaged_chats: std::collections::HashSet::new(),
+            photo_refs: std::collections::HashMap::new(),
+            voice_refs: std::collections::HashMap::new(),
+            video_refs: std::collections::HashMap::new(),
+            video_thumbs: std::collections::HashMap::new(),
+            poll_ballots: std::collections::HashMap::new(),
+        });
+        app.live_mode = true;
+        app.chats = core::model::demo_chats();
+        (app, cmd_rx)
+    }
+
+    /// Batch 6: a row's call-back goes through the call flow
+    /// with the entry's kind: over the fake session it opens
+    /// the chat and sends the backend a StartCall for that
+    /// chat with the video flag set, and the backend's Ringing
+    /// adoption keeps the video kind instead of relabeling the
+    /// call as voice.
+    #[test]
+    fn call_back_starts_the_entry_kind_through_the_fake_session() {
+        let ctx = eframe::egui::Context::default();
+        let (mut app, cmd_rx) = fake_call_app(&ctx);
+        app.call_chat(4, CallKind::Video);
+        assert_eq!(app.selected_chat, 4, "the call-back opens the entry's chat");
+        match cmd_rx.try_recv() {
+            Ok(backend::BackendCommand::StartCall { chat_jid, video }) => {
+                assert_eq!(chat_jid, "6281234567890@s.whatsapp.net");
+                assert!(video, "a video entry calls back as a video call");
+            }
+            other => panic!("expected one StartCall command, got {other:?}"),
+        }
+        assert!(app.calls.outgoing_video, "the started kind is remembered for adoption");
+        app.on_call_changed("fake-call-1", 4, backend::CallPhase::Ringing, 0, None);
+        let active = app.calls.active.as_ref().expect("the ringing call is adopted");
+        assert!(active.video, "the adopted call keeps the video kind");
+        assert!(!app.calls.outgoing_video, "adoption consumes the remembered kind");
+    }
+
+    /// Batch 6: in demo mode a call-back opens the chat and
+    /// nothing else: the demo has no call path, so no call is
+    /// faked and no notice claims one.
+    #[test]
+    fn call_back_in_demo_opens_the_chat_without_a_call() {
+        let ctx = eframe::egui::Context::default();
+        crate::theme::install_fonts(&ctx);
+        let mut app = App::new(Args::parse(), &ctx);
+        app.live = None;
+        app.live_mode = false;
+        app.chats = core::model::demo_chats();
+        app.selected_chat = 2;
+        app.notice = None;
+        app.call_chat(4, CallKind::Voice);
+        assert_eq!(app.selected_chat, 4);
+        assert!(app.calls.active.is_none(), "no call is simulated in demo mode");
+        assert!(app.notice.is_none(), "no notice claims a call happened");
     }
 }

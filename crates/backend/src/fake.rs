@@ -764,6 +764,24 @@ pub fn demo_script() -> Vec<DemoStep> {
     ]
 }
 
+/// Defers a Read receipt for a fake send (P2-46): a send is
+/// acknowledged Delivered at once, but Read is a separate,
+/// later stage, exactly as on the wire. The fake used to emit
+/// both in the same instant, which flattered send proof in
+/// demo and made the delivered state unobservable.
+fn defer_read_receipt(events: EventSink, chat_jid: String, message_id: String, at: i64) {
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(1_500));
+        events.emit(BackendEvent::Receipt {
+            chat_jid,
+            message_ids: vec![message_id],
+            kind: crate::ReceiptKind::Read,
+            at,
+            actor: None,
+        });
+    });
+}
+
 /// Plays [`demo_script`] on its own thread, one event at a time,
 /// until the script ends or `alive` drops (backend shutdown).
 /// Waits in short slices so a shutdown lands promptly instead of
@@ -972,9 +990,8 @@ impl Backend for FakeBackend {
                         message_id: id.clone(),
                     });
                     events.emit(BackendEvent::MessageUpsert(echo));
-                    // Deterministic receipt progression: delivered,
-                    // then read (the simulated driver of the same
-                    // receipt state machine the live backend feeds).
+                    // Receipt stages are separate (P2-46):
+                    // Delivered now, Read deferred.
                     events.emit(BackendEvent::Receipt {
                         chat_jid: chat_jid.clone(),
                         message_ids: vec![id.clone()],
@@ -982,13 +999,7 @@ impl Backend for FakeBackend {
                         at: ts,
                         actor: None,
                     });
-                    events.emit(BackendEvent::Receipt {
-                        chat_jid: chat_jid.clone(),
-                        message_ids: vec![id],
-                        kind: crate::ReceiptKind::Read,
-                        at: ts,
-                        actor: None,
-                    });
+                    defer_read_receipt(events.clone(), chat_jid.clone(), id, ts);
                     if chat_jid == FAKE_DM_JID {
                         // The scripted reply lives under the
                         // chat's current timer, like a real
@@ -1110,13 +1121,7 @@ impl Backend for FakeBackend {
                         at: ts,
                         actor: None,
                     });
-                    events.emit(BackendEvent::Receipt {
-                        chat_jid,
-                        message_ids: vec![id],
-                        kind: crate::ReceiptKind::Read,
-                        at: ts,
-                        actor: None,
-                    });
+                    defer_read_receipt(events.clone(), chat_jid.clone(), id, ts);
                 }
                 BackendCommand::SendLocation {
                     chat_jid,
@@ -1152,15 +1157,20 @@ impl Backend for FakeBackend {
                         at: ts,
                         actor: None,
                     });
-                    events.emit(BackendEvent::Receipt {
-                        chat_jid,
-                        message_ids: vec![id],
-                        kind: crate::ReceiptKind::Read,
-                        at: ts,
-                        actor: None,
-                    });
+                    defer_read_receipt(events.clone(), chat_jid.clone(), id, ts);
                 }
                 BackendCommand::StartCall { chat_jid, video } => {
+                    if video {
+                        // Aligned with the live backend (P1-26):
+                        // video calling is not built, so the fake
+                        // answers the same honest error instead of
+                        // simulating a video call live cannot make.
+                        events.emit(BackendEvent::Error {
+                            message: "Video calls are not available yet. Voice calls work."
+                                .to_owned(),
+                        });
+                        continue;
+                    }
                     if let Some(log) = &command_log {
                         log.lock()
                             .unwrap_or_else(std::sync::PoisonError::into_inner)

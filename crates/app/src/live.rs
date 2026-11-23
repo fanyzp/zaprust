@@ -3148,6 +3148,16 @@ impl crate::state::App {
             BackendEvent::FavoritesSync { chat_jids } => {
                 self.apply_favorites_sync(&chat_jids);
             }
+            BackendEvent::StickerFavoriteChanged { filehash, favorite } => {
+                if favorite {
+                    self.synced_sticker_favorites.insert(filehash);
+                } else {
+                    self.synced_sticker_favorites.remove(&filehash);
+                }
+            }
+            BackendEvent::RecentStickerRemoved { filehash } => {
+                self.synced_recent_sticker_removals.push(filehash);
+            }
             BackendEvent::CallHistoryRecord { record } => {
                 // The phone's own call history: the store keeps
                 // the first record per call ID, so replays of a

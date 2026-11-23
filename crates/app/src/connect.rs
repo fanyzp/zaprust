@@ -1142,7 +1142,17 @@ impl App {
                         ui.painter().text(
                             Pos2::new(rrect.left() + 52.0, rrect.center().y),
                             Align2::LEFT_CENTER,
-                            "Add account",
+                            // Honest label (total audit P1-27):
+                            // there is no multi-account support, so
+                            // in live mode this row only opens the
+                            // connection screen and must say so; in
+                            // demo mode it is the path into linking,
+                            // which "Add account" describes fairly.
+                            crate::i18n::t(if self.live_mode {
+                                "account.connection"
+                            } else {
+                                "account.add_account"
+                            }),
                             FontId::proportional(13.5),
                             rgb(t.text_primary),
                         );

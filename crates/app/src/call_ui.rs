@@ -129,6 +129,16 @@ impl App {
     /// and video actions all land here, so the kind the user
     /// picked is the kind the backend is asked for.
     pub(crate) fn start_call_kind(&mut self, video: bool) {
+        if video {
+            // No video promise (total audit P1-26): this build
+            // has no camera or codec path for calls, so a video
+            // start is refused here with the honest sentence,
+            // before any ringing state or backend command can
+            // suggest a video call is coming. Every entry point
+            // (picker action, video call-back) shares this path.
+            self.notice = Some(Notice::error(crate::i18n::t("call.video_unavailable")));
+            return;
+        }
         if !self.live_mode {
             self.notice = Some(Notice::info(
                 "Calls work in live mode and test mode, not in the offline demo.".to_owned(),
@@ -184,11 +194,18 @@ impl App {
     /// Latched by `action_pending`, so a double click sends one
     /// command (see the field's note).
     pub(crate) fn accept_active_call(&mut self) {
+        let video = self.calls.active.as_ref().is_some_and(|c| c.video);
         if let Some(call) = &mut self.calls.active {
             if !call.action_pending {
                 call.action_pending = true;
                 self.send_backend(BackendCommand::AcceptCall);
             }
+        }
+        if video {
+            // The accept path is audio-only (P1-26): say so at
+            // the moment of accepting, instead of letting the
+            // video label on the card imply a video call.
+            self.notice = Some(Notice::info(crate::i18n::t("call.video_accepted_as_voice")));
         }
     }
 

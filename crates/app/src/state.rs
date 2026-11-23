@@ -1373,6 +1373,12 @@ pub(crate) struct App {
     /// The last second the disappearing-messages expiry pass ran
     /// (the pass is throttled to once per second).
     pub(crate) last_expiry_scan: u64,
+    /// The expiry clock's anchor (P1-53): the wall second the
+    /// monotonic anchor was taken at, with the instant it was
+    /// taken. Expiry and mute lifting read time through this
+    /// anchor, never from the raw wall clock, so a forward
+    /// clock jump cannot mass-delete messages.
+    pub(crate) expiry_anchor: Option<(u64, std::time::Instant)>,
     /// True when the shell renders live data instead of the demo set.
     pub(crate) live_mode: bool,
     /// The running live session, when live mode is on.
@@ -1628,6 +1634,14 @@ pub(crate) struct App {
     /// home's Other groups section (demo data; live mode has no
     /// other groups).
     pub(crate) joined_community_groups: std::collections::HashSet<u64>,
+    /// Sticker filehashes the account's other devices marked
+    /// favorite (app-state sync, P1-01), and the recent-sticker
+    /// removals seen this session. Bookkeeping for the synced
+    /// sticker sets: the picker surfaces local packs today, so
+    /// these sets are the consumed sync state a synced-favorites
+    /// surface will read; nothing is displayed from them yet.
+    pub(crate) synced_sticker_favorites: std::collections::HashSet<String>,
+    pub(crate) synced_recent_sticker_removals: Vec<String>,
     /// The community whose description is expanded on its home,
     /// if any.
     pub(crate) community_desc_expanded: Option<u64>,
@@ -2099,6 +2113,7 @@ impl App {
             giphy_prefs: serde_json::Map::new(),
             sent_counter: 0,
             last_expiry_scan: 0,
+            expiry_anchor: None,
             live_mode: false,
             live: None,
             live_start_error: None,
@@ -2218,6 +2233,8 @@ impl App {
             my_profile: crate::profile::MyProfileState::default(),
             my_profile_open: false,
             joined_community_groups: std::collections::HashSet::new(),
+            synced_sticker_favorites: std::collections::HashSet::new(),
+            synced_recent_sticker_removals: Vec::new(),
             community_desc_expanded: None,
             open_community: None,
             community_home_from_overview: false,

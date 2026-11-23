@@ -167,12 +167,23 @@ struct PickerAction {
     label_key: &'static str,
 }
 
-/// The two call actions every picker row carries, voice first.
-fn picker_call_actions() -> [PickerAction; 2] {
-    [
-        PickerAction { video: false, icon: crate::icons::Icon::Phone, label_key: "calls.voice" },
-        PickerAction { video: true, icon: crate::icons::Icon::Video, label_key: "calls.video" },
-    ]
+/// The call actions a picker row carries, voice first. In
+/// live mode the video action is absent (P1-26): video calling
+/// is not built, and an action that can only fail must not be
+/// offered. Demo mode keeps both actions as fixtures of the
+/// dataset's call kinds; starting one still lands on the
+/// honest refusal in `start_call_kind`.
+fn picker_call_actions(live_mode: bool) -> Vec<PickerAction> {
+    let voice =
+        PickerAction { video: false, icon: crate::icons::Icon::Phone, label_key: "calls.voice" };
+    if live_mode {
+        vec![voice]
+    } else {
+        vec![
+            voice,
+            PickerAction { video: true, icon: crate::icons::Icon::Video, label_key: "calls.video" },
+        ]
+    }
 }
 
 /// The one call log row, shared by the desktop panel and the
@@ -1070,7 +1081,7 @@ impl App {
                                         // are checked first, like the
                                         // row paradigm's call-back.
                                         let mut action_chosen: Option<bool> = None;
-                                        for (i, action) in picker_call_actions().iter().enumerate()
+                                        for (i, action) in picker_call_actions(self.live_mode).iter().enumerate()
                                         {
                                             let btn_rect = egui::Rect::from_center_size(
                                                 Pos2::new(
@@ -1342,12 +1353,13 @@ mod tests {
         assert_eq!(call_back_icon(&voice), crate::icons::Icon::Phone);
     }
 
-    /// Batch 6: every new call picker row carries both call
-    /// actions, voice and video, each with its own glyph and
-    /// locale label.
+    /// Batch 6: a demo picker row carries both call actions,
+    /// voice and video, each with its own glyph and locale
+    /// label. A live row carries the voice action only (P1-26):
+    /// video calling is not built, so live must not offer it.
     #[test]
     fn picker_rows_carry_voice_and_video_actions() {
-        let actions = picker_call_actions();
+        let actions = picker_call_actions(false);
         assert_eq!(actions.len(), 2);
         assert!(!actions[0].video);
         assert_eq!(actions[0].icon, crate::icons::Icon::Phone);
@@ -1355,6 +1367,9 @@ mod tests {
         assert!(actions[1].video);
         assert_eq!(actions[1].icon, crate::icons::Icon::Video);
         assert_eq!(actions[1].label_key, "calls.video");
+        let live = picker_call_actions(true);
+        assert_eq!(live.len(), 1);
+        assert!(!live[0].video);
     }
 
     /// Batch 6: the unified row has no per-row info button left
@@ -1438,30 +1453,30 @@ mod tests {
         (app, cmd_rx)
     }
 
-    /// Batch 6: a row's call-back goes through the call flow
-    /// with the entry's kind: over the fake session it opens
-    /// the chat and sends the backend a StartCall for that
-    /// chat with the video flag set, and the backend's Ringing
-    /// adoption keeps the video kind instead of relabeling the
-    /// call as voice.
+    /// P1-26: a video entry's call-back opens the chat but
+    /// starts nothing: video calling is not built, so the
+    /// action answers with the honest error notice and no
+    /// StartCall reaches the backend (a simulated video call
+    /// in the fake overstated the live gap). A voice entry's
+    /// call-back still starts its call through the same path.
     #[test]
     fn call_back_starts_the_entry_kind_through_the_fake_session() {
         let ctx = eframe::egui::Context::default();
         let (mut app, cmd_rx) = fake_call_app(&ctx);
         app.call_chat(4, CallKind::Video);
         assert_eq!(app.selected_chat, 4, "the call-back opens the entry's chat");
+        assert!(cmd_rx.try_recv().is_err(), "no call command is sent for a video call-back");
+        let notice = app.notice.as_ref().expect("the refusal is spoken");
+        assert_eq!(notice.kind, crate::state::NoticeKind::Error, "the refusal is an error notice");
+        app.notice = None;
+        app.call_chat(4, CallKind::Voice);
         match cmd_rx.try_recv() {
             Ok(backend::BackendCommand::StartCall { chat_jid, video }) => {
                 assert_eq!(chat_jid, "6281234567890@s.whatsapp.net");
-                assert!(video, "a video entry calls back as a video call");
+                assert!(!video, "a voice entry calls back as a voice call");
             }
             other => panic!("expected one StartCall command, got {other:?}"),
         }
-        assert!(app.calls.outgoing_video, "the started kind is remembered for adoption");
-        app.on_call_changed("fake-call-1", 4, backend::CallPhase::Ringing, 0, None);
-        let active = app.calls.active.as_ref().expect("the ringing call is adopted");
-        assert!(active.video, "the adopted call keeps the video kind");
-        assert!(!app.calls.outgoing_video, "adoption consumes the remembered kind");
     }
 
     /// Batch 6: in demo mode a call-back opens the chat and

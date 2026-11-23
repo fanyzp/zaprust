@@ -559,6 +559,19 @@ pub(super) fn translate_event(
                 .collect();
             sink.emit(BackendEvent::FavoritesSync { chat_jids });
         }
+        Event::FavoriteStickerUpdate(update) => {
+            // Favorite-sticker sync (total audit P1-01): the
+            // events are public variants on the bus this match
+            // already consumes; the earlier register claim that
+            // they were crate-private dispatch was wrong.
+            sink.emit(BackendEvent::StickerFavoriteChanged {
+                filehash: update.filehash.clone(),
+                favorite: update.action.is_favorite.unwrap_or(false),
+            });
+        }
+        Event::RemoveRecentStickerUpdate(update) => {
+            sink.emit(BackendEvent::RecentStickerRemoved { filehash: update.filehash.clone() });
+        }
         Event::AppStateSyncFailed(failed) => {
             // A fatal collection refusal is the case WA Web
             // treats as grounds to tell the user (the library
@@ -2407,6 +2420,55 @@ mod qr_expiry_translate_tests {
         );
         translate_event(&event, &sink, &[], &mut super::IdentityBook::default());
         assert!(matches!(rx.try_recv(), Ok(BackendEvent::QrExpired)));
+    }
+}
+
+#[cfg(test)]
+mod sticker_sync_translate_tests {
+    use super::translate_event;
+    use crate::{BackendEvent, EventSink};
+    use whatsapp_rust::wacore::types::events::{
+        Event, FavoriteStickerUpdate, RemoveRecentStickerUpdate,
+    };
+
+    fn sink() -> (EventSink, std::sync::mpsc::Receiver<BackendEvent>) {
+        let (tx, rx) = std::sync::mpsc::sync_channel(4);
+        (EventSink { tx, wake: std::sync::Arc::new(|| {}) }, rx)
+    }
+
+    /// P1-01: a favorite-sticker sync from another device
+    /// crosses the boundary as a typed backend event carrying
+    /// the filehash and the direction.
+    #[test]
+    fn favorite_sticker_update_crosses_the_boundary() {
+        let (sink, rx) = sink();
+        let mut action = whatsapp_rust::prelude::wa::sync_action_value::StickerAction::default();
+        action.is_favorite = Some(true);
+        let event = Event::FavoriteStickerUpdate(
+            FavoriteStickerUpdate::builder()
+                .filehash("hash-a".to_owned())
+                .action(Box::new(action))
+                .build(),
+        );
+        translate_event(&event, &sink, &[], &mut super::IdentityBook::default());
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(BackendEvent::StickerFavoriteChanged { ref filehash, favorite: true })
+                if filehash == "hash-a"
+        ));
+    }
+
+    #[test]
+    fn remove_recent_sticker_update_crosses_the_boundary() {
+        let (sink, rx) = sink();
+        let event = Event::RemoveRecentStickerUpdate(
+            RemoveRecentStickerUpdate::builder().filehash("hash-b".to_owned()).build(),
+        );
+        translate_event(&event, &sink, &[], &mut super::IdentityBook::default());
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(BackendEvent::RecentStickerRemoved { ref filehash }) if filehash == "hash-b"
+        ));
     }
 }
 

@@ -1151,10 +1151,16 @@ impl App {
             }
         }
         if intents.focus_search {
-            // The chat-list search field carries the stable id
-            // "chat_search" (chat_list.rs), so the focus request
-            // lands on it as the panel closes back onto the list.
-            ctx.memory_mut(|m| m.request_focus(egui::Id::unique("chat_search")));
+            // The dock's Search action promises search inside
+            // this conversation (its placement beside the call
+            // action says so): open the in-chat search strip for
+            // the chat the dock describes, with focus armed, and
+            // close the dock back onto the conversation. (Before
+            // this fix the action focused the chat-list search
+            // instead, which searches other chats entirely.)
+            self.chat_search.open = true;
+            self.chat_search.chat_id = self.selected_chat;
+            self.chat_search.focus_armed = true;
             close = true;
         }
         if let Some(text) = intents.suggestion {

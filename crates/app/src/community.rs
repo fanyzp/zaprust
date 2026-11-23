@@ -30,7 +30,7 @@
 
 use crate::state::{App, Notice};
 use crate::theme::rgb;
-use crate::widgets::{icon_button, paint_avatar};
+use crate::widgets::icon_button;
 use core::model::{
     demo_announcement_chat, demo_announcement_messages, demo_communities,
     demo_community_other_groups, Chat, ChatKind, Community,
@@ -210,6 +210,7 @@ pub fn community_home(
     desc_expanded: bool,
     cover: Option<&egui::TextureHandle>,
     scroll_offset: f32,
+    community_photo: Option<egui::TextureId>,
 ) -> CommunityIntents {
     let mut intents = CommunityIntents::default();
     let total_groups = community.group_chat_ids.len() + community.other_group_ids.len();
@@ -260,7 +261,20 @@ pub fn community_home(
         // subtitle line and the description with its toggle.
         ui.vertical_centered(|ui| {
             let (rect, _) = ui.allocate_exact_size(Vec2::splat(80.0), egui::Sense::hover());
-            paint_avatar(ui.painter(), rect.center(), 40.0, true, community.avatar_seed);
+            // The community's own picture through the shared
+            // avatar dispatch (total audit P1-31): the parent
+            // group's chat carries the identity, so its real
+            // photo paints when the caller resolved one, exactly
+            // like every other surface. Before, this block called
+            // the non-photo painter unconditionally and a
+            // community's real picture could never show.
+            crate::widgets::paint_chat_avatar_photo(
+                ui.painter(),
+                rect.center(),
+                40.0,
+                announcement,
+                community_photo,
+            );
             ui.add_space(SP_2);
             ui.label(
                 RichText::new(&community.name)
@@ -545,6 +559,22 @@ impl App {
         let other_groups: Vec<&Chat> = other_owned.iter().collect();
         let desc_expanded = self.community_desc_expanded == Some(community.id);
         let cover = if self.live_mode { None } else { self.media.photo_texture.clone() };
+        // The community's own picture (P1-31): the announcement
+        // chat IS the parent group, so its JID drives the shared
+        // avatar pipeline; the decoded texture (when one exists)
+        // goes to the home's identity block.
+        let community_photo = if self.live_mode {
+            let jid = self.live.as_ref().and_then(|s| s.jids.get(&announcement.id).cloned());
+            match jid {
+                Some(jid) => {
+                    self.ensure_avatar(root.ctx(), &jid);
+                    self.live_avatar(&jid).map(|h| h.id())
+                }
+                None => None,
+            }
+        } else {
+            None
+        };
         let mut intents = CommunityIntents::default();
         egui::CentralPanel::default().frame(egui::Frame::new().fill(rgb(t.bg_panel))).show(
             root,
@@ -559,6 +589,7 @@ impl App {
                     desc_expanded,
                     cover.as_ref(),
                     self.qa_community_scroll,
+                    community_photo,
                 );
             },
         );

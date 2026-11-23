@@ -93,8 +93,8 @@
 "conversation.view_profile" = "View profile"
 "conversation.archive" = "Archive chat"
 "conversation.unarchive" = "Unarchive chat"
-"conversation.add_favorite" = "Add to favorites"
-"conversation.remove_favorite" = "Remove from favorites"
+"conversation.add_favorite" = "Add to favorites (this device only)"
+"conversation.remove_favorite" = "Remove from favorites (this device only)"
 "conversation.pin" = "Pin chat"
 "conversation.unpin" = "Unpin chat"
 "conversation.mute_notifications" = "Mute notifications"
@@ -373,6 +373,8 @@
 
 # ---- account session (log out) ----
 "account.log_out" = "Log out"
+"account.add_account" = "Add account"
+"account.connection" = "Connection"
 "account.log_out_title" = "Log out?"
 "account.log_out_body" = "This computer will be unlinked from your WhatsApp account and its sign-in data will be deleted. The chats saved on this computer stay in the local archive, and you can link again at any time."
 
@@ -488,6 +490,8 @@
 "connect.status_crashed" = "The connection stopped: {summary}"
 
 "call.incoming_video" = "Incoming video call"
+"call.video_unavailable" = "Video calls are not available yet. Voice calls work."
+"call.video_accepted_as_voice" = "Video is not available yet, so this call connects as a voice call."
 "call.incoming_voice" = "Incoming voice call"
 "call.ringing" = "Ringing…"
 "call.ended" = "Call ended"

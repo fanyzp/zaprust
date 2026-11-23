@@ -2816,6 +2816,23 @@ pub enum BackendEvent {
         /// Chat JIDs marked favorite on the account.
         chat_jids: Vec<String>,
     },
+    /// A sticker was favorited or unfavorited on a linked
+    /// device (app-state sync). `filehash` is the sticker's
+    /// identity (the base64 SHA-256 of its decrypted file, the
+    /// index key the sync itself uses).
+    StickerFavoriteChanged {
+        /// The sticker's filehash identity.
+        filehash: String,
+        /// True when the sticker entered the favorites, false
+        /// when it left them.
+        favorite: bool,
+    },
+    /// A sticker was removed from the recent-stickers list on
+    /// a linked device (app-state sync).
+    RecentStickerRemoved {
+        /// The sticker's filehash identity.
+        filehash: String,
+    },
     /// One call from the phone's own call history, delivered by
     /// the pairing-time history or a later app-state sync. The
     /// record's direction was derived from the event's creator

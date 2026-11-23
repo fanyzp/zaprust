@@ -56,14 +56,44 @@ pub(crate) fn current_version() -> Version {
 /// a path that actually exists and is a file. A stale or hostile
 /// `APPIMAGE` must not get to decide which file an update
 /// overwrites; anything else falls back to the executable path.
+///
+/// P1-52: existence is not identity. The named file must also
+/// prove it is an AppImage of this app: an ELF carrying the
+/// AppImage type-2 marker, or the very file the OS says is
+/// running. A stale variable pointing at another user-space
+/// executable (which passes the existence check and would be
+/// overwritten by a signed update) fails both tests and falls
+/// back to the executable path.
 pub(crate) fn install_location() -> (PathBuf, InstallKind) {
     let path = std::env::var_os("APPIMAGE")
         .map(PathBuf::from)
-        .filter(|p| !p.as_os_str().is_empty() && p.is_file())
+        .filter(|p| !p.as_os_str().is_empty() && p.is_file() && is_own_appimage(p))
         .or_else(|| std::env::current_exe().ok())
         .unwrap_or_else(|| PathBuf::from("zaprust"));
     let kind = core::update::classify_install_path(&path);
     (path, kind)
+}
+
+/// Whether `path` is plausibly this app's own AppImage: the
+/// running executable itself, or an ELF file carrying the
+/// AppImage type-2 marker (`AI\x02` at offset 8). Anything else
+/// (another program's binary, a script, a random file) is not a
+/// swap target this app may overwrite.
+fn is_own_appimage(path: &std::path::Path) -> bool {
+    if let Ok(exe) = std::env::current_exe() {
+        if let (Ok(a), Ok(b)) = (std::fs::canonicalize(path), std::fs::canonicalize(&exe)) {
+            if a == b {
+                return true;
+            }
+        }
+    }
+    use std::io::Read;
+    let Ok(mut f) = std::fs::File::open(path) else { return false };
+    let mut head = [0u8; 16];
+    if f.read_exact(&mut head).is_err() {
+        return false;
+    }
+    head[0..4] == [0x7f, b'E', b'L', b'F'] && head[8..11] == [0x41, 0x49, 0x02]
 }
 
 /// Removes the `.old` backup a previous successful swap left next
@@ -612,6 +642,30 @@ fn download_verify_swap(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn appimage_identity_needs_the_marker_or_the_running_file() {
+        let dir = std::env::temp_dir().join(format!("zaprust-p152-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        // A plain ELF without the AppImage marker: not a target.
+        let plain = dir.join("other-program");
+        let mut bytes = vec![0x7f, b'E', b'L', b'F'];
+        bytes.extend_from_slice(&[0u8; 12]);
+        std::fs::write(&plain, &bytes).unwrap();
+        assert!(!is_own_appimage(&plain));
+        // An ELF with the type-2 marker at offset 8: a target.
+        let image = dir.join("Zaprust.AppImage");
+        let mut bytes = vec![0x7f, b'E', b'L', b'F', 2, 1, 1, 0];
+        bytes.extend_from_slice(&[0x41, 0x49, 0x02]);
+        bytes.extend_from_slice(&[0u8; 5]);
+        std::fs::write(&image, &bytes).unwrap();
+        assert!(is_own_appimage(&image));
+        // A non-ELF file is never a target.
+        let text = dir.join("notes.txt");
+        std::fs::write(&text, b"not a binary at all").unwrap();
+        assert!(!is_own_appimage(&text));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     use super::*;
 
     #[test]

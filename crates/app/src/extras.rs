@@ -163,6 +163,17 @@ pub(crate) struct PickerTab {
     pub(crate) label: String,
 }
 
+/// The pure core of the guarded expiry clock (P1-53): the
+/// effective now is the anchor plus real elapsed time; the
+/// wall clock may raise it by at most a 300 second slack
+/// (ordinary clock corrections), never by the size of a jump,
+/// and it never runs backwards from the anchor line.
+pub(crate) fn guarded_expiry_now(anchor_wall: u64, elapsed_secs: u64, wall_now: u64) -> u64 {
+    let monotonic = anchor_wall.saturating_add(elapsed_secs);
+    let capped_wall = monotonic.saturating_add(300);
+    monotonic.max(wall_now.min(capped_wall)).max(anchor_wall)
+}
+
 impl App {
     /// Whether a native feature is switched on. Accepts the short
     /// feature id ("giphy") and, for call sites not yet migrated,
@@ -782,11 +793,44 @@ impl App {
     /// their own schedule; once per second is plenty for a
     /// per-message timer. Cheap when nothing is due.
     pub(crate) fn tick_expiry(&mut self) {
-        let now = now_unix();
+        let now = self.guarded_now();
         if now != self.last_expiry_scan {
             self.last_expiry_scan = now;
             self.expire_disappearing_messages(now);
             self.lift_expired_mutes(now);
+        }
+    }
+
+    /// The clock the expiry family reads (total audit P1-53).
+    /// Expiry used to read the raw wall clock, so a forward
+    /// jump (a manual clock change, a bad NTP step) irreversibly
+    /// deleted every message whose timer fell inside the jump
+    /// and lifted every timed mute early. Time here advances
+    /// from a session anchor by real elapsed time only: the
+    /// wall clock may pull the estimate forward by at most the
+    /// elapsed time plus a small slack, and the anchor re-bases
+    /// once an hour of real time has passed, so a sane clock
+    /// (including time spent suspended, which the monotonic
+    /// clock counts on this platform) tracks the wall, while a
+    /// jump is throttled to the slack. A clock already wrong
+    /// when the app starts is indistinguishable from a right
+    /// one; that first anchor is the recorded limit.
+    pub(crate) fn guarded_now(&mut self) -> u64 {
+        let wall = now_unix();
+        let instant = std::time::Instant::now();
+        match self.expiry_anchor {
+            None => {
+                self.expiry_anchor = Some((wall, instant));
+                wall
+            }
+            Some((anchor_wall, anchor_instant)) => {
+                let elapsed = anchor_instant.elapsed().as_secs();
+                let guarded = guarded_expiry_now(anchor_wall, elapsed, wall);
+                if elapsed >= 3_600 {
+                    self.expiry_anchor = Some((guarded, instant));
+                }
+                guarded
+            }
         }
     }
 
@@ -1171,6 +1215,20 @@ impl<K: PartialEq> TextureCache<K> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn guarded_clock_throttles_a_forward_jump() {
+        // Anchor at 1_000_000, ten real seconds pass, and the
+        // wall jumps a day ahead: effective time advances by
+        // the elapsed time plus at most the slack, so nothing
+        // expiring inside the jump is deleted by it.
+        let eff = guarded_expiry_now(1_000_000, 10, 1_000_000 + 86_400);
+        assert_eq!(eff, 1_000_000 + 10 + 300);
+        // A sane wall (elapsed matches) is followed exactly.
+        assert_eq!(guarded_expiry_now(1_000_000, 60, 1_000_060), 1_000_060);
+        // A wall behind the anchor never runs time backwards.
+        assert_eq!(guarded_expiry_now(1_000_000, 5, 999_000), 1_000_005);
+    }
+
     use super::*;
 
     fn test_texture(ctx: &egui::Context, name: &str) -> egui::TextureHandle {

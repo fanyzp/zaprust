@@ -8923,7 +8923,7 @@ mod burst_drain_tests {
         tx.send(BackendEvent::MessageUpsert(live)).unwrap();
         drain_all(&mut app, &ctx);
         let want = message_id(CHAT_JID, "aud-1");
-        let (_, msg) = stored_messages(&app).into_iter().find(|(_, m)| m.id == want).unwrap();
+        let (_, msg) = stored_messages(&app).iter().find(|(_, m)| m.id == want).unwrap();
         match &msg.kind {
             core::model::MessageKind::Audio { secs, name, size_bytes } => {
                 assert_eq!(*secs, 83);
@@ -8960,7 +8960,7 @@ mod burst_drain_tests {
         tx.send(BackendEvent::MessageUpsert(live)).unwrap();
         drain_all(&mut app, &ctx);
         let want = message_id(CHAT_JID, "doc-1");
-        let (_, msg) = stored_messages(&app).into_iter().find(|(_, m)| m.id == want).unwrap();
+        let (_, msg) = stored_messages(&app).iter().find(|(_, m)| m.id == want).unwrap();
         match &msg.kind {
             core::model::MessageKind::Document { name, size_bytes, page_count } => {
                 assert_eq!(name, "report.pdf");
@@ -8988,7 +8988,8 @@ mod burst_drain_tests {
         // fetch instead of assuming it is next.
         let mut sent_fetch = false;
         while let Ok(cmd) = cmd_rx.try_recv() {
-            if matches!(cmd, BackendCommand::FetchSticker { ref message_id, .. } if message_id.as_str() == "stk-1") {
+            if matches!(cmd, BackendCommand::FetchSticker { ref message_id, .. } if message_id.as_str() == "stk-1")
+            {
                 sent_fetch = true;
                 break;
             }

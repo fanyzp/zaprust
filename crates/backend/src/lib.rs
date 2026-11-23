@@ -190,6 +190,24 @@ fn remove_legacy_dir(current: &std::path::Path, legacy: &std::path::Path) -> boo
     std::fs::remove_dir_all(&legacy).is_ok()
 }
 
+/// Normalizes a phone number as typed into the digit string
+/// the protocol addresses: formatting characters (spaces,
+/// dashes, parentheses, a leading `+`) are stripped, and the
+/// result must be 7 to 15 digits (the international format's
+/// bounds) to be a number at all. Shared by every backend so
+/// the fake and the real backend accept exactly the same
+/// numbers. `None` when what was typed cannot be a phone
+/// number.
+#[must_use]
+pub fn phone_digits(raw: &str) -> Option<String> {
+    let digits: String = raw.chars().filter(char::is_ascii_digit).collect();
+    if (7..=15).contains(&digits.len()) {
+        Some(digits)
+    } else {
+        None
+    }
+}
+
 /// The file stem every download of a message's media is saved
 /// under in the downloads folder: `<chat user part>-<message
 /// id>`, with the id kept filename-safe. This is the one place
@@ -197,7 +215,6 @@ fn remove_legacy_dir(current: &std::path::Path, legacy: &std::path::Path) -> boo
 /// backend builds the saved file's name from it, and the
 /// removal helpers below match files by it, so a rename here
 /// renames both sides of the contract.
-#[must_use]
 pub fn downloaded_media_stem(chat_jid: &str, message_id: &str) -> String {
     let user = chat_jid.split('@').next().unwrap_or(chat_jid);
     let safe: String = message_id
@@ -846,6 +863,59 @@ pub enum BackendCommand {
     ResolveTitles {
         /// Chat JIDs whose titles are raw identifiers.
         jids: Vec<String>,
+    },
+    /// Ask the phone for the next older page of one chat's
+    /// history (the protocol's on-demand history sync, a peer
+    /// data operation). The anchor is the oldest message the
+    /// archive already holds for the chat: the phone answers
+    /// with messages older than it. The answer arrives later
+    /// as ordinary history message upserts for the chat,
+    /// followed by one [`BackendEvent::HistoryPageFetched`]
+    /// saying how many landed and whether the phone's history
+    /// is exhausted; a request the phone never answers is
+    /// closed by the backend's own watchdog as
+    /// [`BackendEvent::HistoryFetchFailed`]. Fire-and-forget:
+    /// no event answers the command itself.
+    FetchOlderMessages {
+        /// Chat JID.
+        chat_jid: String,
+        /// Protocol ID of the oldest archived message.
+        oldest_message_id: String,
+        /// Whether the anchor message is my own.
+        oldest_from_me: bool,
+        /// Anchor timestamp, Unix milliseconds.
+        oldest_timestamp_ms: i64,
+    },
+    /// Set or remove a group's profile picture. `Some` sets the
+    /// picture to the given JPEG bytes (the caller crops and
+    /// sizes them, the protocol carries them as is, exactly
+    /// like the account's own picture); `None` removes it.
+    /// Answered with [`BackendEvent::GroupPictureChanged`] on
+    /// success and [`BackendEvent::GroupPictureFailed`] on
+    /// failure: the protocol has no typed not-admin error, so a
+    /// server refusal and a transport failure are worded
+    /// differently in the failure message and neither is ever
+    /// silent.
+    SetGroupPicture {
+        /// Group JID.
+        chat_jid: String,
+        /// New picture bytes, or `None` to remove the picture.
+        image: Option<Vec<u8>>,
+    },
+    /// Look up a phone number and resolve the person behind it
+    /// so a chat can be started with someone outside the
+    /// roster. The number is taken as typed (formatting is
+    /// stripped by the backend; the protocol wants the digits
+    /// of the full international form). Answered with exactly
+    /// one of [`BackendEvent::ContactResolved`] (the number is
+    /// on WhatsApp and the chat is ready to open),
+    /// [`BackendEvent::ContactNotFound`] (the number is not on
+    /// WhatsApp: an answer, not an error), or
+    /// [`BackendEvent::ContactLookupFailed`] (the lookup
+    /// itself failed; never reported as "not on WhatsApp").
+    LookupContact {
+        /// The phone number as typed.
+        phone: String,
     },
     /// Stop the backend worker.
     Shutdown,
@@ -1965,6 +2035,89 @@ pub enum BackendEvent {
         /// JID whose picture changed.
         jid: String,
     },
+    /// An older-history page requested with
+    /// [`BackendCommand::FetchOlderMessages`] has landed: its
+    /// messages were already delivered as ordinary message
+    /// upserts for the chat (and persisted by the app's normal
+    /// path) before this event, so the app can clear the
+    /// chat's loading state against content that is already on
+    /// screen.
+    HistoryPageFetched {
+        /// Chat JID the page belongs to.
+        chat_jid: String,
+        /// How many messages the page carried for the chat.
+        added: u32,
+        /// True when the phone's history for this chat is
+        /// exhausted (its transfer marker says no more messages
+        /// remain, or the page carried nothing): the app
+        /// latches the chat's history state and never asks
+        /// again for this chat's older pages.
+        end_of_history: bool,
+    },
+    /// An older-history request ended without an answer: the
+    /// send itself failed, or the phone never answered within
+    /// the backend's watchdog window. The chat returns to idle
+    /// (a later scroll to the top may retry); this is never
+    /// reported as end-of-history.
+    HistoryFetchFailed {
+        /// Chat JID the request was for.
+        chat_jid: String,
+        /// Why the request failed, in user words.
+        message: String,
+    },
+    /// A group's profile picture was set or removed by this
+    /// client (answering [`BackendCommand::SetGroupPicture`]).
+    /// The app drops the group's cached picture and refetches
+    /// through the normal avatar funnel, so every surface
+    /// repaints from the server's new state.
+    GroupPictureChanged {
+        /// Group JID.
+        chat_jid: String,
+    },
+    /// A group picture change never reached the server or was
+    /// refused by it (answering
+    /// [`BackendCommand::SetGroupPicture`]). The picture the
+    /// app shows stays the server's; `message` says why, in
+    /// user words.
+    GroupPictureFailed {
+        /// Group JID.
+        chat_jid: String,
+        /// Why the change failed, in user words.
+        message: String,
+    },
+    /// A number lookup found its person (answering
+    /// [`BackendCommand::LookupContact`]): the chat is ready
+    /// to open. The app upserts it through the normal path
+    /// (which persists it) and selects it.
+    ContactResolved {
+        /// The resolved person's chat.
+        chat: LiveChat,
+        /// The person's other address form (their LID when the
+        /// chat is addressed by phone number, or the reverse),
+        /// when the lookup disclosed it. A person has two JID
+        /// forms and the roster may already hold a chat under
+        /// the other one; the app checks it before creating a
+        /// second chat for the same person.
+        alt_jid: Option<String>,
+    },
+    /// A number lookup completed and the number is not on
+    /// WhatsApp (answering [`BackendCommand::LookupContact`]).
+    /// An answer, not a failure.
+    ContactNotFound {
+        /// The number that was looked up, as typed.
+        phone: String,
+    },
+    /// A number lookup itself failed (answering
+    /// [`BackendCommand::LookupContact`]): the number could
+    /// not be one, the server refused the query, or the
+    /// connection failed. Never reported as "not on
+    /// WhatsApp".
+    ContactLookupFailed {
+        /// The number that was looked up, as typed.
+        phone: String,
+        /// Why the lookup failed, in user words.
+        message: String,
+    },
     /// A media fetch recovered through the media-retry flow: the
     /// sender's device re-uploaded the media and the message's
     /// CDN path changed. The app persists the fresh path with
@@ -2410,6 +2563,27 @@ mod tests {
             account_id: "default".to_owned(),
             db_key: [0; 32],
         }
+    }
+
+    #[test]
+    fn phone_digits_accepts_international_forms_and_refuses_the_rest() {
+        // Formatting is presentation: spaces, dashes,
+        // parentheses and plus signs are not digits and strip
+        // away; the digits that remain are the number.
+        assert_eq!(phone_digits("+62 812-3456-7890").as_deref(), Some("6281234567890"));
+        assert_eq!(phone_digits("1 (000) 000-0007").as_deref(), Some("10000000007"));
+        assert_eq!(phone_digits("10000000007").as_deref(), Some("10000000007"));
+        // The bounds are the international format's: fewer
+        // than 7 digits or more than 15 is not a phone number
+        // at all, and the lookup fails as malformed instead of
+        // asking the server about a non-number. Whether a
+        // well-formed number is actually on WhatsApp is the
+        // server's answer (not registered), a different
+        // outcome the normalizer never pre-empts.
+        assert_eq!(phone_digits("123"), None);
+        assert_eq!(phone_digits("1234567890123456"), None, "sixteen digits is too long");
+        assert_eq!(phone_digits(""), None);
+        assert_eq!(phone_digits("+62-812-ab"), None, "the digits that remain are too few");
     }
 
     fn no_wake() -> WakeFn {

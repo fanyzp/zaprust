@@ -306,6 +306,7 @@ impl App {
     pub(crate) fn draw_conversation_popups(&mut self, ctx: &egui::Context) {
         self.draw_create_group_dialog(ctx);
         self.draw_join_group_dialog(ctx);
+        self.draw_new_chat_dialog(ctx);
         self.draw_ui_confirm(ctx);
         self.draw_context_menu(ctx);
         self.draw_forward_picker(ctx);
@@ -423,6 +424,11 @@ impl App {
                 crate::i18n::tf("profile.remove_member_body", "name", name),
                 crate::i18n::t("common.remove"),
             ),
+            UiConfirm::RemoveGroupPhoto { name, .. } => (
+                crate::i18n::t("profile.remove_group_photo_title"),
+                crate::i18n::tf("profile.remove_group_photo_body", "name", name),
+                crate::i18n::t("common.remove"),
+            ),
             UiConfirm::LeaveGroup { name, .. } => (
                 crate::i18n::t("profile.leave_group"),
                 crate::i18n::tf("profile.leave_group_body", "name", name),
@@ -527,6 +533,9 @@ impl App {
                         Some(address),
                         backend::ParticipantOp::Remove,
                     );
+                }
+                Some(UiConfirm::RemoveGroupPhoto { chat_id, .. }) => {
+                    self.set_group_picture(chat_id, None);
                 }
                 Some(UiConfirm::LeaveGroup { chat_id, .. }) => {
                     self.leave_group(chat_id);

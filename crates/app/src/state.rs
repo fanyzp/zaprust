@@ -418,6 +418,11 @@ pub(crate) enum PairMode {
 pub(crate) enum UiConfirm {
     /// Remove one member from a group (live participant op).
     RemoveMember { chat_id: u64, address: String, name: String },
+    /// Remove a group's profile picture (design standard
+    /// section 23): destructive in effect (the picture is gone
+    /// for every member), so it confirms like the other
+    /// destructive actions before the command is sent.
+    RemoveGroupPhoto { chat_id: u64, name: String },
     /// Leave a group; confirming closes the info dock, as the
     /// chat is archived by the leave itself.
     LeaveGroup { chat_id: u64, name: String },
@@ -760,6 +765,27 @@ pub(crate) struct GroupsState {
     pub(crate) create_name: String,
     /// Create-group form: comma-separated participant addresses.
     pub(crate) create_members: String,
+}
+
+/// New-chat-by-number dialog state (design standard section
+/// 23): a chat-list dialog in the create/join family. The three
+/// lookup outcomes stay distinct in the state itself: a check
+/// in flight, a definitive not-on-WhatsApp answer, and a
+/// failed lookup (an error, never reported as not found).
+pub(crate) struct NewChatState {
+    /// The dialog is open.
+    pub(crate) open: bool,
+    /// The phone number as typed (any formatting; the backend
+    /// boundary normalizes it).
+    pub(crate) phone: String,
+    /// The number whose lookup is in flight, as typed. The
+    /// outcome events carry the number back, and only an
+    /// outcome for this exact input moves the dialog.
+    pub(crate) checking: Option<String>,
+    /// The number the server answered is not on WhatsApp.
+    pub(crate) not_found: Option<String>,
+    /// The lookup failed, in user words, shown inline.
+    pub(crate) error: Option<String>,
 }
 
 /// Self-update state (see update.rs): the phase, the release on offer, worker results and check bookkeeping.
@@ -1213,6 +1239,8 @@ pub(crate) struct App {
     pub(crate) typing_names: std::collections::HashMap<u64, String>,
     /// Group state: member lists, modes and invite data reported by the backend, plus the join-by-link and create-group dialog state.
     pub(crate) groups: GroupsState,
+    /// New-chat-by-number dialog state (see NewChatState).
+    pub(crate) new_chat: NewChatState,
     /// Contacts blocked from this client (live: also sent to the
     /// backend; demo: local state with an honest caption).
     /// Persisted in the encrypted archive store (privacy audit
@@ -1775,6 +1803,13 @@ impl App {
                 create_name: String::new(),
                 create_members: String::new(),
             },
+            new_chat: NewChatState {
+                open: false,
+                phone: String::new(),
+                checking: None,
+                not_found: None,
+                error: None,
+            },
             blocked_chats: std::collections::HashSet::new(),
             profile_form_for: None,
             ui_confirm: None,
@@ -2109,6 +2144,13 @@ impl App {
         if self.live_mode {
             self.sync_conversation();
             self.mark_selected_chat_read();
+            // Opening a chat arms its older-history trigger
+            // (design standard section 22): a conversation that
+            // opens at its top may ask the phone for the page
+            // before it.
+            if let Some(session) = &mut self.live {
+                session.history_armed.insert(id);
+            }
         } else {
             // The detached slot (the community announcement chat)
             // loads exactly like a listed chat; it is only the

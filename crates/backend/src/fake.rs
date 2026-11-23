@@ -466,6 +466,71 @@ pub(crate) fn scripted_group_messages() -> Vec<LiveMessage> {
     vec![location, carousel, contact]
 }
 
+/// The scripted older-history pages for the DM chat, keyed by
+/// the anchor message the app asks older-than. Each page is
+/// (messages in timestamp order, end_of_history). The first
+/// page answers the linked script's oldest message; the second
+/// page answers the first page's oldest and ends the history.
+/// Any other anchor (and any other chat) gets an empty,
+/// history-ending page: the fake's world is finite and says so.
+fn older_page(chat_jid: &str, anchor_id: &str) -> (Vec<LiveMessage>, bool) {
+    if chat_jid != FAKE_DM_JID {
+        return (Vec::new(), true);
+    }
+    let text = |id: &str, sender: Option<&str>, body: &str, ts: i64, from_me: bool| {
+        LiveMessage::text(id, FAKE_DM_JID, sender.map(ToOwned::to_owned), body, ts, from_me)
+    };
+    match anchor_id {
+        "fake-1" => (
+            vec![
+                text(
+                    "fake-old-a1",
+                    Some("Sarah Miller"),
+                    "Found the old apartment listing, sending it over",
+                    1_700_000_020,
+                    false,
+                ),
+                text("fake-old-a2", None, "That one looks promising", 1_700_000_050, true),
+                text(
+                    "fake-old-a3",
+                    Some("Sarah Miller"),
+                    "Let me check the commute first",
+                    1_700_000_080,
+                    false,
+                ),
+            ],
+            false,
+        ),
+        "fake-old-a1" => (
+            vec![
+                text(
+                    "fake-old-b1",
+                    Some("Sarah Miller"),
+                    "We met at the workshop last spring",
+                    1_699_999_900,
+                    false,
+                ),
+                text("fake-old-b2", None, "Right, the Rust workshop", 1_699_999_950, true),
+            ],
+            true,
+        ),
+        _ => (Vec::new(), true),
+    }
+}
+
+/// The fake's contact directory for number lookups: the numbers
+/// test mode knows, mapped to the person behind them. Sarah is
+/// already a roster chat; Emma and Mike resolve to chats the
+/// roster does not have yet.
+fn directory_person(digits: &str) -> Option<(&'static str, &'static str)> {
+    match digits {
+        "10000000001" => Some(("10000000001@s.whatsapp.net", "Sarah Miller")),
+        "10000000004" => Some(("10000000004@s.whatsapp.net", "Mike Johnson")),
+        "10000000007" => Some(("10000000007@s.whatsapp.net", "Emma Wilson")),
+        _ => None,
+    }
+}
+
 /// One step of the scheduled demo script: an event to emit `at`
 /// after the demo links. The script is plain data on purpose, so
 /// tests can assert its shape (order, coverage, bounds) without
@@ -717,6 +782,13 @@ impl Backend for FakeBackend {
             )]);
         let mut chat_state: std::collections::HashMap<String, LiveChat> =
             scripted_chats().into_iter().map(|c| (c.jid.clone(), c)).collect();
+        // Group pictures changed through SetGroupPicture, keyed
+        // by group JID: Some(bytes) after a set, None after a
+        // remove. FetchAvatar consults this before its default
+        // answer, so a change is visible through the same funnel
+        // the real backend's refetch uses.
+        let mut group_picture_state: std::collections::HashMap<String, Option<Vec<u8>>> =
+            std::collections::HashMap::new();
         // Blocked contact JIDs, mirroring the server-side list the
         // real backend fetches at connect: BlockContact mutates it
         // and the full list is re-emitted as a Blocklist event.
@@ -1678,6 +1750,20 @@ impl Backend for FakeBackend {
                     }
                 }
                 BackendCommand::FetchAvatar { jid } => {
+                    // A group picture changed this session wins
+                    // over the defaults below: it is the state
+                    // the change command left behind.
+                    if let Some(changed) = group_picture_state.get(&jid) {
+                        match changed {
+                            Some(bytes) => events.emit(BackendEvent::AvatarBytes {
+                                jid,
+                                picture_id: Some("fake-picture-set".to_owned()),
+                                bytes: bytes.clone(),
+                            }),
+                            None => events.emit(BackendEvent::AvatarMissing { jid }),
+                        }
+                        continue;
+                    }
                     // The demo world has pictures for everyone;
                     // the deterministic test world has none, so
                     // tests see the honest negative path.
@@ -1692,6 +1778,86 @@ impl Backend for FakeBackend {
                         events.emit(BackendEvent::AvatarMissing { jid });
                     }
                 }
+                BackendCommand::FetchOlderMessages { chat_jid, oldest_message_id, .. } => {
+                    if let Some(log) = &command_log {
+                        log.lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .push(format!("fetch_older:{chat_jid}:{oldest_message_id}"));
+                    }
+                    // The answer takes a phone round trip even
+                    // in test mode: a short delay on a side
+                    // thread, so the app's loading state is a
+                    // real state and not a one-frame flash. The
+                    // page's messages land as ordinary upserts,
+                    // then the completion event, exactly the
+                    // real backend's order.
+                    let (page, end) = older_page(&chat_jid, &oldest_message_id);
+                    let tick_events = events.clone();
+                    let alive = call_alive.clone();
+                    std::thread::Builder::new()
+                        .name("zaprust-fake-history-page".to_owned())
+                        .spawn(move || {
+                            std::thread::sleep(Duration::from_millis(900));
+                            if !alive.load(std::sync::atomic::Ordering::Relaxed) {
+                                return;
+                            }
+                            let added = u32::try_from(page.len()).unwrap_or(0);
+                            for msg in page {
+                                tick_events.emit(BackendEvent::MessageUpsert(msg));
+                            }
+                            tick_events.emit(BackendEvent::HistoryPageFetched {
+                                chat_jid,
+                                added,
+                                end_of_history: end,
+                            });
+                        })
+                        .ok();
+                }
+                BackendCommand::SetGroupPicture { chat_jid, image } => {
+                    let is_group =
+                        chat_state.get(&chat_jid).is_some_and(|c| c.kind == LiveChatKind::Group);
+                    if !is_group {
+                        events.emit(BackendEvent::GroupPictureFailed {
+                            chat_jid,
+                            message: "Test mode knows no such group.".to_owned(),
+                        });
+                    } else if image.as_ref().is_some_and(|bytes| bytes.is_empty()) {
+                        events.emit(BackendEvent::GroupPictureFailed {
+                            chat_jid,
+                            message: "That picture file is empty.".to_owned(),
+                        });
+                    } else {
+                        group_picture_state.insert(chat_jid.clone(), image);
+                        events.emit(BackendEvent::GroupPictureChanged { chat_jid });
+                    }
+                }
+                BackendCommand::LookupContact { phone } => match crate::phone_digits(&phone) {
+                    None => events.emit(BackendEvent::ContactLookupFailed {
+                        phone,
+                        message: "That does not look like a phone number: \
+                                      use the full international format, digits only."
+                            .to_owned(),
+                    }),
+                    Some(digits) => match directory_person(&digits) {
+                        Some((jid, name)) => {
+                            let chat = chat_state.get(jid).cloned().unwrap_or_else(|| LiveChat {
+                                jid: jid.to_owned(),
+                                title: name.to_owned(),
+                                kind: LiveChatKind::Dm,
+                                preview: String::new(),
+                                preview_sender: None,
+                                timestamp: 0,
+                                unread: 0,
+                                archived: false,
+                                pinned: false,
+                                ephemeral_secs: 0,
+                                muted: false,
+                            });
+                            events.emit(BackendEvent::ContactResolved { chat, alt_jid: None });
+                        }
+                        None => events.emit(BackendEvent::ContactNotFound { phone }),
+                    },
+                },
                 BackendCommand::ResolveTitles { jids } => {
                     if let Some(log) = &command_log {
                         log.lock()
@@ -2182,6 +2348,217 @@ mod tests {
         }
         let recorded = log.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
         assert_eq!(recorded, ["post_text_status:Out for a walk:1"]);
+        ch.commands.send(BackendCommand::Shutdown).unwrap();
+    }
+
+    /// Connects the fake and drains the linked script, so a
+    /// test starts from a quiet channel.
+    fn linked(ch: &BackendChannels) {
+        ch.commands.send(BackendCommand::ConnectQr).unwrap();
+        // The script's last word is the scripted incoming call;
+        // drain until it has been seen, then until the channel
+        // is quiet.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let mut saw_call = false;
+        while std::time::Instant::now() < deadline {
+            match ch.events.recv_timeout(Duration::from_millis(300)) {
+                Ok(BackendEvent::IncomingCall { .. }) => {
+                    saw_call = true;
+                    break;
+                }
+                Ok(_) => {}
+                Err(_) => break,
+            }
+        }
+        assert!(saw_call, "the linked script ends with its scripted call");
+        while ch.events.recv_timeout(Duration::from_millis(100)).is_ok() {}
+    }
+
+    /// Collects events until `done` matches one, with a
+    /// deadline; returns everything collected, match included.
+    fn collect_until(
+        ch: &BackendChannels,
+        done: &dyn Fn(&BackendEvent) -> bool,
+    ) -> Vec<BackendEvent> {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let mut out = Vec::new();
+        while std::time::Instant::now() < deadline {
+            // A quiet slice is not the end: the page thread
+            // answers after 900 ms, so only the deadline stops
+            // the collection.
+            if let Ok(event) = ch.events.recv_timeout(Duration::from_millis(500)) {
+                let finished = done(&event);
+                out.push(event);
+                if finished {
+                    break;
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn older_pages_land_in_order_and_the_last_ends_history() {
+        let ch = start(FakeBackend::auto());
+        linked(&ch);
+        // Page A, anchored on the oldest scripted message.
+        ch.commands
+            .send(BackendCommand::FetchOlderMessages {
+                chat_jid: FAKE_DM_JID.to_owned(),
+                oldest_message_id: "fake-1".to_owned(),
+                oldest_from_me: false,
+                oldest_timestamp_ms: 1_700_000_100_000,
+            })
+            .unwrap();
+        let events = collect_until(&ch, &|e| matches!(e, BackendEvent::HistoryPageFetched { .. }));
+        let ids: Vec<&str> = events
+            .iter()
+            .filter_map(|e| match e {
+                BackendEvent::MessageUpsert(m) => Some(m.id.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ids, ["fake-old-a1", "fake-old-a2", "fake-old-a3"], "page A lands whole");
+        assert!(
+            matches!(
+                events.last(),
+                Some(BackendEvent::HistoryPageFetched { added: 3, end_of_history: false, .. })
+            ),
+            "page A completes with more behind it: {:?}",
+            events.last()
+        );
+        // Page B, anchored on page A's oldest: the end.
+        ch.commands
+            .send(BackendCommand::FetchOlderMessages {
+                chat_jid: FAKE_DM_JID.to_owned(),
+                oldest_message_id: "fake-old-a1".to_owned(),
+                oldest_from_me: false,
+                oldest_timestamp_ms: 1_700_000_020_000,
+            })
+            .unwrap();
+        let events = collect_until(&ch, &|e| matches!(e, BackendEvent::HistoryPageFetched { .. }));
+        assert!(
+            matches!(
+                events.last(),
+                Some(BackendEvent::HistoryPageFetched { added: 2, end_of_history: true, .. })
+            ),
+            "page B completes the history: {:?}",
+            events.last()
+        );
+        // Any other anchor (or chat) answers empty and ended:
+        // the phone had nothing older to give.
+        ch.commands
+            .send(BackendCommand::FetchOlderMessages {
+                chat_jid: FAKE_GROUP_JID.to_owned(),
+                oldest_message_id: "fake-1".to_owned(),
+                oldest_from_me: false,
+                oldest_timestamp_ms: 1_700_000_100_000,
+            })
+            .unwrap();
+        let events = collect_until(&ch, &|e| matches!(e, BackendEvent::HistoryPageFetched { .. }));
+        assert_eq!(events.len(), 1, "an empty page carries no upserts");
+        assert!(
+            matches!(
+                events[0],
+                BackendEvent::HistoryPageFetched { added: 0, end_of_history: true, .. }
+            ),
+            "an empty page is the end: {:?}",
+            events[0]
+        );
+        ch.commands.send(BackendCommand::Shutdown).unwrap();
+    }
+
+    #[test]
+    fn group_picture_set_and_remove_show_in_fetch_avatar() {
+        let ch = start(FakeBackend::auto());
+        linked(&ch);
+        let picture = fixture_png(FAKE_GROUP_JID);
+        ch.commands
+            .send(BackendCommand::SetGroupPicture {
+                chat_jid: FAKE_GROUP_JID.to_owned(),
+                image: Some(picture.clone()),
+            })
+            .unwrap();
+        assert!(
+            matches!(next(&ch), BackendEvent::GroupPictureChanged { ref chat_jid } if chat_jid == FAKE_GROUP_JID),
+            "the set confirms"
+        );
+        ch.commands.send(BackendCommand::FetchAvatar { jid: FAKE_GROUP_JID.to_owned() }).unwrap();
+        match next(&ch) {
+            BackendEvent::AvatarBytes { bytes, picture_id, .. } => {
+                assert_eq!(bytes, picture, "the fetch serves the picture that was set");
+                assert_eq!(picture_id.as_deref(), Some("fake-picture-set"));
+            }
+            other => panic!("expected the set picture, got {other:?}"),
+        }
+        ch.commands
+            .send(BackendCommand::SetGroupPicture {
+                chat_jid: FAKE_GROUP_JID.to_owned(),
+                image: None,
+            })
+            .unwrap();
+        assert!(
+            matches!(next(&ch), BackendEvent::GroupPictureChanged { .. }),
+            "the remove confirms"
+        );
+        ch.commands.send(BackendCommand::FetchAvatar { jid: FAKE_GROUP_JID.to_owned() }).unwrap();
+        assert!(
+            matches!(next(&ch), BackendEvent::AvatarMissing { .. }),
+            "after removal the group has no picture in test mode"
+        );
+        // A group the fake does not know refuses honestly.
+        ch.commands
+            .send(BackendCommand::SetGroupPicture {
+                chat_jid: "99999999999@g.us".to_owned(),
+                image: Some(picture),
+            })
+            .unwrap();
+        assert!(
+            matches!(next(&ch), BackendEvent::GroupPictureFailed { .. }),
+            "an unknown group fails, never silently succeeds"
+        );
+        ch.commands.send(BackendCommand::Shutdown).unwrap();
+    }
+
+    #[test]
+    fn lookup_resolves_the_directory_and_refuses_the_rest() {
+        let ch = start(FakeBackend::auto());
+        linked(&ch);
+        // A fresh person, typed with formatting.
+        ch.commands
+            .send(BackendCommand::LookupContact { phone: "+1 (000) 000-0007".to_owned() })
+            .unwrap();
+        match next(&ch) {
+            BackendEvent::ContactResolved { chat, .. } => {
+                assert_eq!(chat.jid, "10000000007@s.whatsapp.net");
+                assert_eq!(chat.title, "Emma Wilson");
+            }
+            other => panic!("expected a resolution, got {other:?}"),
+        }
+        // A roster person resolves to the roster chat itself.
+        ch.commands
+            .send(BackendCommand::LookupContact { phone: "10000000001".to_owned() })
+            .unwrap();
+        match next(&ch) {
+            BackendEvent::ContactResolved { chat, .. } => {
+                assert_eq!(chat.jid, FAKE_DM_JID);
+                assert_eq!(chat.title, "Sarah Miller (live demo)");
+            }
+            other => panic!("expected the roster chat, got {other:?}"),
+        }
+        // A well-formed number nobody owns: not on WhatsApp.
+        ch.commands.send(BackendCommand::LookupContact { phone: "999999999".to_owned() }).unwrap();
+        assert!(
+            matches!(next(&ch), BackendEvent::ContactNotFound { .. }),
+            "an unowned number is a plain not-found"
+        );
+        // A malformed number: a failed lookup, never a
+        // not-found.
+        ch.commands.send(BackendCommand::LookupContact { phone: "123".to_owned() }).unwrap();
+        assert!(
+            matches!(next(&ch), BackendEvent::ContactLookupFailed { .. }),
+            "a malformed number fails the lookup"
+        );
         ch.commands.send(BackendCommand::Shutdown).unwrap();
     }
 

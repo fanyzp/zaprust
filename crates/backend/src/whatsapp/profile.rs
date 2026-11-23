@@ -1,6 +1,10 @@
 //! The signed-in account's own profile for the WhatsApp backend:
 //! reading the push name, About and picture back from the server,
 //! and applying editor changes through the library's profile API.
+//! The same module carries the two identity operations that are
+//! not about the account itself: setting or removing a group's
+//! picture (the picture domain's other write) and resolving a
+//! phone number to a person (the contacts facade's lookup).
 //!
 //! The read-back is three separate sources, because that is how
 //! the protocol exposes a linked device's own profile: the push
@@ -246,6 +250,131 @@ pub(super) async fn update_own_profile(
         }
     }
     Ok(())
+}
+
+/// Sets or removes one group's profile picture through the
+/// library's groups facade. The bytes are carried as given (the
+/// caller cropped and encoded them, exactly like the account's
+/// own picture). Errors are worded for the user from the
+/// error's structure: the protocol has no typed not-admin
+/// error, so a server rejection (an active refusal, read
+/// through the library's error-chain helper) is worded as a
+/// refusal with admin rights named as the ordinary cause, and
+/// a transport failure as a reachability failure. Neither is
+/// ever collapsed into the other, and neither is silent.
+pub(super) async fn set_group_picture(
+    client: &Client,
+    group_jid: &str,
+    image: Option<Vec<u8>>,
+) -> Result<(), String> {
+    use whatsapp_rust::ErrorChainExt;
+    let Ok(jid) = group_jid.parse::<Jid>() else {
+        return Err("That group address is not usable.".to_owned());
+    };
+    if image.as_ref().is_some_and(|bytes| bytes.is_empty()) {
+        return Err("That picture file is empty, nothing was sent.".to_owned());
+    }
+    let groups = client.groups();
+    let result = match image {
+        Some(bytes) => groups.set_profile_picture(jid, bytes).await.map(|_| ()),
+        None => groups.remove_profile_picture(jid).await.map(|_| ()),
+    };
+    result.map_err(|e| {
+        if let Some(rejection) = e.server_rejection() {
+            let detail = if rejection.text.is_empty() {
+                String::new()
+            } else {
+                format!(": {}", rejection.text)
+            };
+            format!(
+                "The server refused the picture change{detail}. \
+                 Only a group admin can change a group's picture."
+            )
+        } else if e.is_timeout() || e.is_transport_unavailable() {
+            "The picture change could not reach the server. Check the connection and try again."
+                .to_owned()
+        } else {
+            format!("The picture change failed: {e}")
+        }
+    })
+}
+
+/// The outcome of one [`lookup_contact`] call, in the three
+/// shapes the protocol boundary keeps distinct: a resolved
+/// person, a definitive not-on-WhatsApp answer, and a failed
+/// lookup (which must never be reported as the second).
+pub(super) enum ContactOutcome {
+    /// The person is on WhatsApp; the chat is ready to open,
+    /// with the person's other address form when disclosed.
+    Resolved {
+        /// The resolved person's chat.
+        chat: crate::LiveChat,
+        /// The person's LID or phone-number counterpart JID.
+        alt_jid: Option<String>,
+    },
+    /// The number is not on WhatsApp.
+    NotFound,
+    /// The lookup itself failed, in user words.
+    Failed(String),
+}
+
+/// Resolves one phone number (digits only, international form;
+/// the caller normalized it) to the person behind it through
+/// the contacts facade. The chat's title is the first name
+/// source that knows the person: the business verified name
+/// the lookup itself returns, then the formatted number (the
+/// identity standard's fallback; a personal account's push
+/// name is not something this query returns, and a name is
+/// never invented). The chat is addressed by the phone-number
+/// JID the user typed; the LID counterpart rides along so the
+/// app can find a roster chat that already exists under it.
+pub(super) async fn lookup_contact(client: &Client, digits: &str) -> ContactOutcome {
+    let Ok(jid) = format!("{digits}@s.whatsapp.net").parse::<Jid>() else {
+        return ContactOutcome::Failed(
+            "That does not look like a phone number: use the full international format, digits only."
+                .to_owned(),
+        );
+    };
+    let results = match client.contacts().is_on_whatsapp(std::slice::from_ref(&jid)).await {
+        Ok(results) => results,
+        Err(e) => {
+            return ContactOutcome::Failed(format!("The lookup did not reach the server: {e}"));
+        }
+    };
+    let Some(result) = results.into_iter().next() else {
+        return ContactOutcome::Failed("The server did not answer the lookup.".to_owned());
+    };
+    if let Some(error) = &result.contact_error {
+        let detail = error.text.as_deref().unwrap_or("the server could not check it");
+        return ContactOutcome::Failed(format!("The lookup failed for that number: {detail}"));
+    }
+    if !result.is_registered {
+        return ContactOutcome::NotFound;
+    }
+    let pn_jid = result.pn_jid.clone().unwrap_or_else(|| jid.clone());
+    let alt_jid = result.lid.as_ref().map(ToString::to_string);
+    let title = result
+        .verified_name
+        .as_ref()
+        .and_then(|verified| verified.name.clone())
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or_else(|| format!("+{digits}"));
+    ContactOutcome::Resolved {
+        chat: crate::LiveChat {
+            jid: pn_jid.to_string(),
+            title,
+            kind: crate::LiveChatKind::Dm,
+            preview: String::new(),
+            preview_sender: None,
+            timestamp: 0,
+            unread: 0,
+            archived: false,
+            pinned: false,
+            ephemeral_secs: 0,
+            muted: false,
+        },
+        alt_jid,
+    }
 }
 
 #[cfg(test)]

@@ -1418,6 +1418,8 @@ mod tests {
             avatar_bytes: std::collections::HashMap::new(),
             avatar_missing: std::collections::HashMap::new(),
             avatar_requested: std::collections::HashSet::new(),
+            history: std::collections::HashMap::new(),
+            history_armed: std::collections::HashSet::new(),
             poll_ballots: std::collections::HashMap::new(),
         });
         app.live_mode = true;

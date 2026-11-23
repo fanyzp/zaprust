@@ -170,6 +170,8 @@ mod tests {
             avatar_bytes: HashMap::new(),
             avatar_missing: HashMap::new(),
             avatar_requested: std::collections::HashSet::new(),
+            history: std::collections::HashMap::new(),
+            history_armed: std::collections::HashSet::new(),
             poll_ballots: HashMap::new(),
         }
     }

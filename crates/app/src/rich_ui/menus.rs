@@ -792,6 +792,137 @@ impl App {
             self.groups.join_link_error = None;
         }
     }
+
+    /// The "New chat" dialog: one phone number field (design
+    /// standard section 23). Checking asks the backend whether
+    /// the number is on WhatsApp; a resolved person opens
+    /// their conversation (the ContactResolved handler), a
+    /// number that is not on WhatsApp gets a plain inline
+    /// answer (not an error), and a failed lookup gets an
+    /// inline error (never reported as not found). Looking up
+    /// needs a session, so demo mode shows the honest note
+    /// instead of a Check button, like the join dialog.
+    pub(crate) fn draw_new_chat_dialog(&mut self, ctx: &egui::Context) {
+        let Some(grp_p) =
+            crate::anim::popup_phase(ctx, "new_chat", self.new_chat.open, self.motion)
+        else {
+            return;
+        };
+        let exiting = !self.new_chat.open;
+        let t = self.tokens;
+        let mut check = false;
+        let mut close = false;
+        egui::Area::new(egui::Id::unique("new_chat"))
+            .pivot(Align2::CENTER_CENTER)
+            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                if grp_p < 0.999 {
+                    ui.set_opacity(grp_p);
+                }
+                show_popup(self.popup_frame(), self.tokens, ui, |ui| {
+                    ui.set_width(300.0);
+                    ui.add_enabled_ui(!exiting, |ui| {
+                        ui.label(
+                            RichText::new(crate::i18n::t("chats.new_chat_title"))
+                                .size(15.0)
+                                .strong(),
+                        );
+                        ui.add_space(6.0);
+                        ui.label(
+                            RichText::new(crate::i18n::t("chats.phone_label"))
+                                .size(11.5)
+                                .color(rgb(t.text_secondary)),
+                        );
+                        ui.add_enabled_ui(self.new_chat.checking.is_none(), |ui| {
+                            crate::widgets::text_field(
+                                ui,
+                                t,
+                                &mut self.new_chat.phone,
+                                "+62 812 3456 7890",
+                                280.0,
+                            );
+                        });
+                        if !self.live_mode {
+                            ui.label(
+                                RichText::new(crate::i18n::t("chats.new_chat_live_only"))
+                                    .size(11.0)
+                                    .color(rgb(t.text_faint)),
+                            );
+                        }
+                        if self.new_chat.checking.is_some() {
+                            ui.add_space(4.0);
+                            crate::widgets::loading_row(
+                                ui,
+                                &crate::i18n::t("chats.checking_number"),
+                                11.5,
+                                t.text_secondary,
+                            );
+                        }
+                        if let Some(phone) = &self.new_chat.not_found {
+                            ui.add_space(4.0);
+                            ui.label(
+                                RichText::new(crate::i18n::tf(
+                                    "chats.not_on_whatsapp",
+                                    "phone",
+                                    phone,
+                                ))
+                                .size(11.5)
+                                .color(rgb(t.text_secondary)),
+                            );
+                        }
+                        if let Some(error) = &self.new_chat.error {
+                            ui.add_space(4.0);
+                            ui.label(RichText::new(error.clone()).size(11.5).color(rgb(t.danger)));
+                        }
+                        ui.add_space(8.0);
+                        ui.horizontal(|ui| {
+                            if crate::widgets::button(
+                                ui,
+                                t,
+                                &crate::i18n::t("common.cancel"),
+                                crate::widgets::Btn::Secondary,
+                            )
+                            .clicked()
+                            {
+                                close = true;
+                            }
+                            if self.live_mode
+                                && self.new_chat.checking.is_none()
+                                && crate::widgets::button(
+                                    ui,
+                                    t,
+                                    &crate::i18n::t("chats.start_chat"),
+                                    crate::widgets::Btn::Primary,
+                                )
+                                .clicked()
+                            {
+                                check = true;
+                            }
+                        });
+                    });
+                });
+            });
+        crate::anim::popup_transform(
+            ctx,
+            egui::Id::unique("new_chat"),
+            ctx.content_rect().center(),
+            grp_p,
+        );
+        if check {
+            self.start_new_chat_lookup();
+        }
+        if close {
+            // Closing abandons any in-flight check: its
+            // outcome events key off the tracked input, which
+            // is cleared here, so a late answer changes
+            // nothing.
+            self.new_chat.open = false;
+            self.new_chat.checking = None;
+            self.new_chat.not_found = None;
+            self.new_chat.error = None;
+        }
+    }
 }
 
 #[cfg(test)]

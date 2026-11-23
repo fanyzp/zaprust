@@ -230,9 +230,11 @@ pub(super) fn translate_event(
         Event::StarUpdate(update) => {
             // App-state sync reporting the account's star state
             // for one message: a star or unstar from another
-            // device, or the state as a full sync delivers it.
-            // This is the only wire path that knows star; message
-            // arrivals do not carry it.
+            // device, or the state as a full sync delivers it
+            // (the link-time import of the phone's pre-existing
+            // stars rides this path). History-sync arrivals carry
+            // the same state per message (WebMessageInfo.starred,
+            // read in history_message); live arrivals do not.
             sink.emit(BackendEvent::StarChanged {
                 chat_jid: update.chat_jid.to_string(),
                 message_id: update.message_id.clone(),
@@ -843,6 +845,16 @@ fn history_message(
         resolved.or_else(|| sender_jid.as_deref().map(user_part))
     };
     let mut msg = LiveMessage::text(id, chat_jid.to_owned(), sender_name, body, timestamp, from_me);
+    // The history payload carries the account's star state for
+    // this message (WebMessageInfo.starred): a message the phone
+    // had starred before linking arrives already starred, so the
+    // archive and the Starred panel tell the truth after a fresh
+    // link without depending on the app-state sync's timing. The
+    // app-state path (StarUpdate) remains the authoritative one
+    // for later changes; the two agree by construction, and the
+    // app's flag resolution never lets an uninformed upsert clear
+    // a star either path set.
+    msg.starred = info.starred.unwrap_or(false);
     msg.kind = kind;
     msg.view_once = view_once;
     msg.photo_ref = super::util::photo_ref_of(proto);
@@ -1792,6 +1804,51 @@ mod live_pairing_fix_tests {
             .collect();
         assert_eq!(bodies, vec!["hello there", "Photo"]);
         assert!(bodies.iter().all(|b| *b != "[non-text message]"));
+    }
+
+    /// The link-time star import's second path: a history
+    /// message whose payload carries the account's star
+    /// (WebMessageInfo.starred) arrives starred, so a message
+    /// the phone had starred before linking is starred in the
+    /// archive whichever sync lands first; a message without
+    /// the flag arrives unstarred.
+    #[test]
+    fn history_sync_message_carries_its_star() {
+        let mut text = wa::Message::default();
+        text.conversation = Some("keep this one".to_owned());
+        let mut starred_info = history_info("s1", false, 100, text.clone());
+        starred_info.starred = Some(true);
+        let plain_info = history_info("s2", false, 200, text);
+        let mut conv = wa::Conversation::default();
+        conv.id = "12345@s.whatsapp.net".to_owned();
+        conv.messages = vec![
+            {
+                let mut e = wa::HistorySyncMsg::default();
+                e.message = MessageField::some(starred_info);
+                e
+            },
+            {
+                let mut e = wa::HistorySyncMsg::default();
+                e.message = MessageField::some(plain_info);
+                e
+            },
+        ];
+        let mut sync = wa::HistorySync::default();
+        sync.conversations = vec![conv];
+
+        let (tx, rx) = std::sync::mpsc::sync_channel(16);
+        let sink = EventSink { tx, wake: std::sync::Arc::new(|| {}) };
+        translate_history_sync(&sync, &sink);
+        let events: Vec<BackendEvent> = rx.try_iter().collect();
+
+        let stars: Vec<(&str, bool)> = events
+            .iter()
+            .filter_map(|e| match e {
+                BackendEvent::MessageUpsert(m) => Some((m.id.as_str(), m.starred)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(stars, vec![("s1", true), ("s2", false)]);
     }
 
     /// Identity resolution across every source a payload carries:

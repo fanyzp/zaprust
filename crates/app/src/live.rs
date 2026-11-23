@@ -148,6 +148,18 @@ pub(crate) struct PollTallyWrite {
     pub(crate) ballots: Vec<(String, Vec<usize>)>,
 }
 
+/// One chat's older-history fetch state within a session
+/// (design standard section 22).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HistoryFetch {
+    /// A page request is outstanding with the phone.
+    Fetching,
+    /// The phone's history for this chat is exhausted: the
+    /// completion marker arrived, or a page came back empty.
+    /// Latched for the session; scrolling never re-asks.
+    Exhausted,
+}
+
 /// One running live session: channels, link state, and the live data
 /// mirrors the UI renders.
 pub(crate) struct LiveSession {
@@ -277,6 +289,18 @@ pub(crate) struct LiveSession {
     /// retryable across sessions, not within one frame loop).
     /// Cleared per JID when the wire reports a picture change.
     pub(crate) avatar_requested: std::collections::HashSet<String>,
+    /// Per-chat older-history fetch state (design standard
+    /// section 22): a chat is present while a page request is
+    /// outstanding, or once the phone's history for it is
+    /// exhausted; absence is idle. Session-scoped by
+    /// construction: a new session re-earns every latch.
+    pub(crate) history: HashMap<u64, HistoryFetch>,
+    /// Chats whose scroll-trigger for an older page is armed
+    /// (design standard section 22): armed when a chat opens
+    /// and after the stream has scrolled away from the top,
+    /// disarmed when a fetch fires, so resting at the top
+    /// never loops requests.
+    pub(crate) history_armed: std::collections::HashSet<u64>,
     /// Per-voter poll ballots per numeric message ID, seeded
     /// from the archive at start and extended by every vote
     /// event. A vote replaces the voter's whole previous ballot
@@ -941,6 +965,8 @@ impl crate::state::App {
             avatar_bytes: HashMap::new(),
             avatar_missing: HashMap::new(),
             avatar_requested: std::collections::HashSet::new(),
+            history: HashMap::new(),
+            history_armed: std::collections::HashSet::new(),
             poll_ballots: HashMap::new(),
         };
         // Load the archive into the rendered data. Live mode never
@@ -2294,14 +2320,76 @@ impl crate::state::App {
                 // The wire says this identity's picture changed:
                 // every cached form is stale. The next display
                 // refetches through `ensure_avatar`.
-                self.media.live_avatar_textures.remove(&jid);
+                self.drop_avatar(&jid);
+            }
+            BackendEvent::HistoryPageFetched { chat_jid, end_of_history, .. } => {
+                // The page's messages already landed through
+                // MessageUpsert: the backend reports completion
+                // only after translation filed them. Only the
+                // fetch state moves here (design standard
+                // section 22): exhaustion latches, otherwise the
+                // chat returns to idle, and the trigger stays
+                // disarmed until the stream scrolls away from
+                // the top again.
+                let id = jid_id(&chat_jid);
                 if let Some(session) = &mut self.live {
-                    if let Some(store) = &session.store {
-                        let _ = store.delete_avatar(&jid);
+                    if end_of_history {
+                        session.history.insert(id, HistoryFetch::Exhausted);
+                    } else {
+                        session.history.remove(&id);
                     }
-                    session.avatar_bytes.remove(&jid);
-                    session.avatar_missing.remove(&jid);
-                    session.avatar_requested.remove(&jid);
+                    session.history_armed.remove(&id);
+                }
+                if self.selected_chat == id && self.live_mode {
+                    self.sync_conversation();
+                }
+            }
+            BackendEvent::HistoryFetchFailed { chat_jid, message } => {
+                // Back to idle, never latched (section 22): the
+                // user can scroll away and back to retry. The
+                // failure is surfaced only when the chat is the
+                // one on screen; another chat's failed page is
+                // not worth a global notice.
+                let id = jid_id(&chat_jid);
+                if let Some(session) = &mut self.live {
+                    session.history.remove(&id);
+                }
+                if self.selected_chat == id && self.live_mode {
+                    self.notice = Some(Notice::error(message));
+                }
+            }
+            BackendEvent::GroupPictureChanged { chat_jid } => {
+                // Our own picture write landed (section 23):
+                // reconcile through the avatar pipeline, never
+                // by painting the picked bytes as server state.
+                self.drop_avatar(&chat_jid);
+                self.notice = Some(Notice::info(crate::i18n::t("profile.group_picture_updated")));
+            }
+            BackendEvent::GroupPictureFailed { message, .. } => {
+                self.notice = Some(Notice::error(message));
+            }
+            BackendEvent::ContactResolved { chat, alt_jid } => {
+                // Only a dialog still open acts on the answer:
+                // a lookup the user cancelled while it was in
+                // flight does not yank them into a conversation.
+                if self.new_chat.open {
+                    self.apply_contact_resolved(chat, alt_jid);
+                }
+            }
+            BackendEvent::ContactNotFound { phone } => {
+                // Only the dialog's own outstanding check moves
+                // (section 23): a stale outcome for an input the
+                // user has since replaced is ignored.
+                if self.new_chat.checking.as_deref() == Some(phone.as_str()) {
+                    self.new_chat.checking = None;
+                    self.new_chat.not_found = Some(phone);
+                    self.new_chat.error = None;
+                }
+            }
+            BackendEvent::ContactLookupFailed { phone, message } => {
+                if self.new_chat.checking.as_deref() == Some(phone.as_str()) {
+                    self.new_chat.checking = None;
+                    self.new_chat.error = Some(message);
                 }
             }
             BackendEvent::MediaRefreshed { chat_jid, message_id: pid, direct_path } => {
@@ -3936,6 +4024,24 @@ impl crate::state::App {
         });
     }
 
+    /// Drops every cached form of one identity's picture
+    /// (decoded texture, staged bytes, the store row, the
+    /// negative and the in-flight marks), so the next display
+    /// refetches through `ensure_avatar`. The one invalidation
+    /// path, shared by the wire's picture-change notification
+    /// and by our own confirmed picture writes.
+    pub(crate) fn drop_avatar(&mut self, jid: &str) {
+        self.media.live_avatar_textures.remove(jid);
+        if let Some(session) = &mut self.live {
+            if let Some(store) = &session.store {
+                let _ = store.delete_avatar(jid);
+            }
+            session.avatar_bytes.remove(jid);
+            session.avatar_missing.remove(jid);
+            session.avatar_requested.remove(jid);
+        }
+    }
+
     /// Ensures one identity's profile picture is on its way or
     /// already here, called by every surface that paints an
     /// avatar. Resolution order: the decoded texture cache, the
@@ -5270,6 +5376,92 @@ impl crate::state::App {
     pub(crate) fn live_jid(&self, chat_id: u64) -> Option<String> {
         self.live.as_ref().and_then(|s| s.jids.get(&chat_id).cloned())
     }
+
+    /// Asks the phone for the page of history older than the
+    /// oldest message on hand for one chat (design standard
+    /// section 22). The anchor is the oldest archived message:
+    /// its protocol identity, direction and timestamp are what
+    /// the phone pages from. Firing marks the chat Fetching
+    /// (the stream's loading row keys off it) and disarms the
+    /// scroll trigger; the outcome events move the state from
+    /// there. A chat that cannot be anchored (nothing archived
+    /// yet) is left idle and disarmed, never marked fetching
+    /// for a request that was not sent.
+    pub(crate) fn request_older_page(&mut self, chat_id: u64) {
+        if let Some(session) = &mut self.live {
+            session.history_armed.remove(&chat_id);
+        }
+        let anchor = self.live.as_ref().and_then(|session| {
+            let jid = session.jids.get(&chat_id)?.clone();
+            let store = session.store.as_ref()?;
+            let rows = store.messages(&jid).ok()?;
+            rows.into_iter()
+                .min_by_key(|(m, _)| m.timestamp)
+                .map(|(m, _)| (jid, m.id, m.from_me, m.timestamp))
+        });
+        let Some((chat_jid, oldest_message_id, oldest_from_me, oldest_ts)) = anchor else {
+            return;
+        };
+        if let Some(session) = &mut self.live {
+            session.history.insert(chat_id, HistoryFetch::Fetching);
+        }
+        self.send_backend(BackendCommand::FetchOlderMessages {
+            chat_jid,
+            oldest_message_id,
+            oldest_from_me,
+            oldest_timestamp_ms: oldest_ts.saturating_mul(1000),
+        });
+    }
+
+    /// Starts the new-chat dialog's lookup for the number as
+    /// typed (design standard section 23). The dialog tracks
+    /// the in-flight input so a late outcome for a replaced
+    /// input is ignored by the event handlers.
+    pub(crate) fn start_new_chat_lookup(&mut self) {
+        let phone = self.new_chat.phone.trim().to_owned();
+        if phone.is_empty() || self.new_chat.checking.is_some() {
+            return;
+        }
+        self.new_chat.not_found = None;
+        self.new_chat.error = None;
+        self.new_chat.checking = Some(phone.clone());
+        self.send_backend(BackendCommand::LookupContact { phone });
+    }
+
+    /// A number lookup resolved to a person (design standard
+    /// section 23): the conversation opens. One person, one
+    /// chat: when the roster already holds a chat under either
+    /// of the person's address forms, that chat is selected
+    /// as-is (its known title stands; the lookup never renames
+    /// a chat the session already knows). Otherwise the
+    /// resolved chat enters through the normal upsert path and
+    /// is selected, and its picture is asked for through the
+    /// avatar pipeline.
+    pub(crate) fn apply_contact_resolved(
+        &mut self,
+        chat: backend::LiveChat,
+        alt_jid: Option<String>,
+    ) {
+        self.new_chat.checking = None;
+        self.new_chat.not_found = None;
+        self.new_chat.error = None;
+        let known = |jid: &str| {
+            let id = jid_id(jid);
+            self.live.as_ref().is_some_and(|s| s.jids.contains_key(&id)).then_some(id)
+        };
+        let existing = known(&chat.jid).or_else(|| alt_jid.as_deref().and_then(known));
+        let target = match existing {
+            Some(id) => id,
+            None => {
+                let id = jid_id(&chat.jid);
+                self.apply_chat_upsert(&chat);
+                id
+            }
+        };
+        self.new_chat.open = false;
+        self.new_chat.phone.clear();
+        self.select_chat_now(target);
+    }
 }
 
 /// Builds the archive row for a core chat (inverse of `to_chat`).
@@ -5390,6 +5582,8 @@ mod burst_drain_tests {
             avatar_bytes: HashMap::new(),
             avatar_missing: HashMap::new(),
             avatar_requested: std::collections::HashSet::new(),
+            history: HashMap::new(),
+            history_armed: std::collections::HashSet::new(),
             poll_ballots: HashMap::new(),
         });
         app.live_mode = true;
@@ -7003,6 +7197,212 @@ mod burst_drain_tests {
         assert!(app.live_typing.contains_key(&other_id), "the other chat keeps its own mark");
     }
 
+    /// v1.6.8: the older-history state machine (design
+    /// standard section 22): firing anchors on the oldest
+    /// archived message and marks the chat fetching; a landed
+    /// page returns it to idle, the end of history latches it
+    /// exhausted, and a failure returns it to idle without
+    /// latching, so a later scroll can retry.
+    #[test]
+    fn history_fetch_state_moves_with_the_outcome_events() {
+        let (mut app, tx, ctx, cmd_rx) = live_app();
+        tx.send(dm_upsert(CHAT_JID)).unwrap();
+        tx.send(incoming("m2", BASE_TS + 200)).unwrap();
+        tx.send(incoming("m1", BASE_TS + 100)).unwrap();
+        drain_all(&mut app, &ctx);
+        let id = jid_id(CHAT_JID);
+        app.select_chat_now(id);
+        while cmd_rx.try_recv().is_ok() {}
+        app.request_older_page(id);
+        {
+            let session = app.live.as_ref().unwrap();
+            assert_eq!(session.history.get(&id), Some(&HistoryFetch::Fetching));
+            assert!(!session.history_armed.contains(&id), "firing disarms the trigger");
+        }
+        let mut fetch_cmd = None;
+        while let Ok(cmd) = cmd_rx.try_recv() {
+            if matches!(cmd, BackendCommand::FetchOlderMessages { .. }) {
+                fetch_cmd = Some(cmd);
+            }
+        }
+        match fetch_cmd {
+            Some(BackendCommand::FetchOlderMessages {
+                chat_jid,
+                oldest_message_id,
+                oldest_from_me,
+                oldest_timestamp_ms,
+            }) => {
+                assert_eq!(chat_jid, CHAT_JID);
+                assert_eq!(oldest_message_id, "m1", "the anchor is the oldest message on hand");
+                assert!(!oldest_from_me);
+                assert_eq!(oldest_timestamp_ms, (BASE_TS + 100) * 1000);
+            }
+            other => panic!("expected a fetch command, got {other:?}"),
+        }
+        // A page with more behind it: back to idle.
+        tx.send(BackendEvent::HistoryPageFetched {
+            chat_jid: CHAT_JID.to_owned(),
+            added: 50,
+            end_of_history: false,
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(
+            !app.live.as_ref().unwrap().history.contains_key(&id),
+            "a landed page idles the chat"
+        );
+        // A failure: idle too, never latched, and surfaced
+        // because the chat is the one on screen.
+        app.request_older_page(id);
+        tx.send(BackendEvent::HistoryFetchFailed {
+            chat_jid: CHAT_JID.to_owned(),
+            message: "no answer".to_owned(),
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(!app.live.as_ref().unwrap().history.contains_key(&id), "a failure idles the chat");
+        assert_eq!(
+            app.notice.as_ref().map(|n| n.kind),
+            Some(crate::state::NoticeKind::Error),
+            "the failure is surfaced for the open chat"
+        );
+        // The end of history latches for the session.
+        app.request_older_page(id);
+        tx.send(BackendEvent::HistoryPageFetched {
+            chat_jid: CHAT_JID.to_owned(),
+            added: 0,
+            end_of_history: true,
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(
+            app.live.as_ref().unwrap().history.get(&id),
+            Some(&HistoryFetch::Exhausted),
+            "the end of history latches"
+        );
+    }
+
+    /// v1.6.8: a resolved number opens the person's chat
+    /// (design standard section 23): a new person enters
+    /// through the upsert path and is selected; a person the
+    /// roster already holds, under either address form, is
+    /// selected as-is and never duplicated or renamed.
+    #[test]
+    fn contact_resolved_opens_one_chat_per_person() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        tx.send(dm_upsert(CHAT_JID)).unwrap();
+        drain_all(&mut app, &ctx);
+        let dm_chat = |jid: &str, title: &str| LiveChat {
+            jid: jid.to_owned(),
+            title: title.to_owned(),
+            kind: LiveChatKind::Dm,
+            preview: String::new(),
+            preview_sender: None,
+            timestamp: 0,
+            unread: 0,
+            archived: false,
+            pinned: false,
+            ephemeral_secs: 0,
+            muted: false,
+        };
+        app.new_chat.open = true;
+        tx.send(BackendEvent::ContactResolved {
+            chat: dm_chat("10000000007@s.whatsapp.net", "Emma Wilson"),
+            alt_jid: None,
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        let emma_id = jid_id("10000000007@s.whatsapp.net");
+        assert_eq!(app.selected_chat, emma_id, "the resolved chat opens");
+        assert!(!app.new_chat.open, "the dialog closes on resolution");
+        assert_eq!(chat_of(&app, emma_id).title, "Emma Wilson");
+        // The roster person, resolved under their other
+        // address form: the existing chat is selected, no
+        // second chat appears, its known title stands.
+        app.new_chat.open = true;
+        tx.send(BackendEvent::ContactResolved {
+            chat: dm_chat("10000000001@s.whatsapp.net", "+10000000001"),
+            alt_jid: Some(CHAT_JID.to_owned()),
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(app.selected_chat, jid_id(CHAT_JID), "the roster chat opens");
+        assert!(
+            app.chats.iter().all(|c| c.id != jid_id("10000000001@s.whatsapp.net")),
+            "no duplicate chat for the same person"
+        );
+        assert_eq!(chat_of(&app, jid_id(CHAT_JID)).title, "Sender", "the known title stands");
+    }
+
+    /// v1.6.8: lookup outcomes move only the dialog state that
+    /// asked (section 23): not-found is recorded as its own
+    /// outcome, and a stale failure for a replaced input is
+    /// ignored.
+    #[test]
+    fn lookup_outcomes_move_only_the_dialog_that_asked() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        app.new_chat.open = true;
+        app.new_chat.phone = "999999999".to_owned();
+        app.start_new_chat_lookup();
+        assert_eq!(app.new_chat.checking.as_deref(), Some("999999999"));
+        tx.send(BackendEvent::ContactNotFound { phone: "999999999".to_owned() }).unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(app.new_chat.not_found.as_deref(), Some("999999999"));
+        assert!(app.new_chat.checking.is_none());
+        assert!(app.new_chat.error.is_none(), "not found is not an error");
+        app.new_chat.phone = "10000000007".to_owned();
+        app.start_new_chat_lookup();
+        tx.send(BackendEvent::ContactLookupFailed {
+            phone: "999999999".to_owned(),
+            message: "stale".to_owned(),
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(app.new_chat.error.is_none(), "a stale outcome changes nothing");
+        assert_eq!(app.new_chat.checking.as_deref(), Some("10000000007"));
+    }
+
+    /// v1.6.8: our own group picture write reconciles through
+    /// the avatar pipeline (section 23): the change event
+    /// drops every cached form of the picture, and a failure
+    /// surfaces as an error notice in the backend's words.
+    #[test]
+    fn group_picture_events_invalidate_and_report() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        tx.send(BackendEvent::AvatarBytes {
+            jid: CHAT_JID.to_owned(),
+            picture_id: Some("pic-1".to_owned()),
+            bytes: png_bytes(),
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(app.live.as_ref().unwrap().avatar_bytes.contains_key(CHAT_JID));
+        tx.send(BackendEvent::GroupPictureChanged { chat_jid: CHAT_JID.to_owned() }).unwrap();
+        drain_all(&mut app, &ctx);
+        {
+            let session = app.live.as_ref().unwrap();
+            assert!(!session.avatar_bytes.contains_key(CHAT_JID), "the cached picture drops");
+            assert!(
+                session.store.as_ref().unwrap().avatar(CHAT_JID).unwrap().is_none(),
+                "and its archive row"
+            );
+        }
+        assert_eq!(
+            app.notice.as_ref().map(|n| n.kind),
+            Some(crate::state::NoticeKind::Info),
+            "the landed write confirms"
+        );
+        tx.send(BackendEvent::GroupPictureFailed {
+            chat_jid: CHAT_JID.to_owned(),
+            message: "refused".to_owned(),
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        let notice = app.notice.as_ref().expect("the failure surfaces");
+        assert_eq!(notice.kind, crate::state::NoticeKind::Error);
+        assert_eq!(notice.text, "refused");
+    }
+
     fn dm_upsert(jid: &str) -> BackendEvent {
         BackendEvent::ChatUpsert(LiveChat {
             jid: jid.to_owned(),
@@ -7552,6 +7952,8 @@ mod chat_state_routing_tests {
             avatar_bytes: HashMap::new(),
             avatar_missing: HashMap::new(),
             avatar_requested: std::collections::HashSet::new(),
+            history: HashMap::new(),
+            history_armed: std::collections::HashSet::new(),
             poll_ballots: HashMap::new(),
         });
         app.live_mode = true;
@@ -9114,6 +9516,8 @@ mod mirror_pruning_tests {
             avatar_bytes: HashMap::new(),
             avatar_missing: HashMap::new(),
             avatar_requested: std::collections::HashSet::new(),
+            history: HashMap::new(),
+            history_armed: std::collections::HashSet::new(),
             poll_ballots: HashMap::new(),
         });
         app.live_mode = true;
@@ -9665,6 +10069,8 @@ mod qr_gate_tests {
             avatar_bytes: HashMap::new(),
             avatar_missing: HashMap::new(),
             avatar_requested: std::collections::HashSet::new(),
+            history: HashMap::new(),
+            history_armed: std::collections::HashSet::new(),
             poll_ballots: HashMap::new(),
         };
         if with_payload {
@@ -9883,6 +10289,8 @@ mod logout_tests {
             avatar_bytes: HashMap::new(),
             avatar_missing: HashMap::new(),
             avatar_requested: std::collections::HashSet::new(),
+            history: HashMap::new(),
+            history_armed: std::collections::HashSet::new(),
             poll_ballots: HashMap::new(),
         });
         app.live_mode = true;
@@ -10111,6 +10519,8 @@ mod reaction_tests {
             avatar_bytes: HashMap::new(),
             avatar_missing: HashMap::new(),
             avatar_requested: std::collections::HashSet::new(),
+            history: HashMap::new(),
+            history_armed: std::collections::HashSet::new(),
         });
         app.live_mode = true;
         (app, evt_tx, ctx, cmd_rx)
@@ -10441,6 +10851,8 @@ mod star_pin_tests {
             avatar_bytes: HashMap::new(),
             avatar_missing: HashMap::new(),
             avatar_requested: std::collections::HashSet::new(),
+            history: HashMap::new(),
+            history_armed: std::collections::HashSet::new(),
         });
         app.live_mode = true;
         (app, evt_tx, ctx, cmd_rx)

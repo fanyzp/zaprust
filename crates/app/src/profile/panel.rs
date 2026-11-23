@@ -57,6 +57,11 @@ impl App {
         let mut toggle_mute = false;
         let mut export = false;
         let mut open_sibling: Option<u64> = None;
+        // The group settings' Change photo button defers its
+        // file pick to after the dock draw (the pick is a
+        // blocking OS dialog; the section closures only record
+        // the intent).
+        let mut group_photo_pick = false;
         let mut intents = ProfileIntents::default();
 
         // Member names for groups: the subtitle lists participants
@@ -381,6 +386,46 @@ impl App {
                             let approval_on =
                                 self.groups.approval.get(&chat.id).copied().unwrap_or(false);
                             dock_card_section(ui, t, &crate::i18n::t("profile.group_settings"), None, |ui| {
+                            // The group's picture, changed from
+                            // the group's own surface (design
+                            // standard section 23): the same
+                            // avatar the header paints. Change
+                            // picks a file (prepared exactly like
+                            // the account's own photo); Remove
+                            // confirms first, like every
+                            // destructive action.
+                            ui.label(
+                                RichText::new(crate::i18n::t("profile.group_photo"))
+                                    .size(11.5)
+                                    .color(rgb(t.text_secondary)),
+                            );
+                            ui.horizontal(|ui| {
+                                if button(
+                                    ui,
+                                    t,
+                                    &crate::i18n::t("profile.change_photo"),
+                                    Btn::Secondary,
+                                )
+                                .clicked()
+                                {
+                                    group_photo_pick = true;
+                                }
+                                if header_photo.is_some()
+                                    && button(
+                                        ui,
+                                        t,
+                                        &crate::i18n::t("profile.remove_photo"),
+                                        Btn::Secondary,
+                                    )
+                                    .clicked()
+                                {
+                                    self.ui_confirm = Some(UiConfirm::RemoveGroupPhoto {
+                                        chat_id: chat.id,
+                                        name: chat.title.clone(),
+                                    });
+                                }
+                            });
+                            ui.add_space(SP_2);
                             ui.label(RichText::new("Name").size(11.5).color(rgb(t.text_secondary)));
                             text_field(
                                 ui,
@@ -1004,6 +1049,27 @@ impl App {
             self.select_chat_now(id);
             close = true;
         }
+        if group_photo_pick {
+            // The pick itself: a blocking OS dialog, then the
+            // own-profile preparation (square 640 JPEG), then
+            // the command. A file that cannot be read or is not
+            // an image is an honest error before anything is
+            // sent, in the preparation's own words.
+            if let Some(path) = rfd::FileDialog::new()
+                .add_filter("Images", &["png", "jpg", "jpeg", "gif", "webp"])
+                .pick_file()
+            {
+                match std::fs::read(&path) {
+                    Ok(bytes) => match super::my_profile::prepare_profile_jpeg(&bytes) {
+                        Ok(jpeg) => self.set_group_picture(chat.id, Some(jpeg)),
+                        Err(e) => self.notice = Some(Notice::error(e)),
+                    },
+                    Err(e) => {
+                        self.notice = Some(Notice::error(format!("Could not read that file: {e}")));
+                    }
+                }
+            }
+        }
         if intents.focus_search {
             // The chat-list search field carries the stable id
             // "chat_search" (chat_list.rs), so the focus request
@@ -1065,6 +1131,27 @@ impl App {
             }
         }
         self.notice = Some(Notice::info("Group info saved.".to_owned()));
+    }
+
+    /// Sets or removes a group's profile picture through the
+    /// backend (design standard section 23). `image` is the
+    /// prepared square JPEG (the own-profile preparation), or
+    /// None to remove. The write can outlast a breath, so a
+    /// Busy notice starts it; the outcome events replace it:
+    /// GroupPictureChanged refreshes the picture through the
+    /// avatar pipeline, GroupPictureFailed surfaces the
+    /// refusal or the transport failure in the backend's words.
+    pub(crate) fn set_group_picture(&mut self, chat_id: u64, image: Option<Vec<u8>>) {
+        let Some(jid) = self.live_jid(chat_id) else {
+            return;
+        };
+        let removing = image.is_none();
+        self.send_backend(backend::BackendCommand::SetGroupPicture { chat_jid: jid, image });
+        self.notice = Some(Notice::busy(crate::i18n::t(if removing {
+            "profile.group_picture_removing"
+        } else {
+            "profile.group_picture_updating"
+        })));
     }
 
     /// One participant operation from the profile panel. `address`

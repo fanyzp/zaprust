@@ -64,6 +64,51 @@ const SEND_MEDIA_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(6
 /// runtime drop aborts the bot.
 const SHUTDOWN_FLUSH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
+/// How long an on-demand history request may wait for the
+/// phone's answer before the backend closes it as failed. The
+/// library's fetch is fire-and-forget with no timeout of its
+/// own: a phone that is off would otherwise leave the app's
+/// loading state latched forever.
+const HISTORY_FETCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(45);
+
+/// Messages requested per older-history page: the service's
+/// own default page size (its AB-prop default), so a page is
+/// what the phone would send a first-party client.
+const HISTORY_PAGE_SIZE: i32 = 50;
+
+/// On-demand history requests in flight: request ID to chat
+/// JID. The command handler records an entry BEFORE the
+/// request goes out (the library's own docs warn the answer
+/// can arrive before the send completes); the event handler
+/// removes the entry when the answering history sync lands
+/// and reports the page; the watchdog removes it when the
+/// phone never answers.
+type PendingHistory = std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, String>>>;
+
+/// What one landed on-demand history page means for its chat:
+/// how many messages it carried for the chat, and whether the
+/// phone's history for the chat is exhausted. Exhaustion is
+/// the payload's own completion marker, or an empty page: the
+/// library codifies no empty-page rule, but an on-demand
+/// answer carrying nothing for the chat means the phone had
+/// nothing older to give, and reading it as "maybe more"
+/// would re-request the same anchor forever.
+fn history_page_outcome(
+    sync: &whatsapp_rust::prelude::wa::HistorySync,
+    chat_jid: &str,
+) -> (u32, bool) {
+    use whatsapp_rust::prelude::wa::conversation::EndOfHistoryTransferType;
+    let Some(conv) = sync.conversations.iter().find(|c| c.id == chat_jid) else {
+        return (0, true);
+    };
+    let added = u32::try_from(conv.messages.len()).unwrap_or(0);
+    let marked_complete = matches!(
+        conv.end_of_history_transfer_type,
+        Some(EndOfHistoryTransferType::CompleteAndNoMoreMessageRemainOnPrimary)
+    );
+    (added, marked_complete || added == 0)
+}
+
 /// (jid, display name) rows for a membership-request list. The
 /// protocol carries no name for a requester, so the display name
 /// is empty: the app resolves a label from its own data or masks
@@ -477,6 +522,11 @@ pub(super) async fn run_async(
         std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
     let heal_attempts_events = heal_attempts.clone();
     let heal_attempts_msg = heal_attempts.clone();
+    // On-demand history requests in flight (see PendingHistory).
+    let pending_history: PendingHistory =
+        std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+    let pending_history_events = pending_history.clone();
+    let pending_history_commands = pending_history.clone();
     // The logout flag the caller wipes the account directory on:
     // set by the library's logged-out callback (this device was
     // unlinked, here or from the phone) and by the Disconnect
@@ -688,6 +738,7 @@ pub(super) async fn run_async(
         .on_event(move |event: Arc<Event>, client| {
             let sink = sink_all.clone();
             let heal_attempts = heal_attempts_events.clone();
+            let pending_history = pending_history_events.clone();
             let retry = retry_for_events.clone();
             #[cfg(feature = "calls")]
             let incoming_slot = call_incoming_events.clone();
@@ -703,7 +754,42 @@ pub(super) async fn run_async(
                     .flatten()
                     .map(|jid| jid.to_non_ad().to_string())
                     .collect();
+                // An on-demand history answer is claimed before
+                // translation: the pending entry comes out now,
+                // but the completion is reported only after
+                // translate_event has filed the page's messages,
+                // so the app clears its loading state against
+                // content that is already on screen.
+                let history_claim = match &*event {
+                    Event::HistorySync(lazy) => {
+                        lazy.peer_data_request_session_id().and_then(|sid| {
+                            pending_history
+                                .lock()
+                                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                                .remove(sid)
+                        })
+                    }
+                    _ => None,
+                };
                 let (unresolved, marks) = translate_event(&event, &sink, &own_jids);
+                if let Some(chat_jid) = history_claim {
+                    if let Event::HistorySync(lazy) = &*event {
+                        match lazy.get() {
+                            Some(sync) => {
+                                let (added, end_of_history) = history_page_outcome(sync, &chat_jid);
+                                sink.emit(BackendEvent::HistoryPageFetched {
+                                    chat_jid,
+                                    added,
+                                    end_of_history,
+                                });
+                            }
+                            None => sink.emit(BackendEvent::HistoryFetchFailed {
+                                chat_jid,
+                                message: "The phone's answer could not be read.".to_owned(),
+                            }),
+                        }
+                    }
+                }
                 for (chat_jid, message_id, mark) in marks {
                     super::util::record_retry_target(&retry, &chat_jid, &message_id, mark);
                 }
@@ -2294,6 +2380,136 @@ pub(super) async fn run_async(
                 }
                 BackendCommand::ResolveTitles { jids } => {
                     heal_titles_with_retry(client.clone(), events.clone(), jids);
+                }
+                BackendCommand::FetchOlderMessages {
+                    chat_jid,
+                    oldest_message_id,
+                    oldest_from_me,
+                    oldest_timestamp_ms,
+                } => {
+                    // On-demand history (see the command's docs).
+                    // Runs as its own task: the send and the
+                    // watchdog take time, and the dispatch loop
+                    // must not wait behind them. The pending
+                    // entry is recorded BEFORE the request goes
+                    // out, because the phone's answer can arrive
+                    // before the send completes.
+                    match chat_jid.parse::<Jid>() {
+                        Ok(jid) => {
+                            let request_id = client.generate_message_id();
+                            let session_id = request_id.as_str().to_owned();
+                            pending_history_commands
+                                .lock()
+                                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                                .insert(session_id.clone(), chat_jid.clone());
+                            let client = client.clone();
+                            let events = events.clone();
+                            let pending = pending_history_commands.clone();
+                            tokio::spawn(async move {
+                                let sent = client
+                                    .fetch_message_history_with_id(
+                                        &jid,
+                                        &oldest_message_id,
+                                        oldest_from_me,
+                                        oldest_timestamp_ms,
+                                        HISTORY_PAGE_SIZE,
+                                        &request_id,
+                                    )
+                                    .await;
+                                if let Err(e) = sent {
+                                    pending
+                                        .lock()
+                                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                                        .remove(&session_id);
+                                    events.emit(BackendEvent::HistoryFetchFailed {
+                                        chat_jid,
+                                        message: format!(
+                                            "Asking the phone for older messages failed: {e}"
+                                        ),
+                                    });
+                                    return;
+                                }
+                                // The watchdog: the library's
+                                // fetch has no timeout, so a phone
+                                // that never answers is closed
+                                // here as failed, never left
+                                // latched. A late answer still
+                                // files its messages through the
+                                // normal path; it just finds no
+                                // pending entry to complete.
+                                tokio::time::sleep(HISTORY_FETCH_TIMEOUT).await;
+                                let unanswered = pending
+                                    .lock()
+                                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                                    .remove(&session_id)
+                                    .is_some();
+                                if unanswered {
+                                    events.emit(BackendEvent::HistoryFetchFailed {
+                                        chat_jid,
+                                        message: "The phone did not answer the request \
+                                                  for older messages."
+                                            .to_owned(),
+                                    });
+                                }
+                            });
+                        }
+                        Err(e) => events.emit(BackendEvent::HistoryFetchFailed {
+                            chat_jid,
+                            message: format!("Invalid chat address: {e}"),
+                        }),
+                    }
+                }
+                BackendCommand::SetGroupPicture { chat_jid, image } => {
+                    // Group picture write (see the command's
+                    // docs). Runs as its own task like the other
+                    // picture operations.
+                    let client = client.clone();
+                    let events = events.clone();
+                    tokio::spawn(async move {
+                        match super::profile::set_group_picture(&client, &chat_jid, image).await {
+                            Ok(()) => {
+                                events.emit(BackendEvent::GroupPictureChanged { chat_jid });
+                            }
+                            Err(message) => {
+                                events.emit(BackendEvent::GroupPictureFailed { chat_jid, message });
+                            }
+                        }
+                    });
+                }
+                BackendCommand::LookupContact { phone } => {
+                    // Number lookup (see the command's docs).
+                    // Runs as its own task: the usync round trip
+                    // takes network time.
+                    let client = client.clone();
+                    let events = events.clone();
+                    tokio::spawn(async move {
+                        use super::profile::ContactOutcome;
+                        match crate::phone_digits(&phone) {
+                            None => events.emit(BackendEvent::ContactLookupFailed {
+                                phone,
+                                message: "That does not look like a phone number: \
+                                          use the full international format, digits only."
+                                    .to_owned(),
+                            }),
+                            Some(digits) => {
+                                match super::profile::lookup_contact(&client, &digits).await {
+                                    ContactOutcome::Resolved { chat, alt_jid } => {
+                                        events
+                                            .emit(BackendEvent::ContactResolved { chat, alt_jid });
+                                    }
+                                    ContactOutcome::NotFound => {
+                                        events.emit(BackendEvent::ContactNotFound { phone });
+                                    }
+                                    ContactOutcome::Failed(message) => {
+                                        events.emit(BackendEvent::ContactLookupFailed {
+                                            phone,
+                                            message,
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    });
                 }
                 BackendCommand::SetPrivacy { category, value } => {
                     use whatsapp_rust::privacy_settings::{PrivacyCategory, PrivacyValue};

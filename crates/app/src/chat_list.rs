@@ -146,6 +146,18 @@ impl App {
                             if crate::widgets::icon_button(
                                 ui,
                                 t,
+                                crate::icons::Icon::Chat,
+                                28.0,
+                                &crate::i18n::t("chats.new_chat"),
+                                None,
+                            )
+                            .clicked()
+                            {
+                                self.new_chat.open = true;
+                            }
+                            if crate::widgets::icon_button(
+                                ui,
+                                t,
                                 crate::icons::Icon::Edit,
                                 28.0,
                                 &crate::i18n::t("chats.new_group"),
@@ -564,6 +576,7 @@ impl App {
     fn draw_chat_list_header_portrait(&mut self, ui: &mut egui::Ui, t: Tokens) {
         let mut go: Option<crate::state::Screen> = None;
         let mut new_group = false;
+        let mut new_chat = false;
         ui.horizontal(|ui| {
             if self.screen.is_filtered_list() {
                 if crate::widgets::icon_button(
@@ -608,6 +621,18 @@ impl App {
                         if crate::widgets::menu_item_icon(
                             ui,
                             t,
+                            Some(crate::icons::Icon::Chat),
+                            &crate::i18n::t("chats.new_chat"),
+                            None,
+                        )
+                        .clicked()
+                        {
+                            new_chat = true;
+                            ui.close();
+                        }
+                        if crate::widgets::menu_item_icon(
+                            ui,
+                            t,
                             Some(crate::icons::Icon::Edit),
                             &crate::i18n::t("chats.new_group"),
                             None,
@@ -646,6 +671,9 @@ impl App {
         });
         if new_group {
             self.groups.create_open = true;
+        }
+        if new_chat {
+            self.new_chat.open = true;
         }
         if let Some(screen) = go {
             self.screen = screen;

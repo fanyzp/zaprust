@@ -48,13 +48,26 @@ impl App {
             .stick_to_bottom(!self.qa_scroll_top && self.scroll_to_message.is_none())
             .show(&mut child, |ui| {
                 ui.add_space(10.0);
-                // There is deliberately no "loading older
-                // messages" label here: an earlier version drew
-                // one unconditionally in every live conversation,
-                // but the backend exposes no per-chat history-sync
-                // state to drive it, so it was a permanent fake
-                // indicator (audit finding 14). It returns only
-                // when a real sync signal exists to gate it.
+                // The older-history loading row (design
+                // standard section 22): painted only while a
+                // page request for this chat is outstanding
+                // with the phone. That fetch state is the real
+                // signal the audit-14 note once waited for (an
+                // earlier unconditional label was a permanent
+                // fake indicator): a fetch with no row would be
+                // a silent wait, a row with no fetch behind it
+                // a fake, and both are violations.
+                if self.live.as_ref().is_some_and(|s| {
+                    s.history.get(&chat.id) == Some(&crate::live::HistoryFetch::Fetching)
+                }) {
+                    crate::widgets::loading_row(
+                        ui,
+                        &crate::i18n::t("chat.loading_older"),
+                        11.5,
+                        t.text_secondary,
+                    );
+                    ui.add_space(8.0);
+                }
                 // An empty conversation still opens with
                 // the encryption notice (below, the loop
                 // paints it under the first day chip when
@@ -594,6 +607,29 @@ impl App {
                 self.media.voice_player = None;
             } else if player.is_playing() {
                 ui.ctx().request_repaint_after(std::time::Duration::from_millis(40));
+            }
+        }
+
+        // Older-history trigger (design standard section 22):
+        // the stream resting in its top zone with the trigger
+        // armed asks the phone for the page before the oldest
+        // message on hand. The trigger re-arms only after the
+        // stream has scrolled well away from the top, so
+        // resting at the top never loops requests, and a chat
+        // already fetching (or exhausted) never asks again.
+        if self.live_mode {
+            let offset_y = scroll_out.state.clamped_offset().y;
+            if offset_y > 240.0 {
+                if let Some(session) = &mut self.live {
+                    session.history_armed.insert(chat.id);
+                }
+            } else if offset_y <= 24.0 && !self.conversation.is_empty() {
+                let may_fetch = self.live.as_ref().is_some_and(|s| {
+                    s.history_armed.contains(&chat.id) && !s.history.contains_key(&chat.id)
+                });
+                if may_fetch {
+                    self.request_older_page(chat.id);
+                }
             }
         }
 

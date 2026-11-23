@@ -6,6 +6,15 @@ impl App {
     /// Casts or changes my vote on a poll message (demo + live).
     pub(crate) fn vote_poll(&mut self, msg_id: u64, idx: usize) {
         let chat_id = self.selected_chat;
+        // My selection before this vote, captured before any
+        // apply moves it: a PollVoteFailed re-applies it as my
+        // ballot and the tally recomputes back.
+        let previous_votes = self.conversation.iter().find(|m| m.id == msg_id).and_then(|m| {
+            match &m.kind {
+                MessageKind::Poll { my_votes, .. } => Some(my_votes.clone()),
+                _ => None,
+            }
+        });
         let mut new_options: Vec<usize> = Vec::new();
         if let Some(msg) = self.conversation.iter_mut().find(|m| m.id == msg_id) {
             if let MessageKind::Poll { options, multiple, my_votes, .. } = &mut msg.kind {
@@ -34,6 +43,9 @@ impl App {
                 self.live.as_ref().and_then(|s| s.jids.get(&chat_id).cloned()),
                 self.protocol_ids.get(&msg_id).cloned(),
             ) {
+                if let Some(previous) = previous_votes {
+                    self.pending_poll_votes.entry(msg_id).or_insert(previous);
+                }
                 self.send_backend(BackendCommand::VotePoll {
                     chat_jid: jid.clone(),
                     message_id: proto.clone(),

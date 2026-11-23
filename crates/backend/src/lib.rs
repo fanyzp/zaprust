@@ -1759,6 +1759,21 @@ pub enum BackendEvent {
         /// Option indices the voter currently selects.
         selected: Vec<usize>,
     },
+    /// A [`BackendCommand::VotePoll`] never reached the
+    /// server: the poll's creation secret is unavailable on
+    /// this device, an address was invalid, or the send
+    /// itself failed. The app rolls the optimistic vote back
+    /// to the selection it replaced and shows `message` as
+    /// the notice. The poll counterpart of
+    /// [`BackendEvent::StarFailed`], with the same contract.
+    PollVoteFailed {
+        /// Chat JID.
+        chat_jid: String,
+        /// Protocol ID of the poll message.
+        message_id: String,
+        /// Why the vote failed, in user words.
+        message: String,
+    },
     /// A message was edited by its sender.
     MessageEdited {
         /// Chat JID.
@@ -1774,6 +1789,31 @@ pub enum BackendEvent {
         chat_jid: String,
         /// Protocol ID of the revoked message.
         message_id: String,
+    },
+    /// A [`BackendCommand::EditMessage`] never reached the
+    /// server. The app restores the message's previous body
+    /// and shows `message` as the notice. The edit counterpart
+    /// of [`BackendEvent::StarFailed`], with the same contract.
+    EditMessageFailed {
+        /// Chat JID.
+        chat_jid: String,
+        /// Protocol ID of the message.
+        message_id: String,
+        /// Why the edit failed, in user words.
+        message: String,
+    },
+    /// A [`BackendCommand::RevokeMessage`] never reached the
+    /// server: the message was not deleted for anyone. The app
+    /// restores the message's not-deleted state and shows
+    /// `message` as the notice. The revoke counterpart of
+    /// [`BackendEvent::StarFailed`], with the same contract.
+    RevokeMessageFailed {
+        /// Chat JID.
+        chat_jid: String,
+        /// Protocol ID of the message.
+        message_id: String,
+        /// Why the revoke failed, in user words.
+        message: String,
     },
     /// A chat's disappearing-messages timer changed: set from
     /// this client (the echo of
@@ -1870,24 +1910,26 @@ pub enum BackendEvent {
         /// `read` is true; the count is 0 then.
         unread_count: u32,
     },
-    /// A chat was deleted on the server (deleted on the phone).
-    /// The app removes the chat from its list, its session
-    /// mirror and its archive. A deletion made from this client
-    /// goes out as [`BackendCommand::DeleteChat`] and applies
-    /// locally at once through the same adoption, without
-    /// waiting for this event.
+    /// A chat was deleted on the server (deleted on the phone,
+    /// or this client's own [`BackendCommand::DeleteChat`]
+    /// confirmed back). The app removes the chat from its list,
+    /// its session mirror and its archive. A deletion made from
+    /// this client applies locally only when this event
+    /// confirms it: nothing is destroyed on a command whose
+    /// outcome is not yet known.
     ChatDeleted {
         /// Chat JID.
         chat_jid: String,
     },
     /// A chat's messages were cleared on the server (cleared
-    /// on the phone; the chat itself stays in the list). The
-    /// app removes the cleared messages from its session
-    /// mirror and its archive; the chat, its list position
-    /// and its settings are untouched. A clearing made from
-    /// this client goes out as [`BackendCommand::ClearChat`]
-    /// and applies locally at once through the same adoption,
-    /// without waiting for this event.
+    /// on the phone, or this client's own
+    /// [`BackendCommand::ClearChat`] confirmed back; the chat
+    /// itself stays in the list). The app removes the cleared
+    /// messages from its session mirror and its archive; the
+    /// chat, its list position and its settings are untouched.
+    /// A clearing made from this client applies locally only
+    /// when this event confirms it, for the same reason as
+    /// [`BackendEvent::ChatDeleted`].
     ChatCleared {
         /// Chat JID.
         chat_jid: String,
@@ -1916,6 +1958,111 @@ pub enum BackendEvent {
         chat_jid: String,
         /// Protocol ID of the message.
         message_id: String,
+    },
+    /// A [`BackendCommand::ChatAction`] never reached the
+    /// server. The app rolls the chat's archive/pin/mute state
+    /// back to the snapshot it took when the action was sent
+    /// and shows `message` as the notice. The chat-action
+    /// counterpart of [`BackendEvent::StarFailed`], with the
+    /// same contract.
+    ChatActionFailed {
+        /// Chat JID.
+        chat_jid: String,
+        /// The action that failed.
+        action: ChatAction,
+        /// Why the action failed, in user words.
+        message: String,
+    },
+    /// A [`BackendCommand::ClearChat`] never reached the
+    /// server. Nothing was cleared anywhere: the app staged
+    /// no local deletion for the command, so there is nothing
+    /// to restore; it only shows `message` as the notice.
+    ClearChatFailed {
+        /// Chat JID.
+        chat_jid: String,
+        /// Why the clear failed, in user words.
+        message: String,
+    },
+    /// A [`BackendCommand::DeleteChat`] never reached the
+    /// server. Nothing was deleted anywhere: the app staged
+    /// no local deletion for the command, so there is nothing
+    /// to restore; it only shows `message` as the notice.
+    DeleteChatFailed {
+        /// Chat JID.
+        chat_jid: String,
+        /// Why the delete failed, in user words.
+        message: String,
+    },
+    /// A [`BackendCommand::DeleteMessageForMe`] never reached
+    /// the server. The app restores the message it removed
+    /// optimistically (its archive row included) and shows
+    /// `message` as the notice. The delete-for-me counterpart
+    /// of [`BackendEvent::StarFailed`], with the same contract.
+    DeleteForMeFailed {
+        /// Chat JID the message belongs to.
+        chat_jid: String,
+        /// Protocol ID of the message.
+        message_id: String,
+        /// Why the delete failed, in user words.
+        message: String,
+    },
+    /// A [`BackendCommand::MarkChatUnread`] never reached the
+    /// server. The app removes the unread badge it set
+    /// optimistically and shows `message` as the notice.
+    MarkUnreadFailed {
+        /// Chat JID.
+        chat_jid: String,
+        /// Why marking unread failed, in user words.
+        message: String,
+    },
+    /// A [`BackendCommand::BlockContact`] never reached the
+    /// server. The app restores the blocked set (and its
+    /// persisted copy) to the state before the toggle and
+    /// shows `message` as the notice.
+    BlockFailed {
+        /// JID of the contact the toggle named.
+        chat_jid: String,
+        /// Why the toggle failed, in user words.
+        message: String,
+    },
+    /// A [`BackendCommand::SetGroupInfo`] was accepted by the
+    /// server: every field the command carried is saved. The
+    /// app applies the new title and shows its saved notice
+    /// only from this event, never at click time.
+    GroupInfoSaved {
+        /// Chat JID of the group.
+        chat_jid: String,
+    },
+    /// A [`BackendCommand::SetGroupInfo`] failed on the
+    /// server: a field the command carried was refused or the
+    /// send failed. The app keeps the group's previous title
+    /// and shows `message` as the notice.
+    GroupInfoFailed {
+        /// Chat JID of the group.
+        chat_jid: String,
+        /// Why saving failed, in user words.
+        message: String,
+    },
+    /// A [`BackendCommand::LeaveGroup`] never reached the
+    /// server: the account is still a member. The app restores
+    /// the chat row it archived optimistically and shows
+    /// `message` as the notice.
+    LeaveGroupFailed {
+        /// Chat JID of the group.
+        chat_jid: String,
+        /// Why leaving failed, in user words.
+        message: String,
+    },
+    /// A [`BackendCommand::SetDisappearingTimer`] never
+    /// reached the server. The app restores the chat's
+    /// previous timer (mirror and archive, without a new
+    /// in-stream announcement) and shows `message` as the
+    /// notice.
+    DisappearingTimerFailed {
+        /// Chat JID.
+        chat_jid: String,
+        /// Why the timer change failed, in user words.
+        message: String,
     },
     /// Current privacy settings as fetched from the account
     /// (category → value spellings; see [`BackendCommand::SetPrivacy`]).

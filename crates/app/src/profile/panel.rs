@@ -1176,8 +1176,12 @@ impl App {
     /// the protocol command, whose DisappearingChanged echo then
     /// finds the value already in place and stays silent.
     pub(crate) fn set_disappearing_timer(&mut self, chat_id: u64, duration_secs: u32) {
-        if self.ephemeral_secs_of(chat_id) == duration_secs {
+        let previous = self.ephemeral_secs_of(chat_id);
+        if previous == duration_secs {
             return;
+        }
+        if self.live.is_some() {
+            self.pending_timers.entry(chat_id).or_insert(previous);
         }
         self.apply_disappearing_changed(chat_id, duration_secs);
         if let Some(jid) = self.live_jid(chat_id) {
@@ -1189,26 +1193,31 @@ impl App {
     }
 
     /// Saves the edited group subject/description through the
-    /// backend (live groups only).
+    /// backend (live groups only). Nothing is claimed at click
+    /// time: the title keeps its previous value and no notice
+    /// speaks until the backend answers, GroupInfoSaved
+    /// applying the new title with the saved notice and
+    /// GroupInfoFailed speaking the failure. A title asserted
+    /// before its outcome existed was a fake success.
     pub(crate) fn save_group_info(&mut self, chat_id: u64) {
         let Some(jid) = self.live_jid(chat_id) else {
             return;
         };
         let subject = self.group_subject_edit.trim().to_owned();
         let description = self.group_desc_edit.trim().to_owned();
+        let previous_title =
+            self.chats.iter().find(|c| c.id == chat_id).map(|c| c.title.clone()).unwrap_or_default();
+        let new_subject = if subject.is_empty() { None } else { Some(subject) };
+        self.pending_group_info
+            .entry(chat_id)
+            .or_insert((previous_title, new_subject.clone()));
         self.send_backend(backend::BackendCommand::SetGroupInfo {
             chat_jid: jid,
-            subject: if subject.is_empty() { None } else { Some(subject.clone()) },
+            subject: new_subject,
             // An empty field keeps the current description; the
             // form never clears it implicitly (data-loss guard).
             description: if description.is_empty() { None } else { Some(description) },
         });
-        if !subject.is_empty() {
-            if let Some(c) = self.chats.iter_mut().find(|c| c.id == chat_id) {
-                c.title = subject;
-            }
-        }
-        self.notice = Some(Notice::info("Group info saved.".to_owned()));
     }
 
     /// Sets or removes a group's profile picture through the
@@ -1262,9 +1271,15 @@ impl App {
         self.notice = Some(Notice::info("Sent. The member list will refresh.".to_owned()));
     }
 
-    /// Leaves a live group and archives the local row.
+    /// Leaves a live group and archives the local row. The
+    /// archive is optimistic: a LeaveGroupFailed restores the
+    /// row's previous archived flag, since a failed leave means
+    /// the account is still a member.
     pub(crate) fn leave_group(&mut self, chat_id: u64) {
         if let Some(jid) = self.live_jid(chat_id) {
+            let previous =
+                self.chats.iter().find(|c| c.id == chat_id).is_some_and(|c| c.archived);
+            self.pending_leave.entry(chat_id).or_insert(previous);
             self.send_backend(backend::BackendCommand::LeaveGroup { chat_jid: jid });
         }
         // Archive locally WITHOUT routing through apply_chat_action:
@@ -1291,30 +1306,42 @@ impl App {
     }
 
     /// Blocks/unblocks a DM contact: local state plus the backend
-    /// command in live mode.
+    /// command in live mode. The set flips at once, but in live
+    /// mode the success is announced only when the server's
+    /// Blocklist report confirms the toggle, and a BlockFailed
+    /// restores the set: a "Contact blocked." spoken at click
+    /// time was a claim the server had not yet agreed to. Demo
+    /// mode has no server to wait for, so its notice stays
+    /// immediate and local, like the demo's other truths.
     pub(crate) fn toggle_block_contact(&mut self, chat_id: u64) {
-        let now_blocked = if self.blocked_chats.contains(&chat_id) {
+        let was_blocked = self.blocked_chats.contains(&chat_id);
+        let now_blocked = if was_blocked {
             self.blocked_chats.remove(&chat_id);
             false
         } else {
             self.blocked_chats.insert(chat_id);
             true
         };
+        let mut sent = false;
         if let Some(jid) = self.live_jid(chat_id) {
+            self.pending_blocks.entry(chat_id).or_insert(was_blocked);
             self.send_backend(backend::BackendCommand::BlockContact {
                 chat_jid: jid,
                 block: now_blocked,
             });
+            sent = true;
         }
         // The set is persisted (to the encrypted archive store,
         // privacy audit A6) so the panel still shows the right
         // state after a restart, before (or without) the
         // backend's connect-time blocklist fetch.
         self.persist_blocked_chats();
-        self.notice = Some(Notice::info(if now_blocked {
-            "Contact blocked.".to_owned()
-        } else {
-            "Contact unblocked.".to_owned()
-        }));
+        if !sent {
+            self.notice = Some(Notice::info(if now_blocked {
+                "Contact blocked.".to_owned()
+            } else {
+                "Contact unblocked.".to_owned()
+            }));
+        }
     }
 }

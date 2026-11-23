@@ -343,6 +343,8 @@
 "notice.report_sent" = "Sudah dilaporkan. Terima kasih sudah memberi tahu kami tentang"
 "notice.report_needs_connection" = "Melaporkan butuh koneksi langsung."
 "notice.report_unavailable" = "Pesan itu tidak ada di arsip, jadi tidak dapat dilaporkan."
+"notice.clearing_chat" = "Membersihkan chat..."
+"notice.deleting_chat" = "Menghapus chat..."
 "attach.contact" = "Kontak"
 "attach.contact_empty" = "Belum ada kontak dengan nomor telepon."
 "common.delete" = "Hapus"

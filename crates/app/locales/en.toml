@@ -429,6 +429,8 @@
 "notice.report_sent" = "Reported. Thanks for letting us know about"
 "notice.report_needs_connection" = "Reporting needs a live connection."
 "notice.report_unavailable" = "That message is not in the archive, so it cannot be reported."
+"notice.clearing_chat" = "Clearing chat..."
+"notice.deleting_chat" = "Deleting chat..."
 "attach.contact" = "Contact"
 "attach.contact_empty" = "No contacts with a phone number yet."
 "common.delete" = "Delete"

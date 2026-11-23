@@ -159,6 +159,13 @@ impl App {
         if !self.in_open_conversation(msg_id) {
             return;
         }
+        // The pre-edit state, captured before the local apply:
+        // an EditMessageFailed restores it verbatim.
+        let previous = self
+            .conversation
+            .iter()
+            .find(|m| m.id == msg_id)
+            .map(|m| (m.body.clone(), m.edited));
         for msg in &mut self.conversation {
             if msg.id == msg_id {
                 msg.body = new_body.to_owned();
@@ -185,6 +192,9 @@ impl App {
                 // The backend edits the message for real; the
                 // local update above is the immediate view and the
                 // archive follows the backend's edit event.
+                if let Some(previous) = previous {
+                    self.pending_edits.entry(msg_id).or_insert(previous);
+                }
                 self.send_backend(BackendCommand::EditMessage {
                     chat_jid: jid,
                     message_id: proto,
@@ -233,6 +243,12 @@ impl App {
                 } else {
                     None
                 };
+                // The pre-revoke deleted flag (the clone above
+                // predates the local apply): a
+                // RevokeMessageFailed restores it.
+                self.pending_revokes
+                    .entry(msg_id)
+                    .or_insert(msg.as_ref().is_some_and(|m| m.deleted));
                 self.send_backend(BackendCommand::RevokeMessage {
                     chat_jid: jid,
                     message_id: proto,
@@ -278,17 +294,24 @@ impl App {
                 } else {
                     None
                 };
-                // The wire timestamp of the message, from the
-                // archive row: the facade stamps the app-state
-                // patch with it when it has one.
-                let message_timestamp = self.live.as_ref().and_then(|s| {
+                // The message's archive row, read once for both
+                // of its uses: the wire timestamp the facade
+                // stamps the app-state patch with, and the
+                // rollback snapshot a DeleteForMeFailed restores
+                // (the local apply below deletes this very row,
+                // so it must be captured first).
+                let archived = self.live.as_ref().and_then(|s| {
                     let store = s.store.as_ref()?;
                     let rows = store.messages(&jid).ok()?;
-                    rows.iter().find(|(m, _)| m.id == proto).map(|(m, _)| m.timestamp)
+                    rows.iter().find(|(m, _)| m.id == proto).map(|(m, f)| (m.clone(), *f))
                 });
-                Some((jid, proto, sender_jid, from_me, message_timestamp))
+                let message_timestamp = archived.as_ref().map(|(m, _)| m.timestamp);
+                Some((jid, proto, sender_jid, from_me, message_timestamp, archived))
             });
-        if let Some((jid, proto, sender_jid, from_me, message_timestamp)) = plumbing {
+        if let Some((jid, proto, sender_jid, from_me, message_timestamp, archived)) = plumbing {
+            if let Some((row, flags)) = archived {
+                self.pending_delete_for_me.entry(msg_id).or_insert((chat_id, row, flags));
+            }
             self.apply_message_deleted_for_me(chat_id, &jid, msg_id, &proto);
             self.send_backend(BackendCommand::DeleteMessageForMe {
                 chat_jid: jid,
@@ -364,6 +387,11 @@ impl App {
             return;
         };
         let Some(pid) = self.protocol_ids.get(&msg_id).cloned() else {
+            // The same honest refusal as the un-timestampable
+            // case below: a report that cannot name its message
+            // is an error the user hears about, never a silent
+            // no-op behind a confirmed modal.
+            self.notice = Some(Notice::error(crate::i18n::t("notice.report_unavailable")));
             return;
         };
         let timestamp = self.live.as_ref().and_then(|s| {

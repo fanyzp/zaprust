@@ -1521,6 +1521,72 @@ pub(crate) struct App {
     /// counterpart of `pending_stars`, settled by a MessageKept
     /// report and restored by a KeepFailed.
     pub(crate) pending_keeps: std::collections::HashMap<u64, bool>,
+    /// Live mode: my poll selection before a vote the backend
+    /// has not yet settled, per poll message ID. A PollVote
+    /// echo carrying my selection drops the entry (confirmed);
+    /// a PollVoteFailed re-applies the stored selection as my
+    /// ballot, which recomputes the tally back (rolled back).
+    pub(crate) pending_poll_votes: std::collections::HashMap<u64, Vec<usize>>,
+    /// Live mode: a chat's (archived, pinned, muted, mute_until)
+    /// before a chat action the backend has not yet settled,
+    /// keyed by chat ID and the action's field group ("archive",
+    /// "pin", "mute"). A matching Changed report drops the
+    /// entry; a ChatActionFailed restores only the fields its
+    /// action owns.
+    pub(crate) pending_chat_actions:
+        std::collections::HashMap<(u64, &'static str), (bool, bool, bool, i64)>,
+    /// Live mode: a chat's unread count before a mark-unread
+    /// the backend has not yet settled. A ChatReadChanged drops
+    /// the entry; a MarkUnreadFailed restores the count.
+    pub(crate) pending_unread: std::collections::HashMap<u64, u32>,
+    /// Live mode: a chat's blocked state before a block toggle
+    /// the backend has not yet settled. A Blocklist report that
+    /// matches the intended state drops the entry and speaks
+    /// the success notice; a BlockFailed restores the state.
+    pub(crate) pending_blocks: std::collections::HashMap<u64, bool>,
+    /// Live mode: a group's title before a group-info save,
+    /// with the subject the save carries. A GroupInfoSaved
+    /// applies the subject and speaks the saved notice; a
+    /// GroupInfoFailed drops the entry (the title was never
+    /// applied) and speaks the failure.
+    pub(crate) pending_group_info: std::collections::HashMap<u64, (String, Option<String>)>,
+    /// Live mode: a group's archived flag before a leave the
+    /// backend has not yet settled. A LeaveGroupFailed restores
+    /// it (mirror and archive).
+    pub(crate) pending_leave: std::collections::HashMap<u64, bool>,
+    /// Live mode: a chat's disappearing-timer seconds before a
+    /// change the backend has not yet settled. A
+    /// DisappearingChanged drops the entry; a
+    /// DisappearingTimerFailed restores the seconds quietly
+    /// (no new in-stream announcement).
+    pub(crate) pending_timers: std::collections::HashMap<u64, u32>,
+    /// Live mode: a message's (body, edited flag) before an
+    /// edit the backend has not yet settled. A MessageEdited
+    /// drops the entry; an EditMessageFailed restores both.
+    pub(crate) pending_edits: std::collections::HashMap<u64, (String, bool)>,
+    /// Live mode: a message's deleted flag before a revoke the
+    /// backend has not yet settled. A MessageRevoked drops the
+    /// entry; a RevokeMessageFailed restores the flag.
+    pub(crate) pending_revokes: std::collections::HashMap<u64, bool>,
+    /// Live mode: the archived row a delete-for-me removed
+    /// optimistically (chat ID, the row, its flags), per
+    /// message ID. A MessageDeletedForMe report drops the
+    /// entry (the removal stands); a DeleteForMeFailed writes
+    /// the row back to the archive and re-adopts it into the
+    /// mirror and the open conversation.
+    pub(crate) pending_delete_for_me:
+        std::collections::HashMap<u64, (u64, backend::LiveMessage, i64)>,
+    /// Live mode: chats whose clear this client sent and whose
+    /// confirming ChatCleared report has not landed yet, with
+    /// the modal's keep-starred choice. Nothing is deleted
+    /// locally while an entry stands: the local apply is the
+    /// confirmation's, not the click's. A ClearChatFailed drops
+    /// the entry and speaks the failure.
+    pub(crate) pending_clears: std::collections::HashMap<u64, bool>,
+    /// Live mode: chats whose delete this client sent and whose
+    /// confirming ChatDeleted report has not landed yet. The
+    /// delete counterpart of `pending_clears`.
+    pub(crate) pending_chat_deletes: std::collections::HashSet<u64>,
     /// Media picker state: the emoji, GIF and sticker panel, its drafts and results, decoded textures and in-flight workers.
     pub(crate) picker: PickerState,
     /// The live voice recorder, present while a recording runs.
@@ -2081,6 +2147,18 @@ impl App {
             pending_stars: std::collections::HashMap::new(),
             pending_pins: std::collections::HashMap::new(),
             pending_keeps: std::collections::HashMap::new(),
+            pending_poll_votes: std::collections::HashMap::new(),
+            pending_chat_actions: std::collections::HashMap::new(),
+            pending_unread: std::collections::HashMap::new(),
+            pending_blocks: std::collections::HashMap::new(),
+            pending_group_info: std::collections::HashMap::new(),
+            pending_leave: std::collections::HashMap::new(),
+            pending_timers: std::collections::HashMap::new(),
+            pending_edits: std::collections::HashMap::new(),
+            pending_revokes: std::collections::HashMap::new(),
+            pending_delete_for_me: std::collections::HashMap::new(),
+            pending_clears: std::collections::HashMap::new(),
+            pending_chat_deletes: std::collections::HashSet::new(),
             picker: PickerState {
                 open: args.picker.is_some(),
                 tab: args.picker.clone().unwrap_or_else(|| "emoji".to_owned()),

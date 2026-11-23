@@ -60,6 +60,30 @@ pub struct FakeBackend {
     /// plays after the linked script. Only the app demo enables
     /// this; tests keep the deterministic linked script alone.
     pub demo_script: bool,
+    /// One-shot failure injection: command kind names (the
+    /// `BackendCommand` variant names, e.g. `"VotePoll"`). The
+    /// next command of a named kind fails with the same typed
+    /// failure event the real backend emits for it, and the name
+    /// is consumed. This is what makes the app's rollback paths
+    /// rehearsable at all: without it the fake could only ever
+    /// succeed. The app demo seeds the list from the
+    /// `ZAPRUST_FAKE_FAIL` environment variable (comma-separated
+    /// kind names) so failure states are reachable in QA captures.
+    pub fail_next: Vec<&'static str>,
+}
+
+/// The failure-injection list the app demo starts with, from
+/// `ZAPRUST_FAKE_FAIL` (comma-separated command kind names).
+/// Names are leaked to `&'static str`: the list is built once at
+/// startup and lives as long as the process.
+fn env_failures() -> Vec<&'static str> {
+    std::env::var("ZAPRUST_FAKE_FAIL")
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(|name| &*Box::leak(name.to_owned().into_boxed_str()))
+        .collect()
 }
 
 impl FakeBackend {
@@ -67,20 +91,25 @@ impl FakeBackend {
     /// "linked" screenshots.
     #[must_use]
     pub fn auto() -> Self {
-        Self { auto_connect: true, command_log: None, demo_script: false }
+        Self { auto_connect: true, command_log: None, demo_script: false, fail_next: Vec::new() }
     }
 
     /// A fake that waits at the pairing step, for the QR/code
     /// screenshots and for tests of the waiting states.
     #[must_use]
     pub fn waiting() -> Self {
-        Self { auto_connect: false, command_log: None, demo_script: false }
+        Self { auto_connect: false, command_log: None, demo_script: false, fail_next: Vec::new() }
     }
 
     /// A fake that records privacy-relevant commands into `log`.
     #[must_use]
     pub fn auto_with_log(log: std::sync::Arc<std::sync::Mutex<Vec<String>>>) -> Self {
-        Self { auto_connect: true, command_log: Some(log), demo_script: false }
+        Self {
+            auto_connect: true,
+            command_log: Some(log),
+            demo_script: false,
+            fail_next: Vec::new(),
+        }
     }
 
     /// The app demo: links on its own, then plays the scheduled
@@ -88,7 +117,12 @@ impl FakeBackend {
     /// linked script lands.
     #[must_use]
     pub fn demo() -> Self {
-        Self { auto_connect: true, command_log: None, demo_script: true }
+        Self {
+            auto_connect: true,
+            command_log: None,
+            demo_script: true,
+            fail_next: env_failures(),
+        }
     }
 }
 
@@ -835,6 +869,20 @@ impl Backend for FakeBackend {
         // on the first link, and shares the call ticker's lifetime
         // flag so Shutdown stops it too.
         let mut script_started = false;
+        // Failure injection (see the field docs): one-shot, by
+        // command kind name. Arms consult it before doing any
+        // work, so an injected failure changes no fake state,
+        // exactly like a send that never reached a server.
+        let mut fail_next = self.fail_next.clone();
+        let mut take_failure = |kind: &'static str| -> bool {
+            match fail_next.iter().position(|name| *name == kind) {
+                Some(pos) => {
+                    fail_next.remove(pos);
+                    true
+                }
+                None => false,
+            }
+        };
         while let Ok(cmd) = commands.recv() {
             match cmd {
                 BackendCommand::ConnectQr => {
@@ -958,11 +1006,19 @@ impl Backend for FakeBackend {
                     }
                 }
                 BackendCommand::SetDisappearingTimer { chat_jid, duration_secs } => {
-                    if let Some(chat) = chat_state.get_mut(&chat_jid) {
-                        chat.ephemeral_secs = duration_secs;
-                        events.emit(BackendEvent::ChatUpsert(chat.clone()));
+                    if take_failure("SetDisappearingTimer") {
+                        events.emit(BackendEvent::DisappearingTimerFailed {
+                            chat_jid,
+                            message: "Changing disappearing messages failed: connection lost"
+                                .to_owned(),
+                        });
+                    } else {
+                        if let Some(chat) = chat_state.get_mut(&chat_jid) {
+                            chat.ephemeral_secs = duration_secs;
+                            events.emit(BackendEvent::ChatUpsert(chat.clone()));
+                        }
+                        events.emit(BackendEvent::DisappearingChanged { chat_jid, duration_secs });
                     }
-                    events.emit(BackendEvent::DisappearingChanged { chat_jid, duration_secs });
                 }
                 BackendCommand::SendMedia {
                     chat_jid,
@@ -1245,7 +1301,16 @@ impl Backend for FakeBackend {
                     // retracts). Tallies are the app's aggregation
                     // job; the fake only keeps its own record of my
                     // votes so its model of the poll stays coherent.
-                    if let Some(msg) = polls.get_mut(&message_id) {
+                    // An unknown poll answers with the honest
+                    // failure, like the real backend does when a
+                    // poll's secret never reached the device.
+                    if take_failure("VotePoll") {
+                        events.emit(BackendEvent::PollVoteFailed {
+                            chat_jid,
+                            message_id,
+                            message: "Voting failed: connection lost".to_owned(),
+                        });
+                    } else if let Some(msg) = polls.get_mut(&message_id) {
                         if let crate::LiveMessageKind::Poll { my_votes, .. } = &mut msg.kind {
                             *my_votes = options.clone();
                         }
@@ -1255,6 +1320,13 @@ impl Backend for FakeBackend {
                             voter_jid: FAKE_OWN_JID.to_owned(),
                             from_me: true,
                             selected: options,
+                        });
+                    } else {
+                        events.emit(BackendEvent::PollVoteFailed {
+                            chat_jid,
+                            message_id,
+                            message: "Voting failed: that poll is not part of this chat."
+                                .to_owned(),
                         });
                     }
                 }
@@ -1301,10 +1373,26 @@ impl Backend for FakeBackend {
                     }
                 }
                 BackendCommand::EditMessage { chat_jid, message_id, new_body } => {
-                    events.emit(BackendEvent::MessageEdited { chat_jid, message_id, new_body });
+                    if take_failure("EditMessage") {
+                        events.emit(BackendEvent::EditMessageFailed {
+                            chat_jid,
+                            message_id,
+                            message: "Editing failed: connection lost".to_owned(),
+                        });
+                    } else {
+                        events.emit(BackendEvent::MessageEdited { chat_jid, message_id, new_body });
+                    }
                 }
                 BackendCommand::RevokeMessage { chat_jid, message_id, .. } => {
-                    events.emit(BackendEvent::MessageRevoked { chat_jid, message_id });
+                    if take_failure("RevokeMessage") {
+                        events.emit(BackendEvent::RevokeMessageFailed {
+                            chat_jid,
+                            message_id,
+                            message: "Deleting for everyone failed: connection lost".to_owned(),
+                        });
+                    } else {
+                        events.emit(BackendEvent::MessageRevoked { chat_jid, message_id });
+                    }
                 }
                 BackendCommand::DeleteMessageForMe { chat_jid, message_id, .. } => {
                     if let Some(log) = &command_log {
@@ -1312,8 +1400,16 @@ impl Backend for FakeBackend {
                             .unwrap_or_else(std::sync::PoisonError::into_inner)
                             .push(format!("delete_for_me:{chat_jid}:{message_id}"));
                     }
-                    message_state.remove(&(chat_jid.clone(), message_id.clone()));
-                    events.emit(BackendEvent::MessageDeletedForMe { chat_jid, message_id });
+                    if take_failure("DeleteMessageForMe") {
+                        events.emit(BackendEvent::DeleteForMeFailed {
+                            chat_jid,
+                            message_id,
+                            message: "Deleting the message failed: connection lost".to_owned(),
+                        });
+                    } else {
+                        message_state.remove(&(chat_jid.clone(), message_id.clone()));
+                        events.emit(BackendEvent::MessageDeletedForMe { chat_jid, message_id });
+                    }
                 }
                 BackendCommand::KeepMessage { chat_jid, message_id, keep, .. } => {
                     if let Some(log) = &command_log {
@@ -1337,14 +1433,21 @@ impl Backend for FakeBackend {
                             .unwrap_or_else(std::sync::PoisonError::into_inner)
                             .push(format!("clear_chat:{chat_jid}:{keep_starred}"));
                     }
-                    message_state.retain(|(chat, _), msg| {
-                        *chat != chat_jid || (keep_starred && msg.starred)
-                    });
-                    events.emit(BackendEvent::ChatCleared {
-                        chat_jid,
-                        delete_starred: !keep_starred,
-                        last_message_timestamp: None,
-                    });
+                    if take_failure("ClearChat") {
+                        events.emit(BackendEvent::ClearChatFailed {
+                            chat_jid,
+                            message: "Clearing the chat failed: connection lost".to_owned(),
+                        });
+                    } else {
+                        message_state.retain(|(chat, _), msg| {
+                            *chat != chat_jid || (keep_starred && msg.starred)
+                        });
+                        events.emit(BackendEvent::ChatCleared {
+                            chat_jid,
+                            delete_starred: !keep_starred,
+                            last_message_timestamp: None,
+                        });
+                    }
                 }
                 BackendCommand::DeleteChat { chat_jid } => {
                     if let Some(log) = &command_log {
@@ -1352,9 +1455,16 @@ impl Backend for FakeBackend {
                             .unwrap_or_else(std::sync::PoisonError::into_inner)
                             .push(format!("delete_chat:{chat_jid}"));
                     }
-                    chat_state.remove(&chat_jid);
-                    message_state.retain(|(chat, _), _| *chat != chat_jid);
-                    events.emit(BackendEvent::ChatDeleted { chat_jid });
+                    if take_failure("DeleteChat") {
+                        events.emit(BackendEvent::DeleteChatFailed {
+                            chat_jid,
+                            message: "Deleting the chat failed: connection lost".to_owned(),
+                        });
+                    } else {
+                        chat_state.remove(&chat_jid);
+                        message_state.retain(|(chat, _), _| *chat != chat_jid);
+                        events.emit(BackendEvent::ChatDeleted { chat_jid });
+                    }
                 }
                 BackendCommand::MarkChatUnread { chat_jid } => {
                     if let Some(log) = &command_log {
@@ -1362,7 +1472,13 @@ impl Backend for FakeBackend {
                             .unwrap_or_else(std::sync::PoisonError::into_inner)
                             .push(format!("mark_unread:{chat_jid}"));
                     }
-                    if let Some(chat) = chat_state.get_mut(&chat_jid) {
+                    if take_failure("MarkChatUnread") {
+                        events.emit(BackendEvent::MarkUnreadFailed {
+                            chat_jid,
+                            message: "Marking the chat as unread failed: connection lost"
+                                .to_owned(),
+                        });
+                    } else if let Some(chat) = chat_state.get_mut(&chat_jid) {
                         chat.unread = chat.unread.max(1);
                         let chat = chat.clone();
                         events.emit(BackendEvent::ChatUpsert(chat));
@@ -1529,7 +1645,13 @@ impl Backend for FakeBackend {
                             .unwrap_or_else(std::sync::PoisonError::into_inner)
                             .push(format!("chat_action:{chat_jid}:{action:?}"));
                     }
-                    if let Some(chat) = chat_state.get_mut(&chat_jid) {
+                    if take_failure("ChatAction") {
+                        events.emit(BackendEvent::ChatActionFailed {
+                            chat_jid,
+                            action,
+                            message: "That chat action failed: connection lost".to_owned(),
+                        });
+                    } else if let Some(chat) = chat_state.get_mut(&chat_jid) {
                         match action {
                             crate::ChatAction::Archive => chat.archived = true,
                             crate::ChatAction::Unarchive => chat.archived = false,
@@ -1558,14 +1680,21 @@ impl Backend for FakeBackend {
                             .unwrap_or_else(std::sync::PoisonError::into_inner)
                             .push(format!("block:{chat_jid}:{block}"));
                     }
-                    if block {
-                        blocked_state.insert(chat_jid);
+                    if take_failure("BlockContact") {
+                        events.emit(BackendEvent::BlockFailed {
+                            chat_jid,
+                            message: "Blocking failed: connection lost".to_owned(),
+                        });
                     } else {
-                        blocked_state.remove(&chat_jid);
+                        if block {
+                            blocked_state.insert(chat_jid);
+                        } else {
+                            blocked_state.remove(&chat_jid);
+                        }
+                        let mut list: Vec<String> = blocked_state.iter().cloned().collect();
+                        list.sort();
+                        events.emit(BackendEvent::Blocklist(list));
                     }
-                    let mut list: Vec<String> = blocked_state.iter().cloned().collect();
-                    list.sort();
-                    events.emit(BackendEvent::Blocklist(list));
                 }
                 BackendCommand::CreateGroup { name, participants } => {
                     if let Some(log) = &command_log {
@@ -1674,10 +1803,23 @@ impl Backend for FakeBackend {
                             ),
                         );
                     }
-                    if let (Some(subject), Some(chat)) = (subject, chat_state.get_mut(&chat_jid)) {
-                        chat.title = subject;
-                        let chat = chat.clone();
-                        events.emit(BackendEvent::ChatUpsert(chat));
+                    if take_failure("SetGroupInfo") {
+                        events.emit(BackendEvent::GroupInfoFailed {
+                            chat_jid,
+                            message: "Renaming the group failed: connection lost".to_owned(),
+                        });
+                    } else {
+                        if let (Some(subject), Some(chat)) =
+                            (subject, chat_state.get_mut(&chat_jid))
+                        {
+                            chat.title = subject;
+                            let chat = chat.clone();
+                            events.emit(BackendEvent::ChatUpsert(chat));
+                        }
+                        // The outcome event the real backend
+                        // answers with; the app applies its title
+                        // and its saved notice only from it.
+                        events.emit(BackendEvent::GroupInfoSaved { chat_jid });
                     }
                 }
                 BackendCommand::FetchGroupMembers { chat_jid } => {
@@ -1833,7 +1975,12 @@ impl Backend for FakeBackend {
                             .unwrap_or_else(std::sync::PoisonError::into_inner)
                             .push(format!("leave_group:{chat_jid}"));
                     }
-                    if let Some(chat) = chat_state.get_mut(&chat_jid) {
+                    if take_failure("LeaveGroup") {
+                        events.emit(BackendEvent::LeaveGroupFailed {
+                            chat_jid,
+                            message: "Leaving the group failed: connection lost".to_owned(),
+                        });
+                    } else if let Some(chat) = chat_state.get_mut(&chat_jid) {
                         chat.archived = true;
                         let chat = chat.clone();
                         events.emit(BackendEvent::ChatUpsert(chat));

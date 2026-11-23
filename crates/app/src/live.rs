@@ -2192,6 +2192,89 @@ impl crate::state::App {
                 }
                 self.notice = Some(Notice::error(human_error(&message)));
             }
+            BackendEvent::PollVoteFailed { chat_jid, message_id: pid, message } => {
+                let chat_id = jid_id(&chat_jid);
+                let mid = message_id(&chat_jid, &pid);
+                // Scrubbed before display, like the star and pin
+                // failure paths above.
+                let message = core::crash::scrub_for_display(&message);
+                tracing::warn!("poll vote failed: {message}");
+                if let Some(previous) = self.pending_poll_votes.remove(&mid) {
+                    // The vote never reached the server: re-apply
+                    // the selection it replaced as my ballot,
+                    // which recomputes the tally back in the
+                    // mirror and the archive alike, then bring
+                    // the open conversation's copy with it.
+                    self.apply_poll_vote(&chat_jid, &pid, "", true, &previous);
+                    self.sync_poll_from_mirror(chat_id, mid);
+                }
+                self.notice = Some(Notice::error(human_error(&message)));
+            }
+            BackendEvent::EditMessageFailed { chat_jid, message_id: pid, message } => {
+                let chat_id = jid_id(&chat_jid);
+                let mid = message_id(&chat_jid, &pid);
+                let message = core::crash::scrub_for_display(&message);
+                tracing::warn!("edit failed: {message}");
+                if let Some((body, edited)) = self.pending_edits.remove(&mid) {
+                    // The edit never reached the server: the
+                    // message keeps its previous body, in the
+                    // session mirror and the open view alike.
+                    if let Some(entry) =
+                        self.live.as_mut().and_then(|s| s.messages.get_mut(&chat_id))
+                    {
+                        for (_, m) in entry.iter_mut() {
+                            if m.id == mid {
+                                m.body = body.clone();
+                                m.edited = edited;
+                            }
+                        }
+                    }
+                    if self.selected_chat == chat_id {
+                        self.sync_conversation();
+                    }
+                }
+                self.notice = Some(Notice::error(human_error(&message)));
+            }
+            BackendEvent::RevokeMessageFailed { chat_jid, message_id: pid, message } => {
+                let chat_id = jid_id(&chat_jid);
+                let mid = message_id(&chat_jid, &pid);
+                let message = core::crash::scrub_for_display(&message);
+                tracing::warn!("revoke failed: {message}");
+                if let Some(previous) = self.pending_revokes.remove(&mid) {
+                    // The revoke never reached the server: the
+                    // message is not deleted for anyone, so its
+                    // deleted flag goes back to what it was.
+                    if let Some(entry) =
+                        self.live.as_mut().and_then(|s| s.messages.get_mut(&chat_id))
+                    {
+                        for (_, m) in entry.iter_mut() {
+                            if m.id == mid {
+                                m.deleted = previous;
+                            }
+                        }
+                    }
+                    if self.selected_chat == chat_id {
+                        self.sync_conversation();
+                    }
+                }
+                self.notice = Some(Notice::error(human_error(&message)));
+            }
+            BackendEvent::DeleteForMeFailed { chat_jid, message_id: pid, message } => {
+                let chat_id = jid_id(&chat_jid);
+                let mid = message_id(&chat_jid, &pid);
+                let message = core::crash::scrub_for_display(&message);
+                tracing::warn!("delete for me failed: {message}");
+                if let Some((snap_chat, row, flags)) = self.pending_delete_for_me.remove(&mid) {
+                    // The delete never reached the server: the
+                    // message is still the account's, so its
+                    // archived row goes back and the mirror
+                    // re-adopts it.
+                    if snap_chat == chat_id {
+                        self.restore_deleted_for_me(chat_id, &row, flags);
+                    }
+                }
+                self.notice = Some(Notice::error(human_error(&message)));
+            }
             BackendEvent::SpamReported { chat_jid } => {
                 let chat_id = jid_id(&chat_jid);
                 let name = self
@@ -2218,11 +2301,18 @@ impl crate::state::App {
                 self.apply_status_post_failed(message);
             }
             BackendEvent::PollVote { chat_jid, message_id: pid, voter_jid, from_me, selected } => {
+                if from_me {
+                    // My own vote reported back settles the
+                    // pending change it confirms.
+                    let mid = message_id(&chat_jid, &pid);
+                    self.pending_poll_votes.remove(&mid);
+                }
                 self.apply_poll_vote(&chat_jid, &pid, &voter_jid, from_me, &selected);
             }
             BackendEvent::MessageEdited { chat_jid, message_id: pid, new_body } => {
                 let chat_id = jid_id(&chat_jid);
                 let mid = message_id(&chat_jid, &pid);
+                self.pending_edits.remove(&mid);
                 if let Some(entry) = self.live.as_mut().and_then(|s| s.messages.get_mut(&chat_id)) {
                     for (_, m) in entry.iter_mut() {
                         if m.id == mid {
@@ -2238,25 +2328,45 @@ impl crate::state::App {
             BackendEvent::MessageRevoked { chat_jid, message_id: pid } => {
                 let chat_id = jid_id(&chat_jid);
                 let mid = message_id(&chat_jid, &pid);
+                self.pending_revokes.remove(&mid);
                 self.apply_revoke(chat_id, mid);
             }
             BackendEvent::DisappearingChanged { chat_jid, duration_secs } => {
                 let chat_id = jid_id(&chat_jid);
+                self.pending_timers.remove(&chat_id);
                 self.apply_disappearing_changed(chat_id, duration_secs);
+            }
+            BackendEvent::DisappearingTimerFailed { chat_jid, message } => {
+                let chat_id = jid_id(&chat_jid);
+                let message = core::crash::scrub_for_display(&message);
+                tracing::warn!("disappearing timer failed: {message}");
+                if let Some(previous) = self.pending_timers.remove(&chat_id) {
+                    // The change never reached the server: the
+                    // previous timer goes back quietly, with no
+                    // new in-stream announcement (the one the
+                    // optimistic apply posted was the failure's
+                    // own; the error notice below is its
+                    // correction).
+                    self.set_ephemeral_state(chat_id, previous);
+                }
+                self.notice = Some(Notice::error(human_error(&message)));
             }
             BackendEvent::DefaultDisappearingTimerChanged { duration_secs } => {
                 self.apply_default_disappearing_timer(duration_secs);
             }
             BackendEvent::MuteChanged { chat_jid, muted, mute_until } => {
                 let chat_id = jid_id(&chat_jid);
+                self.pending_chat_actions.remove(&(chat_id, "mute"));
                 self.apply_mute_changed(chat_id, muted, mute_until);
             }
             BackendEvent::PinChanged { chat_jid, pinned } => {
                 let chat_id = jid_id(&chat_jid);
+                self.pending_chat_actions.remove(&(chat_id, "pin"));
                 self.apply_pin_changed(chat_id, pinned);
             }
             BackendEvent::ArchiveChanged { chat_jid, archived } => {
                 let chat_id = jid_id(&chat_jid);
+                self.pending_chat_actions.remove(&(chat_id, "archive"));
                 self.apply_archive_changed(chat_id, archived);
             }
             BackendEvent::StarChanged { chat_jid, message_id: pid, starred } => {
@@ -2266,20 +2376,135 @@ impl crate::state::App {
             }
             BackendEvent::ChatReadChanged { chat_jid, read, unread_count } => {
                 let chat_id = jid_id(&chat_jid);
+                self.pending_unread.remove(&chat_id);
                 self.apply_chat_read_changed(chat_id, read, unread_count);
             }
             BackendEvent::ChatDeleted { chat_jid } => {
                 let chat_id = jid_id(&chat_jid);
+                if self.pending_chat_deletes.remove(&chat_id) {
+                    // My own delete, confirmed: its Busy notice
+                    // has done its work.
+                    self.clear_busy_notice();
+                }
                 self.apply_chat_deleted(chat_id, &chat_jid);
             }
             BackendEvent::ChatCleared { chat_jid, delete_starred, last_message_timestamp } => {
                 let chat_id = jid_id(&chat_jid);
+                if self.pending_clears.remove(&chat_id).is_some() {
+                    self.clear_busy_notice();
+                }
                 self.apply_chat_cleared(chat_id, &chat_jid, delete_starred, last_message_timestamp);
             }
             BackendEvent::MessageDeletedForMe { chat_jid, message_id: pid } => {
                 let chat_id = jid_id(&chat_jid);
                 let mid = message_id(&chat_jid, &pid);
+                self.pending_delete_for_me.remove(&mid);
                 self.apply_message_deleted_for_me(chat_id, &chat_jid, mid, &pid);
+            }
+            BackendEvent::ChatActionFailed { chat_jid, action, message } => {
+                let chat_id = jid_id(&chat_jid);
+                let message = core::crash::scrub_for_display(&message);
+                tracing::warn!("chat action failed: {message}");
+                let group = match action {
+                    backend::ChatAction::Archive | backend::ChatAction::Unarchive => "archive",
+                    backend::ChatAction::Pin | backend::ChatAction::Unpin => "pin",
+                    backend::ChatAction::Mute
+                    | backend::ChatAction::MuteUntil(_)
+                    | backend::ChatAction::Unmute => "mute",
+                };
+                if let Some(snapshot) = self.pending_chat_actions.remove(&(chat_id, group)) {
+                    // The action never reached the server: the
+                    // fields it owns go back to the snapshot, in
+                    // the mirror and the archive alike.
+                    self.restore_chat_action(chat_id, group, snapshot);
+                }
+                self.notice = Some(Notice::error(human_error(&message)));
+            }
+            BackendEvent::ClearChatFailed { chat_jid, message } => {
+                let chat_id = jid_id(&chat_jid);
+                let message = core::crash::scrub_for_display(&message);
+                tracing::warn!("clear chat failed: {message}");
+                // Nothing was staged locally for this command,
+                // so there is nothing to restore: the pending
+                // entry and its Busy notice are all that go.
+                self.pending_clears.remove(&chat_id);
+                self.clear_busy_notice();
+                self.notice = Some(Notice::error(human_error(&message)));
+            }
+            BackendEvent::DeleteChatFailed { chat_jid, message } => {
+                let chat_id = jid_id(&chat_jid);
+                let message = core::crash::scrub_for_display(&message);
+                tracing::warn!("delete chat failed: {message}");
+                self.pending_chat_deletes.remove(&chat_id);
+                self.clear_busy_notice();
+                self.notice = Some(Notice::error(human_error(&message)));
+            }
+            BackendEvent::MarkUnreadFailed { chat_jid, message } => {
+                let chat_id = jid_id(&chat_jid);
+                let message = core::crash::scrub_for_display(&message);
+                tracing::warn!("mark unread failed: {message}");
+                if let Some(previous) = self.pending_unread.remove(&chat_id) {
+                    // The badge was mine alone: the count goes
+                    // back to what it was before the mark.
+                    if previous == 0 {
+                        self.apply_chat_read_changed(chat_id, true, 0);
+                    } else {
+                        self.apply_chat_read_changed(chat_id, false, previous);
+                    }
+                }
+                self.notice = Some(Notice::error(human_error(&message)));
+            }
+            BackendEvent::BlockFailed { chat_jid, message } => {
+                let chat_id = jid_id(&chat_jid);
+                let message = core::crash::scrub_for_display(&message);
+                tracing::warn!("block failed: {message}");
+                if let Some(previous) = self.pending_blocks.remove(&chat_id) {
+                    // The toggle never reached the server: the
+                    // set (and its persisted copy) goes back.
+                    if previous {
+                        self.blocked_chats.insert(chat_id);
+                    } else {
+                        self.blocked_chats.remove(&chat_id);
+                    }
+                    self.persist_blocked_chats();
+                }
+                self.notice = Some(Notice::error(human_error(&message)));
+            }
+            BackendEvent::GroupInfoSaved { chat_jid } => {
+                let chat_id = jid_id(&chat_jid);
+                if let Some((_previous, subject)) = self.pending_group_info.remove(&chat_id) {
+                    // The save landed: only now does the new
+                    // title apply, and only now is it announced.
+                    if let Some(subject) = subject {
+                        self.apply_chat_renamed(&chat_jid, &subject);
+                    }
+                    self.notice = Some(Notice::info("Group info saved.".to_owned()));
+                }
+            }
+            BackendEvent::GroupInfoFailed { chat_jid, message } => {
+                let chat_id = jid_id(&chat_jid);
+                let message = core::crash::scrub_for_display(&message);
+                tracing::warn!("group info failed: {message}");
+                // The title was never applied at click time, so
+                // a failure has nothing to restore; a field that
+                // did land on the server reconciles through the
+                // next group metadata fetch.
+                self.pending_group_info.remove(&chat_id);
+                self.notice = Some(Notice::error(human_error(&message)));
+            }
+            BackendEvent::LeaveGroupFailed { chat_jid, message } => {
+                let chat_id = jid_id(&chat_jid);
+                let message = core::crash::scrub_for_display(&message);
+                tracing::warn!("leave group failed: {message}");
+                if let Some(previous) = self.pending_leave.remove(&chat_id) {
+                    // Still a member: the chat row's archived
+                    // flag goes back, mirror and archive alike.
+                    if let Some(c) = self.chats.iter_mut().find(|c| c.id == chat_id) {
+                        c.archived = previous;
+                    }
+                    self.persist_chat_row(chat_id);
+                }
+                self.notice = Some(Notice::error(human_error(&message)));
             }
             BackendEvent::PrivacyState(map) => {
                 self.apply_privacy_state(map);
@@ -2302,6 +2527,30 @@ impl crate::state::App {
                 // merely the last local toggle's.
                 self.blocked_chats = jids.iter().map(|j| jid_id(j)).collect();
                 self.persist_blocked_chats();
+                // A pending toggle this list confirms is settled
+                // here, and only here does its success get
+                // announced: at click time nothing was claimed.
+                let confirmed: Vec<u64> = self
+                    .pending_blocks
+                    .keys()
+                    .filter(|id| {
+                        // The toggle's intent was the opposite of
+                        // the state it replaced: it is confirmed
+                        // when the adopted set now holds the chat
+                        // exactly when the toggle blocked it.
+                        let was_blocked = self.pending_blocks[*id];
+                        self.blocked_chats.contains(id) != was_blocked
+                    })
+                    .copied()
+                    .collect();
+                for chat_id in confirmed {
+                    self.pending_blocks.remove(&chat_id);
+                    self.notice = Some(Notice::info(if self.blocked_chats.contains(&chat_id) {
+                        "Contact blocked.".to_owned()
+                    } else {
+                        "Contact unblocked.".to_owned()
+                    }));
+                }
             }
             BackendEvent::MediaSaved { chat_jid, message_id: pid, path } => {
                 // The download is done: its chip stops spinning.
@@ -3061,6 +3310,24 @@ impl crate::state::App {
     pub(crate) fn apply_disappearing_changed(&mut self, chat_id: u64, duration_secs: u32) {
         let current =
             self.chats.iter().find(|c| c.id == chat_id).map(|c| c.ephemeral_secs).unwrap_or(0);
+        self.set_ephemeral_state(chat_id, duration_secs);
+        if current != duration_secs {
+            self.push_system_notice(
+                chat_id,
+                &crate::extras::disappearing_notice_text(duration_secs),
+            );
+        }
+    }
+
+    /// Sets a chat's disappearing-timer state (mirror and
+    /// archive) without any in-stream announcement. The state
+    /// half of [`App::apply_disappearing_changed`], shared with
+    /// the DisappearingTimerFailed rollback, which must restore
+    /// the previous timer quietly: the announcement the
+    /// optimistic apply posted belongs to the failed change,
+    /// and a second one would claim a change that never
+    /// happened.
+    pub(crate) fn set_ephemeral_state(&mut self, chat_id: u64, duration_secs: u32) {
         if let Some(c) = self.chats.iter_mut().find(|c| c.id == chat_id) {
             c.ephemeral_secs = duration_secs;
         }
@@ -3074,12 +3341,6 @@ impl crate::state::App {
                     let _ = store.upsert_chat(&chat_to_live(chat, jid, ts));
                 }
             }
-        }
-        if current != duration_secs {
-            self.push_system_notice(
-                chat_id,
-                &crate::extras::disappearing_notice_text(duration_secs),
-            );
         }
     }
 
@@ -3324,11 +3585,11 @@ impl crate::state::App {
         }
     }
 
-    /// Applies a chat deletion: the server reported it (the
-    /// chat was deleted on the phone), or my own delete action
-    /// applied it locally ahead of its command (section 24: the
-    /// destructive actions follow the revoke precedent, local
-    /// apply first, a typed error if the command fails). The
+    /// Applies a chat deletion the server reported: the chat
+    /// was deleted on the phone, or my own DeleteChat command
+    /// was confirmed back (section 24: a whole-chat removal is
+    /// destructive, so its local apply waits for the outcome;
+    /// a DeleteChatFailed leaves the chat fully in place). The
     /// adoption is the removal itself, everywhere the chat
     /// exists locally: the chat list, the detached slot, the
     /// session mirror and its per-message helper entries, the
@@ -3506,6 +3767,133 @@ impl crate::state::App {
         }
         if self.selected_chat == chat_id {
             self.sync_conversation();
+        }
+    }
+
+    /// Rolls a chat action back after a ChatActionFailed: the
+    /// fields the failed action owns (archive, pin, or the mute
+    /// pair) return to the snapshot taken when the action was
+    /// sent, in the mirror and the archive alike. Fields other
+    /// actions own are untouched, so a settled sibling action
+    /// keeps its state.
+    pub(crate) fn restore_chat_action(
+        &mut self,
+        chat_id: u64,
+        group: &str,
+        snapshot: (bool, bool, bool, i64),
+    ) {
+        let (archived, pinned, muted, mute_until) = snapshot;
+        let until = u64::try_from(mute_until).unwrap_or(0);
+        if let Some(c) = self.chats.iter_mut().find(|c| c.id == chat_id) {
+            match group {
+                "archive" => c.archived = archived,
+                "pin" => c.pinned = pinned,
+                _ => {
+                    c.muted = muted;
+                    c.mute_until = until;
+                }
+            }
+        }
+        if let Some(c) = self.detached_chat.as_mut().filter(|c| c.id == chat_id) {
+            match group {
+                "archive" => c.archived = archived,
+                "pin" => c.pinned = pinned,
+                _ => {
+                    c.muted = muted;
+                    c.mute_until = until;
+                }
+            }
+        }
+        self.persist_chat_row(chat_id);
+    }
+
+    /// Puts a message back after a DeleteForMeFailed: the
+    /// delete never reached the server, so the message is still
+    /// the account's. Its archived row is written back first;
+    /// then the session mirror re-adopts it with the helper
+    /// entries its upsert would have built (media refs,
+    /// thumbnails, mentions, flags, protocol bookkeeping), the
+    /// row preview is recomputed, and the open conversation
+    /// re-syncs. The message's saved download, removed by the
+    /// optimistic apply, is not restored: it is a local copy of
+    /// media the message still names, fetchable again.
+    pub(crate) fn restore_deleted_for_me(
+        &mut self,
+        chat_id: u64,
+        row: &backend::LiveMessage,
+        flags: i64,
+    ) {
+        if let Some(session) = &self.live {
+            if let Some(store) = &session.store {
+                let _ = store.upsert_message(row, flags);
+            }
+        }
+        let msg_id = message_id(&row.chat_jid, &row.id);
+        if let Some(session) = &mut self.live {
+            if let Some(reference) = &row.photo_ref {
+                session.photo_refs.insert(msg_id, reference.clone());
+            }
+            if let Some(reference) = &row.voice_ref {
+                session.voice_refs.insert(msg_id, reference.clone());
+            }
+            if let Some(reference) = &row.video_ref {
+                session.video_refs.insert(msg_id, reference.clone());
+            }
+            if let Some(thumb) = &row.video_thumbnail {
+                session.video_thumbs.insert(msg_id, thumb.clone());
+            }
+            if let Some(reference) = &row.sticker_ref {
+                session.sticker_refs.insert(msg_id, reference.clone());
+            }
+            if let Some(thumb) = &row.photo_thumbnail {
+                session.photo_thumbs.insert(msg_id, thumb.clone());
+            }
+            if !row.mentions.is_empty() {
+                session.message_mentions.insert(msg_id, row.mentions.clone());
+            }
+            if flags != 0 {
+                session.flags.insert(msg_id, flags);
+            }
+            let entry = session.messages.entry(chat_id).or_default();
+            if !entry.iter().any(|(_, m)| m.id == msg_id) {
+                entry.push((row.timestamp, to_message_with_flags(row, flags)));
+                entry.sort_by_key(|(ts, _)| *ts);
+            }
+        }
+        self.protocol_ids.insert(msg_id, row.id.clone());
+        if let Some(jid) = &row.sender_jid {
+            self.sender_jids.insert(msg_id, jid.clone());
+        }
+        self.refresh_preview_after_removal(chat_id);
+        if self.selected_chat == chat_id {
+            self.sync_conversation();
+        }
+    }
+
+    /// Copies a poll's aggregated state from the session mirror
+    /// into the open conversation's copy of the message. The
+    /// mirror is where apply_poll_vote aggregates; the
+    /// conversation is a separate rendering copy, and a rollback
+    /// must move both.
+    pub(crate) fn sync_poll_from_mirror(&mut self, chat_id: u64, mid: u64) {
+        let restored = self
+            .live
+            .as_ref()
+            .and_then(|s| s.messages.get(&chat_id))
+            .and_then(|msgs| msgs.iter().find(|(_, m)| m.id == mid))
+            .and_then(|(_, m)| match &m.kind {
+                MessageKind::Poll { options, my_votes, .. } => {
+                    Some((options.clone(), my_votes.clone()))
+                }
+                _ => None,
+            });
+        if let Some((options, my_votes)) = restored {
+            for m in self.conversation.iter_mut().filter(|m| m.id == mid) {
+                if let MessageKind::Poll { options: o, my_votes: v, .. } = &mut m.kind {
+                    *o = options.clone();
+                    *v = my_votes.clone();
+                }
+            }
         }
     }
 
@@ -5495,12 +5883,36 @@ impl crate::state::App {
         muted: bool,
     ) {
         let in_chats = self.chats.iter().any(|c| c.id == chat_id);
-        let (was_archived, was_pinned, was_muted) = self
+        let (was_archived, was_pinned, was_muted, was_mute_until) = self
             .chats
             .iter()
             .find(|c| c.id == chat_id)
             .or_else(|| self.detached_chat.as_ref().filter(|c| c.id == chat_id))
-            .map_or((archived, pinned, muted), |c| (c.archived, c.pinned, c.muted));
+            .map_or((archived, pinned, muted, 0), |c| {
+                (c.archived, c.pinned, c.muted, c.mute_until)
+            });
+        // Snapshot the pre-action state per field group, so a
+        // ChatActionFailed can restore exactly the fields its
+        // action owns. First change wins: a second action on the
+        // same group while the first is unsettled rolls back to
+        // the state before both, the last server-known state.
+        if self.live.is_some() {
+            let snap = (
+                was_archived,
+                was_pinned,
+                was_muted,
+                i64::try_from(was_mute_until).unwrap_or(0),
+            );
+            if archived != was_archived {
+                self.pending_chat_actions.entry((chat_id, "archive")).or_insert(snap);
+            }
+            if pinned != was_pinned {
+                self.pending_chat_actions.entry((chat_id, "pin")).or_insert(snap);
+            }
+            if muted != was_muted {
+                self.pending_chat_actions.entry((chat_id, "mute")).or_insert(snap);
+            }
+        }
         if let Some(c) = self.chats.iter_mut().find(|c| c.id == chat_id) {
             c.archived = archived;
             c.pinned = pinned;
@@ -5567,6 +5979,9 @@ impl crate::state::App {
     /// applies the same local change with no command behind it.
     pub(crate) fn mark_chat_unread(&mut self, chat_id: u64) {
         let current = self.chats.iter().find(|c| c.id == chat_id).map_or(0, |c| c.unread);
+        if self.live.is_some() {
+            self.pending_unread.entry(chat_id).or_insert(current);
+        }
         self.apply_chat_read_changed(chat_id, false, current);
         if self.live.is_some() {
             if let Some(jid) = self.live_jid(chat_id) {
@@ -5576,13 +5991,19 @@ impl crate::state::App {
     }
 
     /// Clears a chat's messages (design standard section 24),
-    /// after the confirmation modal: the local apply runs
-    /// through the same adoption an inbound clear takes, then
-    /// the command follows. `keep_starred` is the modal's
-    /// checkbox choice, honored on both sides.
+    /// after the confirmation modal. In live mode the command
+    /// goes first and NOTHING is deleted locally yet: the local
+    /// apply is the confirming ChatCleared report's, through
+    /// the same adoption an inbound clear takes, and a
+    /// ClearChatFailed leaves every message in place. A clear
+    /// whose local half ran before its outcome existed could
+    /// destroy the archive copy of messages the server still
+    /// holds; that trade is never made. `keep_starred` is the
+    /// modal's checkbox choice, honored on both sides.
     pub(crate) fn clear_chat(&mut self, chat_id: u64, keep_starred: bool) {
         if let Some(jid) = self.live_jid(chat_id) {
-            self.apply_chat_cleared(chat_id, &jid, !keep_starred, None);
+            self.pending_clears.insert(chat_id, keep_starred);
+            self.notice = Some(Notice::busy(crate::i18n::t("notice.clearing_chat")));
             self.send_backend(BackendCommand::ClearChat { chat_jid: jid, keep_starred });
         } else if !self.live_mode {
             // Demo mode: the chat's messages live in the model
@@ -5598,11 +6019,14 @@ impl crate::state::App {
     }
 
     /// Deletes a chat (design standard section 24), after the
-    /// confirmation modal: local apply through the inbound
-    /// adoption, then the command.
+    /// confirmation modal. Live mode follows the same rule as
+    /// clear: the command goes first, the local removal is the
+    /// confirming ChatDeleted report's, and a DeleteChatFailed
+    /// leaves the chat fully in place.
     pub(crate) fn delete_chat(&mut self, chat_id: u64) {
         if let Some(jid) = self.live_jid(chat_id) {
-            self.apply_chat_deleted(chat_id, &jid);
+            self.pending_chat_deletes.insert(chat_id);
+            self.notice = Some(Notice::busy(crate::i18n::t("notice.deleting_chat")));
             self.send_backend(BackendCommand::DeleteChat { chat_jid: jid });
         } else if self.live_mode {
             // A live session whose address book does not know
@@ -5641,6 +6065,19 @@ impl crate::state::App {
             }
             MuteChoice::Always => (0, ChatAction::Mute),
         };
+        // The mute snapshot a ChatActionFailed restores,
+        // taken before the mirror moves (see apply_chat_action).
+        if self.live.is_some() {
+            if let Some(c) = self.chats.iter().find(|c| c.id == chat_id) {
+                let snap = (
+                    c.archived,
+                    c.pinned,
+                    c.muted,
+                    i64::try_from(c.mute_until).unwrap_or(0),
+                );
+                self.pending_chat_actions.entry((chat_id, "mute")).or_insert(snap);
+            }
+        }
         if let Some(c) = self.chats.iter_mut().find(|c| c.id == chat_id) {
             c.muted = true;
             c.mute_until = until;

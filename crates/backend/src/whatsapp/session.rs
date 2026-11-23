@@ -1105,13 +1105,17 @@ pub(super) async fn run_async(
                                     chat_jid,
                                     duration_secs,
                                 }),
-                                Err(e) => events.emit(BackendEvent::Error {
-                                    message: format!("Changing disappearing messages failed: {e}"),
+                                Err(e) => events.emit(BackendEvent::DisappearingTimerFailed {
+                                    chat_jid: chat_jid.clone(),
+                                    message: format!(
+                                        "Changing disappearing messages failed: {e}"
+                                    ),
                                 }),
                             }
                         }
                         Err(e) => {
-                            events.emit(BackendEvent::Error {
+                            events.emit(BackendEvent::DisappearingTimerFailed {
+                                chat_jid: chat_jid.clone(),
                                 message: format!("Invalid chat address: {e}"),
                             });
                         }
@@ -1186,6 +1190,17 @@ pub(super) async fn run_async(
                     let cached = lock_cache(&poll_secrets)
                         .get(&(chat_jid.clone(), message_id.clone()))
                         .cloned();
+                    // Failures answer with PollVoteFailed, not
+                    // the generic Error: the app applied the vote
+                    // optimistically and can only roll it back if
+                    // the failure names its poll.
+                    let fail = |message: String| {
+                        events.emit(BackendEvent::PollVoteFailed {
+                            chat_jid: chat_jid.clone(),
+                            message_id: message_id.clone(),
+                            message,
+                        });
+                    };
                     match (cached, chat_jid.parse::<Jid>()) {
                         (Some((creator, secret, names)), Ok(jid)) => {
                             let options: Vec<String> =
@@ -1197,29 +1212,25 @@ pub(super) async fn run_async(
                                         .vote_raw(jid, &message_id, &creator_jid, &secret, &options)
                                         .await
                                     {
-                                        events.emit(BackendEvent::Error {
-                                            message: format!("Voting failed: {e}"),
-                                        });
+                                        fail(format!("Voting failed: {e}"));
                                     }
                                 }
-                                Err(e) => events.emit(BackendEvent::Error {
-                                    message: format!("Invalid poll creator address: {e}"),
-                                }),
+                                Err(e) => {
+                                    fail(format!("Invalid poll creator address: {e}"));
+                                }
                             }
                         }
-                        (None, _) => events.emit(BackendEvent::Error {
-                            message: "This poll cannot be voted on from Zaprust: its \
+                        (None, _) => fail("This poll cannot be voted on from Zaprust: its \
                                           creation secret is not available. The secret \
                                           travels with the poll when it is created or \
                                           received, and Zaprust keeps it with the archived \
                                           poll; this poll's secret never reached this \
                                           device, so the poll predates the archive or the \
                                           sender's client did not include it."
-                                .to_owned(),
-                        }),
-                        (_, Err(e)) => events.emit(BackendEvent::Error {
-                            message: format!("Invalid chat address: {e}"),
-                        }),
+                            .to_owned()),
+                        (_, Err(e)) => {
+                            fail(format!("Invalid chat address: {e}"));
+                        }
                     }
                 }
                 #[cfg(feature = "calls")]
@@ -1403,6 +1414,17 @@ pub(super) async fn run_async(
                 }
                 BackendCommand::EditMessage { chat_jid, message_id, new_body } => {
                     use whatsapp_rust::wacore::proto_helpers::MessageBuilderExt;
+                    // EditMessageFailed, not the generic Error,
+                    // for the same reason as StarFailed: only the
+                    // app can restore the message's previous body,
+                    // and only if the failure names its message.
+                    let fail = |message: String| {
+                        events.emit(BackendEvent::EditMessageFailed {
+                            chat_jid: chat_jid.clone(),
+                            message_id: message_id.clone(),
+                            message,
+                        });
+                    };
                     match build_message_target(&chat_jid, &message_id, None, true) {
                         Ok((jid, sender, mid)) => {
                             match whatsapp_rust::MessageRef::new(&jid, mid, sender.as_ref(), true) {
@@ -1412,17 +1434,15 @@ pub(super) async fn run_async(
                                         whatsapp_rust::prelude::wa::Message::text(new_body),
                                     );
                                     if let Err(e) = client.edit_message(request).await {
-                                        events.emit(BackendEvent::Error {
-                                            message: format!("Editing failed: {e}"),
-                                        });
+                                        fail(format!("Editing failed: {e}"));
                                     }
                                 }
-                                Err(_) => events.emit(BackendEvent::Error {
-                                    message: "That message reference is invalid.".to_owned(),
-                                }),
+                                Err(_) => {
+                                    fail("That message reference is invalid.".to_owned());
+                                }
                             }
                         }
-                        Err(e) => events.emit(BackendEvent::Error { message: e }),
+                        Err(e) => fail(e),
                     }
                 }
                 BackendCommand::RevokeMessage { chat_jid, message_id, sender_jid, from_me } => {
@@ -1433,6 +1453,15 @@ pub(super) async fn run_async(
                     // an admin delete (refused by the library when
                     // the author is missing, and by the server
                     // when the account is not an admin there).
+                    // Failures answer with RevokeMessageFailed so
+                    // the app can restore the not-deleted state.
+                    let fail = |message: String| {
+                        events.emit(BackendEvent::RevokeMessageFailed {
+                            chat_jid: chat_jid.clone(),
+                            message_id: message_id.clone(),
+                            message,
+                        });
+                    };
                     match build_message_target(&chat_jid, &message_id, sender_jid.as_ref(), from_me)
                     {
                         Ok((jid, sender, mid)) => {
@@ -1444,17 +1473,15 @@ pub(super) async fn run_async(
                             ) {
                                 Ok(target) => {
                                     if let Err(e) = client.revoke_message(&target).await {
-                                        events.emit(BackendEvent::Error {
-                                            message: format!("Deleting for everyone failed: {e}"),
-                                        });
+                                        fail(format!("Deleting for everyone failed: {e}"));
                                     }
                                 }
-                                Err(_) => events.emit(BackendEvent::Error {
-                                    message: "That message reference is invalid.".to_owned(),
-                                }),
+                                Err(_) => {
+                                    fail("That message reference is invalid.".to_owned());
+                                }
                             }
                         }
-                        Err(e) => events.emit(BackendEvent::Error { message: e }),
+                        Err(e) => fail(e),
                     }
                 }
                 BackendCommand::DeleteMessageForMe {
@@ -1465,6 +1492,16 @@ pub(super) async fn run_async(
                     delete_media,
                     message_timestamp,
                 } => {
+                    // Failures answer with DeleteForMeFailed so
+                    // the app can restore the message it removed
+                    // optimistically, archive row included.
+                    let fail = |message: String| {
+                        events.emit(BackendEvent::DeleteForMeFailed {
+                            chat_jid: chat_jid.clone(),
+                            message_id: message_id.clone(),
+                            message,
+                        });
+                    };
                     match build_message_target(&chat_jid, &message_id, sender_jid.as_ref(), from_me)
                     {
                         Ok((jid, sender, mid)) => {
@@ -1484,17 +1521,15 @@ pub(super) async fn run_async(
                                         )
                                         .await
                                     {
-                                        events.emit(BackendEvent::Error {
-                                            message: format!("Deleting the message failed: {e}"),
-                                        });
+                                        fail(format!("Deleting the message failed: {e}"));
                                     }
                                 }
-                                Err(_) => events.emit(BackendEvent::Error {
-                                    message: "That message reference is invalid.".to_owned(),
-                                }),
+                                Err(_) => {
+                                    fail("That message reference is invalid.".to_owned());
+                                }
                             }
                         }
-                        Err(e) => events.emit(BackendEvent::Error { message: e }),
+                        Err(e) => fail(e),
                     }
                 }
                 BackendCommand::KeepMessage { chat_jid, message_id, sender_jid, from_me, keep } => {
@@ -1659,31 +1694,50 @@ pub(super) async fn run_async(
                         Err(e) => fail(e),
                     }
                 }
-                BackendCommand::ChatAction { chat_jid, action } => match chat_jid.parse::<Jid>() {
-                    Ok(jid) => {
-                        let actions = client.chat_actions();
-                        let result = match action {
-                            ChatAction::Archive => actions.archive_chat(&jid, None).await,
-                            ChatAction::Unarchive => actions.unarchive_chat(&jid, None).await,
-                            ChatAction::Pin => actions.pin_chat(&jid).await,
-                            ChatAction::Unpin => actions.unpin_chat(&jid).await,
-                            ChatAction::Mute => actions.mute_chat(&jid).await,
-                            ChatAction::MuteUntil(until_ms) => {
-                                actions.mute_chat_until(&jid, until_ms).await
+                BackendCommand::ChatAction { chat_jid, action } => {
+                    // Failures answer with ChatActionFailed so
+                    // the app can roll the chat's state back to
+                    // its snapshot; the generic Error cannot name
+                    // the chat or the action.
+                    let fail = |message: String| {
+                        events.emit(BackendEvent::ChatActionFailed {
+                            chat_jid: chat_jid.clone(),
+                            action,
+                            message,
+                        });
+                    };
+                    match chat_jid.parse::<Jid>() {
+                        Ok(jid) => {
+                            let actions = client.chat_actions();
+                            let result = match action {
+                                ChatAction::Archive => actions.archive_chat(&jid, None).await,
+                                ChatAction::Unarchive => actions.unarchive_chat(&jid, None).await,
+                                ChatAction::Pin => actions.pin_chat(&jid).await,
+                                ChatAction::Unpin => actions.unpin_chat(&jid).await,
+                                ChatAction::Mute => actions.mute_chat(&jid).await,
+                                ChatAction::MuteUntil(until_ms) => {
+                                    actions.mute_chat_until(&jid, until_ms).await
+                                }
+                                ChatAction::Unmute => actions.unmute_chat(&jid).await,
+                            };
+                            if let Err(e) = result {
+                                fail(format!("That chat action failed: {e}"));
                             }
-                            ChatAction::Unmute => actions.unmute_chat(&jid).await,
-                        };
-                        if let Err(e) = result {
-                            events.emit(BackendEvent::Error {
-                                message: format!("That chat action failed: {e}"),
-                            });
                         }
+                        Err(e) => fail(format!("Invalid chat address: {e}")),
                     }
-                    Err(e) => events.emit(BackendEvent::Error {
-                        message: format!("Invalid chat address: {e}"),
-                    }),
-                },
+                }
                 BackendCommand::ClearChat { chat_jid, keep_starred } => {
+                    // Failures answer with ClearChatFailed: the
+                    // app destroys nothing locally until the
+                    // confirming ChatCleared sync event lands, so
+                    // a failure only needs its notice.
+                    let fail = |message: String| {
+                        events.emit(BackendEvent::ClearChatFailed {
+                            chat_jid: chat_jid.clone(),
+                            message,
+                        });
+                    };
                     match chat_jid.parse::<Jid>() {
                         Ok(jid) => {
                             let options = whatsapp_rust::ClearChatOptions::default()
@@ -1698,42 +1752,48 @@ pub(super) async fn run_async(
                                 .clear_chat_with_options(&jid, options, None)
                                 .await
                             {
-                                events.emit(BackendEvent::Error {
-                                    message: format!("Clearing the chat failed: {e}"),
-                                });
+                                fail(format!("Clearing the chat failed: {e}"));
                             }
                         }
-                        Err(e) => events.emit(BackendEvent::Error {
-                            message: format!("Invalid chat address: {e}"),
-                        }),
+                        Err(e) => fail(format!("Invalid chat address: {e}")),
                     }
                 }
-                BackendCommand::DeleteChat { chat_jid } => match chat_jid.parse::<Jid>() {
-                    Ok(jid) => {
-                        if let Err(e) = client.chat_actions().delete_chat(&jid, true, None).await {
-                            events.emit(BackendEvent::Error {
-                                message: format!("Deleting the chat failed: {e}"),
-                            });
+                BackendCommand::DeleteChat { chat_jid } => {
+                    let fail = |message: String| {
+                        events.emit(BackendEvent::DeleteChatFailed {
+                            chat_jid: chat_jid.clone(),
+                            message,
+                        });
+                    };
+                    match chat_jid.parse::<Jid>() {
+                        Ok(jid) => {
+                            if let Err(e) =
+                                client.chat_actions().delete_chat(&jid, true, None).await
+                            {
+                                fail(format!("Deleting the chat failed: {e}"));
+                            }
                         }
+                        Err(e) => fail(format!("Invalid chat address: {e}")),
                     }
-                    Err(e) => events.emit(BackendEvent::Error {
-                        message: format!("Invalid chat address: {e}"),
-                    }),
-                },
-                BackendCommand::MarkChatUnread { chat_jid } => match chat_jid.parse::<Jid>() {
-                    Ok(jid) => {
-                        if let Err(e) =
-                            client.chat_actions().mark_chat_as_read(&jid, false, None).await
-                        {
-                            events.emit(BackendEvent::Error {
-                                message: format!("Marking the chat as unread failed: {e}"),
-                            });
+                }
+                BackendCommand::MarkChatUnread { chat_jid } => {
+                    let fail = |message: String| {
+                        events.emit(BackendEvent::MarkUnreadFailed {
+                            chat_jid: chat_jid.clone(),
+                            message,
+                        });
+                    };
+                    match chat_jid.parse::<Jid>() {
+                        Ok(jid) => {
+                            if let Err(e) =
+                                client.chat_actions().mark_chat_as_read(&jid, false, None).await
+                            {
+                                fail(format!("Marking the chat as unread failed: {e}"));
+                            }
                         }
+                        Err(e) => fail(format!("Invalid chat address: {e}")),
                     }
-                    Err(e) => events.emit(BackendEvent::Error {
-                        message: format!("Invalid chat address: {e}"),
-                    }),
-                },
+                }
                 BackendCommand::SendContact { chat_jid, name, phone, ephemeral_secs } => {
                     match chat_jid.parse::<Jid>() {
                         Ok(jid) => {
@@ -1788,23 +1848,27 @@ pub(super) async fn run_async(
                         Err(e) => fail(format!("Invalid chat address: {e}")),
                     }
                 }
-                BackendCommand::BlockContact { chat_jid, block } => match chat_jid.parse::<Jid>() {
-                    Ok(jid) => {
-                        let result = if block {
-                            client.blocking().block(&jid).await
-                        } else {
-                            client.blocking().unblock(&jid).await
-                        };
-                        if let Err(e) = result {
-                            events.emit(BackendEvent::Error {
-                                message: format!("Blocking failed: {e}"),
-                            });
+                BackendCommand::BlockContact { chat_jid, block } => {
+                    let fail = |message: String| {
+                        events.emit(BackendEvent::BlockFailed {
+                            chat_jid: chat_jid.clone(),
+                            message,
+                        });
+                    };
+                    match chat_jid.parse::<Jid>() {
+                        Ok(jid) => {
+                            let result = if block {
+                                client.blocking().block(&jid).await
+                            } else {
+                                client.blocking().unblock(&jid).await
+                            };
+                            if let Err(e) = result {
+                                fail(format!("Blocking failed: {e}"));
+                            }
                         }
+                        Err(e) => fail(format!("Invalid chat address: {e}")),
                     }
-                    Err(e) => events.emit(BackendEvent::Error {
-                        message: format!("Invalid chat address: {e}"),
-                    }),
-                },
+                }
                 BackendCommand::CreateCommunity { name } => {
                     match whatsapp_rust::CreateCommunityOptions::new(name.clone()) {
                         Ok(options) => match client.community().create(options).await {
@@ -1898,6 +1962,15 @@ pub(super) async fn run_async(
                     }
                 }
                 BackendCommand::SetGroupInfo { chat_jid, subject, description } => {
+                    // The two fields are separate server calls
+                    // and can fail independently. Both are
+                    // attempted; the command answers with exactly
+                    // one outcome event: GroupInfoSaved only when
+                    // every carried field landed, GroupInfoFailed
+                    // with the first failure otherwise. The app
+                    // claims nothing (and changes no title) until
+                    // one of them arrives.
+                    let mut failure: Option<String> = None;
                     match chat_jid.parse::<Jid>() {
                         Ok(jid) => {
                             if let Some(subject) = subject {
@@ -1906,14 +1979,16 @@ pub(super) async fn run_async(
                                         if let Err(e) =
                                             client.groups().set_subject(jid.clone(), subject).await
                                         {
-                                            events.emit(BackendEvent::Error {
-                                                message: format!("Renaming the group failed: {e}"),
-                                            });
+                                            failure = Some(format!(
+                                                "Renaming the group failed: {e}"
+                                            ));
                                         }
                                     }
-                                    Err(e) => events.emit(BackendEvent::Error {
-                                        message: format!("That group name is not allowed: {e}"),
-                                    }),
+                                    Err(e) => {
+                                        failure = Some(format!(
+                                            "That group name is not allowed: {e}"
+                                        ));
+                                    }
                                 }
                             }
                             if let Some(description) = description {
@@ -1942,21 +2017,28 @@ pub(super) async fn run_async(
                                             )
                                             .await
                                         {
-                                            events.emit(BackendEvent::Error {
-                                                message: format!(
-                                                    "Changing the description failed: {e}"
-                                                ),
+                                            failure.get_or_insert_with(|| {
+                                                format!("Changing the description failed: {e}")
                                             });
                                         }
                                     }
                                     Err(message) => {
-                                        events.emit(BackendEvent::Error { message });
+                                        failure.get_or_insert(message);
                                     }
                                 }
                             }
                         }
-                        Err(e) => events.emit(BackendEvent::Error {
-                            message: format!("Invalid group address: {e}"),
+                        Err(e) => {
+                            failure = Some(format!("Invalid group address: {e}"));
+                        }
+                    }
+                    match failure {
+                        Some(message) => events.emit(BackendEvent::GroupInfoFailed {
+                            chat_jid: chat_jid.clone(),
+                            message,
+                        }),
+                        None => events.emit(BackendEvent::GroupInfoSaved {
+                            chat_jid: chat_jid.clone(),
                         }),
                     }
                 }
@@ -2214,18 +2296,22 @@ pub(super) async fn run_async(
                         }),
                     }
                 }
-                BackendCommand::LeaveGroup { chat_jid } => match chat_jid.parse::<Jid>() {
-                    Ok(jid) => {
-                        if let Err(e) = client.groups().leave(jid).await {
-                            events.emit(BackendEvent::Error {
-                                message: format!("Leaving the group failed: {e}"),
-                            });
+                BackendCommand::LeaveGroup { chat_jid } => {
+                    let fail = |message: String| {
+                        events.emit(BackendEvent::LeaveGroupFailed {
+                            chat_jid: chat_jid.clone(),
+                            message,
+                        });
+                    };
+                    match chat_jid.parse::<Jid>() {
+                        Ok(jid) => {
+                            if let Err(e) = client.groups().leave(jid).await {
+                                fail(format!("Leaving the group failed: {e}"));
+                            }
                         }
+                        Err(e) => fail(format!("Invalid group address: {e}")),
                     }
-                    Err(e) => events.emit(BackendEvent::Error {
-                        message: format!("Invalid group address: {e}"),
-                    }),
-                },
+                }
                 BackendCommand::DownloadMedia { chat_jid, message_id } => {
                     let proto = lock_cache(&proto_cache)
                         .0

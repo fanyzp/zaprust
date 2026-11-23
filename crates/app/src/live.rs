@@ -9039,6 +9039,69 @@ mod burst_drain_tests {
         assert_eq!(row.sticker_ref, None, "the archived reference is dropped");
     }
 
+    /// A verified name arriving (a usync answer, or a history
+    /// payload that stated one) badges the identity's chat:
+    /// the flag the list and the header paint from.
+    #[test]
+    fn verified_name_badges_the_chat() {
+        let (mut app, tx, ctx, cmd_rx) = live_app();
+        make_real(&mut app);
+        let chat_id = jid_id(CHAT_JID);
+        app.chats.push(to_chat(&backend::LiveChat {
+            jid: CHAT_JID.to_owned(),
+            kind: backend::LiveChatKind::Dm,
+            title: "Sender".to_owned(),
+            preview: String::new(),
+            preview_sender: None,
+            timestamp: BASE_TS,
+            unread: 0,
+            pinned: false,
+            archived: false,
+            muted: false,
+            mute_until: 0,
+            ephemeral_secs: 0,
+        }));
+        {
+            let session = app.live.as_mut().unwrap();
+            session.jids.insert(chat_id, CHAT_JID.to_owned());
+        }
+        // The ask goes out once per identity.
+        app.ensure_verified_name(CHAT_JID);
+        app.ensure_verified_name(CHAT_JID);
+        let asks = cmd_rx
+            .try_iter()
+            .filter(|c| matches!(c, BackendCommand::FetchVerifiedName { .. }))
+            .count();
+        assert_eq!(asks, 1, "one verified-name ask per identity per session");
+        tx.send(BackendEvent::VerifiedNameResult {
+            jid: CHAT_JID.to_owned(),
+            name: Some("Toko Berkah".to_owned()),
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        app.apply_verified_badges();
+        let chat = app.chats.iter().find(|c| c.id == chat_id).unwrap();
+        assert!(chat.verified, "the chat wears the badge once the name is proven");
+        // A history payload stating the name seeds the book too.
+        let mut live = LiveMessage::text(
+            "biz-1",
+            CHAT_JID,
+            Some("Toko Berkah".to_owned()),
+            "promo today",
+            BASE_TS,
+            false,
+        );
+        live.sender_jid = Some(CHAT_JID.to_owned());
+        live.sender_verified_name = Some("Toko Berkah".to_owned());
+        tx.send(BackendEvent::MessageUpsert(live)).unwrap();
+        drain_all(&mut app, &ctx);
+        let session = app.live.as_ref().unwrap();
+        assert_eq!(
+            session.verified_names.get(CHAT_JID).map(String::as_str),
+            Some("Toko Berkah")
+        );
+    }
+
     /// Item 111: view-once video bytes land in memory (never a
     /// file), the player starts from them and presents a real
     /// decoded frame of the actual video.
@@ -12044,69 +12107,6 @@ mod mirror_pruning_tests {
         assert!(
             app.live_quote_for_reply().is_none(),
             "a reply to the expired message resolves to nothing, as before"
-        );
-    }
-
-    /// A verified name arriving (a usync answer, or a history
-    /// payload that stated one) badges the identity's chat:
-    /// the flag the list and the header paint from.
-    #[test]
-    fn verified_name_badges_the_chat() {
-        let (mut app, tx, ctx, cmd_rx) = live_app();
-        make_real(&mut app);
-        let chat_id = jid_id(CHAT_JID);
-        app.chats.push(to_chat(&backend::LiveChat {
-            jid: CHAT_JID.to_owned(),
-            kind: backend::LiveChatKind::Dm,
-            title: "Sender".to_owned(),
-            preview: String::new(),
-            preview_sender: None,
-            timestamp: BASE_TS,
-            unread: 0,
-            pinned: false,
-            archived: false,
-            muted: false,
-            mute_until: 0,
-            ephemeral_secs: 0,
-        }));
-        {
-            let session = app.live.as_mut().unwrap();
-            session.jids.insert(chat_id, CHAT_JID.to_owned());
-        }
-        // The ask goes out once per identity.
-        app.ensure_verified_name(CHAT_JID);
-        app.ensure_verified_name(CHAT_JID);
-        let asks = cmd_rx
-            .try_iter()
-            .filter(|c| matches!(c, BackendCommand::FetchVerifiedName { .. }))
-            .count();
-        assert_eq!(asks, 1, "one verified-name ask per identity per session");
-        tx.send(BackendEvent::VerifiedNameResult {
-            jid: CHAT_JID.to_owned(),
-            name: Some("Toko Berkah".to_owned()),
-        })
-        .unwrap();
-        drain_all(&mut app, &ctx);
-        app.apply_verified_badges();
-        let chat = app.chats.iter().find(|c| c.id == chat_id).unwrap();
-        assert!(chat.verified, "the chat wears the badge once the name is proven");
-        // A history payload stating the name seeds the book too.
-        let mut live = LiveMessage::text(
-            "biz-1",
-            CHAT_JID,
-            Some("Toko Berkah".to_owned()),
-            "promo today",
-            BASE_TS,
-            false,
-        );
-        live.sender_jid = Some(CHAT_JID.to_owned());
-        live.sender_verified_name = Some("Toko Berkah".to_owned());
-        tx.send(BackendEvent::MessageUpsert(live)).unwrap();
-        drain_all(&mut app, &ctx);
-        let session = app.live.as_ref().unwrap();
-        assert_eq!(
-            session.verified_names.get(CHAT_JID).map(String::as_str),
-            Some("Toko Berkah")
         );
     }
 

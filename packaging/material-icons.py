@@ -71,6 +71,7 @@ WANTED = [
     ("Forward", ["forward"]),
     ("Star", ["star"]),
     ("Pin", ["push_pin"]),
+    ("Bookmark", ["bookmark"]),
     ("Download", ["download"]),
     ("Poll", ["poll"]),
     ("Schedule", ["schedule"]),

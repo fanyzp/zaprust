@@ -898,6 +898,7 @@ fn star_and_pin_message_commands_update_state_and_log() {
             sender_jid: None,
             from_me: false,
             pin: true,
+            duration: backend::PinDuration::Days7,
         })
         .unwrap();
     let events = collect_until(
@@ -1126,6 +1127,8 @@ fn edit_and_revoke_commands_emit_their_events() {
         .send(BackendCommand::RevokeMessage {
             chat_jid: "10000000001@s.whatsapp.net".to_owned(),
             message_id: "fake-1".to_owned(),
+            sender_jid: None,
+            from_me: true,
         })
         .unwrap();
     let events = collect_until(
@@ -1631,4 +1634,192 @@ fn disconnect_answers_with_logged_out() {
         "disconnect is answered by LoggedOut: {events:?}"
     );
     ch.commands.send(BackendCommand::Shutdown).unwrap();
+}
+
+#[test]
+fn delete_for_me_command_removes_the_message_and_logs() {
+    let (ch, log) = linked_backend();
+    let _ = collect_until(
+        &ch.events,
+        3,
+        |e| matches!(e, BackendEvent::MessageUpsert(m) if m.id == "fake-3"),
+    );
+    ch.commands
+        .send(BackendCommand::DeleteMessageForMe {
+            chat_jid: "10000000001@s.whatsapp.net".to_owned(),
+            message_id: "fake-1".to_owned(),
+            sender_jid: None,
+            from_me: false,
+            delete_media: true,
+            message_timestamp: Some(1_700_000_000),
+        })
+        .unwrap();
+    let events =
+        collect_until(&ch.events, 5, |e| matches!(e, BackendEvent::MessageDeletedForMe { .. }));
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            BackendEvent::MessageDeletedForMe { chat_jid, message_id }
+                if chat_jid == "10000000001@s.whatsapp.net" && message_id == "fake-1"
+        )),
+        "the delete-for-me command reports the removal"
+    );
+    let log = log.lock().unwrap();
+    assert!(log.iter().any(|l| l.starts_with("delete_for_me:")), "log: {log:?}");
+}
+
+#[test]
+fn clear_and_delete_chat_commands_apply_and_log() {
+    let (ch, log) = linked_backend();
+    let _ = collect_until(
+        &ch.events,
+        3,
+        |e| matches!(e, BackendEvent::MessageUpsert(m) if m.id == "fake-3"),
+    );
+    // Star one message first: a clear that keeps starred
+    // messages must leave it in place.
+    ch.commands
+        .send(BackendCommand::StarMessage {
+            chat_jid: "10000000001@s.whatsapp.net".to_owned(),
+            message_id: "fake-1".to_owned(),
+            sender_jid: None,
+            from_me: false,
+            star: true,
+        })
+        .unwrap();
+    let _ = collect_until(
+        &ch.events,
+        5,
+        |e| matches!(e, BackendEvent::MessageUpsert(m) if m.id == "fake-1" && m.starred),
+    );
+    ch.commands
+        .send(BackendCommand::ClearChat {
+            chat_jid: "10000000001@s.whatsapp.net".to_owned(),
+            keep_starred: true,
+        })
+        .unwrap();
+    let events = collect_until(&ch.events, 5, |e| matches!(e, BackendEvent::ChatCleared { .. }));
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            BackendEvent::ChatCleared { delete_starred, .. } if !delete_starred
+        )),
+        "the clear reports that starred messages were kept"
+    );
+    // The starred message survived: keeping it (a command that
+    // requires the message to exist) still answers.
+    ch.commands
+        .send(BackendCommand::KeepMessage {
+            chat_jid: "10000000001@s.whatsapp.net".to_owned(),
+            message_id: "fake-1".to_owned(),
+            sender_jid: None,
+            from_me: false,
+            keep: true,
+        })
+        .unwrap();
+    let events = collect_until(&ch.events, 5, |e| matches!(e, BackendEvent::MessageKept { .. }));
+    assert!(
+        events.iter().any(|e| matches!(e, BackendEvent::MessageKept { kept, .. } if *kept)),
+        "the kept report lands for the surviving starred message"
+    );
+    ch.commands
+        .send(BackendCommand::DeleteChat { chat_jid: "10000000001@s.whatsapp.net".to_owned() })
+        .unwrap();
+    let events = collect_until(&ch.events, 5, |e| matches!(e, BackendEvent::ChatDeleted { .. }));
+    assert!(
+        events.iter().any(|e| matches!(e, BackendEvent::ChatDeleted { .. })),
+        "the delete reports the chat removal"
+    );
+    let log = log.lock().unwrap();
+    assert!(log.iter().any(|l| l.starts_with("clear_chat:")), "log: {log:?}");
+    assert!(log.iter().any(|l| l.starts_with("delete_chat:")), "log: {log:?}");
+}
+
+#[test]
+fn mark_unread_mute_until_contact_and_spam_commands() {
+    let (ch, log) = linked_backend();
+    let _ = collect_until(
+        &ch.events,
+        3,
+        |e| matches!(e, BackendEvent::MessageUpsert(m) if m.id == "fake-3"),
+    );
+    ch.commands
+        .send(BackendCommand::MarkChatUnread { chat_jid: "10000000002@g.us".to_owned() })
+        .unwrap();
+    let events =
+        collect_until(&ch.events, 5, |e| matches!(e, BackendEvent::ChatUpsert(c) if c.unread >= 1));
+    assert!(
+        events.iter().any(|e| matches!(e, BackendEvent::ChatUpsert(c) if c.unread >= 1)),
+        "marking unread raises the badge in the upsert"
+    );
+    ch.commands
+        .send(BackendCommand::ChatAction {
+            chat_jid: "10000000002@g.us".to_owned(),
+            action: backend::ChatAction::MuteUntil(1_700_028_800_000),
+        })
+        .unwrap();
+    let events = collect_until(
+        &ch.events,
+        5,
+        |e| matches!(e, BackendEvent::ChatUpsert(c) if c.mute_until == 1_700_028_800),
+    );
+    assert!(
+        events.iter().any(
+            |e| matches!(e, BackendEvent::ChatUpsert(c) if c.muted && c.mute_until == 1_700_028_800)
+        ),
+        "the timed mute upsert carries its end in seconds"
+    );
+    ch.commands
+        .send(BackendCommand::SendContact {
+            chat_jid: "10000000001@s.whatsapp.net".to_owned(),
+            name: "Emma Wilson".to_owned(),
+            phone: "10000000007".to_owned(),
+            ephemeral_secs: 0,
+        })
+        .unwrap();
+    let events = collect_until(
+        &ch.events,
+        5,
+        |e| matches!(e, BackendEvent::MessageUpsert(m) if matches!(m.kind, backend::LiveMessageKind::Contact { .. })),
+    );
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            BackendEvent::MessageUpsert(m)
+                if matches!(&m.kind, backend::LiveMessageKind::Contact { name, phone }
+                    if name == "Emma Wilson" && phone == "10000000007")
+        )),
+        "the sent contact card upserts as a contact message"
+    );
+    ch.commands
+        .send(BackendCommand::ReportSpam {
+            chat_jid: "10000000001@s.whatsapp.net".to_owned(),
+            message_id: "fake-1".to_owned(),
+            sender_jid: None,
+            message_timestamp: 1_700_000_000,
+        })
+        .unwrap();
+    let events = collect_until(&ch.events, 5, |e| matches!(e, BackendEvent::SpamReported { .. }));
+    assert!(
+        events.iter().any(|e| matches!(e, BackendEvent::SpamReported { .. })),
+        "the report answers with its reported event"
+    );
+    ch.commands
+        .send(BackendCommand::ReportSpam {
+            chat_jid: "10000000001@s.whatsapp.net".to_owned(),
+            message_id: "no-such-message".to_owned(),
+            sender_jid: None,
+            message_timestamp: 1_700_000_000,
+        })
+        .unwrap();
+    let events =
+        collect_until(&ch.events, 5, |e| matches!(e, BackendEvent::SpamReportFailed { .. }));
+    assert!(
+        events.iter().any(|e| matches!(e, BackendEvent::SpamReportFailed { .. })),
+        "an unknown message fails the report honestly"
+    );
+    let log = log.lock().unwrap();
+    assert!(log.iter().any(|l| l.starts_with("mark_unread:")), "log: {log:?}");
+    assert!(log.iter().any(|l| l.starts_with("send_contact:")), "log: {log:?}");
+    assert!(log.iter().any(|l| l.starts_with("report_spam:")), "log: {log:?}");
 }

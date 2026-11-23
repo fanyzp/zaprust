@@ -46,6 +46,7 @@ pub(crate) enum Icon {
     Forward,
     Star,
     Pin,
+    Bookmark,
     Download,
     Poll,
     React,
@@ -141,6 +142,7 @@ pub(crate) fn glyph(icon: Icon) -> char {
         Icon::Forward => '\u{f57a}',      // forward
         Icon::Star => '\u{f09a}',         // star
         Icon::Pin => '\u{f10d}',          // push_pin
+        Icon::Bookmark => '\u{e8e7}',     // bookmark
         Icon::Download => '\u{f090}',     // download
         Icon::Poll => '\u{f0cc}',         // poll
         Icon::React => '\u{e1d3}',        // add_reaction

@@ -124,6 +124,22 @@ pub(super) fn translate_special(ctx: &MessageContext, sink: &EventSink) -> bool 
             None => {}
         }
     }
+    if let Some(keep) = msg.keep_in_chat_message.as_option() {
+        // A keep (or un-keep) of a disappearing message, made
+        // from any device: it is an add-on about another
+        // message, never a bubble of its own. The library
+        // dispatches no event for it, so the state crosses here.
+        if let Some(target_id) =
+            keep.key.as_option().and_then(|k| k.id.as_deref()).map(ToOwned::to_owned)
+        {
+            sink.emit(BackendEvent::MessageKept {
+                chat_jid,
+                message_id: target_id,
+                kept: keep.keep_type == Some(whatsapp_rust::prelude::wa::KeepType::KeepForAll),
+            });
+            return true;
+        }
+    }
     false
 }
 
@@ -199,6 +215,7 @@ pub(super) fn translate_event(
             sink.emit(BackendEvent::MuteChanged {
                 chat_jid: update.jid.to_string(),
                 muted: mute_action_state(&update.action, now_millis()),
+                mute_until: mute_action_until(&update.action),
             });
         }
         Event::PinUpdate(update) => {
@@ -789,6 +806,11 @@ fn translate_history_conversation(
         pinned: conv.pinned.is_some_and(|p| p > 0),
         ephemeral_secs: conv.ephemeral_expiration.unwrap_or(0),
         muted: conv.mute_end_time.is_some_and(|end| i64::try_from(end).unwrap_or(0) > now_secs),
+        mute_until: conv
+            .mute_end_time
+            .map(|end| i64::try_from(end).unwrap_or(0))
+            .filter(|end| *end > now_secs)
+            .unwrap_or(0),
     };
     sink.emit(BackendEvent::ChatUpsert(chat));
     for msg in messages {
@@ -962,6 +984,7 @@ pub(super) fn translate_message(ctx: &MessageContext) -> Option<(LiveChat, LiveM
         // docs on LiveChat).
         ephemeral_secs: 0,
         muted: false,
+        mute_until: 0,
     };
     let mut msg = LiveMessage::text(
         ctx.info.id.to_string(),
@@ -1248,6 +1271,23 @@ pub(super) fn mute_action_state(
     match action.mute_end_timestamp {
         Some(end) if end > 0 => end > now_ms,
         _ => true,
+    }
+}
+
+/// The end of a sync `MuteAction` as unix seconds, for the app
+/// to show and to lift the mute locally when it passes. `0`
+/// when the action is not a timed mute: unmuted, indefinite
+/// (the `-1` spelling), or an end already in the past (the
+/// state helper reports those unmuted, so no end survives).
+pub(super) fn mute_action_until(
+    action: &whatsapp_rust::prelude::wa::sync_action_value::MuteAction,
+) -> i64 {
+    if action.muted != Some(true) {
+        return 0;
+    }
+    match action.mute_end_timestamp {
+        Some(end) if end > 0 => end / 1000,
+        _ => 0,
     }
 }
 
@@ -2030,5 +2070,30 @@ mod live_pairing_fix_tests {
             call_record_of(&anonymous, Some("sync-id".to_owned()), Some(false), None, None)
                 .unwrap();
         assert_eq!(rescued.call_id, "sync-id");
+    }
+}
+
+#[cfg(test)]
+mod mute_until_tests {
+    use super::mute_action_until;
+    use whatsapp_rust::prelude::wa::sync_action_value::MuteAction;
+
+    fn action(muted: Option<bool>, mute_end_timestamp: Option<i64>) -> MuteAction {
+        let mut action = MuteAction::default();
+        action.muted = muted;
+        action.mute_end_timestamp = mute_end_timestamp;
+        action
+    }
+
+    #[test]
+    fn timed_mute_reports_its_end_in_seconds() {
+        assert_eq!(mute_action_until(&action(Some(true), Some(1_700_028_800_000))), 1_700_028_800);
+    }
+
+    #[test]
+    fn indefinite_and_unmuted_report_no_end() {
+        assert_eq!(mute_action_until(&action(Some(true), Some(-1))), 0);
+        assert_eq!(mute_action_until(&action(Some(true), None)), 0);
+        assert_eq!(mute_action_until(&action(Some(false), Some(1_700_028_800_000))), 0);
     }
 }

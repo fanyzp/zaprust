@@ -231,6 +231,7 @@ pub fn scripted_chats() -> Vec<LiveChat> {
             pinned: false,
             ephemeral_secs: 0,
             muted: false,
+            mute_until: 0,
         },
         LiveChat {
             jid: FAKE_GROUP_JID.to_owned(),
@@ -244,6 +245,7 @@ pub fn scripted_chats() -> Vec<LiveChat> {
             pinned: false,
             ephemeral_secs: 0,
             muted: false,
+            mute_until: 0,
         },
         LiveChat {
             jid: FAKE_CHANNEL_JID.to_owned(),
@@ -257,6 +259,7 @@ pub fn scripted_chats() -> Vec<LiveChat> {
             pinned: false,
             ephemeral_secs: 0,
             muted: false,
+            mute_until: 0,
         },
     ]
 }
@@ -1300,8 +1303,107 @@ impl Backend for FakeBackend {
                 BackendCommand::EditMessage { chat_jid, message_id, new_body } => {
                     events.emit(BackendEvent::MessageEdited { chat_jid, message_id, new_body });
                 }
-                BackendCommand::RevokeMessage { chat_jid, message_id } => {
+                BackendCommand::RevokeMessage { chat_jid, message_id, .. } => {
                     events.emit(BackendEvent::MessageRevoked { chat_jid, message_id });
+                }
+                BackendCommand::DeleteMessageForMe { chat_jid, message_id, .. } => {
+                    if let Some(log) = &command_log {
+                        log.lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .push(format!("delete_for_me:{chat_jid}:{message_id}"));
+                    }
+                    message_state.remove(&(chat_jid.clone(), message_id.clone()));
+                    events.emit(BackendEvent::MessageDeletedForMe { chat_jid, message_id });
+                }
+                BackendCommand::KeepMessage { chat_jid, message_id, keep, .. } => {
+                    if let Some(log) = &command_log {
+                        log.lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .push(format!("keep:{chat_jid}:{message_id}:{keep}"));
+                    }
+                    if message_state.contains_key(&(chat_jid.clone(), message_id.clone())) {
+                        events.emit(BackendEvent::MessageKept { chat_jid, message_id, kept: keep });
+                    } else {
+                        events.emit(BackendEvent::KeepFailed {
+                            chat_jid,
+                            message_id,
+                            message: "That message is not part of the test-mode script.".to_owned(),
+                        });
+                    }
+                }
+                BackendCommand::ClearChat { chat_jid, keep_starred } => {
+                    if let Some(log) = &command_log {
+                        log.lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .push(format!("clear_chat:{chat_jid}:{keep_starred}"));
+                    }
+                    message_state.retain(|(chat, _), msg| {
+                        *chat != chat_jid || (keep_starred && msg.starred)
+                    });
+                    events.emit(BackendEvent::ChatCleared {
+                        chat_jid,
+                        delete_starred: !keep_starred,
+                        last_message_timestamp: None,
+                    });
+                }
+                BackendCommand::DeleteChat { chat_jid } => {
+                    if let Some(log) = &command_log {
+                        log.lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .push(format!("delete_chat:{chat_jid}"));
+                    }
+                    chat_state.remove(&chat_jid);
+                    message_state.retain(|(chat, _), _| *chat != chat_jid);
+                    events.emit(BackendEvent::ChatDeleted { chat_jid });
+                }
+                BackendCommand::MarkChatUnread { chat_jid } => {
+                    if let Some(log) = &command_log {
+                        log.lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .push(format!("mark_unread:{chat_jid}"));
+                    }
+                    if let Some(chat) = chat_state.get_mut(&chat_jid) {
+                        chat.unread = chat.unread.max(1);
+                        let chat = chat.clone();
+                        events.emit(BackendEvent::ChatUpsert(chat));
+                    }
+                }
+                BackendCommand::SendContact { chat_jid, name, phone, ephemeral_secs } => {
+                    if let Some(log) = &command_log {
+                        log.lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .push(format!("send_contact:{chat_jid}:{phone}"));
+                    }
+                    sent_counter += 1;
+                    let id = format!("fake-sent-{sent_counter}");
+                    let ts = 1_700_000_300 + i64::try_from(sent_counter).unwrap_or(0);
+                    let mut echo = LiveMessage {
+                        kind: crate::LiveMessageKind::Contact { name: name.clone(), phone },
+                        ..LiveMessage::text(id.clone(), chat_jid.clone(), None, name, ts, true)
+                    };
+                    if ephemeral_secs > 0 {
+                        echo.expires_at = ts + i64::from(ephemeral_secs);
+                    }
+                    message_state.insert((chat_jid.clone(), id.clone()), echo.clone());
+                    events.emit(BackendEvent::MessageSent {
+                        chat_jid: chat_jid.clone(),
+                        message_id: id,
+                    });
+                    events.emit(BackendEvent::MessageUpsert(echo));
+                }
+                BackendCommand::ReportSpam { chat_jid, message_id, .. } => {
+                    if let Some(log) = &command_log {
+                        log.lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .push(format!("report_spam:{chat_jid}:{message_id}"));
+                    }
+                    if message_state.contains_key(&(chat_jid.clone(), message_id.clone())) {
+                        events.emit(BackendEvent::SpamReported { chat_jid });
+                    } else {
+                        events.emit(BackendEvent::SpamReportFailed {
+                            message: "That message is not part of the test-mode script.".to_owned(),
+                        });
+                    }
                 }
                 BackendCommand::SetPrivacy { category, value } => {
                     if let Some(log) = &command_log {
@@ -1433,8 +1535,18 @@ impl Backend for FakeBackend {
                             crate::ChatAction::Unarchive => chat.archived = false,
                             crate::ChatAction::Pin => chat.pinned = true,
                             crate::ChatAction::Unpin => chat.pinned = false,
-                            crate::ChatAction::Mute => chat.muted = true,
-                            crate::ChatAction::Unmute => chat.muted = false,
+                            crate::ChatAction::Mute => {
+                                chat.muted = true;
+                                chat.mute_until = 0;
+                            }
+                            crate::ChatAction::MuteUntil(until_ms) => {
+                                chat.muted = true;
+                                chat.mute_until = until_ms / 1000;
+                            }
+                            crate::ChatAction::Unmute => {
+                                chat.muted = false;
+                                chat.mute_until = 0;
+                            }
                         }
                         let chat = chat.clone();
                         events.emit(BackendEvent::ChatUpsert(chat));
@@ -1481,6 +1593,7 @@ impl Backend for FakeBackend {
                             pinned: false,
                             ephemeral_secs: 0,
                             muted: false,
+                            mute_until: 0,
                         },
                     );
                     events.emit(BackendEvent::ChatUpsert(LiveChat {
@@ -1495,6 +1608,7 @@ impl Backend for FakeBackend {
                         pinned: false,
                         ephemeral_secs: 0,
                         muted: false,
+                        mute_until: 0,
                     }));
                 }
                 BackendCommand::CreateCommunity { name } => {
@@ -1544,7 +1658,11 @@ impl Backend for FakeBackend {
                             }
                         }
                     }
-                    events.emit(BackendEvent::GroupMembers { chat_jid, members: members.clone() });
+                    events.emit(BackendEvent::GroupMembers {
+                        chat_jid,
+                        members: members.clone(),
+                        own_admin: true,
+                    });
                 }
                 BackendCommand::SetGroupInfo { chat_jid, subject, description } => {
                     if let Some(log) = &command_log {
@@ -1565,7 +1683,15 @@ impl Backend for FakeBackend {
                 BackendCommand::FetchGroupMembers { chat_jid } => {
                     let members =
                         group_state.entry(chat_jid.clone()).or_insert_with(default_members).clone();
-                    events.emit(BackendEvent::GroupMembers { chat_jid: chat_jid.clone(), members });
+                    // The scripted account is an admin of the
+                    // scripted group (Sarah's row carries the
+                    // admin flag in the demo data's own terms);
+                    // the flag is what the app gates on.
+                    events.emit(BackendEvent::GroupMembers {
+                        chat_jid: chat_jid.clone(),
+                        members,
+                        own_admin: true,
+                    });
                     events.emit(BackendEvent::GroupApprovalState {
                         enabled: approval_state.get(&chat_jid).copied().unwrap_or(false),
                         chat_jid: chat_jid.clone(),
@@ -1651,6 +1777,7 @@ impl Backend for FakeBackend {
                             events.emit(BackendEvent::GroupMembers {
                                 chat_jid: chat_jid.clone(),
                                 members,
+                                own_admin: true,
                             });
                         }
                     }
@@ -1694,6 +1821,7 @@ impl Backend for FakeBackend {
                             pinned: false,
                             ephemeral_secs: 0,
                             muted: false,
+                            mute_until: 0,
                         };
                         chat_state.insert(jid, chat.clone());
                         events.emit(BackendEvent::ChatUpsert(chat));
@@ -1852,6 +1980,7 @@ impl Backend for FakeBackend {
                                 pinned: false,
                                 ephemeral_secs: 0,
                                 muted: false,
+                                mute_until: 0,
                             });
                             events.emit(BackendEvent::ContactResolved { chat, alt_jid: None });
                         }

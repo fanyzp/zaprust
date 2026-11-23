@@ -787,6 +787,28 @@ impl App {
         if now != self.last_expiry_scan {
             self.last_expiry_scan = now;
             self.expire_disappearing_messages(now);
+            self.lift_expired_mutes(now);
+        }
+    }
+
+    /// Lifts timed mutes whose end has passed (design standard
+    /// section 24). The wire carries no event for a mute simply
+    /// running out, and the phone lifts it silently too, so the
+    /// local mirror does the same: flag and end clear, the
+    /// archive row follows, and nothing is sent anywhere.
+    pub(crate) fn lift_expired_mutes(&mut self, now: u64) {
+        let due: Vec<u64> = self
+            .chats
+            .iter()
+            .filter(|c| c.muted && c.mute_until != 0 && c.mute_until <= now)
+            .map(|c| c.id)
+            .collect();
+        for chat_id in due {
+            if let Some(c) = self.chats.iter_mut().find(|c| c.id == chat_id) {
+                c.muted = false;
+                c.mute_until = 0;
+            }
+            self.persist_chat_row(chat_id);
         }
     }
 

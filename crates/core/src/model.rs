@@ -207,6 +207,11 @@ pub struct Message {
     pub link_preview: Option<LinkPreview>,
     /// Whether I starred this message.
     pub starred: bool,
+    /// Whether this disappearing message is kept in the chat.
+    /// A kept message never counts as expired, whatever its
+    /// timer says.
+    #[serde(default)]
+    pub kept: bool,
     /// Whether this message is pinned in the chat.
     pub pinned: bool,
     /// Whether this message was forwarded into the chat.
@@ -240,6 +245,7 @@ impl Message {
             deleted_by_sender: false,
             link_preview: None,
             starred: false,
+            kept: false,
             pinned: false,
             forwarded: false,
             expires_at: 0,
@@ -270,6 +276,7 @@ impl Message {
             deleted_by_sender: false,
             link_preview: None,
             starred: false,
+            kept: false,
             pinned: false,
             forwarded: false,
             expires_at: 0,
@@ -328,7 +335,7 @@ impl Message {
     /// `now` (unix seconds). Messages with no timer never expire.
     #[must_use]
     pub fn is_expired(&self, now: u64) -> bool {
-        self.expires_at != 0 && self.expires_at <= now
+        !self.kept && self.expires_at != 0 && self.expires_at <= now
     }
 }
 
@@ -544,6 +551,12 @@ pub struct Chat {
     pub pinned: bool,
     /// Muted.
     pub muted: bool,
+    /// The end of a timed mute, unix seconds; 0 when the mute
+    /// has no end (indefinite) or the chat is not muted. The
+    /// archive persists it (schema v12) so a timed mute survives
+    /// a restart and lifts itself when it passes.
+    #[serde(default)]
+    pub mute_until: u64,
     /// Favorite.
     pub favorite: bool,
     /// Avatar background hue seed (the UI derives a color from it).
@@ -778,6 +791,7 @@ pub fn demo_announcement_chat() -> Chat {
         mentions: 0,
         pinned: false,
         muted: false,
+        mute_until: 0,
         favorite: false,
         avatar_seed: 137,
         verified: false,
@@ -865,6 +879,7 @@ pub fn demo_conversation() -> Vec<Message> {
             deleted_by_sender: false,
             link_preview: None,
             starred: false,
+            kept: false,
             pinned: false,
             forwarded: false,
             expires_at: 0,
@@ -1216,6 +1231,7 @@ fn group(
         mentions,
         pinned,
         muted: false,
+        mute_until: 0,
         favorite: pinned,
         avatar_seed: (id * 37 % 251) as u8,
         verified: false,
@@ -1243,6 +1259,7 @@ fn dm(id: u64, title: &str, subtitle: &str, preview: &str, time: &str, unread: u
         mentions: 0,
         pinned: false,
         muted: false,
+        mute_until: 0,
         favorite: false,
         avatar_seed: (id * 53 % 251) as u8,
         verified: false,
@@ -1278,6 +1295,7 @@ fn channel(
         mentions: 0,
         pinned: false,
         muted: true,
+        mute_until: 0,
         favorite: false,
         avatar_seed: (id * 71 % 251) as u8,
         verified: false,

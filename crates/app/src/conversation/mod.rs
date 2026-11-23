@@ -172,12 +172,76 @@ impl App {
                         };
                         row(ui, crate::icons::Icon::Pin, &pin_label, "pinchat");
                         ui.add_space(4.0);
-                        let mute_label = if chat.muted {
-                            crate::i18n::t("conversation.unmute_notifications")
+                        if chat.muted {
+                            row(
+                                ui,
+                                crate::icons::Icon::Bell,
+                                &crate::i18n::t("conversation.unmute_notifications"),
+                                "mute",
+                            );
+                            if chat.mute_until != 0 {
+                                // The timed mute's end, shown
+                                // where the state is managed
+                                // (section 24): a label row, not
+                                // an action.
+                                ui.add_space(2.0);
+                                ui.label(
+                                    egui::RichText::new(crate::i18n::tf(
+                                        "conversation.muted_until",
+                                        "time",
+                                        &crate::live::fmt_time(
+                                            i64::try_from(chat.mute_until).unwrap_or(0),
+                                        ),
+                                    ))
+                                    .size(12.0)
+                                    .color(rgb(t.text_secondary)),
+                                );
+                            }
                         } else {
-                            crate::i18n::t("conversation.mute_notifications")
-                        };
-                        row(ui, crate::icons::Icon::Bell, &mute_label, "mute");
+                            // The duration is chosen at mute time
+                            // (section 24): 8 hours, 1 week, or
+                            // always, the choices WhatsApp offers.
+                            row(
+                                ui,
+                                crate::icons::Icon::BellOff,
+                                &crate::i18n::t("conversation.mute_8_hours"),
+                                "mute8h",
+                            );
+                            row(
+                                ui,
+                                crate::icons::Icon::BellOff,
+                                &crate::i18n::t("conversation.mute_1_week"),
+                                "mute1w",
+                            );
+                            row(
+                                ui,
+                                crate::icons::Icon::BellOff,
+                                &crate::i18n::t("conversation.mute_always"),
+                                "mute",
+                            );
+                        }
+                        if chat.unread == 0 {
+                            ui.add_space(4.0);
+                            row(
+                                ui,
+                                crate::icons::Icon::Chat,
+                                &crate::i18n::t("conversation.mark_unread"),
+                                "unread",
+                            );
+                        }
+                        ui.add_space(4.0);
+                        row(
+                            ui,
+                            crate::icons::Icon::Delete,
+                            &crate::i18n::t("chat.clear_title"),
+                            "clear",
+                        );
+                        row(
+                            ui,
+                            crate::icons::Icon::Delete,
+                            &crate::i18n::t("chat.delete_title"),
+                            "delete",
+                        );
                     });
                 crate::theme::paint_glass_edge(ui.painter(), menu_frame.response.rect, 14.0, t);
             });
@@ -197,18 +261,53 @@ impl App {
                 close = true;
             }
             Some("mute") => {
-                // Through apply_chat_action, like pin: the flip
-                // applies locally at once and, in live mode, the
-                // backend command follows, so the account's mute
-                // state changes too instead of only this window's.
-                // The detached announcement chat is covered by
-                // the same call's detached fallback (local-only,
-                // as before).
-                self.apply_chat_action(chat.id, chat.archived, chat.pinned, !chat.muted);
+                if chat.muted {
+                    // Unmute: through apply_chat_action, like
+                    // pin: the flip applies locally at once and,
+                    // in live mode, the backend command follows,
+                    // so the account's mute state changes too
+                    // instead of only this window's. The detached
+                    // announcement chat is covered by the same
+                    // call's detached fallback (local-only, as
+                    // before).
+                    self.apply_chat_action(chat.id, chat.archived, chat.pinned, false);
+                } else {
+                    // "Mute always" is one of the duration
+                    // choices (section 24) and goes through the
+                    // same path as the timed ones.
+                    self.apply_mute_for(chat.id, crate::live::MuteChoice::Always);
+                }
                 close = true;
             }
             Some("pinchat") => {
                 self.apply_chat_action(chat.id, chat.archived, !chat.pinned, chat.muted);
+                close = true;
+            }
+            Some("mute8h") => {
+                self.apply_mute_for(chat.id, crate::live::MuteChoice::Hours8);
+                close = true;
+            }
+            Some("mute1w") => {
+                self.apply_mute_for(chat.id, crate::live::MuteChoice::Week);
+                close = true;
+            }
+            Some("unread") => {
+                self.mark_chat_unread(chat.id);
+                close = true;
+            }
+            Some("clear") => {
+                self.clear_keep_starred = true;
+                self.ui_confirm = Some(crate::state::UiConfirm::ClearChat {
+                    chat_id: chat.id,
+                    name: chat.title.clone(),
+                });
+                close = true;
+            }
+            Some("delete") => {
+                self.ui_confirm = Some(crate::state::UiConfirm::DeleteChat {
+                    chat_id: chat.id,
+                    name: chat.title.clone(),
+                });
                 close = true;
             }
             _ => {}

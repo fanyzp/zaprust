@@ -149,7 +149,7 @@ impl From<std::io::Error> for StoreError {
 }
 
 /// The newest schema version this build migrates to.
-pub const SCHEMA_VERSION: i64 = 11;
+pub const SCHEMA_VERSION: i64 = 12;
 
 /// `store_meta` key recording that the one-time freelist purge
 /// (see [`Store::open`]) has run for this archive. The purge
@@ -198,6 +198,12 @@ pub const FLAG_PINNED_MESSAGE: i64 = 16;
 /// opened it stays opened, so the state is persisted with the
 /// message instead of living only in the session.
 pub const FLAG_VIEW_ONCE_OPENED: i64 = 32;
+
+/// Message flag: this disappearing message is kept in the chat
+/// (keep in chat). A kept message does not disappear when its
+/// timer runs out, so the state persists with the message like
+/// the star and pin flags.
+pub const FLAG_KEPT: i64 = 64;
 
 /// The rich payload of one message, stored as JSON in the
 /// `messages.data` column (schema v2). Absence (NULL) means a plain
@@ -765,6 +771,19 @@ impl Store {
                     )?;
                     tx.execute_batch("PRAGMA user_version = 11;")?;
                 }
+                11 => {
+                    // v12: the end of a timed mute (unix
+                    // seconds, 0 = no timed end) joins the mute
+                    // flag, so a mute with a deadline survives a
+                    // restart and can lift itself when it passes.
+                    add_column_if_missing(
+                        &tx,
+                        "chats",
+                        "mute_until",
+                        "ALTER TABLE chats ADD COLUMN mute_until INTEGER NOT NULL DEFAULT 0",
+                    )?;
+                    tx.execute_batch("PRAGMA user_version = 12;")?;
+                }
                 _ => return Err(StoreError::BadSchemaVersion(version)),
             }
             tx.commit()?;
@@ -779,8 +798,8 @@ impl Store {
     /// [`StoreError`] on SQLite failures.
     pub fn upsert_chat(&self, chat: &LiveChat) -> Result<(), StoreError> {
         self.conn.execute(
-            "INSERT INTO chats (jid, title, kind, preview, preview_sender, timestamp, unread, archived, pinned, ephemeral_secs, muted)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+            "INSERT INTO chats (jid, title, kind, preview, preview_sender, timestamp, unread, archived, pinned, ephemeral_secs, muted, mute_until)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
              ON CONFLICT(jid) DO UPDATE SET
                 title = CASE WHEN (length(excluded.title) >= 9 AND excluded.title NOT GLOB '*[^0-9]*')
                                   AND NOT (length(chats.title) >= 9 AND chats.title NOT GLOB '*[^0-9]*')
@@ -793,7 +812,8 @@ impl Store {
                 archived = excluded.archived,
                 pinned = excluded.pinned,
                 ephemeral_secs = excluded.ephemeral_secs,
-                muted = excluded.muted",
+                muted = excluded.muted,
+                mute_until = excluded.mute_until",
             params![
                 chat.jid,
                 chat.title,
@@ -806,6 +826,7 @@ impl Store {
                 i64::from(chat.pinned),
                 i64::from(chat.ephemeral_secs),
                 i64::from(chat.muted),
+                chat.mute_until,
             ],
         )?;
         Ok(())
@@ -1445,7 +1466,7 @@ impl Store {
     /// [`StoreError`] on SQLite failures.
     pub fn chats(&self) -> Result<Vec<LiveChat>, StoreError> {
         let mut stmt = self.conn.prepare(
-            "SELECT jid, title, kind, preview, preview_sender, timestamp, unread, archived, pinned, ephemeral_secs, muted
+            "SELECT jid, title, kind, preview, preview_sender, timestamp, unread, archived, pinned, ephemeral_secs, muted, mute_until
              FROM chats ORDER BY timestamp DESC",
         )?;
         let rows = stmt.query_map([], |row| {
@@ -1461,6 +1482,7 @@ impl Store {
                 pinned: row.get::<_, i64>(8)? != 0,
                 ephemeral_secs: u32::try_from(row.get::<_, i64>(9)?).unwrap_or(0),
                 muted: row.get::<_, i64>(10)? != 0,
+                mute_until: row.get(11)?,
             })
         })?;
         let mut out = Vec::new();
@@ -1889,7 +1911,8 @@ mod tests {
                 archived INTEGER NOT NULL DEFAULT 0,
                 pinned INTEGER NOT NULL DEFAULT 0,
                 ephemeral_secs INTEGER NOT NULL DEFAULT 0,
-                muted INTEGER NOT NULL DEFAULT 0
+                muted INTEGER NOT NULL DEFAULT 0,
+                mute_until INTEGER NOT NULL DEFAULT 0
             );
             CREATE TABLE messages (
                 chat_jid TEXT NOT NULL,
@@ -2075,6 +2098,22 @@ mod tests {
         let msgs: Vec<LiveMessage> =
             store.messages(&scripted_chats()[0].jid).unwrap().into_iter().map(|(m, _)| m).collect();
         assert_eq!(msgs, scripted_messages());
+    }
+
+    #[test]
+    fn timed_mute_end_round_trips_through_the_archive() {
+        // Schema v12: a timed mute's end persists with the mute
+        // flag, so the mute survives a restart with its deadline
+        // intact (section 24).
+        let store = Store::open_in_memory().unwrap();
+        let mut chat = scripted_chats()[0].clone();
+        chat.muted = true;
+        chat.mute_until = 1_700_028_800;
+        store.upsert_chat(&chat).unwrap();
+        let chats = store.chats().unwrap();
+        let read = chats.iter().find(|c| c.jid == chat.jid).unwrap();
+        assert!(read.muted);
+        assert_eq!(read.mute_until, 1_700_028_800);
     }
 
     #[test]
@@ -2977,6 +3016,7 @@ mod tests {
             pinned: false,
             ephemeral_secs: 0,
             muted: false,
+            mute_until: 0,
         }
     }
 

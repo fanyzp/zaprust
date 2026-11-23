@@ -125,7 +125,7 @@ impl App {
                 format!("DefaultDisappearingTimerChanged: {duration_secs}s"),
                 None,
             ),
-            BackendEvent::MuteChanged { chat_jid, muted } => {
+            BackendEvent::MuteChanged { chat_jid, muted, .. } => {
                 ("message", format!("MuteChanged in {chat_jid}: muted={muted}"), None)
             }
             BackendEvent::PinChanged { chat_jid, pinned } => {
@@ -200,7 +200,7 @@ impl App {
                     None,
                 )
             }
-            BackendEvent::GroupMembers { chat_jid, members } => {
+            BackendEvent::GroupMembers { chat_jid, members, .. } => {
                 ("backend", format!("GroupMembers {chat_jid}: {} members", members.len()), None)
             }
             BackendEvent::GroupInviteLink { chat_jid, .. } => {
@@ -551,6 +551,7 @@ mod tests {
             pinned: false,
             ephemeral_secs: 0,
             muted: false,
+            mute_until: 0,
         }));
         let mut msg = LiveMessage::text(
             "m1",

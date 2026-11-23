@@ -432,6 +432,21 @@ pub(crate) enum UiConfirm {
     /// that list, which this client cannot restore. Confirming
     /// performs the cycle the row click asked for.
     ReplaceExceptionList { category: String, label: String },
+    /// Clear a chat's messages (design standard section 24):
+    /// every message in the chat goes, on every device. The
+    /// modal carries the keep-starred choice the wire supports;
+    /// the checkbox state lives in
+    /// [`ZapApp::clear_keep_starred`].
+    ClearChat { chat_id: u64, name: String },
+    /// Delete a chat (design standard section 24): the chat and
+    /// its messages go, on every device. Nothing about it is
+    /// recoverable from this client.
+    DeleteChat { chat_id: u64, name: String },
+    /// Report a message as spam (design standard section 24):
+    /// the report goes to WhatsApp with the message's identity;
+    /// confirming sends it. The chat and message are named so
+    /// the outcome notice can say what was reported.
+    ReportSpam { chat_id: u64, msg_id: u64, name: String },
     /// Log out: unlink this device from the account. Confirming
     /// sends the backend's disconnect command; the local chats
     /// stay in the archive on this computer.
@@ -738,6 +753,12 @@ pub(crate) struct GroupsState {
     /// the profile panel, labels resolved on arrival (see
     /// `MemberRow`).
     pub(crate) live_members: std::collections::HashMap<u64, Vec<MemberRow>>,
+    /// Live mode: whether my own account is an admin of the
+    /// group, as the backend computed it from the same group
+    /// metadata that produced `live_members`. Gates the
+    /// admin-only message actions; absent means unknown, and
+    /// unknown never shows an admin action.
+    pub(crate) own_admin: std::collections::HashMap<u64, bool>,
     /// Chats whose member list was already requested this panel
     /// session (avoids re-requesting every frame).
     pub(crate) members_requested: std::collections::HashSet<u64>,
@@ -1259,6 +1280,16 @@ pub(crate) struct App {
     /// the centered modal, away from the click that opened it,
     /// is what confirms.
     pub(crate) ui_confirm: Option<UiConfirm>,
+    /// The clear-chat modal's keep-starred checkbox state
+    /// (design standard section 24). Defaults to keeping starred
+    /// messages, the safer reading of a clear; the modal resets
+    /// it every time it opens.
+    pub(crate) clear_keep_starred: bool,
+    /// The attach menu's contact picker dialog is open (design
+    /// standard section 24): it lists the contacts the roster
+    /// knows by phone number and sends the picked one as a
+    /// contact card into the open chat.
+    pub(crate) contact_picker_open: bool,
     /// Profile panel: the add-participant input.
     pub(crate) add_participant_input: String,
     /// Profile panel: the group subject edit buffer.
@@ -1295,6 +1326,11 @@ pub(crate) struct App {
     /// counterpart of `pending_stars`, settled by an upsert
     /// carrying the new state and restored by a PinFailed.
     pub(crate) pending_pins: std::collections::HashMap<u64, bool>,
+    /// Live mode: the kept value of a message before a keep
+    /// change the backend has not yet settled; the keep
+    /// counterpart of `pending_stars`, settled by a MessageKept
+    /// report and restored by a KeepFailed.
+    pub(crate) pending_keeps: std::collections::HashMap<u64, bool>,
     /// Media picker state: the emoji, GIF and sticker panel, its drafts and results, decoded textures and in-flight workers.
     pub(crate) picker: PickerState,
     /// The live voice recorder, present while a recording runs.
@@ -1615,6 +1651,7 @@ impl App {
                 mentions: 0,
                 pinned: false,
                 muted: false,
+                mute_until: 0,
                 favorite: false,
                 avatar_seed: 0,
                 verified: false,
@@ -1790,6 +1827,7 @@ impl App {
             typing_names: std::collections::HashMap::new(),
             groups: GroupsState {
                 live_members: std::collections::HashMap::new(),
+                own_admin: std::collections::HashMap::new(),
                 members_requested: std::collections::HashSet::new(),
                 invite_link: None,
                 approval: std::collections::HashMap::new(),
@@ -1813,6 +1851,8 @@ impl App {
             blocked_chats: std::collections::HashSet::new(),
             profile_form_for: None,
             ui_confirm: None,
+            clear_keep_starred: true,
+            contact_picker_open: false,
             add_participant_input: String::new(),
             group_subject_edit: String::new(),
             group_desc_edit: String::new(),
@@ -1835,6 +1875,7 @@ impl App {
             pending_reactions: std::collections::HashMap::new(),
             pending_stars: std::collections::HashMap::new(),
             pending_pins: std::collections::HashMap::new(),
+            pending_keeps: std::collections::HashMap::new(),
             picker: PickerState {
                 open: args.picker.is_some(),
                 tab: args.picker.clone().unwrap_or_else(|| "emoji".to_owned()),

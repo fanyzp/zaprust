@@ -22,8 +22,8 @@ use super::calls::{
     CallIncoming,
 };
 use super::send::{
-    outgoing_location_message, outgoing_text_message, post_text_status, send_media,
-    stamp_ephemeral, OutgoingMedia,
+    outgoing_contact_message, outgoing_location_message, outgoing_text_message, post_text_status,
+    send_media, stamp_ephemeral, OutgoingMedia,
 };
 use super::translate::{
     participant_name, privacy_map, translate_event, translate_message, translate_special,
@@ -1373,10 +1373,23 @@ pub(super) async fn run_async(
                         Err(e) => events.emit(BackendEvent::Error { message: e }),
                     }
                 }
-                BackendCommand::RevokeMessage { chat_jid, message_id } => {
-                    match build_message_target(&chat_jid, &message_id, None, true) {
+                BackendCommand::RevokeMessage { chat_jid, message_id, sender_jid, from_me } => {
+                    // The target carries the message's author, like
+                    // star and pin: the library branches on it, a
+                    // from-me target revoking as the sender and
+                    // another member's group message revoking as
+                    // an admin delete (refused by the library when
+                    // the author is missing, and by the server
+                    // when the account is not an admin there).
+                    match build_message_target(&chat_jid, &message_id, sender_jid.as_ref(), from_me)
+                    {
                         Ok((jid, sender, mid)) => {
-                            match whatsapp_rust::MessageRef::new(&jid, mid, sender.as_ref(), true) {
+                            match whatsapp_rust::MessageRef::new(
+                                &jid,
+                                mid,
+                                sender.as_ref(),
+                                from_me,
+                            ) {
                                 Ok(target) => {
                                     if let Err(e) = client.revoke_message(&target).await {
                                         events.emit(BackendEvent::Error {
@@ -1390,6 +1403,80 @@ pub(super) async fn run_async(
                             }
                         }
                         Err(e) => events.emit(BackendEvent::Error { message: e }),
+                    }
+                }
+                BackendCommand::DeleteMessageForMe {
+                    chat_jid,
+                    message_id,
+                    sender_jid,
+                    from_me,
+                    delete_media,
+                    message_timestamp,
+                } => {
+                    match build_message_target(&chat_jid, &message_id, sender_jid.as_ref(), from_me)
+                    {
+                        Ok((jid, sender, mid)) => {
+                            match whatsapp_rust::MessageRef::new(
+                                &jid,
+                                mid,
+                                sender.as_ref(),
+                                from_me,
+                            ) {
+                                Ok(target) => {
+                                    if let Err(e) = client
+                                        .chat_actions()
+                                        .delete_message_for_me(
+                                            &target,
+                                            delete_media,
+                                            message_timestamp,
+                                        )
+                                        .await
+                                    {
+                                        events.emit(BackendEvent::Error {
+                                            message: format!("Deleting the message failed: {e}"),
+                                        });
+                                    }
+                                }
+                                Err(_) => events.emit(BackendEvent::Error {
+                                    message: "That message reference is invalid.".to_owned(),
+                                }),
+                            }
+                        }
+                        Err(e) => events.emit(BackendEvent::Error { message: e }),
+                    }
+                }
+                BackendCommand::KeepMessage { chat_jid, message_id, sender_jid, from_me, keep } => {
+                    // KeepFailed, not the generic Error, for the
+                    // same reason as StarFailed: only the app can
+                    // roll the optimistic kept state back, and
+                    // only if the failure names its message.
+                    let fail = |message: String| {
+                        events.emit(BackendEvent::KeepFailed {
+                            chat_jid: chat_jid.clone(),
+                            message_id: message_id.clone(),
+                            message,
+                        });
+                    };
+                    match build_message_target(&chat_jid, &message_id, sender_jid.as_ref(), from_me)
+                    {
+                        Ok((jid, sender, mid)) => {
+                            match whatsapp_rust::MessageRef::new(
+                                &jid,
+                                mid,
+                                sender.as_ref(),
+                                from_me,
+                            ) {
+                                Ok(target) => {
+                                    if let Err(e) = client.keep_message(&target, keep).await {
+                                        fail(format!("Keeping the message failed: {e}"));
+                                    }
+                                }
+                                Err(_) => {
+                                    fail("That message reference is invalid.".to_owned());
+                                }
+                            }
+                        }
+                        Err(e) => fail(e),
                     }
                 }
                 BackendCommand::ForwardMessage { from_chat_jid, message_id, to_chat_jid } => {
@@ -1463,7 +1550,14 @@ pub(super) async fn run_async(
                         Err(e) => fail(e),
                     }
                 }
-                BackendCommand::PinMessage { chat_jid, message_id, sender_jid, from_me, pin } => {
+                BackendCommand::PinMessage {
+                    chat_jid,
+                    message_id,
+                    sender_jid,
+                    from_me,
+                    pin,
+                    duration,
+                } => {
                     // PinFailed, not the generic Error, for the
                     // same reason as StarFailed above: only the
                     // app can roll the optimistic pin back, and
@@ -1486,9 +1580,18 @@ pub(super) async fn run_async(
                             ) {
                                 Ok(target) => {
                                     let result = if pin {
-                                        client
-                                            .pin_message(&target, whatsapp_rust::PinDuration::Days7)
-                                            .await
+                                        let duration = match duration {
+                                            crate::PinDuration::Hours24 => {
+                                                whatsapp_rust::PinDuration::Hours24
+                                            }
+                                            crate::PinDuration::Days7 => {
+                                                whatsapp_rust::PinDuration::Days7
+                                            }
+                                            crate::PinDuration::Days30 => {
+                                                whatsapp_rust::PinDuration::Days30
+                                            }
+                                        };
+                                        client.pin_message(&target, duration).await
                                     } else {
                                         client.unpin_message(&target).await
                                     };
@@ -1513,6 +1616,9 @@ pub(super) async fn run_async(
                             ChatAction::Pin => actions.pin_chat(&jid).await,
                             ChatAction::Unpin => actions.unpin_chat(&jid).await,
                             ChatAction::Mute => actions.mute_chat(&jid).await,
+                            ChatAction::MuteUntil(until_ms) => {
+                                actions.mute_chat_until(&jid, until_ms).await
+                            }
                             ChatAction::Unmute => actions.unmute_chat(&jid).await,
                         };
                         if let Err(e) = result {
@@ -1525,6 +1631,111 @@ pub(super) async fn run_async(
                         message: format!("Invalid chat address: {e}"),
                     }),
                 },
+                BackendCommand::ClearChat { chat_jid, keep_starred } => {
+                    match chat_jid.parse::<Jid>() {
+                        Ok(jid) => {
+                            let options = whatsapp_rust::ClearChatOptions::default()
+                                .with_starred_messages(if keep_starred {
+                                    whatsapp_rust::StarredMessages::Keep
+                                } else {
+                                    whatsapp_rust::StarredMessages::Delete
+                                })
+                                .with_media(whatsapp_rust::MediaDeletion::Delete);
+                            if let Err(e) = client
+                                .chat_actions()
+                                .clear_chat_with_options(&jid, options, None)
+                                .await
+                            {
+                                events.emit(BackendEvent::Error {
+                                    message: format!("Clearing the chat failed: {e}"),
+                                });
+                            }
+                        }
+                        Err(e) => events.emit(BackendEvent::Error {
+                            message: format!("Invalid chat address: {e}"),
+                        }),
+                    }
+                }
+                BackendCommand::DeleteChat { chat_jid } => match chat_jid.parse::<Jid>() {
+                    Ok(jid) => {
+                        if let Err(e) = client.chat_actions().delete_chat(&jid, true, None).await {
+                            events.emit(BackendEvent::Error {
+                                message: format!("Deleting the chat failed: {e}"),
+                            });
+                        }
+                    }
+                    Err(e) => events.emit(BackendEvent::Error {
+                        message: format!("Invalid chat address: {e}"),
+                    }),
+                },
+                BackendCommand::MarkChatUnread { chat_jid } => match chat_jid.parse::<Jid>() {
+                    Ok(jid) => {
+                        if let Err(e) =
+                            client.chat_actions().mark_chat_as_read(&jid, false, None).await
+                        {
+                            events.emit(BackendEvent::Error {
+                                message: format!("Marking the chat as unread failed: {e}"),
+                            });
+                        }
+                    }
+                    Err(e) => events.emit(BackendEvent::Error {
+                        message: format!("Invalid chat address: {e}"),
+                    }),
+                },
+                BackendCommand::SendContact { chat_jid, name, phone, ephemeral_secs } => {
+                    match chat_jid.parse::<Jid>() {
+                        Ok(jid) => {
+                            let mut message = outgoing_contact_message(&name, &phone);
+                            stamp_ephemeral(&mut message, ephemeral_secs);
+                            match client.send_message(jid, message).await {
+                                Ok(sent) => events.emit(BackendEvent::MessageSent {
+                                    chat_jid: chat_jid.clone(),
+                                    message_id: sent.message_id.to_string(),
+                                }),
+                                Err(e) => events.emit(BackendEvent::Error {
+                                    message: format!("Sending the contact failed: {e}"),
+                                }),
+                            }
+                        }
+                        Err(e) => events.emit(BackendEvent::Error {
+                            message: format!("Invalid chat address: {e}"),
+                        }),
+                    }
+                }
+                BackendCommand::ReportSpam {
+                    chat_jid,
+                    message_id,
+                    sender_jid,
+                    message_timestamp,
+                } => {
+                    let fail = |message: String| {
+                        events.emit(BackendEvent::SpamReportFailed { message });
+                    };
+                    match chat_jid.parse::<Jid>() {
+                        Ok(jid) => {
+                            let sender = sender_jid.and_then(|s| s.parse::<Jid>().ok());
+                            let mut request = whatsapp_rust::SpamReportRequest {
+                                message_id: message_id.clone(),
+                                message_timestamp: u64::try_from(message_timestamp).unwrap_or(0),
+                                spam_flow: whatsapp_rust::SpamFlow::MessageMenu,
+                                ..Default::default()
+                            };
+                            if chat_jid.ends_with("@g.us") {
+                                request.group_jid = Some(jid.clone());
+                                request.participant_jid = sender.clone();
+                            } else {
+                                request.from_jid = sender.clone().or_else(|| Some(jid.clone()));
+                            }
+                            match client.send_spam_report(request).await {
+                                Ok(_) => events.emit(BackendEvent::SpamReported {
+                                    chat_jid: chat_jid.clone(),
+                                }),
+                                Err(e) => fail(format!("Reporting failed: {e}")),
+                            }
+                        }
+                        Err(e) => fail(format!("Invalid chat address: {e}")),
+                    }
+                }
                 BackendCommand::BlockContact { chat_jid, block } => match chat_jid.parse::<Jid>() {
                     Ok(jid) => {
                         let result = if block {
@@ -1586,6 +1797,7 @@ pub(super) async fn run_async(
                                         pinned: false,
                                         ephemeral_secs: 0,
                                         muted: false,
+                                        mute_until: 0,
                                     }));
                                 }
                                 Err(e) => events.emit(BackendEvent::Error {
@@ -1699,14 +1911,28 @@ pub(super) async fn run_async(
                 BackendCommand::FetchGroupMembers { chat_jid } => match chat_jid.parse::<Jid>() {
                     Ok(jid) => match client.groups().fetch_metadata(&jid).await {
                         Ok(meta) => {
-                            let members = meta
+                            let members: Vec<(String, String, bool)> = meta
                                 .participants
                                 .iter()
                                 .map(|p| (p.jid.to_string(), participant_name(p), p.is_admin()))
                                 .collect();
+                            // My own role comes from the same
+                            // metadata: my addresses (phone form
+                            // and LID form) against the admin
+                            // participants. The app gates its
+                            // admin-only actions on this and never
+                            // guesses a role itself.
+                            let own_admin =
+                                [client.pn(), client.lid()].into_iter().flatten().any(|own| {
+                                    let own = own.to_non_ad().to_string();
+                                    meta.participants.iter().any(|p| {
+                                        p.is_admin() && p.jid.to_non_ad().to_string() == own
+                                    })
+                                });
                             events.emit(BackendEvent::GroupMembers {
                                 chat_jid: chat_jid.clone(),
                                 members,
+                                own_admin,
                             });
                             // The same metadata is the group's
                             // identity source: its subject heals a
@@ -1928,6 +2154,7 @@ pub(super) async fn run_async(
                                 pinned: false,
                                 ephemeral_secs: 0,
                                 muted: false,
+                                mute_until: 0,
                             }));
                         }
                         Err(e) => events.emit(BackendEvent::Error {

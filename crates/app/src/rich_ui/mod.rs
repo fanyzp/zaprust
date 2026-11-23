@@ -198,6 +198,14 @@ impl App {
     /// backend command; the backend's library limitation is
     /// surfaced as an event, not hidden).
     pub(crate) fn delete_for_everyone(&mut self, msg_id: u64) {
+        // The message's author, for the revoke target: the
+        // backend branches on it (my own message revokes as the
+        // sender; another member's group message revokes as an
+        // admin delete, design standard section 24). The menu
+        // only offers the action where the role allows it; the
+        // plumbing here just names the author honestly, the
+        // same rule star and pin follow.
+        let msg = self.conversation.iter().find(|m| m.id == msg_id).cloned();
         for msg in &mut self.conversation {
             if msg.id == msg_id {
                 msg.deleted = true;
@@ -219,12 +227,162 @@ impl App {
                 self.live.as_ref().and_then(|s| s.jids.get(&chat_id).cloned()),
                 self.protocol_ids.get(&msg_id).cloned(),
             ) {
+                let from_me = msg.as_ref().is_some_and(|m| m.sender.is_none());
+                let sender_jid = if !from_me && jid.ends_with("@g.us") {
+                    self.sender_jids.get(&msg_id).cloned()
+                } else {
+                    None
+                };
                 self.send_backend(BackendCommand::RevokeMessage {
                     chat_jid: jid,
                     message_id: proto,
+                    sender_jid,
+                    from_me,
                 });
             }
         }
+    }
+
+    /// Deletes a message for me only (design standard section
+    /// 24): it leaves this account's chats on every device and
+    /// stays untouched for everyone else. The local apply runs
+    /// through the same adoption an inbound delete-for-me
+    /// takes; the command follows. In demo mode the removal is
+    /// local only, like the demo's other message actions.
+    pub(crate) fn delete_for_me(&mut self, msg_id: u64) {
+        let chat_id = self.selected_chat;
+        let msg = self.conversation.iter().find(|m| m.id == msg_id).cloned();
+        if !self.live_mode {
+            // Demo mode: the removal is local only, out of the
+            // rendered conversation and the stored copy alike.
+            self.conversation.retain(|m| m.id != msg_id);
+            if let Some(chat) = self.chats.iter_mut().find(|c| c.id == chat_id) {
+                chat.messages.retain(|m| m.id != msg_id);
+            }
+            if let Some(detached) = self.detached_chat.as_mut().filter(|c| c.id == chat_id) {
+                detached.messages.retain(|m| m.id != msg_id);
+            }
+            return;
+        }
+        // The command's plumbing is captured BEFORE the local
+        // apply: the adoption removes the archive row and forgets
+        // the message's helper entries (protocol id, author), so
+        // reading them afterwards would find nothing and the
+        // command would never be sent.
+        let plumbing =
+            self.live.as_ref().and_then(|s| s.jids.get(&chat_id).cloned()).and_then(|jid| {
+                let proto = self.protocol_ids.get(&msg_id).cloned()?;
+                let from_me = msg.as_ref().is_some_and(|m| m.sender.is_none());
+                let sender_jid = if !from_me && jid.ends_with("@g.us") {
+                    self.sender_jids.get(&msg_id).cloned()
+                } else {
+                    None
+                };
+                // The wire timestamp of the message, from the
+                // archive row: the facade stamps the app-state
+                // patch with it when it has one.
+                let message_timestamp = self.live.as_ref().and_then(|s| {
+                    let store = s.store.as_ref()?;
+                    let rows = store.messages(&jid).ok()?;
+                    rows.iter().find(|(m, _)| m.id == proto).map(|(m, _)| m.timestamp)
+                });
+                Some((jid, proto, sender_jid, from_me, message_timestamp))
+            });
+        if let Some((jid, proto, sender_jid, from_me, message_timestamp)) = plumbing {
+            self.apply_message_deleted_for_me(chat_id, &jid, msg_id, &proto);
+            self.send_backend(BackendCommand::DeleteMessageForMe {
+                chat_jid: jid,
+                message_id: proto,
+                sender_jid,
+                from_me,
+                delete_media: true,
+                message_timestamp,
+            });
+        }
+    }
+
+    /// Keeps (or stops keeping) a disappearing message in the
+    /// chat (design standard section 24), following the star
+    /// toggle's shape: optimistic apply, a pending snapshot a
+    /// KeepFailed restores, and the flag write-through that
+    /// persists the state. Demo mode mirrors locally.
+    pub(crate) fn toggle_keep_message(&mut self, msg_id: u64) {
+        let Some(pos) = self.conversation.iter().position(|m| m.id == msg_id) else {
+            return;
+        };
+        let msg = self.conversation[pos].clone();
+        let on = !msg.kept;
+        self.conversation[pos].kept = on;
+        if !self.live_mode {
+            let chat_id = self.selected_chat;
+            if let Some(chat) = self.chats.iter_mut().find(|c| c.id == chat_id) {
+                if let Some(m) = chat.messages.iter_mut().find(|m| m.id == msg_id) {
+                    m.kept = on;
+                }
+            }
+        }
+        if let Some(msgs) = self.live.as_mut().and_then(|s| s.messages.get_mut(&self.selected_chat))
+        {
+            for (_, m) in msgs.iter_mut() {
+                if m.id == msg_id {
+                    m.kept = on;
+                }
+            }
+        }
+        if self.live.is_some() {
+            self.set_live_flag(self.selected_chat, msg_id, store::FLAG_KEPT, on);
+            if let (Some(jid), Some(pid)) =
+                (self.live_jid(self.selected_chat), self.protocol_ids.get(&msg_id).cloned())
+            {
+                let from_me = msg.sender.is_none();
+                let sender_jid = if !from_me && jid.ends_with("@g.us") {
+                    self.sender_jids.get(&msg_id).cloned()
+                } else {
+                    None
+                };
+                self.pending_keeps.entry(msg_id).or_insert(msg.kept);
+                self.send_backend(backend::BackendCommand::KeepMessage {
+                    chat_jid: jid,
+                    message_id: pid,
+                    sender_jid,
+                    from_me,
+                    keep: on,
+                });
+            }
+        }
+    }
+
+    /// Sends the spam report the confirmation modal approved
+    /// (design standard section 24). The report names the
+    /// message by its archived timestamp; a message the archive
+    /// cannot timestamp is refused with an honest notice rather
+    /// than reported with an invented one. The outcome arrives
+    /// as SpamReported or SpamReportFailed.
+    pub(crate) fn report_spam(&mut self, chat_id: u64, msg_id: u64) {
+        let Some(jid) = self.live_jid(chat_id) else {
+            self.notice = Some(Notice::error(crate::i18n::t("notice.report_needs_connection")));
+            return;
+        };
+        let Some(pid) = self.protocol_ids.get(&msg_id).cloned() else {
+            return;
+        };
+        let timestamp = self.live.as_ref().and_then(|s| {
+            let store = s.store.as_ref()?;
+            let rows = store.messages(&jid).ok()?;
+            rows.iter().find(|(m, _)| m.id == pid).map(|(m, _)| m.timestamp)
+        });
+        let Some(message_timestamp) = timestamp else {
+            self.notice = Some(Notice::error(crate::i18n::t("notice.report_unavailable")));
+            return;
+        };
+        let sender_jid =
+            if jid.ends_with("@g.us") { self.sender_jids.get(&msg_id).cloned() } else { None };
+        self.send_backend(backend::BackendCommand::ReportSpam {
+            chat_jid: jid,
+            message_id: pid,
+            sender_jid,
+            message_timestamp,
+        });
     }
 
     /// The under-bubble strip: the flag lines (forwarded, pinned)
@@ -247,6 +405,9 @@ impl App {
         }
         if msg.pinned {
             texts.push((crate::icons::Icon::Pin, "Pinned"));
+        }
+        if msg.kept {
+            texts.push((crate::icons::Icon::Bookmark, "Kept"));
         }
         if texts.is_empty() && !msg.deleted_by_sender {
             return;
@@ -315,6 +476,7 @@ impl App {
         self.draw_rich_menu(ctx);
         self.draw_poll_builder(ctx);
         self.draw_location_dialog(ctx);
+        self.draw_contact_picker(ctx);
         self.draw_picker(ctx);
     }
 
@@ -391,6 +553,98 @@ impl App {
             });
     }
 
+    /// The attach menu's contact picker (design standard
+    /// section 24): the contacts this account's roster knows by
+    /// phone number, one row each; picking one sends its card
+    /// into the open chat. The roster is the app's own contact
+    /// knowledge (direct chats with a phone-form address); a
+    /// contact known only by a privacy address has no number
+    /// to put on a card and is not listed, and an empty roster
+    /// says so instead of showing a dead list.
+    fn draw_contact_picker(&mut self, ctx: &egui::Context) {
+        let Some(p) =
+            crate::anim::popup_phase(ctx, "contact_picker", self.contact_picker_open, self.motion)
+        else {
+            return;
+        };
+        let exiting = !self.contact_picker_open;
+        let t = self.tokens;
+        if !exiting && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.contact_picker_open = false;
+        }
+        let contacts: Vec<(String, String)> = self
+            .chats
+            .iter()
+            .filter(|c| c.kind == core::model::ChatKind::Dm)
+            .filter_map(|c| {
+                let jid = self.live_jid(c.id)?;
+                let user = jid.strip_suffix("@s.whatsapp.net")?;
+                if user.chars().all(|ch| ch.is_ascii_digit())
+                    && !crate::live::is_raw_identifier(&c.title)
+                {
+                    Some((c.title.clone(), user.to_owned()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let mut picked: Option<(String, String)> = None;
+        egui::Area::new(egui::Id::unique("contact_picker"))
+            .anchor(Align2::CENTER_CENTER, Vec2::new(0.0, -40.0))
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                if p < 0.999 {
+                    ui.set_opacity(p);
+                }
+                show_popup(self.popup_frame(), t, ui, |ui| {
+                    ui.set_width(280.0);
+                    ui.add_enabled_ui(!exiting, |ui| {
+                        ui.label(
+                            RichText::new(crate::i18n::t("attach.contact"))
+                                .font(crate::theme::semibold(15.0)),
+                        );
+                        ui.add_space(6.0);
+                        if contacts.is_empty() {
+                            ui.label(
+                                RichText::new(crate::i18n::t("attach.contact_empty"))
+                                    .size(12.5)
+                                    .color(rgb(t.text_secondary)),
+                            );
+                        }
+                        for (name, phone) in &contacts {
+                            if crate::widgets::menu_item_icon(
+                                ui,
+                                t,
+                                Some(crate::icons::Icon::Person),
+                                name,
+                                Some(&format!("+{phone}")),
+                            )
+                            .clicked()
+                            {
+                                picked = Some((name.clone(), phone.clone()));
+                            }
+                        }
+                        ui.add_space(6.0);
+                        if crate::widgets::button(
+                            ui,
+                            t,
+                            &crate::i18n::t("common.cancel"),
+                            crate::widgets::Btn::Secondary,
+                        )
+                        .clicked()
+                        {
+                            self.contact_picker_open = false;
+                        }
+                    });
+                });
+            });
+        if let Some((name, phone)) = picked {
+            self.contact_picker_open = false;
+            let chat_id = self.selected_chat;
+            self.send_contact_card(chat_id, &name, &phone);
+        }
+    }
+
     /// The house confirmation modal for destructive actions
     /// parked in `ui_confirm` (removing a group member, leaving
     /// a group, replacing a privacy exception list): a centered glass card over the unified dim,
@@ -449,6 +703,21 @@ impl App {
                 crate::i18n::t("connect.start_fresh_body"),
                 crate::i18n::t("connect.start_fresh"),
             ),
+            UiConfirm::ClearChat { name, .. } => (
+                crate::i18n::t("chat.clear_title"),
+                crate::i18n::tf("chat.clear_body", "name", name),
+                crate::i18n::t("chat.clear_confirm"),
+            ),
+            UiConfirm::DeleteChat { name, .. } => (
+                crate::i18n::t("chat.delete_title"),
+                crate::i18n::tf("chat.delete_body", "name", name),
+                crate::i18n::t("common.delete"),
+            ),
+            UiConfirm::ReportSpam { name, .. } => (
+                crate::i18n::t("chat.report_title"),
+                crate::i18n::tf("chat.report_body", "name", name),
+                crate::i18n::t("chat.report_confirm"),
+            ),
         };
         let mut decision: Option<bool> = None;
         if !exiting && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
@@ -484,6 +753,19 @@ impl App {
                         ui.label(RichText::new(&title).size(14.0).strong());
                         ui.add_space(4.0);
                         ui.label(RichText::new(&body).size(12.5).color(rgb(t.text_secondary)));
+                        if matches!(confirm, UiConfirm::ClearChat { .. }) {
+                            // The keep-starred choice the wire
+                            // supports (section 24), defaulting
+                            // to keeping them: clearing is the
+                            // destructive act, the stars are a
+                            // separate decision the user makes
+                            // here, not a default taken for them.
+                            ui.add_space(6.0);
+                            ui.checkbox(
+                                &mut self.clear_keep_starred,
+                                crate::i18n::t("chat.keep_starred"),
+                            );
+                        }
                         ui.add_space(10.0);
                         // Dialog convention: the safe action
                         // first (left), the destructive action
@@ -551,6 +833,16 @@ impl App {
                 }
                 Some(UiConfirm::StartFresh) => {
                     self.start_fresh(ctx);
+                }
+                Some(UiConfirm::ClearChat { chat_id, .. }) => {
+                    let keep_starred = self.clear_keep_starred;
+                    self.clear_chat(chat_id, keep_starred);
+                }
+                Some(UiConfirm::DeleteChat { chat_id, .. }) => {
+                    self.delete_chat(chat_id);
+                }
+                Some(UiConfirm::ReportSpam { chat_id, msg_id, .. }) => {
+                    self.report_spam(chat_id, msg_id);
                 }
                 None => {}
             },
@@ -745,7 +1037,7 @@ impl App {
     }
 
     /// Pins/unpins one message: same wiring as star.
-    pub(crate) fn toggle_pin_message(&mut self, msg_id: u64) {
+    pub(crate) fn toggle_pin_message(&mut self, msg_id: u64, duration: backend::PinDuration) {
         let Some(pos) = self.conversation.iter().position(|m| m.id == msg_id) else {
             return;
         };
@@ -807,6 +1099,7 @@ impl App {
                     sender_jid,
                     from_me,
                     pin: on,
+                    duration,
                 });
             }
         }
@@ -895,6 +1188,7 @@ impl App {
                 mentions: 0,
                 pinned: false,
                 muted: false,
+                mute_until: 0,
                 favorite: false,
                 avatar_seed: (new_id % 251) as u8,
                 verified: false,

@@ -52,6 +52,17 @@ impl App {
         };
         let mine = msg.sender.is_none();
         let is_text = msg.kind == MessageKind::Text;
+        // Admin delete (design standard section 24): in a group
+        // where my account is an admin, another member's message
+        // can be deleted for everyone. The role comes from the
+        // backend's own computation over the group metadata;
+        // unknown (metadata not fetched yet) never offers it.
+        let admin_can_delete = !mine
+            && self.live_jid(self.selected_chat).is_some_and(|j| j.ends_with("@g.us"))
+            && self.groups.own_admin.get(&self.selected_chat) == Some(&true);
+        // A disappearing message (it carries an expiry) can be
+        // kept in the chat; a kept one can be released again.
+        let keepable = msg.expires_at != 0;
         let mut close = false;
         if !exiting && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             close = true;
@@ -125,7 +136,7 @@ impl App {
                             self.start_edit(msg.id);
                             close = true;
                         }
-                        if mine
+                        if (mine || admin_can_delete)
                             && crate::widgets::menu_item_danger(
                                 ui,
                                 t,
@@ -135,6 +146,17 @@ impl App {
                             .clicked()
                         {
                             self.delete_for_everyone(msg.id);
+                            close = true;
+                        }
+                        if crate::widgets::menu_item_danger(
+                            ui,
+                            t,
+                            crate::icons::Icon::Delete,
+                            "Delete for me",
+                        )
+                        .clicked()
+                        {
+                            self.delete_for_me(msg.id);
                             close = true;
                         }
                         if mine
@@ -200,16 +222,75 @@ impl App {
                             self.toggle_star_message(msg.id);
                             close = true;
                         }
-                        if crate::widgets::menu_item_icon(
-                            ui,
-                            t,
-                            Some(crate::icons::Icon::Pin),
-                            if msg.pinned { "Unpin message" } else { "Pin message" },
-                            None,
-                        )
-                        .clicked()
+                        if keepable
+                            && crate::widgets::menu_item_icon(
+                                ui,
+                                t,
+                                Some(crate::icons::Icon::Bookmark),
+                                if msg.kept { "Stop keeping" } else { "Keep in chat" },
+                                None,
+                            )
+                            .clicked()
                         {
-                            self.toggle_pin_message(msg.id);
+                            self.toggle_keep_message(msg.id);
+                            close = true;
+                        }
+                        if msg.pinned {
+                            if crate::widgets::menu_item_icon(
+                                ui,
+                                t,
+                                Some(crate::icons::Icon::Pin),
+                                "Unpin message",
+                                None,
+                            )
+                            .clicked()
+                            {
+                                self.toggle_pin_message(msg.id, backend::PinDuration::Days7);
+                                close = true;
+                            }
+                        } else {
+                            // The pin duration is part of the pin
+                            // itself (section 24): the three
+                            // durations the wire offers, chosen
+                            // at pin time like WhatsApp presents
+                            // them.
+                            for (label, duration) in [
+                                ("Pin for 24 hours", backend::PinDuration::Hours24),
+                                ("Pin for 7 days", backend::PinDuration::Days7),
+                                ("Pin for 30 days", backend::PinDuration::Days30),
+                            ] {
+                                if crate::widgets::menu_item_icon(
+                                    ui,
+                                    t,
+                                    Some(crate::icons::Icon::Pin),
+                                    label,
+                                    None,
+                                )
+                                .clicked()
+                                {
+                                    self.toggle_pin_message(msg.id, duration);
+                                    close = true;
+                                }
+                            }
+                        }
+                        if !mine
+                            && self.live.is_some()
+                            && crate::widgets::menu_item_danger(
+                                ui,
+                                t,
+                                crate::icons::Icon::Shield,
+                                "Report",
+                            )
+                            .clicked()
+                        {
+                            self.ui_confirm = Some(crate::state::UiConfirm::ReportSpam {
+                                chat_id: self.selected_chat,
+                                msg_id: msg.id,
+                                name: msg
+                                    .sender
+                                    .clone()
+                                    .unwrap_or_else(|| "this contact".to_owned()),
+                            });
                             close = true;
                         }
                         if is_media
@@ -532,6 +613,18 @@ impl App {
                                 latitude: "-6.200000".to_owned(),
                                 longitude: "106.816666".to_owned(),
                             });
+                            close = true;
+                        }
+                        if crate::widgets::menu_item_icon(
+                            ui,
+                            t,
+                            Some(crate::icons::Icon::Person),
+                            &crate::i18n::t("attach.contact"),
+                            None,
+                        )
+                        .clicked()
+                        {
+                            self.contact_picker_open = true;
                             close = true;
                         }
                         if crate::widgets::menu_item_icon(

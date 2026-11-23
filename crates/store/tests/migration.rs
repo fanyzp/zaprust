@@ -30,6 +30,7 @@ fn chat(jid: &str, title: &str) -> LiveChat {
         pinned: false,
         ephemeral_secs: 0,
         muted: false,
+        mute_until: 0,
     }
 }
 

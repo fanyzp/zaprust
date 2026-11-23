@@ -35,6 +35,12 @@ enum RowPick {
     SetArchived(bool),
     /// Set the chat's favorite state.
     SetFavorite(bool),
+    /// Mark the chat as unread (section 24).
+    MarkUnread,
+    /// Open the clear-chat confirmation for the chat.
+    ClearChat,
+    /// Open the delete-chat confirmation for the chat.
+    DeleteChat,
 }
 
 /// The chat row's preview line: in a group the sender's name
@@ -473,6 +479,43 @@ impl App {
                                         .set(Some((chat.id, RowPick::SetFavorite(!chat.favorite))));
                                     ui.close();
                                 }
+                                if chat.unread == 0
+                                    && crate::widgets::menu_item_icon(
+                                        ui,
+                                        t,
+                                        Some(crate::icons::Icon::Chat),
+                                        &crate::i18n::t("conversation.mark_unread"),
+                                        None,
+                                    )
+                                    .clicked()
+                                {
+                                    row_action.set(Some((chat.id, RowPick::MarkUnread)));
+                                    ui.close();
+                                }
+                                if crate::widgets::menu_item_icon(
+                                    ui,
+                                    t,
+                                    Some(crate::icons::Icon::Delete),
+                                    &crate::i18n::t("chat.clear_title"),
+                                    None,
+                                )
+                                .clicked()
+                                {
+                                    row_action.set(Some((chat.id, RowPick::ClearChat)));
+                                    ui.close();
+                                }
+                                if crate::widgets::menu_item_icon(
+                                    ui,
+                                    t,
+                                    Some(crate::icons::Icon::Delete),
+                                    &crate::i18n::t("chat.delete_title"),
+                                    None,
+                                )
+                                .clicked()
+                                {
+                                    row_action.set(Some((chat.id, RowPick::DeleteChat)));
+                                    ui.close();
+                                }
                             });
                         }
                     });
@@ -550,6 +593,26 @@ impl App {
                         }
                         RowPick::SetFavorite(target) => {
                             self.apply_favorite(id, target);
+                        }
+                        RowPick::MarkUnread => {
+                            self.mark_chat_unread(id);
+                        }
+                        RowPick::ClearChat => {
+                            self.clear_keep_starred = true;
+                            if let Some(c) = self.chats.iter().find(|c| c.id == id) {
+                                self.ui_confirm = Some(crate::state::UiConfirm::ClearChat {
+                                    chat_id: id,
+                                    name: c.title.clone(),
+                                });
+                            }
+                        }
+                        RowPick::DeleteChat => {
+                            if let Some(c) = self.chats.iter().find(|c| c.id == id) {
+                                self.ui_confirm = Some(crate::state::UiConfirm::DeleteChat {
+                                    chat_id: id,
+                                    name: c.title.clone(),
+                                });
+                            }
                         }
                     }
                 }

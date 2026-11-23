@@ -544,12 +544,53 @@ pub enum BackendCommand {
         /// Replacement body.
         new_body: String,
     },
-    /// Delete one of my own messages for everyone.
+    /// Delete a message for everyone. My own messages revoke as
+    /// the sender; another member's message in a group revokes
+    /// as a group admin delete, which the protocol refuses
+    /// unless the account actually holds admin rights there.
     RevokeMessage {
         /// Chat JID.
         chat_jid: String,
         /// Protocol ID of the message to revoke.
         message_id: String,
+        /// Sender JID of the message (group participant), if any.
+        sender_jid: Option<String>,
+        /// Whether the message is my own.
+        from_me: bool,
+    },
+    /// Delete a message for this account only (the other side
+    /// keeps it). The app-state sync action removes it on every
+    /// linked device; the app removes its local copy at once.
+    DeleteMessageForMe {
+        /// Chat JID.
+        chat_jid: String,
+        /// Protocol ID of the message to delete.
+        message_id: String,
+        /// Sender JID of the message (group participant), if any.
+        sender_jid: Option<String>,
+        /// Whether the message is my own.
+        from_me: bool,
+        /// Whether the message's media goes with it.
+        delete_media: bool,
+        /// The message's timestamp (unix seconds), when the
+        /// archive knows it.
+        message_timestamp: Option<i64>,
+    },
+    /// Keep (or stop keeping) a disappearing message: a kept
+    /// message is exempt from its chat's disappearing timer.
+    /// Failures answer with [`BackendEvent::KeepFailed`] so the
+    /// app can roll the optimistic kept state back.
+    KeepMessage {
+        /// Chat JID.
+        chat_jid: String,
+        /// Protocol ID of the message to keep.
+        message_id: String,
+        /// Sender JID of the message (group participant), if any.
+        sender_jid: Option<String>,
+        /// Whether the message is my own.
+        from_me: bool,
+        /// True to keep, false to stop keeping.
+        keep: bool,
     },
     /// Set a WhatsApp privacy option (live mode; the values are the
     /// protocol spellings: `all`, `contacts`, `none`,
@@ -623,7 +664,8 @@ pub enum BackendCommand {
         /// True to star, false to unstar.
         star: bool,
     },
-    /// Pin or unpin a message in its chat (7-day pin when pinning).
+    /// Pin or unpin a message in its chat. Pinning carries the
+    /// duration the user picked; unpinning ignores it.
     PinMessage {
         /// Chat JID.
         chat_jid: String,
@@ -635,6 +677,8 @@ pub enum BackendCommand {
         from_me: bool,
         /// True to pin, false to unpin.
         pin: bool,
+        /// How long the pin lasts when pinning.
+        duration: PinDuration,
     },
     /// Apply a chat-level action (archive, pin, mute...).
     ChatAction {
@@ -917,6 +961,65 @@ pub enum BackendCommand {
         /// The phone number as typed.
         phone: String,
     },
+    /// Clear a chat's messages (the chat itself stays in the
+    /// list). Destructive: the app confirms first, then applies
+    /// the clearing locally at once, the same adoption the
+    /// inbound clear path performs.
+    ClearChat {
+        /// Chat JID.
+        chat_jid: String,
+        /// Whether starred messages survive the clearing.
+        keep_starred: bool,
+    },
+    /// Delete a chat entirely: its messages and its row in the
+    /// list. Destructive: the app confirms first, then applies
+    /// the deletion locally at once, the same adoption the
+    /// inbound delete path performs.
+    DeleteChat {
+        /// Chat JID.
+        chat_jid: String,
+    },
+    /// Mark a chat as unread (the app-state sync action, NOT the
+    /// read-receipt path: marking unread must never send blue
+    /// ticks). The app adopts the badge locally at once through
+    /// the same state the inbound sync reports.
+    MarkChatUnread {
+        /// Chat JID.
+        chat_jid: String,
+    },
+    /// Send a contact card to a chat: the person's display name
+    /// and phone number, carried as a vCard the receiving side
+    /// renders as a contact card.
+    SendContact {
+        /// Chat JID.
+        chat_jid: String,
+        /// Display name of the person the card is about.
+        name: String,
+        /// Their phone number (international form; formatting is
+        /// stripped by the backend's card builder).
+        phone: String,
+        /// Disappearing-messages timer of the chat, in seconds
+        /// (`0` sends a normal, non-expiring message).
+        ephemeral_secs: u32,
+    },
+    /// Report one message as spam. The report names exactly the
+    /// message the user picked (its protocol ID, its sender and
+    /// its timestamp from the archive); the backend files it
+    /// through the protocol's spam-report call and answers
+    /// [`BackendEvent::SpamReported`] or
+    /// [`BackendEvent::SpamReportFailed`]. Reporting neither
+    /// blocks the sender nor deletes the message: those are
+    /// separate actions with their own commands.
+    ReportSpam {
+        /// Chat JID.
+        chat_jid: String,
+        /// Protocol ID of the reported message.
+        message_id: String,
+        /// Sender JID of the reported message, if any.
+        sender_jid: Option<String>,
+        /// The reported message's timestamp (unix seconds).
+        message_timestamp: i64,
+    },
     /// Stop the backend worker.
     Shutdown,
 }
@@ -1142,6 +1245,12 @@ pub struct LiveChat {
     /// made on the server arrive as
     /// [`BackendEvent::MuteChanged`] instead.
     pub muted: bool,
+    /// Unix second at which a timed mute ends; `0` when the
+    /// chat is unmuted or muted indefinitely. Like `muted`, a
+    /// message-arrival upsert does not learn it from the wire;
+    /// mute changes made on the server arrive as
+    /// [`BackendEvent::MuteChanged`] instead.
+    pub mute_until: i64,
 }
 
 /// A chat-level action from the chat-actions set (app-state sync).
@@ -1157,8 +1266,24 @@ pub enum ChatAction {
     Unpin,
     /// Mute notifications indefinitely.
     Mute,
+    /// Mute notifications until the given moment (unix
+    /// milliseconds, the protocol's own unit).
+    MuteUntil(i64),
     /// Unmute notifications.
     Unmute,
+}
+
+/// How long a message pin lasts, in the protocol's three
+/// choices. Backend-neutral on purpose: the library's own pin
+/// duration type never crosses the backend boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PinDuration {
+    /// 24 hours.
+    Hours24,
+    /// 7 days.
+    Days7,
+    /// 30 days.
+    Days30,
 }
 
 /// A group participant operation.
@@ -1552,6 +1677,47 @@ pub enum BackendEvent {
         /// Why the pin failed, in user words.
         message: String,
     },
+    /// A [`BackendCommand::KeepMessage`] never reached the
+    /// server: the keep counterpart of
+    /// [`BackendEvent::StarFailed`], with the same contract.
+    /// The app rolls the optimistic kept state back and shows
+    /// `message` as the notice.
+    KeepFailed {
+        /// Chat JID.
+        chat_jid: String,
+        /// Protocol ID of the target message.
+        message_id: String,
+        /// Why the keep failed, in user words.
+        message: String,
+    },
+    /// A message's kept state changed on the server: kept or
+    /// un-kept from another device (a keep made on the phone
+    /// arrives as a keep add-on message, which the backend
+    /// translates into this event instead of a bubble). A keep
+    /// set from this client goes out as
+    /// [`BackendCommand::KeepMessage`] and applies locally at
+    /// once, without waiting for this event.
+    MessageKept {
+        /// Chat JID.
+        chat_jid: String,
+        /// Protocol ID of the kept message.
+        message_id: String,
+        /// Whether the message is kept now.
+        kept: bool,
+    },
+    /// A [`BackendCommand::ReportSpam`] was accepted by the
+    /// server: the report is filed.
+    SpamReported {
+        /// Chat JID the reported message belongs to.
+        chat_jid: String,
+    },
+    /// A [`BackendCommand::ReportSpam`] never reached the
+    /// server, or the server refused it. The app shows
+    /// `message` as the notice; nothing was reported.
+    SpamReportFailed {
+        /// Why the report failed, in user words.
+        message: String,
+    },
     /// A [`BackendCommand::PostTextStatus`] reached the server:
     /// the text status is posted. The app adopts `text` as its
     /// current status for the rest of the session.
@@ -1642,6 +1808,9 @@ pub enum BackendEvent {
         /// Whether the chat is muted now. A timed mute whose
         /// end has passed reports `false`.
         muted: bool,
+        /// Unix second at which a timed mute ends; `0` when
+        /// unmuted or muted indefinitely.
+        mute_until: i64,
     },
     /// A chat's pin state changed on the server: pinned or
     /// unpinned from another device, or the account state as a
@@ -1703,9 +1872,10 @@ pub enum BackendEvent {
     },
     /// A chat was deleted on the server (deleted on the phone).
     /// The app removes the chat from its list, its session
-    /// mirror and its archive. There is no local counterpart:
-    /// this client has no delete-chat action of its own, so
-    /// nothing here echoes back to the backend.
+    /// mirror and its archive. A deletion made from this client
+    /// goes out as [`BackendCommand::DeleteChat`] and applies
+    /// locally at once through the same adoption, without
+    /// waiting for this event.
     ChatDeleted {
         /// Chat JID.
         chat_jid: String,
@@ -1714,9 +1884,10 @@ pub enum BackendEvent {
     /// on the phone; the chat itself stays in the list). The
     /// app removes the cleared messages from its session
     /// mirror and its archive; the chat, its list position
-    /// and its settings are untouched. There is no local
-    /// counterpart: this client has no clear-chat action of
-    /// its own, so nothing here echoes back to the backend.
+    /// and its settings are untouched. A clearing made from
+    /// this client goes out as [`BackendCommand::ClearChat`]
+    /// and applies locally at once through the same adoption,
+    /// without waiting for this event.
     ChatCleared {
         /// Chat JID.
         chat_jid: String,
@@ -1736,9 +1907,10 @@ pub enum BackendEvent {
     /// (deleted with "delete for me" on the phone): it is
     /// gone from the account's own view but was not revoked
     /// for anyone else. The app removes it from its session
-    /// mirror and its archive. There is no local counterpart:
-    /// this client has no delete-for-me action of its own, so
-    /// nothing here echoes back to the backend.
+    /// mirror and its archive. A delete made from this client
+    /// goes out as [`BackendCommand::DeleteMessageForMe`] and
+    /// applies locally at once through the same adoption,
+    /// without waiting for this event.
     MessageDeletedForMe {
         /// Chat JID the message belongs to.
         chat_jid: String,
@@ -1953,6 +2125,12 @@ pub enum BackendEvent {
         /// a label from its own data or masks the identifier. It
         /// is never the raw phone number or LID.
         members: Vec<(String, String, bool)>,
+        /// Whether this account is itself an admin of the
+        /// group, computed by the backend from the account's
+        /// own addresses against the member list (the app never
+        /// guesses its own role from names or row order). Gates
+        /// the admin-only message actions in the UI.
+        own_admin: bool,
     },
     /// A group's invite link, answering `FetchGroupInviteLink`.
     GroupInviteLink {

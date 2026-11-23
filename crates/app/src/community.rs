@@ -862,6 +862,7 @@ impl App {
             mentions: 0,
             pinned: false,
             muted: false,
+            mute_until: 0,
             favorite: false,
             avatar_seed,
             verified: false,

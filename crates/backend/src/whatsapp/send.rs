@@ -191,6 +191,28 @@ pub(super) fn outgoing_location_message(name: &str, latitude: f64, longitude: f6
     message
 }
 
+/// Builds a contact-card message: the display name plus a
+/// vCard 3.0 carrying the number. The vCard's TEL line is the
+/// shape the receiving side parses back (`waid` names the
+/// account's id for the number, the value is the full
+/// international form), so a card this client sends renders on
+/// other clients and round-trips through this one's own receive
+/// translation.
+pub(super) fn outgoing_contact_message(name: &str, phone: &str) -> wa::Message {
+    let digits: String = phone.chars().filter(char::is_ascii_digit).collect();
+    let vcard = format!(
+        "BEGIN:VCARD\nVERSION:3.0\nFN:{name}\nTEL;type=CELL;waid={digits}:+{digits}\nEND:VCARD"
+    );
+    let mut message = wa::Message::default();
+    message.contact_message = MessageField::some({
+        let mut contact = wa::message::ContactMessage::default();
+        contact.display_name = Some(name.to_owned());
+        contact.vcard = Some(vcard);
+        contact
+    });
+    message
+}
+
 /// Builds a sticker message from an upload response. Mirrors the
 /// field population of the library's media builders (the library
 /// ships no sticker builder at the pinned revision).

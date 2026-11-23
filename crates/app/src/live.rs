@@ -11,9 +11,31 @@ use std::collections::HashMap;
 use crate::state::Notice;
 use backend::{
     spawn_backend, Backend, BackendChannels, BackendCommand, BackendConfig, BackendEvent,
-    FakeBackend, LiveChat, LiveChatKind, LiveMessage, QrMatrix, QuotedRef, ReceiptKind,
+    ChatAction, FakeBackend, LiveChat, LiveChatKind, LiveMessage, QrMatrix, QuotedRef, ReceiptKind,
     WhatsappBackend,
 };
+
+/// The mute duration choices the header menu offers (design
+/// standard section 24), matching the durations WhatsApp
+/// itself presents.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MuteChoice {
+    /// Mute for 8 hours.
+    Hours8,
+    /// Mute for 1 week.
+    Week,
+    /// Mute with no end.
+    Always,
+}
+
+/// The current time as unix seconds (0 if the clock is somehow
+/// before the epoch).
+pub(crate) fn unix_now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
 use core::model::{
     CallDirection, CallEntry, CallKind, Chat, ChatKind, Delivery, Message, MessageKind,
 };
@@ -416,7 +438,7 @@ fn message_id(chat_jid: &str, proto_id: &str) -> u64 {
 /// name: nine or more characters, all digits. The same predicate
 /// guards renames in the backend and the archive; identity
 /// healing may only replace one of these, never a real name.
-fn is_raw_identifier(text: &str) -> bool {
+pub(crate) fn is_raw_identifier(text: &str) -> bool {
     text.len() >= 9 && text.bytes().all(|b| b.is_ascii_digit())
 }
 
@@ -549,6 +571,7 @@ fn to_chat(live: &LiveChat) -> Chat {
         archived: live.archived,
         ephemeral_secs: live.ephemeral_secs,
         muted: live.muted,
+        mute_until: u64::try_from(live.mute_until).unwrap_or(0),
         favorite: false,
         avatar_seed: (jid_id(&live.jid) % 251) as u8,
         verified: false,
@@ -692,6 +715,7 @@ pub(crate) fn to_message_with_flags(live: &LiveMessage, flags: i64) -> Message {
             image: core::model::PreviewImage::None,
         }),
         starred: flags & store::FLAG_STARRED != 0 || live.starred,
+        kept: flags & store::FLAG_KEPT != 0,
         pinned: flags & store::FLAG_PINNED_MESSAGE != 0 || live.pinned,
         forwarded,
         expires_at: u64::try_from(live.expires_at).unwrap_or(0),
@@ -2142,6 +2166,44 @@ impl crate::state::App {
                 }
                 self.notice = Some(Notice::error(human_error(&message)));
             }
+            BackendEvent::MessageKept { chat_jid, message_id: pid, kept } => {
+                let chat_id = jid_id(&chat_jid);
+                let mid = message_id(&chat_jid, &pid);
+                self.apply_keep_changed(chat_id, mid, &pid, kept);
+            }
+            BackendEvent::KeepFailed { chat_jid, message_id: pid, message } => {
+                let chat_id = jid_id(&chat_jid);
+                let mid = message_id(&chat_jid, &pid);
+                // Scrubbed before display, like the star and pin
+                // failure paths above.
+                let message = core::crash::scrub_for_display(&message);
+                tracing::warn!("keep failed: {message}");
+                if let Some(previous) = self.pending_keeps.remove(&mid) {
+                    // The change never reached the server: put
+                    // the kept state back to what it was.
+                    self.apply_keep_changed(chat_id, mid, &pid, previous);
+                }
+                self.notice = Some(Notice::error(human_error(&message)));
+            }
+            BackendEvent::SpamReported { chat_jid } => {
+                let chat_id = jid_id(&chat_jid);
+                let name = self
+                    .chats
+                    .iter()
+                    .find(|c| c.id == chat_id)
+                    .map(|c| c.title.clone())
+                    .unwrap_or_default();
+                self.notice = Some(Notice::info(format!(
+                    "{} {}",
+                    crate::i18n::t("notice.report_sent"),
+                    name
+                )));
+            }
+            BackendEvent::SpamReportFailed { message } => {
+                let message = core::crash::scrub_for_display(&message);
+                tracing::warn!("spam report failed: {message}");
+                self.notice = Some(Notice::error(human_error(&message)));
+            }
             BackendEvent::StatusPosted { text } => {
                 self.apply_status_posted(text);
             }
@@ -2178,9 +2240,9 @@ impl crate::state::App {
             BackendEvent::DefaultDisappearingTimerChanged { duration_secs } => {
                 self.apply_default_disappearing_timer(duration_secs);
             }
-            BackendEvent::MuteChanged { chat_jid, muted } => {
+            BackendEvent::MuteChanged { chat_jid, muted, mute_until } => {
                 let chat_id = jid_id(&chat_jid);
-                self.apply_mute_changed(chat_id, muted);
+                self.apply_mute_changed(chat_id, muted, mute_until);
             }
             BackendEvent::PinChanged { chat_jid, pinned } => {
                 let chat_id = jid_id(&chat_jid);
@@ -2547,7 +2609,8 @@ impl crate::state::App {
                         .insert(chat_id, crate::state::ContactPresence { online, last_seen });
                 }
             }
-            BackendEvent::GroupMembers { chat_jid, members } => {
+            BackendEvent::GroupMembers { chat_jid, members, own_admin } => {
+                self.groups.own_admin.insert(jid_id(&chat_jid), own_admin);
                 // Member names join the name directory before
                 // row resolution masks any of them: mentions of
                 // this group's members resolve from here.
@@ -2957,12 +3020,19 @@ impl crate::state::App {
     /// update either way. A mute set from this client does not
     /// wait for this event; it applies through apply_chat_action
     /// at once.
-    pub(crate) fn apply_mute_changed(&mut self, chat_id: u64, muted: bool) {
+    pub(crate) fn apply_mute_changed(&mut self, chat_id: u64, muted: bool, mute_until: i64) {
+        // The end counts only while the chat is muted; a past
+        // end with muted = false is how a lapsed timed mute
+        // reconciles, and the field clears with the flag.
+        let until =
+            if muted && mute_until > 0 { u64::try_from(mute_until).unwrap_or(0) } else { 0 };
         if let Some(c) = self.chats.iter_mut().find(|c| c.id == chat_id) {
             c.muted = muted;
+            c.mute_until = until;
         }
         if let Some(c) = self.detached_chat.as_mut().filter(|c| c.id == chat_id) {
             c.muted = muted;
+            c.mute_until = until;
         }
         if let Some(session) = &self.live {
             if let (Some(store), Some(jid)) = (&session.store, session.jids.get(&chat_id)) {
@@ -3101,12 +3171,42 @@ impl crate::state::App {
         }
     }
 
+    /// Applies a keep change for a disappearing message, from
+    /// any source: my own toggle, a MessageKept report (a keep
+    /// made on another device), or a KeepFailed rollback. One
+    /// path for all three, like apply_star_changed: the mirror
+    /// flips and the flag write-through persists it, which is
+    /// also what protects the value from uninformed arrival
+    /// upserts. A server report settles any pending change of
+    /// mine for the message.
+    pub(crate) fn apply_keep_changed(
+        &mut self,
+        chat_id: u64,
+        msg_id: u64,
+        protocol_id: &str,
+        kept: bool,
+    ) {
+        self.protocol_ids.insert(msg_id, protocol_id.to_owned());
+        self.pending_keeps.remove(&msg_id);
+        if let Some(entry) = self.live.as_mut().and_then(|s| s.messages.get_mut(&chat_id)) {
+            for (_, m) in entry.iter_mut() {
+                if m.id == msg_id {
+                    m.kept = kept;
+                }
+            }
+        }
+        self.set_live_flag(chat_id, msg_id, store::FLAG_KEPT, kept);
+        if self.selected_chat == chat_id {
+            self.sync_conversation();
+        }
+    }
+
     /// Writes one chat's archive row from the mirror, so the
     /// stored row carries the state the list shows. For mirror
     /// changes that arrive without a chat upsert of their own
     /// (the unread badge an incoming message raised), whose own
     /// write-through would otherwise never happen.
-    fn persist_chat_row(&self, chat_id: u64) {
+    pub(crate) fn persist_chat_row(&self, chat_id: u64) {
         if let Some(session) = &self.live {
             if let (Some(store), Some(jid)) = (&session.store, session.jids.get(&chat_id)) {
                 if let Some(chat) = self.chats.iter().find(|c| c.id == chat_id) {
@@ -3151,10 +3251,11 @@ impl crate::state::App {
         }
     }
 
-    /// Applies a chat deletion the server reported (the chat
-    /// was deleted on the phone). This client has no
-    /// delete-chat action of its own, so there is no local
-    /// behavior to mirror and nothing is sent back; the
+    /// Applies a chat deletion: the server reported it (the
+    /// chat was deleted on the phone), or my own delete action
+    /// applied it locally ahead of its command (section 24: the
+    /// destructive actions follow the revoke precedent, local
+    /// apply first, a typed error if the command fails). The
     /// adoption is the removal itself, everywhere the chat
     /// exists locally: the chat list, the detached slot, the
     /// session mirror and its per-message helper entries, the
@@ -3292,11 +3393,12 @@ impl crate::state::App {
         }
     }
 
-    /// Applies a delete-for-me the server reported (one
-    /// message deleted for the account on the phone). This
-    /// client has no delete-for-me action of its own, so there
-    /// is no local behavior to mirror and nothing is sent
-    /// back; the adoption is the removal of exactly that
+    /// Applies a delete-for-me: the server reported it (one
+    /// message deleted for the account on the phone), or my own
+    /// delete-for-me action applied it locally ahead of its
+    /// command (section 24, the revoke precedent). Nothing is
+    /// sent back from here; the adoption is the removal of
+    /// exactly that
     /// message: from the session mirror, from its per-message
     /// helper entries, and from the archive. The store
     /// deletion is keyed by the event's own JID and protocol
@@ -3671,6 +3773,7 @@ impl crate::state::App {
                 pinned: false,
                 ephemeral_secs: 0,
                 muted: false,
+                mute_until: 0,
             });
         }
         // Protocol-id bookkeeping (receipts, reactions, read marks).
@@ -5324,6 +5427,10 @@ impl crate::state::App {
             c.archived = archived;
             c.pinned = pinned;
             c.muted = muted;
+            // This path only ever sets an indefinite mute or an
+            // unmute; a timed mute goes through apply_mute_for.
+            // Either way any previous timed end is spent.
+            c.mute_until = 0;
         } else if let Some(c) = self.detached_chat.as_mut().filter(|c| c.id == chat_id) {
             // The detached announcement chat lives outside the
             // chat list, so the header menu actions fall back to
@@ -5331,6 +5438,7 @@ impl crate::state::App {
             c.archived = archived;
             c.pinned = pinned;
             c.muted = muted;
+            c.mute_until = 0;
         }
         // The backend and archive write-through below only run
         // for a chat found in the list: in live mode the detached
@@ -5368,6 +5476,144 @@ impl crate::state::App {
         if let (Some((chat, jid, ts)), Some(session)) = (snapshot, &self.live) {
             if let Some(store) = &session.store {
                 let _ = store.upsert_chat(&crate::live::chat_to_live(&chat, &jid, ts));
+            }
+        }
+    }
+
+    /// Marks a chat as unread (design standard section 24):
+    /// the badge appears at once and persists through the
+    /// archive, and the wire state follows through the chat
+    /// actions facade (the read-state action with read =
+    /// false), never through the receipt path, which would
+    /// tell the sender their messages were read. Demo mode
+    /// applies the same local change with no command behind it.
+    pub(crate) fn mark_chat_unread(&mut self, chat_id: u64) {
+        let current = self.chats.iter().find(|c| c.id == chat_id).map_or(0, |c| c.unread);
+        self.apply_chat_read_changed(chat_id, false, current);
+        if self.live.is_some() {
+            if let Some(jid) = self.live_jid(chat_id) {
+                self.send_backend(BackendCommand::MarkChatUnread { chat_jid: jid });
+            }
+        }
+    }
+
+    /// Clears a chat's messages (design standard section 24),
+    /// after the confirmation modal: the local apply runs
+    /// through the same adoption an inbound clear takes, then
+    /// the command follows. `keep_starred` is the modal's
+    /// checkbox choice, honored on both sides.
+    pub(crate) fn clear_chat(&mut self, chat_id: u64, keep_starred: bool) {
+        if let Some(jid) = self.live_jid(chat_id) {
+            self.apply_chat_cleared(chat_id, &jid, !keep_starred, None);
+            self.send_backend(BackendCommand::ClearChat { chat_jid: jid, keep_starred });
+        } else if !self.live_mode {
+            // Demo mode: the chat's messages live in the model
+            // itself; the same keep-starred rule applies.
+            if let Some(chat) = self.chats.iter_mut().find(|c| c.id == chat_id) {
+                chat.messages.retain(|m| keep_starred && m.starred);
+                chat.preview = String::new();
+            }
+            if self.selected_chat == chat_id {
+                self.conversation.retain(|m| keep_starred && m.starred);
+            }
+        }
+    }
+
+    /// Deletes a chat (design standard section 24), after the
+    /// confirmation modal: local apply through the inbound
+    /// adoption, then the command.
+    pub(crate) fn delete_chat(&mut self, chat_id: u64) {
+        if let Some(jid) = self.live_jid(chat_id) {
+            self.apply_chat_deleted(chat_id, &jid);
+            self.send_backend(BackendCommand::DeleteChat { chat_jid: jid });
+        } else if self.live_mode {
+            // A live session whose address book does not know
+            // this chat: nothing to delete against, and no
+            // silent pretend-delete.
+        } else {
+            // Demo mode: the chat exists only locally.
+            self.chats.retain(|c| c.id != chat_id);
+            if self.selected_chat == chat_id {
+                self.selected_chat = 0;
+            }
+        }
+    }
+
+    /// Applies one of the mute duration choices (design
+    /// standard section 24): 8 hours, 1 week, or always. The
+    /// mirror updates at once with the end the wire will carry;
+    /// the per-second tick lifts a timed mute when its end
+    /// passes, and the archive row persists both fields.
+    pub(crate) fn apply_mute_for(&mut self, chat_id: u64, choice: MuteChoice) {
+        let now = unix_now_secs();
+        let (until, action) = match choice {
+            MuteChoice::Hours8 => {
+                let until = now + 8 * 3_600;
+                (
+                    until,
+                    ChatAction::MuteUntil(i64::try_from(until).unwrap_or(0).saturating_mul(1000)),
+                )
+            }
+            MuteChoice::Week => {
+                let until = now + 7 * 86_400;
+                (
+                    until,
+                    ChatAction::MuteUntil(i64::try_from(until).unwrap_or(0).saturating_mul(1000)),
+                )
+            }
+            MuteChoice::Always => (0, ChatAction::Mute),
+        };
+        if let Some(c) = self.chats.iter_mut().find(|c| c.id == chat_id) {
+            c.muted = true;
+            c.mute_until = until;
+        }
+        if let Some(c) = self.detached_chat.as_mut().filter(|c| c.id == chat_id) {
+            c.muted = true;
+            c.mute_until = until;
+        }
+        if self.live.is_some() {
+            if let Some(jid) = self.live_jid(chat_id) {
+                self.send_backend(BackendCommand::ChatAction { chat_jid: jid, action });
+            }
+        }
+        self.persist_chat_row(chat_id);
+    }
+
+    /// Sends a contact card into a chat (design standard
+    /// section 24). Live mode goes through the backend's
+    /// generic send; the sent card arrives back as a normal
+    /// message upsert and renders through the received-card
+    /// path. Demo mode appends the card locally, the way the
+    /// demo's other sends land.
+    pub(crate) fn send_contact_card(&mut self, chat_id: u64, name: &str, phone: &str) {
+        if self.live.is_some() {
+            if let Some(jid) = self.live_jid(chat_id) {
+                let ephemeral_secs =
+                    self.chats.iter().find(|c| c.id == chat_id).map_or(0, |c| c.ephemeral_secs);
+                self.send_backend(BackendCommand::SendContact {
+                    chat_jid: jid,
+                    name: name.to_owned(),
+                    phone: phone.to_owned(),
+                    ephemeral_secs,
+                });
+            }
+        } else if !self.live_mode {
+            // Demo mode: append the card locally, the shape the
+            // demo's other sends take (the location send in
+            // attach.rs is the model).
+            self.sent_counter += 1;
+            let (stamp, expires_at) = self.demo_send_stamp();
+            let msg = Message {
+                kind: MessageKind::Contact { name: name.to_owned(), phone: phone.to_owned() },
+                expires_at,
+                ..Message::mine(900 + self.sent_counter, name.to_owned(), stamp)
+            };
+            if self.selected_chat == chat_id {
+                self.conversation.push(msg.clone());
+            }
+            if let Some(chat) = self.chats.iter_mut().find(|c| c.id == chat_id) {
+                chat.messages.push(msg);
+                chat.sync_preview_from_last();
             }
         }
     }
@@ -5482,6 +5728,7 @@ pub(crate) fn chat_to_live(chat: &Chat, jid: &str, timestamp: i64) -> LiveChat {
         pinned: chat.pinned,
         ephemeral_secs: chat.ephemeral_secs,
         muted: chat.muted,
+        mute_until: i64::try_from(chat.mute_until).unwrap_or(0),
     }
 }
 
@@ -5743,6 +5990,7 @@ mod burst_drain_tests {
                 pinned: false,
                 ephemeral_secs: 0,
                 muted: false,
+                mute_until: 0,
             })
         };
         let (mut app, tx, ctx, _cmd_rx) = live_app();
@@ -7304,6 +7552,7 @@ mod burst_drain_tests {
             pinned: false,
             ephemeral_secs: 0,
             muted: false,
+            mute_until: 0,
         };
         app.new_chat.open = true;
         tx.send(BackendEvent::ContactResolved {
@@ -7416,6 +7665,7 @@ mod burst_drain_tests {
             pinned: false,
             ephemeral_secs: 0,
             muted: false,
+            mute_until: 0,
         })
     }
 
@@ -7441,6 +7691,7 @@ mod burst_drain_tests {
                 pinned: false,
                 ephemeral_secs: 0,
                 muted: false,
+                mute_until: 0,
             });
             assert!(chat.subtitle.is_empty(), "{kind:?} carries no invented subtitle");
         }
@@ -7618,6 +7869,7 @@ mod burst_drain_tests {
             pinned: false,
             ephemeral_secs: 0,
             muted: false,
+            mute_until: 0,
         }))
         .unwrap();
         drain_all(&mut app, &ctx);
@@ -7638,6 +7890,7 @@ mod burst_drain_tests {
                 ("6282222222222@s.whatsapp.net".to_owned(), "Bob Carter".to_owned(), false),
                 ("6283333333333@s.whatsapp.net".to_owned(), "Carol Danvers".to_owned(), false),
             ],
+            own_admin: false,
         })
         .unwrap();
         drain_all(&mut app, &ctx);
@@ -7730,6 +7983,7 @@ mod burst_drain_tests {
             pinned: false,
             ephemeral_secs: 0,
             muted: false,
+            mute_until: 0,
         }))
         .unwrap();
         let mut bob_msg = LiveMessage::text(
@@ -7758,6 +8012,7 @@ mod burst_drain_tests {
                 (STRANGER_JID.to_owned(), String::new(), false),
                 (LID_JID.to_owned(), String::new(), false),
             ],
+            own_admin: false,
         })
         .unwrap();
         drain_all(&mut app, &ctx);
@@ -7986,6 +8241,7 @@ mod chat_state_routing_tests {
             pinned: false,
             ephemeral_secs: 0,
             muted: false,
+            mute_until: 0,
         })
     }
 
@@ -8004,6 +8260,7 @@ mod chat_state_routing_tests {
             pinned: false,
             ephemeral_secs: 0,
             muted: false,
+            mute_until: 0,
         })
     }
 
@@ -8042,6 +8299,7 @@ mod chat_state_routing_tests {
             pinned: false,
             ephemeral_secs: 0,
             muted: false,
+            mute_until: 0,
         })
     }
 
@@ -8098,6 +8356,7 @@ mod chat_state_routing_tests {
             pinned,
             ephemeral_secs: 0,
             muted: false,
+            mute_until: 0,
         })
     }
 
@@ -8263,7 +8522,12 @@ mod chat_state_routing_tests {
         seed_chat(&mut app, &tx, &ctx);
         let chat_id = jid_id(CHAT_JID);
 
-        tx.send(BackendEvent::MuteChanged { chat_jid: CHAT_JID.to_owned(), muted: true }).unwrap();
+        tx.send(BackendEvent::MuteChanged {
+            chat_jid: CHAT_JID.to_owned(),
+            muted: true,
+            mute_until: 0,
+        })
+        .unwrap();
         drain_all(&mut app, &ctx);
         assert!(chat_muted(&app), "a server mute lands in the mirror");
         assert!(archived_muted(&app), "and in the archive");
@@ -8274,7 +8538,12 @@ mod chat_state_routing_tests {
         // muted again: the server value wins.
         app.apply_chat_action(chat_id, false, false, false);
         assert!(!chat_muted(&app));
-        tx.send(BackendEvent::MuteChanged { chat_jid: CHAT_JID.to_owned(), muted: true }).unwrap();
+        tx.send(BackendEvent::MuteChanged {
+            chat_jid: CHAT_JID.to_owned(),
+            muted: true,
+            mute_until: 0,
+        })
+        .unwrap();
         drain_all(&mut app, &ctx);
         assert!(chat_muted(&app), "the server value overrides the local toggle");
         assert!(archived_muted(&app));
@@ -8288,7 +8557,12 @@ mod chat_state_routing_tests {
         let (mut app, tx, ctx, _cmd_rx) = live_app();
         seed_chat(&mut app, &tx, &ctx);
 
-        tx.send(BackendEvent::MuteChanged { chat_jid: CHAT_JID.to_owned(), muted: true }).unwrap();
+        tx.send(BackendEvent::MuteChanged {
+            chat_jid: CHAT_JID.to_owned(),
+            muted: true,
+            mute_until: 0,
+        })
+        .unwrap();
         drain_all(&mut app, &ctx);
         assert!(chat_muted(&app));
 
@@ -8913,6 +9187,7 @@ mod chat_state_routing_tests {
             pinned: false,
             ephemeral_secs: 0,
             muted: false,
+            mute_until: 0,
         })
     }
 
@@ -9271,7 +9546,12 @@ mod chat_state_routing_tests {
         // Settings the clear must not disturb, set the way the
         // server reports them.
         tx.send(BackendEvent::PinChanged { chat_jid: CHAT_JID.to_owned(), pinned: true }).unwrap();
-        tx.send(BackendEvent::MuteChanged { chat_jid: CHAT_JID.to_owned(), muted: true }).unwrap();
+        tx.send(BackendEvent::MuteChanged {
+            chat_jid: CHAT_JID.to_owned(),
+            muted: true,
+            mute_until: 0,
+        })
+        .unwrap();
         for (pid, body, ts) in [
             ("c1", "first", BASE_TS),
             ("c2", "starred", BASE_TS + 60),
@@ -9660,6 +9940,7 @@ mod mirror_pruning_tests {
             pinned: false,
             ephemeral_secs: 0,
             muted: false,
+            mute_until: 0,
         };
         app.chats.push(to_chat(&live_row));
         {
@@ -10954,9 +11235,9 @@ mod star_pin_tests {
     ) -> (String, String, Option<String>, bool, bool) {
         let sent = sent_commands(cmd_rx);
         let found = sent.iter().find_map(|c| match c {
-            BackendCommand::PinMessage { chat_jid, message_id, sender_jid, from_me, pin } => {
-                Some((chat_jid.clone(), message_id.clone(), sender_jid.clone(), *from_me, *pin))
-            }
+            BackendCommand::PinMessage {
+                chat_jid, message_id, sender_jid, from_me, pin, ..
+            } => Some((chat_jid.clone(), message_id.clone(), sender_jid.clone(), *from_me, *pin)),
             _ => None,
         });
         found.expect("a pin command is sent")
@@ -10984,7 +11265,7 @@ mod star_pin_tests {
     fn group_pin_names_the_message_author() {
         let (mut app, tx, ctx, cmd_rx) = live_app();
         let mid = open_message(&mut app, &tx, &ctx, alice_group_message());
-        app.toggle_pin_message(mid);
+        app.toggle_pin_message(mid, backend::PinDuration::Days7);
         let (chat_jid, message_id, sender_jid, from_me, pin) = pin_command(&cmd_rx);
         assert_eq!(chat_jid, GROUP_JID);
         assert_eq!(message_id, "g1");
@@ -11062,7 +11343,7 @@ mod star_pin_tests {
         let (mut app, tx, ctx, _cmd_rx) = live_app();
         let chat_id = jid_id(GROUP_JID);
         let mid = open_message(&mut app, &tx, &ctx, alice_group_message());
-        app.toggle_pin_message(mid);
+        app.toggle_pin_message(mid, backend::PinDuration::Days7);
         assert!(view_flag(&app, mid, true), "the optimistic pin shows");
         assert!(mirror_flag(&app, chat_id, mid, true));
         assert_eq!(archived_flags(&app, GROUP_JID, "g1"), store::FLAG_PINNED_MESSAGE);
@@ -11080,6 +11361,243 @@ mod star_pin_tests {
         assert!(!app.pending_pins.contains_key(&mid), "nothing stays pending");
         let notice = app.notice_str().unwrap_or_default().to_owned();
         assert!(notice.contains("Pinning the message failed"), "the failure is surfaced: {notice}");
+    }
+
+    /// Section 24: revoking another member's group message
+    /// (the admin path) names the message's author in the
+    /// command, exactly like star and pin do; before this round
+    /// the revoke command carried no author at all, so the
+    /// library could only ever take the sender path.
+    #[test]
+    fn admin_revoke_names_the_group_author() {
+        let (mut app, tx, ctx, cmd_rx) = live_app();
+        let mid = open_message(&mut app, &tx, &ctx, alice_group_message());
+        app.delete_for_everyone(mid);
+        let sent = sent_commands(&cmd_rx);
+        let revoke = sent.iter().find_map(|c| match c {
+            BackendCommand::RevokeMessage { chat_jid, message_id, sender_jid, from_me } => {
+                Some((chat_jid.clone(), message_id.clone(), sender_jid.clone(), *from_me))
+            }
+            _ => None,
+        });
+        assert_eq!(
+            revoke.expect("a revoke command is sent"),
+            (GROUP_JID.to_owned(), "g1".to_owned(), Some(ALICE_JID.to_owned()), false),
+            "the revoke target names the author and the admin path"
+        );
+    }
+
+    /// Section 24: delete for me removes the message from the
+    /// open view and the mirror at once, and the command names
+    /// the author and carries the archive timestamp.
+    #[test]
+    fn delete_for_me_removes_and_sends() {
+        let (mut app, tx, ctx, cmd_rx) = live_app();
+        let chat_id = jid_id(GROUP_JID);
+        let mid = open_message(&mut app, &tx, &ctx, alice_group_message());
+        app.delete_for_me(mid);
+        assert!(app.conversation.iter().all(|m| m.id != mid), "the message leaves the open view");
+        let mirror = app.live.as_ref().unwrap().messages.get(&chat_id).unwrap();
+        assert!(mirror.iter().all(|(_, m)| m.id != mid), "and the session mirror");
+        let sent = sent_commands(&cmd_rx);
+        assert!(
+            sent.iter().any(|c| matches!(
+                c,
+                BackendCommand::DeleteMessageForMe { chat_jid, message_id, sender_jid, message_timestamp, .. }
+                    if chat_jid == GROUP_JID
+                        && message_id == "g1"
+                        && sender_jid.as_deref() == Some(ALICE_JID)
+                        && *message_timestamp == Some(1_700_000_000)
+            )),
+            "the command names the author and the archived timestamp: {sent:?}"
+        );
+    }
+
+    /// Section 24: keeping a disappearing message applies at
+    /// once (view, archive flag, command), and a KeepFailed
+    /// rolls all three back, the star discipline exactly.
+    #[test]
+    fn keep_toggle_applies_and_failed_keep_rolls_back() {
+        let (mut app, tx, ctx, cmd_rx) = live_app();
+        let mut msg = alice_group_message();
+        msg.expires_at = 1_700_003_600;
+        let mid = open_message(&mut app, &tx, &ctx, msg);
+        app.toggle_keep_message(mid);
+        assert!(
+            app.conversation.iter().find(|m| m.id == mid).is_some_and(|m| m.kept),
+            "the optimistic keep shows"
+        );
+        assert_eq!(archived_flags(&app, GROUP_JID, "g1"), store::FLAG_KEPT);
+        let sent = sent_commands(&cmd_rx);
+        assert!(
+            sent.iter().any(|c| matches!(
+                c,
+                BackendCommand::KeepMessage { message_id, keep, .. } if message_id == "g1" && *keep
+            )),
+            "the keep command is sent: {sent:?}"
+        );
+
+        tx.send(BackendEvent::KeepFailed {
+            chat_jid: GROUP_JID.to_owned(),
+            message_id: "g1".to_owned(),
+            message: "Keeping the message failed: connection lost".to_owned(),
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(
+            !app.conversation.iter().find(|m| m.id == mid).is_some_and(|m| m.kept),
+            "the view rolls back"
+        );
+        assert_eq!(archived_flags(&app, GROUP_JID, "g1"), 0, "the archive flag clears");
+        assert!(!app.pending_keeps.contains_key(&mid), "nothing stays pending");
+    }
+
+    /// Section 24: a keep made on another device arrives as a
+    /// MessageKept report and lands in the view and the
+    /// archive without any command of mine.
+    #[test]
+    fn kept_report_from_the_server_lands() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        let mut msg = alice_group_message();
+        msg.expires_at = 1_700_003_600;
+        let mid = open_message(&mut app, &tx, &ctx, msg);
+        tx.send(BackendEvent::MessageKept {
+            chat_jid: GROUP_JID.to_owned(),
+            message_id: "g1".to_owned(),
+            kept: true,
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(
+            app.conversation.iter().find(|m| m.id == mid).is_some_and(|m| m.kept),
+            "the reported keep shows"
+        );
+        assert_eq!(archived_flags(&app, GROUP_JID, "g1"), store::FLAG_KEPT);
+    }
+
+    /// Section 24: mark as unread raises the badge at once,
+    /// persists it in the archive, and sends the read-state
+    /// command (never a receipt).
+    #[test]
+    fn mark_unread_raises_and_persists_the_badge() {
+        let (mut app, tx, ctx, cmd_rx) = live_app();
+        let mid = open_message(&mut app, &tx, &ctx, alice_group_message());
+        let _ = mid;
+        let chat_id = jid_id(GROUP_JID);
+        // Start from a known read state, whatever the arrival
+        // itself did to the badge.
+        app.apply_chat_read_changed(chat_id, true, 0);
+        assert_eq!(app.chats.iter().find(|c| c.id == chat_id).map_or(9, |c| c.unread), 0);
+        app.mark_chat_unread(chat_id);
+        assert_eq!(
+            app.chats.iter().find(|c| c.id == chat_id).map_or(0, |c| c.unread),
+            1,
+            "the badge floors at one"
+        );
+        let store = app.live.as_ref().unwrap().store.as_ref().unwrap();
+        let archived = store.chats().unwrap();
+        assert_eq!(
+            archived.iter().find(|c| c.jid == GROUP_JID).map_or(0, |c| c.unread),
+            1,
+            "the archive row carries the badge"
+        );
+        let sent = sent_commands(&cmd_rx);
+        assert!(
+            sent.iter().any(|c| matches!(c, BackendCommand::MarkChatUnread { chat_jid } if chat_jid == GROUP_JID)),
+            "the mark-unread command is sent: {sent:?}"
+        );
+    }
+
+    /// Section 24: a timed mute carries its end in the mirror
+    /// and the archive, sends MuteUntil in milliseconds, and
+    /// lifts itself when the end passes.
+    #[test]
+    fn timed_mute_sets_end_and_lifts_when_it_passes() {
+        let (mut app, tx, ctx, cmd_rx) = live_app();
+        let _mid = open_message(&mut app, &tx, &ctx, alice_group_message());
+        let chat_id = jid_id(GROUP_JID);
+        app.apply_mute_for(chat_id, MuteChoice::Hours8);
+        let chat = app.chats.iter().find(|c| c.id == chat_id).unwrap();
+        assert!(chat.muted);
+        let until = chat.mute_until;
+        let now = unix_now_secs();
+        assert!(
+            until > now && until <= now + 8 * 3_600,
+            "the end is 8 hours out: {until} vs {now}"
+        );
+        let sent = sent_commands(&cmd_rx);
+        assert!(
+            sent.iter().any(|c| matches!(
+                c,
+                BackendCommand::ChatAction { action: ChatAction::MuteUntil(ms), .. }
+                    if *ms == i64::try_from(until).unwrap_or(0) * 1000
+            )),
+            "the wire end is the mirror end in milliseconds: {sent:?}"
+        );
+        app.lift_expired_mutes(until);
+        let chat = app.chats.iter().find(|c| c.id == chat_id).unwrap();
+        assert!(!chat.muted && chat.mute_until == 0, "the mute lifts itself at its end");
+    }
+
+    /// Section 24: clearing with keep-starred keeps the starred
+    /// message and drops the rest, locally and in the command.
+    #[test]
+    fn clear_chat_keeps_starred_when_asked() {
+        let (mut app, tx, ctx, cmd_rx) = live_app();
+        let mut starred = alice_group_message();
+        starred.starred = true;
+        let mid = open_message(&mut app, &tx, &ctx, starred);
+        let mut other = alice_group_message();
+        other.id = "g2".to_owned();
+        let mid2 = open_message(&mut app, &tx, &ctx, other);
+        let chat_id = jid_id(GROUP_JID);
+        app.clear_chat(chat_id, true);
+        assert!(app.conversation.iter().any(|m| m.id == mid), "the starred message stays");
+        assert!(app.conversation.iter().all(|m| m.id != mid2), "the rest is cleared");
+        let sent = sent_commands(&cmd_rx);
+        assert!(
+            sent.iter().any(|c| matches!(
+                c,
+                BackendCommand::ClearChat { chat_jid, keep_starred } if chat_jid == GROUP_JID && *keep_starred
+            )),
+            "the clear command carries the keep-starred choice: {sent:?}"
+        );
+    }
+
+    /// Section 24: deleting a chat removes it from the list
+    /// and sends the delete command.
+    #[test]
+    fn delete_chat_removes_and_sends() {
+        let (mut app, tx, ctx, cmd_rx) = live_app();
+        let _mid = open_message(&mut app, &tx, &ctx, alice_group_message());
+        let chat_id = jid_id(GROUP_JID);
+        assert!(app.chats.iter().any(|c| c.id == chat_id));
+        app.delete_chat(chat_id);
+        assert!(app.chats.iter().all(|c| c.id != chat_id), "the chat leaves the list");
+        let sent = sent_commands(&cmd_rx);
+        assert!(
+            sent.iter().any(
+                |c| matches!(c, BackendCommand::DeleteChat { chat_jid } if chat_jid == GROUP_JID)
+            ),
+            "the delete command is sent: {sent:?}"
+        );
+    }
+
+    /// Section 24: the pin command carries the duration the
+    /// menu picked, not a fixed one.
+    #[test]
+    fn pin_command_carries_the_chosen_duration() {
+        let (mut app, tx, ctx, cmd_rx) = live_app();
+        let mid = open_message(&mut app, &tx, &ctx, alice_group_message());
+        app.toggle_pin_message(mid, backend::PinDuration::Hours24);
+        let sent = sent_commands(&cmd_rx);
+        assert!(
+            sent.iter().any(|c| matches!(
+                c,
+                BackendCommand::PinMessage { duration: backend::PinDuration::Hours24, .. }
+            )),
+            "the 24-hour duration reaches the command: {sent:?}"
+        );
     }
 
     /// Rolling back an *unstar* restores the star the server
@@ -11141,7 +11659,7 @@ mod star_pin_tests {
         let (mut app, tx, ctx, _cmd_rx) = live_app();
         let chat_id = jid_id(GROUP_JID);
         let mid = open_message(&mut app, &tx, &ctx, alice_group_message());
-        app.toggle_pin_message(mid);
+        app.toggle_pin_message(mid, backend::PinDuration::Days7);
         assert!(app.pending_pins.contains_key(&mid));
 
         let mut confirmed = alice_group_message();

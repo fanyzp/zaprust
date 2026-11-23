@@ -282,12 +282,11 @@ impl App {
                                         .count(),
                                 };
                                 let name = crate::i18n::t(filter_label_key(f));
-                                let label =
-                                    if count > 0 {
-                                        format!("{name} {}", core::filter::format_count(count as u64))
-                                    } else {
-                                        name
-                                    };
+                                let label = if count > 0 {
+                                    format!("{name} {}", core::filter::format_count(count as u64))
+                                } else {
+                                    name
+                                };
                                 let resp = chip(ui, &label, selected, t);
                                 let clicked = resp.clicked();
                                 if selected {

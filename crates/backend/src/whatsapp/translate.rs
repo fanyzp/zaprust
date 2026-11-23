@@ -375,7 +375,10 @@ pub(super) fn translate_event(
                     }
                 }
                 for jid in jids {
-                    sink.emit(BackendEvent::SenderNamed { sender_jid: jid.clone(), name: name.clone() });
+                    sink.emit(BackendEvent::SenderNamed {
+                        sender_jid: jid.clone(),
+                        name: name.clone(),
+                    });
                     sink.emit(BackendEvent::ChatRenamed { chat_jid: jid, title: name.clone() });
                 }
             }
@@ -413,8 +416,7 @@ pub(super) fn translate_history_sync(
     let mut resolved_senders: Vec<(String, String)> = Vec::new();
     let mut unresolved: Vec<(String, LiveChatKind)> = Vec::new();
     for conv in &sync.conversations {
-        if let Some(item) =
-            translate_history_conversation(conv, &book, &mut resolved_senders, sink)
+        if let Some(item) = translate_history_conversation(conv, &book, &mut resolved_senders, sink)
         {
             unresolved.push(item);
         }
@@ -428,7 +430,10 @@ pub(super) fn translate_history_sync(
     let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
     for (sender_jid, name) in &resolved_senders {
         if seen.insert(sender_jid.as_str()) {
-            sink.emit(BackendEvent::SenderNamed { sender_jid: sender_jid.clone(), name: name.clone() });
+            sink.emit(BackendEvent::SenderNamed {
+                sender_jid: sender_jid.clone(),
+                name: name.clone(),
+            });
         }
     }
     unresolved
@@ -575,9 +580,9 @@ fn translate_history_conversation(
         .or_else(|| conv.display_name.clone().filter(|n| !n.trim().is_empty()))
         .or_else(|| book.name_for(&chat_jid))
         .or_else(|| match kind {
-            LiveChatKind::Dm => last
-                .and_then(|m| m.sender.clone())
-                .filter(|name| !is_raw_identifier(name)),
+            LiveChatKind::Dm => {
+                last.and_then(|m| m.sender.clone()).filter(|name| !is_raw_identifier(name))
+            }
             _ => None,
         })
         .or_else(|| match kind {

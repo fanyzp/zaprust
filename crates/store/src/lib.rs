@@ -2714,7 +2714,10 @@ mod tests {
         store.upsert_chat(&titled_chat(group, "Weekend Hikers")).unwrap();
         store.upsert_chat(&titled_chat(group, "120363430176830545")).unwrap();
         let chats = store.chats().unwrap();
-        assert_eq!(chats[0].title, "Weekend Hikers", "a live raw title cannot downgrade the subject");
+        assert_eq!(
+            chats[0].title, "Weekend Hikers",
+            "a live raw title cannot downgrade the subject"
+        );
 
         let dm = "128815045062660@lid";
         store.upsert_chat(&titled_chat(dm, "128815045062660")).unwrap();
@@ -2755,7 +2758,10 @@ mod tests {
         store.upsert_chat(&titled_chat(group, "120363430176830545")).unwrap();
         assert!(store.rename_chat(group, "Weekend Hikers").unwrap());
         assert!(!store.rename_chat(group, "Other Name").unwrap(), "a resolved title is final");
-        assert!(!store.rename_chat(group, "120363430176830545").unwrap(), "a raw rename is refused");
+        assert!(
+            !store.rename_chat(group, "120363430176830545").unwrap(),
+            "a raw rename is refused"
+        );
 
         let mut msg = LiveMessage::text(
             "m1",

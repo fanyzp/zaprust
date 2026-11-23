@@ -212,7 +212,10 @@ fn heal_unresolved_titles(
                                 chat_jid: jid.clone(),
                                 title: phone.clone(),
                             });
-                            sink.emit(BackendEvent::SenderNamed { sender_jid: jid.clone(), name: phone });
+                            sink.emit(BackendEvent::SenderNamed {
+                                sender_jid: jid.clone(),
+                                name: phone,
+                            });
                         }
                     }
                 }
@@ -337,9 +340,8 @@ pub(super) async fn run_async(
     // Chat titles already sent to the identity healer this run,
     // so repeated history chunks do not refetch the same group
     // metadata or LID mapping.
-    let heal_attempts: std::sync::Arc<
-        std::sync::Mutex<std::collections::HashSet<String>>,
-    > = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
+    let heal_attempts: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
     let heal_attempts_events = heal_attempts.clone();
     // The logout flag the caller wipes the account directory on:
     // set by the library's logged-out callback (this device was

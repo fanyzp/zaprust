@@ -7014,8 +7014,7 @@ mod burst_drain_tests {
             };
             session.messages.entry(chat_id).or_default().push((BASE_TS, echo));
         }
-        let delivery_of =
-            |app: &App| app.live.as_ref().unwrap().messages[&chat_id][0].1.delivery;
+        let delivery_of = |app: &App| app.live.as_ref().unwrap().messages[&chat_id][0].1.delivery;
         tx.send(BackendEvent::Error { message: "Renaming the group failed: boom".to_owned() })
             .unwrap();
         drain_all(&mut app, &ctx);

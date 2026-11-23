@@ -2413,6 +2413,7 @@ pub(super) async fn run_async(
                     // no longer in the protocol cache; its
                     // archived reference still downloads it, the
                     // same fallback the display fetches use.
+                    let handled_by_ref = proto.is_none() && document_ref.is_some();
                     if proto.is_none() {
                         if let Some(reference) = document_ref {
                             let client = client.clone();
@@ -2455,90 +2456,91 @@ pub(super) async fn run_async(
                                     }
                                 }
                             });
-                            continue;
                         }
                     }
-                    match proto {
-                        Some(proto) => {
-                            // The download runs as its own task: a
-                            // transfer takes as long as the network
-                            // takes, and the dispatch loop (Shutdown
-                            // included) must not wait behind it. The
-                            // outcome arrives as the same MediaSaved
-                            // / Error events as before.
-                            let client = client.clone();
-                            let events = events.clone();
-                            let targets = retry_for_commands.clone();
-                            let dir = config.data_dir.join("downloads");
-                            // The stem is the naming contract the
-                            // app's deletion paths match downloads
-                            // by (see `downloaded_media_stem`).
-                            let stem = crate::downloaded_media_stem(&chat_jid, &message_id);
-                            tokio::spawn(async move {
-                                let saved = download_proto(&client, &proto, &dir, &stem).await;
-                                // One media-retry recovery on
-                                // failure, same as the display
-                                // fetches: an expired CDN object
-                                // is re-uploaded by the author's
-                                // device and saved under the same
-                                // file name.
-                                let saved = match saved {
-                                    Ok(path) => Ok(path),
-                                    Err(message) => {
-                                        let fields = super::util::media_fields_of(&proto);
-                                        match fields {
-                                            Some(fields) => {
-                                                let ext = match fields.media_type {
-                                                    whatsapp_rust::download::MediaType::Image => {
-                                                        "jpg"
-                                                    }
-                                                    whatsapp_rust::download::MediaType::Video => {
-                                                        "mp4"
-                                                    }
-                                                    whatsapp_rust::download::MediaType::Audio => {
-                                                        "ogg"
-                                                    }
-                                                    whatsapp_rust::download::MediaType::Sticker => {
-                                                        "webp"
-                                                    }
-                                                    _ => "bin",
-                                                };
-                                                retry_download_file(
-                                                    &client,
-                                                    &events,
-                                                    &targets,
-                                                    &chat_jid,
-                                                    &message_id,
-                                                    &fields,
-                                                    &dir,
-                                                    &stem,
-                                                    ext,
-                                                )
-                                                .await
-                                                .ok_or(message)
+                    if !handled_by_ref {
+                        match proto {
+                            Some(proto) => {
+                                // The download runs as its own task: a
+                                // transfer takes as long as the network
+                                // takes, and the dispatch loop (Shutdown
+                                // included) must not wait behind it. The
+                                // outcome arrives as the same MediaSaved
+                                // / Error events as before.
+                                let client = client.clone();
+                                let events = events.clone();
+                                let targets = retry_for_commands.clone();
+                                let dir = config.data_dir.join("downloads");
+                                // The stem is the naming contract the
+                                // app's deletion paths match downloads
+                                // by (see `downloaded_media_stem`).
+                                let stem = crate::downloaded_media_stem(&chat_jid, &message_id);
+                                tokio::spawn(async move {
+                                    let saved = download_proto(&client, &proto, &dir, &stem).await;
+                                    // One media-retry recovery on
+                                    // failure, same as the display
+                                    // fetches: an expired CDN object
+                                    // is re-uploaded by the author's
+                                    // device and saved under the same
+                                    // file name.
+                                    let saved = match saved {
+                                        Ok(path) => Ok(path),
+                                        Err(message) => {
+                                            let fields = super::util::media_fields_of(&proto);
+                                            match fields {
+                                                Some(fields) => {
+                                                    let ext = match fields.media_type {
+                                                        whatsapp_rust::download::MediaType::Image => {
+                                                            "jpg"
+                                                        }
+                                                        whatsapp_rust::download::MediaType::Video => {
+                                                            "mp4"
+                                                        }
+                                                        whatsapp_rust::download::MediaType::Audio => {
+                                                            "ogg"
+                                                        }
+                                                        whatsapp_rust::download::MediaType::Sticker => {
+                                                            "webp"
+                                                        }
+                                                        _ => "bin",
+                                                    };
+                                                    retry_download_file(
+                                                        &client,
+                                                        &events,
+                                                        &targets,
+                                                        &chat_jid,
+                                                        &message_id,
+                                                        &fields,
+                                                        &dir,
+                                                        &stem,
+                                                        ext,
+                                                    )
+                                                    .await
+                                                    .ok_or(message)
+                                                }
+                                                None => Err(message),
                                             }
-                                            None => Err(message),
+                                        }
+                                    };
+                                    match saved {
+                                        Ok(path) => events.emit(BackendEvent::MediaSaved {
+                                            chat_jid,
+                                            message_id,
+                                            path: path.to_string_lossy().into_owned(),
+                                        }),
+                                        Err(e) => {
+                                            events.emit(BackendEvent::Error { message: e });
                                         }
                                     }
-                                };
-                                match saved {
-                                    Ok(path) => events.emit(BackendEvent::MediaSaved {
-                                        chat_jid,
-                                        message_id,
-                                        path: path.to_string_lossy().into_owned(),
-                                    }),
-                                    Err(e) => {
-                                        events.emit(BackendEvent::Error { message: e });
-                                    }
-                                }
-                            });
+                                });
+                            }
+                            None => events.emit(BackendEvent::Error {
+                                message: "That media is not available: it was received \
+                                              before this session and has no stored \
+                                              download reference."
+                                    .to_owned(),
+                            }),
                         }
-                        None => events.emit(BackendEvent::Error {
-                            message: "That media is not available: it was received \
-                                          before this session and has no stored \
-                                          download reference."
-                                .to_owned(),
-                        }),
                     }
                 }
                 BackendCommand::FetchPhoto { chat_jid, message_id, photo_ref } => {

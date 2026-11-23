@@ -50,6 +50,7 @@ pub(super) async fn send_media(
         crate::MediaKind::Photo => MediaType::Image,
         crate::MediaKind::Video => MediaType::Video,
         crate::MediaKind::Voice => MediaType::Audio,
+        crate::MediaKind::Audio => MediaType::Audio,
         crate::MediaKind::Document => MediaType::Document,
         crate::MediaKind::Sticker => MediaType::Sticker,
     };
@@ -83,6 +84,20 @@ pub(super) async fn send_media(
                 media::AudioOptions::default().with_mimetype(outgoing.mime).with_ptt(true);
             if outgoing.seconds > 0 {
                 opts = opts.with_duration_seconds(outgoing.seconds);
+            }
+            media::audio_message(upload, opts)
+        }
+        crate::MediaKind::Audio => {
+            // An audio FILE: the same wire shape with the ptt
+            // flag off, which is what makes the receiver render
+            // a file card instead of a voice note.
+            let mut opts =
+                media::AudioOptions::default().with_mimetype(outgoing.mime).with_ptt(false);
+            if outgoing.seconds > 0 {
+                opts = opts.with_duration_seconds(outgoing.seconds);
+            }
+            if !outgoing.caption.is_empty() {
+                opts = opts.with_caption(outgoing.caption);
             }
             media::audio_message(upload, opts)
         }

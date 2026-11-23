@@ -1044,6 +1044,7 @@ impl Backend for FakeBackend {
                         crate::MediaKind::Photo => "[photo]",
                         crate::MediaKind::Video => "[video]",
                         crate::MediaKind::Voice => "[voice note]",
+                        crate::MediaKind::Audio => "[audio]",
                         crate::MediaKind::Document => "[document]",
                         crate::MediaKind::Sticker => "[sticker]",
                     };

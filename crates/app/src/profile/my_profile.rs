@@ -468,12 +468,6 @@ pub fn draw_my_profile_panel(
                 _ => draw_editor_form(ui, t, state, mode, &mut intents),
             }
         });
-    if let Some(win) = &win {
-        let painter = ctx.layer_painter(egui::LayerId::new(
-            egui::Order::Foreground,
-            egui::Id::unique("zaprust_glass_edge"),
-        ));
-    }
     if exiting {
         // The exit run only replays the panel; its intents are
         // discarded.

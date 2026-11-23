@@ -809,7 +809,7 @@ fn backend_delivery(d: Delivery) -> backend::DeliveryState {
     }
 }
 
-fn to_message_with_flags(live: &LiveMessage, flags: i64) -> Message {
+pub(crate) fn to_message_with_flags(live: &LiveMessage, flags: i64) -> Message {
     let mut kind = to_kind(&live.kind);
     if let MessageKind::Voice { waveform, .. } = &mut kind {
         *waveform = voice_waveform_bars(live.voice_waveform.as_deref());

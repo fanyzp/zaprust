@@ -850,7 +850,7 @@ impl App {
                 if pick_p < 0.999 {
                     ui.set_opacity(pick_p);
                 }
-                let frame = crate::theme::glass_frame(t, 16)
+                let _frame = crate::theme::glass_frame(t, 16)
                     .inner_margin(Margin::symmetric(12, 10))
                     .show(ui, |ui| {
                         ui.set_width(size.x - 24.0);
@@ -983,7 +983,7 @@ impl App {
                 // the same fill, hairline and shadow as every
                 // other glass surface (this frame used to carry
                 // a one-off deeper shadow of its own).
-                let modal = crate::theme::glass_frame(t, 16)
+                let _modal = crate::theme::glass_frame(t, 16)
                     .inner_margin(Margin::symmetric(14, 12))
                     .show(ui, |ui| {
                         ui.set_width(size.x - 28.0);

@@ -53,15 +53,17 @@ pub(crate) fn popup_fill(t: Tokens) -> Color32 {
 /// the composer, list rows) cast no shadow; their depth is the
 /// tone ladder alone.
 pub(crate) fn overlay_shadow(t: Tokens) -> egui::Shadow {
+    // The canonical overlay shadow: thin and neutral, offset
+    // [0, 2], blur 8, alpha at most 32 light / 64 dark.
     if t.is_light() {
         egui::Shadow {
-            offset: [0, 12],
-            blur: 32,
+            offset: [0, 2],
+            blur: 8,
             spread: 0,
-            color: Color32::from_rgba_unmultiplied(17, 27, 33, 80),
+            color: Color32::from_rgba_unmultiplied(17, 27, 33, 32),
         }
     } else {
-        egui::Shadow { offset: [0, 12], blur: 32, spread: 0, color: Color32::from_black_alpha(130) }
+        egui::Shadow { offset: [0, 2], blur: 8, spread: 0, color: Color32::from_black_alpha(64) }
     }
 }
 

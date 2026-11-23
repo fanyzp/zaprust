@@ -111,7 +111,7 @@ impl App {
                 if menu_p < 0.999 {
                     ui.set_opacity(menu_p);
                 }
-                let menu_frame =
+                let _menu_frame =
                     crate::theme::glass_frame(t, 14).inner_margin(Margin::same(8)).show(ui, |ui| {
                         ui.set_width(220.0);
                         let mut row = |ui: &mut egui::Ui,

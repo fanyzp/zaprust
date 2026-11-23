@@ -49,7 +49,7 @@ fn tile_add<R>(
 /// self mutably.
 fn show_popup<R>(
     frame: egui::Frame,
-    t: core::theme::Tokens,
+    _t: core::theme::Tokens,
     ui: &mut egui::Ui,
     add: impl FnOnce(&mut egui::Ui) -> R,
 ) -> R {

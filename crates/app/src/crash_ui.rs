@@ -104,7 +104,7 @@ impl App {
                         if banner_p < 0.999 {
                             ui.set_opacity(banner_p);
                         }
-                        let banner = egui::Frame::new()
+                        let _banner = egui::Frame::new()
                             .fill(crate::theme::glass_text_tint(t, t.bg_panel))
                             .corner_radius(CornerRadius::same(12))
                             .stroke(Stroke::new(1.0_f32, rgb(t.border)))
@@ -284,7 +284,7 @@ impl App {
                 if det_p < 0.999 {
                     ui.set_opacity(det_p);
                 }
-                let modal = egui::Frame::new()
+                let _modal = egui::Frame::new()
                     .fill(crate::theme::glass_text_tint(t, t.bg_panel))
                     .corner_radius(CornerRadius::same(16))
                     .stroke(Stroke::new(1.0_f32, rgb(t.border)))

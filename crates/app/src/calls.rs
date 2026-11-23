@@ -993,7 +993,7 @@ impl App {
                 let frame = crate::theme::glass_panel_frame(t, 14)
                     .fill(rgb(core::theme::elevated_step(t.bg_panel)))
                     .inner_margin(Margin::symmetric(12, 10));
-                let inner = frame.show(ui, |ui| {
+                let _inner = frame.show(ui, |ui| {
                     ui.set_width(sheet_w - 24.0);
                     ui.add_enabled_ui(!exiting, |ui| {
                         ui.label(

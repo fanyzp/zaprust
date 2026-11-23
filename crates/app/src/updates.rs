@@ -250,7 +250,7 @@ impl App {
                 }
                 let frame =
                     crate::theme::glass_panel_frame(t, 14).inner_margin(Margin::symmetric(12, 10));
-                let inner = frame.show(ui, |ui| {
+                let _inner = frame.show(ui, |ui| {
                     ui.set_width(300.0);
                     ui.add_enabled_ui(!exiting && !self.updates.posting, |ui| {
                         ui.label(

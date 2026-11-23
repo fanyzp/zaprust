@@ -172,22 +172,14 @@ impl App {
                 let display_bodies: std::collections::HashMap<u64, String> = {
                     let mut map = std::collections::HashMap::new();
                     if let Some(session) = &self.live {
-                        // The name directory keyed by both
-                        // twins: a mention written against the
-                        // LID resolves through the phone number's
-                        // entry and the other way around.
-                        let mut names = session.names.clone();
-                        for (lid, pn) in &session.lid_pn {
-                            if let Some(name) = session.names.get(pn) {
-                                names.entry(lid.clone()).or_insert_with(|| name.clone());
-                            }
-                            if let Some(name) = session.names.get(lid) {
-                                names.entry(pn.clone()).or_insert_with(|| name.clone());
-                            }
-                        }
+                        // The name directory is fed under both
+                        // JID forms by the backend's identity
+                        // book, so a mention written against
+                        // either form resolves here.
+                        let names = &session.names;
                         for m in &self.conversation {
                             if let Some(mentions) = session.message_mentions.get(&m.id) {
-                                let body = substitute_mentions(&m.body, mentions, &names);
+                                let body = substitute_mentions(&m.body, mentions, names);
                                 if body != m.body {
                                     map.insert(m.id, body);
                                 }
@@ -241,7 +233,7 @@ impl App {
                     // Album: two or more consecutive photos or videos
                     // from the same sender collapse into one grid
                     // card; the run is consumed in a single step.
-                    let run = album_run_len(&self.conversation, idx);
+                    let run = album_run_len(&self.conversation, idx, &key_of);
                     if run >= 2 {
                         // Photos in the run fetch their real bytes
                         // for display, like single photo bubbles.
@@ -1051,17 +1043,22 @@ fn is_album_item(m: &Message) -> bool {
 /// photos or videos from the same sender on the same day with no
 /// quote of their own. Runs shorter than two never reach the grid
 /// (the caller draws a normal bubble for them).
-fn album_run_len(msgs: &[Message], start: usize) -> usize {
+fn album_run_len(
+    msgs: &[Message],
+    start: usize,
+    key_of: &dyn Fn(&Message) -> Option<String>,
+) -> usize {
     let first = &msgs[start];
     if !is_album_item(first) || first.quoted_body.is_some() {
         return 1;
     }
+    let first_key = group_key(first, key_of(first).as_deref());
     let mut n = 1;
     while start + n < msgs.len() {
         let next = &msgs[start + n];
         if !is_album_item(next)
             || next.quoted_body.is_some()
-            || group_key(next) != group_key(first)
+            || group_key(next, key_of(next).as_deref()) != first_key
             || next.day_label() != first.day_label()
         {
             break;

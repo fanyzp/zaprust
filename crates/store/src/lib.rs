@@ -2933,6 +2933,76 @@ mod tests {
         assert_eq!(rows[0].0.body, msg.body);
     }
 
+    /// A message row whose rich payload no longer decodes:
+    /// the bulk read skips exactly that row and reports it,
+    /// and a targeted rewrite fails loudly instead of
+    /// silently erasing the row's data.
+    #[test]
+    fn corrupt_payload_rows_degrade_per_row_and_fail_loudly_on_write() {
+        let store = Store::open_in_memory().unwrap();
+        let mut msg = scripted_messages()[0].clone();
+        msg.photo_ref = Some(backend::PhotoRef {
+            direct_path: "/v/t62.7118-24/photo.enc".to_owned(),
+            media_key: vec![7u8; 32],
+            file_sha256: vec![8u8; 32],
+            file_enc_sha256: vec![9u8; 32],
+            file_length: 12_345,
+        });
+        store.upsert_message(&msg, 0).unwrap();
+        store
+            .conn
+            .execute(
+                "UPDATE messages SET data = '{broken' WHERE chat_jid = ?1 AND id = ?2",
+                params![msg.chat_jid, msg.id],
+            )
+            .unwrap();
+        let (rows, skipped) = store.messages_reporting(&msg.chat_jid).unwrap();
+        assert!(rows.is_empty(), "the corrupt row is skipped, the chat still loads");
+        assert_eq!(skipped, vec![msg.id.clone()], "and the loss is reported by ID");
+        let err = store.clear_photo_ref(&msg.chat_jid, &msg.id).unwrap_err();
+        assert!(
+            matches!(err, StoreError::CorruptData { .. }),
+            "a rewrite over corrupt data fails loudly, got {err:?}"
+        );
+    }
+
+    /// The view-once caption scrub refuses to stamp itself
+    /// done over a row it cannot read: an undecodable payload
+    /// might be a view-once row whose caption would survive.
+    #[test]
+    fn scrub_refuses_to_stamp_done_over_an_unreadable_row() {
+        let store = Store::open_in_memory().unwrap();
+        let mut msg = scripted_messages()[0].clone();
+        msg.view_once = true;
+        msg.body = "a caption that must not survive".to_owned();
+        store.upsert_message(&msg, 0).unwrap();
+        store
+            .conn
+            .execute(
+                "UPDATE messages SET data = '{broken' WHERE chat_jid = ?1 AND id = ?2",
+                params![msg.chat_jid, msg.id],
+            )
+            .unwrap();
+        store
+            .conn
+            .execute(
+                "DELETE FROM store_meta WHERE key = ?1",
+                params![super::VIEW_ONCE_CAPTIONS_SCRUBBED_KEY],
+            )
+            .unwrap();
+        let err = store.scrub_view_once_captions_once().unwrap_err();
+        assert!(matches!(err, StoreError::CorruptData { .. }), "got {err:?}");
+        let stamped: bool = store
+            .conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM store_meta WHERE key = ?1)",
+                params![super::VIEW_ONCE_CAPTIONS_SCRUBBED_KEY],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(!stamped, "the scrub did not stamp itself done");
+    }
+
     fn poster_reference() -> backend::PosterRef {
         backend::PosterRef {
             direct_path: "/v/t62.7118-24/poster.enc".to_owned(),

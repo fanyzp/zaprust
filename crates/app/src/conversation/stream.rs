@@ -325,11 +325,11 @@ impl App {
                         idx += 1;
                         continue;
                     }
-                    let key = group_key(msg, key_of(msg).as_deref());
+                    let key = group_key(msg, key_of(msg));
                     let group_first = sep_break
-                        || match (key, idx.checked_sub(1).map(|i| &self.conversation[i])) {
+                        || match (&key, idx.checked_sub(1).map(|i| &self.conversation[i])) {
                             (Some(k), Some(prev)) => {
-                                group_key(prev, key_of(prev).as_deref()) != Some(k)
+                                group_key(prev, key_of(prev)).as_ref() != Some(k)
                             }
                             _ => true,
                         };
@@ -337,9 +337,9 @@ impl App {
                         && (self.conversation[idx + 1].day_label() != msg.day_label()
                             || divider_before(idx + 1));
                     let group_last = next_sep_break
-                        || match (key, self.conversation.get(idx + 1)) {
+                        || match (&key, self.conversation.get(idx + 1)) {
                             (Some(k), Some(next)) => {
-                                group_key(next, key_of(next).as_deref()) != Some(k)
+                                group_key(next, key_of(next)).as_ref() != Some(k)
                             }
                             _ => true,
                         };
@@ -1020,7 +1020,7 @@ fn time_chip_between(prev: &Message, msg: &Message) -> bool {
 /// sender's identity key (the author JID in live mode, the
 /// display name in the demo), so two group members who share
 /// a display name never pack into one run.
-fn group_key<'a>(m: &Message, key: Option<&'a str>) -> Option<(bool, Option<&'a str>)> {
+fn group_key(m: &Message, key: Option<String>) -> Option<(bool, Option<String>)> {
     if m.kind == core::model::MessageKind::System {
         None
     } else {
@@ -1052,13 +1052,13 @@ fn album_run_len(
     if !is_album_item(first) || first.quoted_body.is_some() {
         return 1;
     }
-    let first_key = group_key(first, key_of(first).as_deref());
+    let first_key = group_key(first, key_of(first));
     let mut n = 1;
     while start + n < msgs.len() {
         let next = &msgs[start + n];
         if !is_album_item(next)
             || next.quoted_body.is_some()
-            || group_key(next, key_of(next).as_deref()) != first_key
+            || group_key(next, key_of(next)) != first_key
             || next.day_label() != first.day_label()
         {
             break;

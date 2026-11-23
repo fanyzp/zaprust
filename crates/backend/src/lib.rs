@@ -3867,6 +3867,45 @@ mod tests {
         );
     }
 
+    /// The deletion helpers sweep the video cache with the
+    /// same stem contract as the downloads folder, and the
+    /// cache eviction drops the oldest files past the cap
+    /// while never touching the file that just landed.
+    #[test]
+    fn video_cache_dies_with_its_message_and_evicts_oldest_first() {
+        let root = TempTree::new("video-cache");
+        let cache = root.path().join("video-cache");
+        std::fs::create_dir_all(&cache).unwrap();
+        let stem = downloaded_media_stem("6281234567890@s.whatsapp.net", "VID1");
+        std::fs::write(cache.join(format!("{stem}.mp4")), vec![0u8; 100]).unwrap();
+        std::fs::write(cache.join("other-VID9.mp4"), vec![0u8; 100]).unwrap();
+        assert!(remove_download_for_message(
+            root.path(),
+            "6281234567890@s.whatsapp.net",
+            "VID1"
+        ));
+        assert!(!cache.join(format!("{stem}.mp4")).exists(), "the cached video goes with its message");
+        assert!(cache.join("other-VID9.mp4").exists(), "another chat's cache is untouched");
+
+        // Eviction: three 100-byte files, cap 250, the newest
+        // is protected; exactly the oldest goes.
+        let dir2 = root.path().join("cache2");
+        std::fs::create_dir_all(&dir2).unwrap();
+        let names = ["a.mp4", "b.mp4", "c.mp4"];
+        for name in names {
+            std::fs::write(dir2.join(name), vec![0u8; 100]).unwrap();
+            // Stagger the writes so the mtime age order is
+            // deterministic on any filesystem.
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let keep = dir2.join("c.mp4");
+        let removed = evict_video_cache(&dir2, 250, &keep);
+        assert_eq!(removed, 1);
+        assert!(!dir2.join("a.mp4").exists(), "the oldest is evicted");
+        assert!(dir2.join("b.mp4").exists());
+        assert!(dir2.join("c.mp4").exists(), "the just-landed file is never evicted");
+    }
+
     #[test]
     fn adoption_then_cleanup_removes_the_legacy_tree() {
         let root = TempTree::new("adopt-clean");

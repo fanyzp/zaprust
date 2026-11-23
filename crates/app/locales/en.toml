@@ -49,7 +49,6 @@
 # ---- chat list ----
 "chats.search_hint" = "Search"
 "chats.syncing" = "Syncing chats..."
-"chats.syncing_percent" = "Syncing chats... {percent}%"
 "chats.connection_lost" = "Connection lost. Reconnecting..."
 "chats.new_group" = "New group"
 "chats.no_match" = "No chats match this filter."

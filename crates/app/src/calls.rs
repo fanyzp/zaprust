@@ -1397,7 +1397,7 @@ mod tests {
             account: "Test account".to_owned(),
             connected_at: None,
             syncing: false,
-            sync_percent: None,
+            sync_last_activity: None,
             synced_once: false,
             store: None,
             jids,

@@ -198,13 +198,21 @@ impl App {
                         );
                         ui.add_space(8.0);
                     } else if session.syncing {
-                        let label = match session.sync_percent {
-                            Some(p) => {
-                                crate::i18n::tf("chats.syncing_percent", "percent", &p.to_string())
-                            }
-                            None => crate::i18n::t("chats.syncing"),
-                        };
-                        crate::widgets::loading_row(ui, &label, 12.5, t.text_secondary);
+                        // Indeterminate on purpose: the library
+                        // offers no honest percentage (its only
+                        // number is a per-chunk stamp from the
+                        // phone that can sit unchanged for minutes
+                        // on a populated roster), so the row never
+                        // shows one. The repaint tick keeps the
+                        // quiet-window fallback in poll_backend
+                        // timely while the row is up.
+                        ui.ctx().request_repaint_after(std::time::Duration::from_secs(1));
+                        crate::widgets::loading_row(
+                            ui,
+                            &crate::i18n::t("chats.syncing"),
+                            12.5,
+                            t.text_secondary,
+                        );
                         ui.add_space(8.0);
                     }
                 }
@@ -275,7 +283,11 @@ impl App {
                                 };
                                 let name = crate::i18n::t(filter_label_key(f));
                                 let label =
-                                    if count > 0 { format!("{name} {count}") } else { name };
+                                    if count > 0 {
+                                        format!("{name} {}", core::filter::format_count(count as u64))
+                                    } else {
+                                        name
+                                    };
                                 let resp = chip(ui, &label, selected, t);
                                 let clicked = resp.clicked();
                                 if selected {
@@ -846,7 +858,7 @@ pub(crate) fn chat_row(
         right_limit = right_limit.min(rect.right() - 56.0);
     }
     if chat.unread > 0 {
-        let count_label = chat.unread.to_string();
+        let count_label = core::filter::format_count(u64::from(chat.unread));
         let count_w = ui.ctx().fonts_mut(|f| {
             f.layout_no_wrap(count_label, FontId::proportional(11.0), rgb(t.badge_text)).size().x
         });
@@ -959,7 +971,7 @@ pub(crate) fn chat_row(
         // the count changes, so a new message arriving in a closed
         // chat visibly lands.
         let scale = crate::anim::pop_scale(ui, ("unread_badge", chat.id), chat.unread);
-        let label = chat.unread.to_string();
+        let label = core::filter::format_count(u64::from(chat.unread));
         let font = FontId::proportional(11.0 * scale);
         let text_w = ui.ctx().fonts_mut(|f| {
             f.layout_no_wrap(label.clone(), font.clone(), rgb(t.badge_text)).size().x
@@ -971,8 +983,7 @@ pub(crate) fn chat_row(
             Vec2::new(w, h),
         );
         // Muted chats wear the grey badge variant: the count is
-        // still there, it just does not shout in the accent
-        // green.
+        // still there, it just does not shout in the accent.
         let (badge_fill, badge_text_col) = if chat.muted {
             crate::theme::muted_badge(t)
         } else {

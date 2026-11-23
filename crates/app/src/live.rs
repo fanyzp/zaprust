@@ -178,14 +178,23 @@ pub(crate) struct LiveSession {
     pub(crate) connected_at: Option<i64>,
     /// Catch-up sync state, fed by the backend's sync events:
     /// `syncing` is true from a (re)connect until the backend
-    /// reports the sync complete, `sync_percent` is the latest
-    /// reported progress when the library provides one, and
-    /// `synced_once` records that at least one full catch-up has
-    /// completed this session (the chat list's status row reads
-    /// these; design standard section 14).
+    /// reports the sync complete or sync activity goes quiet
+    /// (see `poll_backend`), and `synced_once` records that at
+    /// least one full catch-up has completed this session (the
+    /// chat list's status row reads these; design standard
+    /// section 14). No percentage is kept: the library's only
+    /// numeric progress is a per-chunk stamp from the phone with
+    /// no monotonicity and no guaranteed final value, so any
+    /// number shown would be fake precision that can strand on
+    /// screen (it sat at 4% for minutes on a populated roster).
+    /// The row is an honest indeterminate "syncing" state.
     pub(crate) syncing: bool,
-    /// Latest sync progress, 0 to 100, when reported.
-    pub(crate) sync_percent: Option<u32>,
+    /// When sync activity was last reported (a connect, a
+    /// history chunk, an offline-sync preview). The quiet-window
+    /// fallback clears `syncing` when this goes stale, because
+    /// the library's completion event covers only the offline
+    /// drain and a catch-up can end without it.
+    pub(crate) sync_last_activity: Option<std::time::Instant>,
     /// Whether a catch-up sync has completed this session.
     pub(crate) synced_once: bool,
     /// The chat archive (write-through). `None` if it failed to open.
@@ -340,6 +349,14 @@ pub(crate) fn jid_id(jid: &str) -> u64 {
 
 fn message_id(chat_jid: &str, proto_id: &str) -> u64 {
     jid_id(&format!("{chat_jid}/{proto_id}"))
+}
+
+/// Whether a display string is a raw identifier rather than a
+/// name: nine or more characters, all digits. The same predicate
+/// guards renames in the backend and the archive; identity
+/// healing may only replace one of these, never a real name.
+fn is_raw_identifier(text: &str) -> bool {
+    text.len() >= 9 && text.bytes().all(|b| b.is_ascii_digit())
 }
 
 /// Maps a backend error string to a human sentence for the
@@ -868,7 +885,7 @@ impl crate::state::App {
             account: String::new(),
             connected_at: None,
             syncing: false,
-            sync_percent: None,
+            sync_last_activity: None,
             synced_once: false,
             store: store_opt,
             jids: HashMap::new(),
@@ -1490,6 +1507,26 @@ impl crate::state::App {
     /// repaint is requested so the queue keeps draining on the
     /// following frames without waiting for user input.
     pub(crate) fn poll_backend(&mut self, ctx: &egui::Context) {
+        // The sync row's quiet-window fallback: the library's
+        // completion event covers the offline drain, and a
+        // catch-up can end without one (a reconnect with an
+        // empty backlog produces no end marker), which used to
+        // latch the row forever. Twenty-five seconds with no
+        // sync activity reported means the catch-up is over in
+        // practice; the row clears and the session counts as
+        // synced.
+        if let Some(session) = &mut self.live {
+            if session.syncing {
+                let quiet = session
+                    .sync_last_activity
+                    .is_some_and(|last| last.elapsed() > std::time::Duration::from_secs(25));
+                if quiet {
+                    session.syncing = false;
+                    session.sync_last_activity = None;
+                    session.synced_once = true;
+                }
+            }
+        }
         // Top the queue up from the channel. Moving an event is
         // cheap; applying it is what costs, and that is budgeted
         // below. A closed channel is remembered for this frame:
@@ -1726,7 +1763,7 @@ impl crate::state::App {
                     // sync events, and the status row shows the
                     // sync until it completes (audit S12).
                     session.syncing = true;
-                    session.sync_percent = None;
+                    session.sync_last_activity = Some(std::time::Instant::now());
                     session.clear_qr();
                     // A used code must never resurface on the
                     // connect screen (logic review F13).
@@ -2197,20 +2234,24 @@ impl crate::state::App {
                 let rows = self.resolve_request_rows(requests);
                 self.groups.join_requests = Some((jid_id(&chat_jid), rows));
             }
-            BackendEvent::SyncProgress { percent } => {
+            BackendEvent::SyncProgress { .. } => {
                 if let Some(session) = &mut self.live {
                     session.syncing = true;
-                    if percent.is_some() {
-                        session.sync_percent = percent;
-                    }
+                    session.sync_last_activity = Some(std::time::Instant::now());
                 }
             }
             BackendEvent::SyncCompleted => {
                 if let Some(session) = &mut self.live {
                     session.syncing = false;
-                    session.sync_percent = None;
+                    session.sync_last_activity = None;
                     session.synced_once = true;
                 }
+            }
+            BackendEvent::ChatRenamed { chat_jid, title } => {
+                self.apply_chat_renamed(&chat_jid, &title);
+            }
+            BackendEvent::SenderNamed { sender_jid, name } => {
+                self.apply_sender_named(&sender_jid, &name);
             }
             BackendEvent::ConnectionLost { reason } => {
                 if let Some(session) = &mut self.live {
@@ -2287,6 +2328,53 @@ impl crate::state::App {
             }
             BackendEvent::CallEndedElsewhere { call_id, chat_jid, answered, at } => {
                 self.record_elsewhere_call(&call_id, &chat_jid, answered, at);
+            }
+        }
+    }
+
+    /// Applies a resolved display name for a chat whose title is
+    /// still a raw identifier (identity healing from the backend:
+    /// a contact update, a group subject, a LID-to-phone mapping).
+    /// The archive rename carries the same guard, so memory and
+    /// disk only ever move from identifier to name.
+    fn apply_chat_renamed(&mut self, chat_jid: &str, title: &str) {
+        if let Some(session) = &mut self.live {
+            if let Some(store) = &session.store {
+                let _ = store.rename_chat(chat_jid, title);
+            }
+        }
+        let id = jid_id(chat_jid);
+        if let Some(chat) = self.chats.iter_mut().find(|c| c.id == id) {
+            if chat.title.is_empty() || is_raw_identifier(&chat.title) {
+                chat.title = title.to_owned();
+            }
+        }
+    }
+
+    /// Applies a resolved display name for one sender: stored
+    /// message labels and previews that still show the sender's
+    /// raw identifier are rewritten in the archive and in memory.
+    /// Labels that already hold a name are never touched.
+    fn apply_sender_named(&mut self, sender_jid: &str, name: &str) {
+        let raw = sender_jid.split('@').next().unwrap_or(sender_jid);
+        if !is_raw_identifier(raw) {
+            return;
+        }
+        if let Some(session) = &mut self.live {
+            if let Some(store) = &session.store {
+                let _ = store.rename_sender(sender_jid, name);
+            }
+            for list in session.messages.values_mut() {
+                for (_, msg) in list.iter_mut() {
+                    if msg.sender.as_deref() == Some(raw) {
+                        msg.sender = Some(name.to_owned());
+                    }
+                }
+            }
+        }
+        for chat in self.chats.iter_mut() {
+            if chat.preview_sender.as_deref() == Some(raw) {
+                chat.preview_sender = Some(name.to_owned());
             }
         }
     }
@@ -4679,7 +4767,7 @@ mod burst_drain_tests {
             account: "Test account".to_owned(),
             connected_at: None,
             syncing: false,
-            sync_percent: None,
+            sync_last_activity: None,
             synced_once: false,
             store: Some(store::Store::open_in_memory().unwrap()),
             jids: HashMap::new(),
@@ -6635,7 +6723,7 @@ mod chat_state_routing_tests {
             account: "Test account".to_owned(),
             connected_at: None,
             syncing: false,
-            sync_percent: None,
+            sync_last_activity: None,
             synced_once: false,
             store: Some(store::Store::open_in_memory().unwrap()),
             jids: HashMap::new(),
@@ -8190,7 +8278,7 @@ mod mirror_pruning_tests {
             account: "Test account".to_owned(),
             connected_at: None,
             syncing: false,
-            sync_percent: None,
+            sync_last_activity: None,
             synced_once: false,
             store: Some(store::Store::open_in_memory().unwrap()),
             jids: HashMap::new(),
@@ -8734,7 +8822,7 @@ mod qr_gate_tests {
             account: String::new(),
             connected_at: None,
             syncing: false,
-            sync_percent: None,
+            sync_last_activity: None,
             synced_once: false,
             store: None,
             jids: HashMap::new(),
@@ -8945,7 +9033,7 @@ mod logout_tests {
             account: "Test account".to_owned(),
             connected_at: None,
             syncing: false,
-            sync_percent: None,
+            sync_last_activity: None,
             synced_once: false,
             store: Some(store::Store::open_in_memory().unwrap()),
             jids: HashMap::new(),
@@ -9165,7 +9253,7 @@ mod reaction_tests {
             account: "Test account".to_owned(),
             connected_at: None,
             syncing: false,
-            sync_percent: None,
+            sync_last_activity: None,
             synced_once: false,
             store: Some(store::Store::open_in_memory().unwrap()),
             jids: HashMap::new(),
@@ -9488,7 +9576,7 @@ mod star_pin_tests {
             account: "Test account".to_owned(),
             connected_at: None,
             syncing: false,
-            sync_percent: None,
+            sync_last_activity: None,
             synced_once: false,
             store: Some(store::Store::open_in_memory().unwrap()),
             jids: HashMap::new(),

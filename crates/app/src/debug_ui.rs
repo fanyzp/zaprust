@@ -53,6 +53,8 @@ impl App {
                 None,
             ),
             BackendEvent::SyncCompleted => ("backend", "SyncCompleted".to_owned(), None),
+            BackendEvent::ChatRenamed { .. } => ("backend", "ChatRenamed".to_owned(), None),
+            BackendEvent::SenderNamed { .. } => ("backend", "SenderNamed".to_owned(), None),
             BackendEvent::OwnProfile(_) => {
                 ("backend", "OwnProfile received (values redacted)".to_owned(), None)
             }

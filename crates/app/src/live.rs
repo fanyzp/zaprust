@@ -12999,7 +12999,7 @@ mod star_pin_tests {
             app.chats.iter().map(|c| &c.title).collect::<Vec<_>>()
         );
         assert!(
-            app.live.as_ref().unwrap().messages.get(&jid_id("status@broadcast")).is_none(),
+            !app.live.as_ref().unwrap().messages.contains_key(&jid_id("status@broadcast")),
             "no mirror is kept under the broadcast address"
         );
     }

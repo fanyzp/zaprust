@@ -152,10 +152,13 @@ impl App {
                         };
                         // The same row in the danger colour, for
                         // the destructive entries (section 24).
-                        let mut row_danger = |ui: &mut egui::Ui,
-                                              icon: crate::icons::Icon,
-                                              label: &str,
-                                              key: &'static str| {
+                        // It reports the click instead of writing
+                        // `action` itself: two closures may not
+                        // hold the same mutable capture.
+                        let row_danger = |ui: &mut egui::Ui,
+                                          icon: crate::icons::Icon,
+                                          label: &str|
+                         -> bool {
                             let (rect, resp) =
                                 ui.allocate_exact_size(Vec2::new(204.0, 32.0), Sense::click());
                             if resp.hovered() {
@@ -180,9 +183,7 @@ impl App {
                                 FontId::proportional(13.0),
                                 rgb(t.danger),
                             );
-                            if resp.clicked() && !exiting {
-                                action = Some(key);
-                            }
+                            resp.clicked() && !exiting
                         };
                         row(
                             ui,
@@ -274,18 +275,20 @@ impl App {
                         // colour on icon and label alike (design
                         // standard section 24); the neutral row
                         // closure above must not render them.
-                        row_danger(
+                        if row_danger(
                             ui,
                             crate::icons::Icon::Delete,
                             &crate::i18n::t("chat.clear_title"),
-                            "clear",
-                        );
-                        row_danger(
+                        ) {
+                            action = Some("clear");
+                        }
+                        if row_danger(
                             ui,
                             crate::icons::Icon::Delete,
                             &crate::i18n::t("chat.delete_title"),
-                            "delete",
-                        );
+                        ) {
+                            action = Some("delete");
+                        }
                     });
                 crate::theme::paint_glass_edge(ui.painter(), menu_frame.response.rect, 14.0, t);
             });

@@ -2361,7 +2361,6 @@ impl crate::state::App {
             }
             BackendEvent::MessagePinChanged { chat_jid, message_id: pid, pinned } => {
                 self.apply_server_pin_changed(&chat_jid, &pid, pinned);
-                EventBatch::default()
             }
             BackendEvent::DisappearingTimerFailed { chat_jid, message } => {
                 let chat_id = jid_id(&chat_jid);
@@ -12180,8 +12179,6 @@ mod star_pin_tests {
         msg
     }
 
-    const DM_JID: &str = "6281234567890@s.whatsapp.net";
-
     fn alice_dm_message() -> LiveMessage {
         let mut msg = LiveMessage::text(
             "d1",
@@ -12585,7 +12582,7 @@ mod star_pin_tests {
             app.conversation.iter().any(|m| m.id == mid2),
             "nothing is cleared before the server answers"
         );
-        tx.send(BackendEvent::ChatCleared { chat_jid: GROUP_JID.to_owned(), keep_starred: true })
+        tx.send(BackendEvent::ChatCleared { chat_jid: GROUP_JID.to_owned(), delete_starred: false })
             .unwrap();
         drain_all(&mut app, &ctx);
         assert!(app.conversation.iter().any(|m| m.id == mid), "the starred message stays");
@@ -12739,7 +12736,7 @@ mod star_pin_tests {
         app.toggle_block_contact(chat_id);
         assert!(app.blocked_chats.contains(&chat_id), "the set flips at once");
         assert!(app.notice.is_none(), "no success is claimed before the server answers");
-        tx.send(BackendEvent::Blocklist { jids: vec![DM_JID.to_owned()] }).unwrap();
+        tx.send(BackendEvent::Blocklist(vec![DM_JID.to_owned()])).unwrap();
         drain_all(&mut app, &ctx);
         assert!(
             app.notice_str() == Some("Contact blocked."),

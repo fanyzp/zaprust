@@ -2761,7 +2761,12 @@ mod live_pairing_fix_tests {
     /// never downgrade a saved name.
     #[test]
     fn history_sender_prefers_the_saved_name() {
-        let mut book = super::IdentityBook::default();
+        let mut book = super::IdentityBook {
+            saved: std::collections::HashMap::new(),
+            push: std::collections::HashMap::new(),
+            lid_to_pn: std::collections::HashMap::new(),
+            pn_to_lid: std::collections::HashMap::new(),
+        };
         book.saved.insert(
             "6281234567890@s.whatsapp.net".to_owned(),
             "Saved Sarah".to_owned(),

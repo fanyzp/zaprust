@@ -2085,9 +2085,7 @@ impl crate::state::App {
                         .messages
                         .values()
                         .flat_map(|entry| entry.iter())
-                        .filter_map(|(_, m)| {
-                            m.delivery.map(|d| (m.id, backend_delivery(d)))
-                        })
+                        .filter_map(|(_, m)| m.delivery.map(|d| (m.id, backend_delivery(d))))
                         .collect();
                     let mut latest: HashMap<u64, (LiveMessage, i64)> = HashMap::new();
                     let mut order: Vec<u64> = Vec::new();

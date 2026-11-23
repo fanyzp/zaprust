@@ -142,12 +142,6 @@ pub(crate) fn modal_dim(p: f32) -> Color32 {
 /// backgrounds, and the interiors of text fields.
 pub(crate) const GLASS_ALPHA: u8 = 200;
 
-/// How far the glass fill leans toward the seed accent. Kept
-/// slight: the glass identity is a hint of the seed over a
-/// neutral base, not a wash of color (the neutral-surfaces
-/// color pass stepped this down from 0.14; bright seeds still
-/// read tinted at 0.08, so it sits at 0.05).
-
 /// The text-bearing glass alpha: the dark theme can run slightly
 /// lower (light text on dark), the light theme needs more body
 /// so dark text keeps its contrast.

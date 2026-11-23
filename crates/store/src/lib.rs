@@ -2083,9 +2083,9 @@ impl Store {
     /// # Errors
     /// [`StoreError`] on SQLite failures.
     pub fn starred_messages(&self) -> Result<Vec<(LiveMessage, i64)>, StoreError> {
-        let mut stmt = self.conn.prepare(
-            "SELECT chat_jid FROM messages WHERE flags & ?1 != 0 GROUP BY chat_jid",
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT chat_jid FROM messages WHERE flags & ?1 != 0 GROUP BY chat_jid")?;
         let chat_rows = stmt.query_map(params![FLAG_STARRED], |row| row.get::<_, String>(0))?;
         let mut chat_jids = Vec::new();
         for row in chat_rows {
@@ -2680,7 +2680,9 @@ mod tests {
         store.upsert_message(&lesser, 0).unwrap();
         // The receipt path advances monotonically too.
         assert!(store.set_message_delivery(&chat.jid, "d2", backend::DeliveryState::Read).unwrap());
-        assert!(!store.set_message_delivery(&chat.jid, "d2", backend::DeliveryState::Sent).unwrap());
+        assert!(!store
+            .set_message_delivery(&chat.jid, "d2", backend::DeliveryState::Sent)
+            .unwrap());
         let loaded = store.messages(&chat.jid).unwrap();
         assert_eq!(loaded[0].0.delivery, Some(backend::DeliveryState::Read));
         assert_eq!(loaded[1].0.delivery, Some(backend::DeliveryState::Read));
@@ -2695,8 +2697,22 @@ mod tests {
         for chat in scripted_chats() {
             store.upsert_chat(&chat).unwrap();
         }
-        let a = LiveMessage::text("sa", scripted_chats()[0].jid.clone(), Some("A".into()), "one", 100, false);
-        let b = LiveMessage::text("sb", scripted_chats()[1].jid.clone(), Some("B".into()), "two", 200, false);
+        let a = LiveMessage::text(
+            "sa",
+            scripted_chats()[0].jid.clone(),
+            Some("A".into()),
+            "one",
+            100,
+            false,
+        );
+        let b = LiveMessage::text(
+            "sb",
+            scripted_chats()[1].jid.clone(),
+            Some("B".into()),
+            "two",
+            200,
+            false,
+        );
         store.upsert_message(&a, FLAG_STARRED).unwrap();
         store.upsert_message(&b, FLAG_STARRED).unwrap();
         let starred = store.starred_messages().unwrap();

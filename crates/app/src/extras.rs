@@ -109,7 +109,6 @@ pub(crate) fn write_file_atomic(path: &std::path::Path, bytes: &[u8]) {
     }
 }
 
-
 /// Whether a live message body is media-only, as a pure
 /// predicate so it is testable without a window or a backend.
 ///

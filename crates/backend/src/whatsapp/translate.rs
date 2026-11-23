@@ -1082,7 +1082,9 @@ fn history_message(
         msg.delivery = match info.status {
             Some(WireStatus::Read) | Some(WireStatus::Played) => Some(crate::DeliveryState::Read),
             Some(WireStatus::DeliveryAck) => Some(crate::DeliveryState::Delivered),
-            Some(WireStatus::ServerAck) | Some(WireStatus::Pending) => Some(crate::DeliveryState::Sent),
+            Some(WireStatus::ServerAck) | Some(WireStatus::Pending) => {
+                Some(crate::DeliveryState::Sent)
+            }
             _ => None,
         };
     }

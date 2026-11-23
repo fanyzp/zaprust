@@ -1153,13 +1153,7 @@ fn paint_system_pill(ui: &egui::Ui, t: Tokens, rect: egui::Rect, kind: SystemPil
         crate::theme::card_soft(t)
     };
     let painter = ui.painter();
-    painter.rect(
-        rect,
-        CornerRadius::same(radius),
-        fill,
-        Stroke::NONE,
-        egui::StrokeKind::Inside,
-    );
+    painter.rect(rect, CornerRadius::same(radius), fill, Stroke::NONE, egui::StrokeKind::Inside);
     fill
 }
 

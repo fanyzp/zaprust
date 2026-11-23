@@ -421,7 +421,11 @@ pub(super) fn dock_member_row(
             ui.vertical(|ui| {
                 ui.label(RichText::new(name).size(12.5).color(rgb(t.text_primary)));
                 if let Some(address) = address {
-                    ui.label(RichText::new(address).size(crate::theme::TEXT_CAPTION).color(rgb(t.text_faint)));
+                    ui.label(
+                        RichText::new(address)
+                            .size(crate::theme::TEXT_CAPTION)
+                            .color(rgb(t.text_faint)),
+                    );
                 }
             });
             if kebab || admin {

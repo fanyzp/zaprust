@@ -429,7 +429,9 @@ impl App {
             .exact_size(280.0)
             .frame(egui::Frame::new().fill(rgb(t.bg_panel)).inner_margin(Margin::symmetric(14, 12)))
             .show(root, |ui| {
-                ui.label(RichText::new(title).font(crate::theme::semibold(crate::theme::TEXT_HEADING)));
+                ui.label(
+                    RichText::new(title).font(crate::theme::semibold(crate::theme::TEXT_HEADING)),
+                );
                 ui.add_space(10.0);
                 if title == "Settings" {
                     ui.horizontal(|ui| {

@@ -20,7 +20,6 @@ impl App {
         self.composer.rich_menu_open = false;
     }
 
-
     /// Draws the floating composer stack and measures it: the
     /// measured height becomes the stream's bottom clearance
     /// on the next frame (see draw_conversation).
@@ -876,7 +875,6 @@ impl App {
                 crate::anim::scalar(ui, "composer_stack_h", measured_stack_h, secs);
         }
     }
-
 }
 
 /// The tallest the composer text field may grow, in visual

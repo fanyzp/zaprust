@@ -1248,7 +1248,9 @@ pub enum ReceiptKind {
 /// Persisted delivery state of an outgoing message, as synced
 /// state (never a display constant). Ordered by rank: a stored
 /// state never moves backward.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub enum DeliveryState {
     /// Reached the server (one tick).
     Sent,
@@ -1262,18 +1264,30 @@ impl DeliveryState {
     /// Rank for monotonic merges (higher wins).
     #[must_use]
     pub fn rank(self) -> u8 {
-        match self { Self::Sent => 1, Self::Delivered => 2, Self::Read => 3 }
+        match self {
+            Self::Sent => 1,
+            Self::Delivered => 2,
+            Self::Read => 3,
+        }
     }
     /// The stronger of two states.
     #[must_use]
     pub fn max_opt(a: Option<Self>, b: Option<Self>) -> Option<Self> {
-        match (a, b) { (Some(x), Some(y)) => Some(if x.rank() >= y.rank() { x } else { y }), (Some(x), None) => Some(x), (None, y) => y }
+        match (a, b) {
+            (Some(x), Some(y)) => Some(if x.rank() >= y.rank() { x } else { y }),
+            (Some(x), None) => Some(x),
+            (None, y) => y,
+        }
     }
 }
 
 impl From<ReceiptKind> for DeliveryState {
     fn from(k: ReceiptKind) -> Self {
-        match k { ReceiptKind::Sent => Self::Sent, ReceiptKind::Delivered | ReceiptKind::Played => Self::Delivered, ReceiptKind::Read => Self::Read }
+        match k {
+            ReceiptKind::Sent => Self::Sent,
+            ReceiptKind::Delivered | ReceiptKind::Played => Self::Delivered,
+            ReceiptKind::Read => Self::Read,
+        }
     }
 }
 

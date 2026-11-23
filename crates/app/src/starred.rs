@@ -175,12 +175,8 @@ impl App {
             }
             for entry in &mut view {
                 if entry.id == self.selected_chat {
-                    let mut fresh: Vec<Message> = self
-                        .conversation
-                        .iter()
-                        .filter(|m| m.starred)
-                        .cloned()
-                        .collect();
+                    let mut fresh: Vec<Message> =
+                        self.conversation.iter().filter(|m| m.starred).cloned().collect();
                     let fresh_ids: std::collections::HashSet<u64> =
                         fresh.iter().map(|m| m.id).collect();
                     entry.messages.retain(|m| !fresh_ids.contains(&m.id));

@@ -242,8 +242,8 @@ async fn heal_one(
             // real structure, not from name tags.
             sink.emit(BackendEvent::ChatCommunity {
                 chat_jid: jid.to_owned(),
-                parent_jid: meta.parent_group_jid().map(|p| p.to_string()),
-                is_parent: meta.is_parent_group(),
+                parent_jid: meta.parent_group_jid.as_ref().map(|p| p.to_string()),
+                is_parent: meta.is_parent_group,
             });
             let mut renamed = false;
             if let Some(subject) = meta.subject.clone().filter(|s| !s.trim().is_empty()) {

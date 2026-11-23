@@ -2795,11 +2795,22 @@ pub(super) async fn run_async(
                                 }
                             };
                             match fetched {
-                                Ok(path) => events.emit(BackendEvent::VideoReady {
-                                    chat_jid,
-                                    message_id,
-                                    path: path.to_string_lossy().into_owned(),
-                                }),
+                                Ok(path) => {
+                                    // The cache is a bounded
+                                    // working set: landing a new
+                                    // video evicts the oldest
+                                    // ones past the cap.
+                                    crate::evict_video_cache(
+                                        &dir,
+                                        crate::VIDEO_CACHE_CAP_BYTES,
+                                        &path,
+                                    );
+                                    events.emit(BackendEvent::VideoReady {
+                                        chat_jid,
+                                        message_id,
+                                        path: path.to_string_lossy().into_owned(),
+                                    });
+                                }
                                 Err(message) => events.emit(BackendEvent::VideoFetchFailed {
                                     chat_jid,
                                     message_id,

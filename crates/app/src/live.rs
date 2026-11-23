@@ -1152,23 +1152,35 @@ impl crate::state::App {
         // so the poll stays votable and its votes stay decryptable
         // in this session too.
         let mut archived_poll_secrets: Vec<BackendCommand> = Vec::new();
+        // Archive load problems, surfaced once the session is
+        // installed: a load that partially fails must never
+        // pass silently (the rest of the archive still loads;
+        // the loss is reported, not hidden).
+        let mut load_problems: Vec<String> = Vec::new();
         if let Some(store) = &session.store {
             // Stored profile pictures seed the avatar cache:
             // positives stage their bytes for first display,
             // negatives remember when they were answered.
-            if let Ok(rows) = store.avatars() {
-                for (jid, _picture_id, bytes, fetched_at) in rows {
-                    match bytes {
-                        Some(bytes) => {
-                            session.avatar_bytes.insert(jid, bytes);
-                        }
-                        None => {
-                            session.avatar_missing.insert(jid, fetched_at);
+            match store.avatars() {
+                Ok(rows) => {
+                    for (jid, _picture_id, bytes, fetched_at) in rows {
+                        match bytes {
+                            Some(bytes) => {
+                                session.avatar_bytes.insert(jid, bytes);
+                            }
+                            None => {
+                                session.avatar_missing.insert(jid, fetched_at);
+                            }
                         }
                     }
                 }
+                Err(e) => load_problems.push(format!("saved profile pictures ({e})")),
             }
-            if let Ok(chats) = store.chats() {
+            let chats_result = store.chats();
+            if let Err(e) = &chats_result {
+                load_problems.push(format!("the saved chat list ({e})"));
+            }
+            if let Ok(chats) = chats_result {
                 for chat in &chats {
                     session.jids.insert(jid_id(&chat.jid), chat.jid.clone());
                     session.times.insert(jid_id(&chat.jid), chat.timestamp);
@@ -1181,7 +1193,22 @@ impl crate::state::App {
                     {
                         session.names.insert(chat.jid.clone(), chat.title.clone());
                     }
-                    if let Ok(msgs) = store.messages(&chat.jid) {
+                    let msgs = match store.messages_reporting(&chat.jid) {
+                        Ok((msgs, skipped)) => {
+                            if !skipped.is_empty() {
+                                load_problems.push(format!(
+                                    "{} unreadable message(s) in one chat",
+                                    skipped.len()
+                                ));
+                            }
+                            msgs
+                        }
+                        Err(e) => {
+                            load_problems.push(format!("one chat's history ({e})"));
+                            Vec::new()
+                        }
+                    };
+                    {
                         for (m, flags) in &msgs {
                             if *flags != 0 {
                                 session.flags.insert(message_id(&m.chat_jid, &m.id), *flags);
@@ -1375,6 +1402,14 @@ impl crate::state::App {
             // posted as an error, never an info note.
             self.live_start_error = Some(note.clone());
             self.notice = Some(Notice::error(note));
+        } else if !load_problems.is_empty() {
+            // A partial load: the archive opened and the rest
+            // loaded, but something was lost on the way in and
+            // the user hears about it exactly once.
+            self.notice = Some(Notice::error(format!(
+                "Some saved data could not be read: {}. Everything else loaded normally.",
+                load_problems.join("; ")
+            )));
         }
         self.live_mode = true;
         // The Calls panel's live history loads from the same

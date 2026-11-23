@@ -241,7 +241,12 @@ pub fn remove_download_for_message(
     message_id: &str,
 ) -> bool {
     let stem = downloaded_media_stem(chat_jid, message_id);
+    // The downloads folder and the video cache share the stem
+    // contract: a deleted message takes both its saved
+    // download and its cached playback file.
     remove_downloads_matching(&data_dir.join("downloads"), &format!("{stem}."), true) > 0
+        || remove_downloads_matching(&data_dir.join("video-cache"), &format!("{stem}."), true)
+            > 0
 }
 
 /// Removes every downloaded media file belonging to a chat,
@@ -253,6 +258,53 @@ pub fn remove_download_for_message(
 pub fn remove_downloads_for_chat(data_dir: &std::path::Path, chat_jid: &str) -> usize {
     let user = chat_jid.split('@').next().unwrap_or(chat_jid);
     remove_downloads_matching(&data_dir.join("downloads"), &format!("{user}-"), false)
+        + remove_downloads_matching(&data_dir.join("video-cache"), &format!("{user}-"), false)
+}
+
+/// The video cache's total size cap: watched videos are
+/// plaintext on disk, so the cache is a bounded working set,
+/// not an archive. Oldest files (by modification time) are
+/// evicted first; the file named `keep` (the one just landed)
+/// is never evicted.
+pub const VIDEO_CACHE_CAP_BYTES: u64 = 512 * 1024 * 1024;
+
+/// Evicts the oldest files of the video cache directory
+/// until its total size is at or under `cap_bytes`. Returns
+/// how many files were removed. Best-effort: unreadable
+/// entries are skipped, never an error.
+pub fn evict_video_cache(dir: &std::path::Path, cap_bytes: u64, keep: &std::path::Path) -> usize {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    let mut files: Vec<(std::path::PathBuf, u64, std::time::SystemTime)> = Vec::new();
+    let mut total: u64 = 0;
+    for entry in entries.flatten() {
+        let Ok(meta) = entry.metadata() else { continue };
+        if !meta.is_file() {
+            continue;
+        }
+        let mtime = meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        total += meta.len();
+        files.push((entry.path(), meta.len(), mtime));
+    }
+    if total <= cap_bytes {
+        return 0;
+    }
+    files.sort_by_key(|(_, _, mtime)| *mtime);
+    let mut removed = 0;
+    for (path, len, _) in files {
+        if total <= cap_bytes {
+            break;
+        }
+        if path == keep {
+            continue;
+        }
+        if std::fs::remove_file(&path).is_ok() {
+            total -= len;
+            removed += 1;
+        }
+    }
+    removed
 }
 
 /// Removes files in `dir` whose names start with `prefix`.

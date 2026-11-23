@@ -52,6 +52,16 @@ pub enum StoreError {
     /// The database carries a schema version this build cannot
     /// interpret at all (negative or otherwise invalid).
     BadSchemaVersion(i64),
+    /// One message row's rich payload is not decodable. Named
+    /// by chat and message so the failure is diagnosable;
+    /// silently treating it as empty would erase the row's
+    /// references and thumbnails on the next rewrite.
+    CorruptData {
+        /// Chat the corrupt row belongs to.
+        chat_jid: String,
+        /// The corrupt row's message ID.
+        id: String,
+    },
 }
 
 impl fmt::Display for StoreError {
@@ -65,6 +75,10 @@ impl fmt::Display for StoreError {
             Self::SchemaTooNew { found, supported } => write!(
                 f,
                 "archive schema version {found} is newer than this build supports ({supported})"
+            ),
+            Self::CorruptData { chat_jid, id } => write!(
+                f,
+                "archive message data is corrupt (chat {chat_jid}, message {id})"
             ),
         }
     }
@@ -563,8 +577,10 @@ impl Store {
         let mut scrubbed_any = false;
         let tx = self.conn.unchecked_transaction()?;
         for (chat_jid, id, timestamp, body, data_text) in &rows {
-            let data: MessageData =
-                data_text.as_deref().and_then(|t| serde_json::from_str(t).ok()).unwrap_or_default();
+            let data: MessageData = match data_text.as_deref() {
+                Some(text) => Self::parse_message_data(text, chat_jid, id)?,
+                None => MessageData::default(),
+            };
             let entry = newest.entry(chat_jid.as_str()).or_insert((*timestamp, id.as_str(), false));
             if (*timestamp, id.as_str()) >= (entry.0, entry.1) {
                 *entry = (*timestamp, id.as_str(), data.view_once);
@@ -1028,6 +1044,17 @@ impl Store {
         Ok(())
     }
 
+    /// Parses one message row's rich payload. A payload that
+    /// does not decode is a loud failure, never a silent
+    /// default: treating it as empty would erase the row's
+    /// references and thumbnails on the next rewrite.
+    fn parse_message_data(text: &str, chat_jid: &str, id: &str) -> Result<MessageData, StoreError> {
+        serde_json::from_str(text).map_err(|_| StoreError::CorruptData {
+            chat_jid: chat_jid.to_owned(),
+            id: id.to_owned(),
+        })
+    }
+
     /// Reads and parses one message row's rich payload, or
     /// `None` when the row does not exist or carries none.
     fn read_message_data(
@@ -1044,7 +1071,10 @@ impl Store {
             )
             .optional()?
             .flatten();
-        Ok(data_text.map(|text| serde_json::from_str(&text).unwrap_or_default()))
+        match data_text {
+            Some(text) => Ok(Some(Self::parse_message_data(&text, chat_jid, id)?)),
+            None => Ok(None),
+        }
     }
 
     /// The single-row write behind [`Store::upsert_message`] and
@@ -1356,7 +1386,7 @@ impl Store {
             .optional()?
             .flatten();
         let Some(data_text) = data_text else { return Ok(()) };
-        let mut data: MessageData = serde_json::from_str(&data_text).unwrap_or_default();
+        let mut data: MessageData = Self::parse_message_data(&data_text, chat_jid, id)?;
         if data.photo_ref.is_none() && data.photo_thumbnail.is_none() {
             return Ok(());
         }
@@ -1442,7 +1472,7 @@ impl Store {
             .optional()?
             .flatten();
         let Some(data_text) = data_text else { return Ok(()) };
-        let mut data: MessageData = serde_json::from_str(&data_text).unwrap_or_default();
+        let mut data: MessageData = Self::parse_message_data(&data_text, chat_jid, id)?;
         if data.video_ref.is_none() && data.video_thumbnail.is_none() && data.poster_ref.is_none() {
             return Ok(());
         }
@@ -1481,7 +1511,7 @@ impl Store {
             .optional()?
             .flatten();
         let Some(data_text) = data_text else { return Ok(()) };
-        let mut data: MessageData = serde_json::from_str(&data_text).unwrap_or_default();
+        let mut data: MessageData = Self::parse_message_data(&data_text, chat_jid, id)?;
         if data.voice_ref.is_none() && data.voice_waveform.is_none() {
             return Ok(());
         }
@@ -1516,7 +1546,7 @@ impl Store {
             .optional()?
             .flatten();
         let Some(data_text) = data_text else { return Ok(()) };
-        let mut data: MessageData = serde_json::from_str(&data_text).unwrap_or_default();
+        let mut data: MessageData = Self::parse_message_data(&data_text, chat_jid, id)?;
         if data.sticker_ref.is_none() {
             return Ok(());
         }
@@ -1549,7 +1579,7 @@ impl Store {
             .optional()?
             .flatten();
         let Some(data_text) = data_text else { return Ok(()) };
-        let mut data: MessageData = serde_json::from_str(&data_text).unwrap_or_default();
+        let mut data: MessageData = Self::parse_message_data(&data_text, chat_jid, id)?;
         if data.document_ref.is_none() {
             return Ok(());
         }
@@ -1591,7 +1621,7 @@ impl Store {
             .optional()?
             .flatten();
         let Some(data_text) = data_text else { return Ok(()) };
-        let mut data: MessageData = serde_json::from_str(&data_text).unwrap_or_default();
+        let mut data: MessageData = Self::parse_message_data(&data_text, chat_jid, id)?;
         if data.video_thumbnail.as_deref() == Some(thumbnail) {
             return Ok(());
         }
@@ -1633,7 +1663,7 @@ impl Store {
             .optional()?
             .flatten();
         let Some(data_text) = data_text else { return Ok(()) };
-        let mut data: MessageData = serde_json::from_str(&data_text).unwrap_or_default();
+        let mut data: MessageData = Self::parse_message_data(&data_text, chat_jid, id)?;
         let mut changed = false;
         if let Some(reference) = &mut data.photo_ref {
             reference.direct_path = direct_path.to_owned();
@@ -1892,14 +1922,40 @@ impl Store {
     /// # Errors
     /// [`StoreError`] on SQLite failures.
     pub fn messages(&self, chat_jid: &str) -> Result<Vec<(LiveMessage, i64)>, StoreError> {
+        Ok(self.messages_reporting(chat_jid)?.0)
+    }
+
+    /// [`Store::messages`] with the load report: the IDs of
+    /// rows whose rich payload did not decode. Those rows are
+    /// skipped (the rest of the chat loads), and the caller
+    /// surfaces the loss instead of the archive silently
+    /// coming back short.
+    pub fn messages_reporting(
+        &self,
+        chat_jid: &str,
+    ) -> Result<(Vec<(LiveMessage, i64)>, Vec<String>), StoreError> {
         let mut stmt = self.conn.prepare(
             "SELECT chat_jid, id, sender, body, timestamp, from_me, data, flags, expires_at
              FROM messages WHERE chat_jid = ?1 ORDER BY timestamp ASC, id ASC",
         )?;
+        let mut skipped: Vec<String> = Vec::new();
         let rows = stmt.query_map(params![chat_jid], |row| {
             let data_text: Option<String> = row.get(6)?;
-            let data: MessageData =
-                data_text.and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+            let row_id: String = row.get(1)?;
+            let data: MessageData = match data_text.as_deref() {
+                Some(text) => match Self::parse_message_data(text, chat_jid, &row_id) {
+                    Ok(data) => data,
+                    Err(_) => {
+                        // Marked by a sentinel the caller
+                        // filters below: the row is skipped,
+                        // its ID reported.
+                        let mut data = MessageData::default();
+                        data.sender_jid = Some("\u{1}corrupt".to_owned());
+                        data
+                    }
+                },
+                None => MessageData::default(),
+            };
             let mut msg = LiveMessage::text(
                 row.get::<_, String>(1)?,
                 row.get::<_, String>(0)?,
@@ -1948,9 +2004,14 @@ impl Store {
         })?;
         let mut out = Vec::new();
         for row in rows {
-            out.push(row?);
+            let (msg, flags) = row?;
+            if msg.sender_jid.as_deref() == Some("\u{1}corrupt") {
+                skipped.push(msg.id.clone());
+                continue;
+            }
+            out.push((msg, flags));
         }
-        Ok(out)
+        Ok((out, skipped))
     }
 
     /// Global message search over the archive (design standard

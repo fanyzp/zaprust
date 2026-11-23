@@ -12570,6 +12570,7 @@ mod star_pin_tests {
         tx.send(BackendEvent::ChatCleared {
             chat_jid: GROUP_JID.to_owned(),
             delete_starred: false,
+            last_message_timestamp: None,
         })
         .unwrap();
         drain_all(&mut app, &ctx);

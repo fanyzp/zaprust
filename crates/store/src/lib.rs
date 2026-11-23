@@ -376,11 +376,11 @@ struct MessageData {
 /// One stored profile picture row: (picture_id, bytes,
 /// fetched_at). Bytes are `None` on a negative row (the identity
 /// has no picture, or privacy refused it).
+pub type AvatarRow = (Option<String>, Option<Vec<u8>>, i64);
+
 /// [`Store::messages_reporting`] result: the decoded rows plus
 /// the IDs of rows skipped because their payload was corrupt.
 pub type MessagesReport = (Vec<(LiveMessage, i64)>, Vec<String>);
-
-pub type AvatarRow = (Option<String>, Option<Vec<u8>>, i64);
 
 /// One row of the full avatar listing: the identity's JID plus
 /// its [`AvatarRow`].

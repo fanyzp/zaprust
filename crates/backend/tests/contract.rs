@@ -1080,7 +1080,7 @@ fn create_group_fetch_members_and_download_honesty() {
         .unwrap();
     let events = collect_until(&ch.events, 5, |e| matches!(e, BackendEvent::Error { .. }));
     assert!(
-        events.iter().any(|e| matches!(e, BackendEvent::Error { message } if message.contains("no downloadable media"))),
+        events.iter().any(|e| matches!(e, BackendEvent::Error { message } if message.contains("not available in the demo"))),
         "test mode answers the download with an honest error, not fake bytes"
     );
 }

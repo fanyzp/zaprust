@@ -616,10 +616,10 @@ mod tests {
         let (s, running) = run.drive(12.08, true, false, full);
         assert!(s > 1.0 && s <= 1.12, "mid-pop inside the cap, got {s}");
         assert!(running);
-        // Just past the duration's end the run is finished,
-        // and it stays finished: the repaint contract is
-        // terminal.
-        assert_eq!(run.drive(12.17, true, false, full), (1.0, false));
+        // Just past the duration's end (180 ms) the run is
+        // finished, and it stays finished: the repaint contract
+        // is terminal.
+        assert_eq!(run.drive(12.19, true, false, full), (1.0, false));
         assert_eq!(run.drive(99.0, true, false, full), (1.0, false));
     }
 

@@ -274,15 +274,16 @@ mod tests {
     #[test]
     fn tab_pop_and_viewer_durations_follow_the_tiers() {
         // The activation pop's frozen numbers: Full runs the
-        // full 160 ms, Reduced lands exactly on 96 ms through
-        // the tier mapping, and Off collapses to zero.
-        assert_eq!(MotionSetting::Full.duration(dur::TAB_POP), 160.0);
-        assert_eq!(MotionSetting::Reduced.duration(dur::TAB_POP), 96.0);
+        // canonical 180 ms, Reduced lands exactly on 108 ms
+        // through the tier mapping, and Off collapses to zero.
+        assert_eq!(MotionSetting::Full.duration(dur::TAB_POP), 180.0);
+        assert_eq!(MotionSetting::Reduced.duration(dur::TAB_POP), 108.0);
         assert_eq!(MotionSetting::Off.duration(dur::TAB_POP), 0.0);
-        // The photo viewer reveal sits inside the house band at
-        // full length, and every tier stays inside it too.
-        assert!((90.0..=300.0).contains(&dur::VIEWER));
-        assert!((90.0..=300.0).contains(&MotionSetting::Reduced.duration(dur::VIEWER)));
+        // The photo viewer reveal sits on the canonical popover
+        // token at full length, and every tier stays inside the
+        // canonical band too.
+        assert_eq!(dur::VIEWER, 260.0);
+        assert!((100.0..=600.0).contains(&MotionSetting::Reduced.duration(dur::VIEWER)));
     }
 
     #[test]

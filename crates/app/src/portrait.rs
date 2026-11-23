@@ -337,7 +337,7 @@ fn paint_fab(painter: &egui::Painter, t: core::theme::Tokens, r: Rect, fill: egu
     // caller painting a popped (scaled) body still gets a true
     // circle; at rest the rect is exactly FAB_SIZE across.
     let radius = r.width() / 2.0;
-    painter.add(crate::theme::card_shadow(t).as_shape(r, CornerRadius::same(radius as u8)));
+    painter.add(crate::theme::overlay_shadow(t).as_shape(r, CornerRadius::same(radius as u8)));
     painter.circle_filled(r.center(), radius, fill);
 }
 

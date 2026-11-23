@@ -1147,17 +1147,17 @@ fn paint_system_pill(ui: &egui::Ui, t: Tokens, rect: egui::Rect, kind: SystemPil
     let fill = if kind == SystemPillKind::Encryption {
         rgb(core::theme::mix(t.system_chip, t.system_text, 0.28))
     } else {
-        crate::theme::glass_tint(t, t.system_chip)
+        // The system chip tone retires onto the card-soft step
+        // (design standard section 1): a resting pill on the
+        // chat ground, no shadow and no frame stroke.
+        crate::theme::card_soft(t)
     };
     let painter = ui.painter();
-    painter.add(egui::Shape::Rect(
-        crate::theme::card_shadow(t).as_shape(rect, CornerRadius::same(radius)),
-    ));
     painter.rect(
         rect,
         CornerRadius::same(radius),
         fill,
-        Stroke::new(1.0_f32, rgb(t.border)),
+        Stroke::NONE,
         egui::StrokeKind::Inside,
     );
     if kind == SystemPillKind::Date {

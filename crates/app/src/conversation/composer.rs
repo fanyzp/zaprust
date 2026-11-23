@@ -156,7 +156,7 @@ impl App {
                                             } else {
                                                 ui.painter().rect_filled(
                                                     tile_rect,
-                                                    CornerRadius::same(8),
+                                                    CornerRadius::same(crate::theme::RADIUS_MICRO),
                                                     rgb(t.bg_panel_alt),
                                                 );
                                                 crate::icons::draw(
@@ -170,7 +170,7 @@ impl App {
                                             }
                                             ui.painter().rect_stroke(
                                                 tile_rect,
-                                                CornerRadius::same(8),
+                                                CornerRadius::same(crate::theme::RADIUS_MICRO),
                                                 Stroke::new(1.0_f32, rgb(t.border)),
                                                 egui::StrokeKind::Inside,
                                             );
@@ -197,7 +197,7 @@ impl App {
                                                     badge_c,
                                                     Vec2::splat(16.0),
                                                 ),
-                                                CornerRadius::same(8),
+                                                CornerRadius::same(crate::theme::RADIUS_MICRO),
                                                 Stroke::new(1.0_f32, rgb(t.border)),
                                                 egui::StrokeKind::Inside,
                                             );

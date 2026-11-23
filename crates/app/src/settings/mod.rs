@@ -429,7 +429,7 @@ impl App {
             .exact_size(280.0)
             .frame(egui::Frame::new().fill(rgb(t.bg_panel)).inner_margin(Margin::symmetric(14, 12)))
             .show(root, |ui| {
-                ui.label(RichText::new(title).font(crate::theme::semibold(20.0)));
+                ui.label(RichText::new(title).font(crate::theme::semibold(crate::theme::TEXT_HEADING)));
                 ui.add_space(10.0);
                 if title == "Settings" {
                     ui.horizontal(|ui| {
@@ -760,7 +760,7 @@ fn tab_label(item: &str) -> String {
 /// description line under it: entries in this app read as
 /// title plus control, the native settings pattern.
 fn page_header(ui: &mut egui::Ui, title: &str) {
-    ui.label(RichText::new(title).font(crate::theme::semibold(21.0)));
+    ui.label(RichText::new(title).font(crate::theme::semibold(crate::theme::TEXT_TITLE)));
     ui.add_space(16.0);
 }
 

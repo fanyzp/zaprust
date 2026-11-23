@@ -123,7 +123,7 @@ impl App {
                             if resp.hovered() {
                                 ui.painter().rect_filled(
                                     rect,
-                                    CornerRadius::same(8),
+                                    CornerRadius::same(crate::theme::RADIUS_MICRO),
                                     rgb(t.bg_panel_alt),
                                 );
                             }
@@ -158,7 +158,7 @@ impl App {
                                 if resp.hovered() {
                                     ui.painter().rect_filled(
                                         rect,
-                                        CornerRadius::same(8),
+                                        CornerRadius::same(crate::theme::RADIUS_MICRO),
                                         rgb(t.bg_panel_alt),
                                     );
                                 }

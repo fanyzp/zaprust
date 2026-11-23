@@ -20,7 +20,6 @@ pub(crate) const TEXT_LABEL: f32 = 12.0;
 pub(crate) const TEXT_BODY: f32 = 15.0;
 pub(crate) const TEXT_HEADING: f32 = 19.0;
 pub(crate) const TEXT_TITLE: f32 = 23.0;
-pub(crate) const TEXT_DISPLAY: f32 = 29.0;
 
 /// The shell fill (level 1): side panels and page shells sit on
 /// the panel tone over the app background.
@@ -72,8 +71,11 @@ pub(crate) fn overlay_shadow(t: Tokens) -> egui::Shadow {
 /// rectangles (the depth pass). Dark surfaces get a soft black
 /// drop, light surfaces a softer grey one; fills stay flat, only
 /// the shadow adds depth.
-pub(crate) fn card_shadow(t: Tokens) -> egui::Shadow {
-    overlay_shadow(t)
+pub(crate) fn card_shadow(_t: Tokens) -> egui::Shadow {
+    // Resting cards cast no shadow (design standard): depth is
+    // the tone ladder alone. Floating surfaces use
+    // [`overlay_shadow`] through modal_shadow / glass_shadow.
+    egui::Shadow::default()
 }
 
 /// The depth under a message bubble: a short, soft drop (2 px
@@ -314,10 +316,10 @@ pub(crate) fn apply_visuals(ctx: &egui::Context, t: Tokens) {
     // toward the app background, so a field reads as recessed against a
     // card and as a soft well on a panel. Derived, no new theme token.
     let field = core::theme::mix(t.bg_panel_alt, t.bg_app, 0.35);
-    visuals.panel_fill = rgb(t.bg_panel);
+    visuals.panel_fill = shell_fill(t);
     visuals.window_fill = rgb(t.bg_panel);
     visuals.extreme_bg_color = rgb(field);
-    visuals.faint_bg_color = rgb(t.bg_panel_alt);
+    visuals.faint_bg_color = card_fill(t);
     visuals.override_text_color = Some(rgb(t.text_primary));
     let accent = rgb(t.accent);
     visuals.selection.bg_fill =
@@ -328,7 +330,7 @@ pub(crate) fn apply_visuals(ctx: &egui::Context, t: Tokens) {
     // hand-drawn surfaces opt in per response (widgets.rs).
     visuals.interact_cursor = Some(egui::CursorIcon::PointingHand);
     visuals.window_corner_radius = egui::CornerRadius::same(RADIUS_PANEL);
-    visuals.menu_corner_radius = egui::CornerRadius::same(12);
+    visuals.menu_corner_radius = egui::CornerRadius::same(RADIUS_SMALL);
     visuals.window_stroke = Stroke::NONE;
     // Full widget state table. Before this pass only two fills were set
     // and hovered equalled inactive, so no stock widget ever reacted to

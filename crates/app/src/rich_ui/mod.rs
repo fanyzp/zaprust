@@ -931,7 +931,7 @@ fn chip_label(
                     rgb(color),
                     rgb(t.bg_panel_alt),
                 );
-                ui.label(RichText::new(text).size(10.5).color(rgb(color)));
+                ui.label(RichText::new(text).size(crate::theme::TEXT_CAPTION).color(rgb(color)));
             });
         });
 }

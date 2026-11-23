@@ -1054,18 +1054,6 @@ pub(super) fn video_fields(reference: &crate::VideoRef) -> MediaRefFields {
     }
 }
 
-/// The retry fields of an archived poster reference.
-pub(super) fn poster_fields(reference: &crate::PosterRef) -> MediaRefFields {
-    MediaRefFields {
-        direct_path: reference.direct_path.clone(),
-        media_key: reference.media_key.clone(),
-        file_sha256: reference.file_sha256.clone(),
-        file_enc_sha256: reference.file_enc_sha256.clone(),
-        file_length: POSTER_DECLARED_BYTES,
-        media_type: whatsapp_rust::download::MediaType::Video,
-    }
-}
-
 /// The retry fields of an archived sticker reference.
 pub(super) fn sticker_fields(reference: &crate::StickerRef) -> MediaRefFields {
     MediaRefFields {

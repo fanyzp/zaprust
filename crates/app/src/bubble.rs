@@ -579,11 +579,8 @@ fn ellipsize_lines(ui: &egui::Ui, text: &str, font: FontId, wrap: f32, max_lines
     // cluster (P2-64): convert the char count to its byte
     // offset, floor it with the shared helper, and take the
     // prefix up to it.
-    let byte_end = if lo == 0 {
-        0
-    } else {
-        text.char_indices().nth(lo).map_or(text.len(), |(i, _)| i)
-    };
+    let byte_end =
+        if lo == 0 { 0 } else { text.char_indices().nth(lo).map_or(text.len(), |(i, _)| i) };
     let byte_end = crate::widgets::floor_grapheme_boundary(text, byte_end);
     let mut out: String = text[..byte_end].to_owned();
     out.push('\u{2026}');

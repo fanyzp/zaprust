@@ -248,8 +248,8 @@ impl App {
                 if p < 0.999 {
                     ui.set_opacity(p);
                 }
-                let frame =
-                    crate::theme::glass_panel_frame(t, crate::theme::RADIUS_PANEL).inner_margin(Margin::symmetric(12, 10));
+                let frame = crate::theme::glass_panel_frame(t, crate::theme::RADIUS_PANEL)
+                    .inner_margin(Margin::symmetric(12, 10));
                 let _inner = frame.show(ui, |ui| {
                     ui.set_width(300.0);
                     ui.add_enabled_ui(!exiting && !self.updates.posting, |ui| {

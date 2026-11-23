@@ -226,7 +226,9 @@ impl App {
                     .inner_margin(Margin::symmetric(14, 12))
                     .show(ui, |ui| {
                         ui.label(
-                            RichText::new(crate::i18n::t("pickers.gif_needs_key")).size(15.0).strong(),
+                            RichText::new(crate::i18n::t("pickers.gif_needs_key"))
+                                .size(15.0)
+                                .strong(),
                         );
                         if self.picker.giphy_rejected {
                             ui.label(
@@ -244,10 +246,7 @@ impl App {
                             .size(12.0)
                             .color(rgb(t.text_secondary)),
                         );
-                        ui.hyperlink_to(
-                            "Get a key at developers.giphy.com",
-                            GIPHY_DEVELOPERS_URL,
-                        );
+                        ui.hyperlink_to("Get a key at developers.giphy.com", GIPHY_DEVELOPERS_URL);
                         if crate::widgets::button(
                             ui,
                             t,
@@ -468,7 +467,11 @@ impl App {
         }
         self.request_sticker_previews(missing);
         ui.add_space(10.0);
-        ui.label(RichText::new(crate::i18n::t("pickers.new_pack_name")).size(12.0).color(rgb(t.text_secondary)));
+        ui.label(
+            RichText::new(crate::i18n::t("pickers.new_pack_name"))
+                .size(12.0)
+                .color(rgb(t.text_secondary)),
+        );
         ui.horizontal(|ui| {
             crate::widgets::text_field(ui, t, &mut self.picker.sticker_new_pack, "", 220.0);
             if crate::widgets::button(ui, t, "New pack", crate::widgets::Btn::Secondary).clicked()
@@ -481,7 +484,11 @@ impl App {
                 }
             }
         });
-        ui.label(RichText::new(crate::i18n::t("pickers.new_sticker_text")).size(12.0).color(rgb(t.text_secondary)));
+        ui.label(
+            RichText::new(crate::i18n::t("pickers.new_sticker_text"))
+                .size(12.0)
+                .color(rgb(t.text_secondary)),
+        );
         ui.horizontal(|ui| {
             crate::widgets::text_field(ui, t, &mut self.picker.sticker_new_text, "", 220.0);
             if crate::widgets::button(ui, t, "Add text sticker", crate::widgets::Btn::Secondary)
@@ -694,9 +701,8 @@ impl App {
         // reads as in flight instead of as silence. The poll
         // clears or replaces this.
         self.notice = Some(Notice::busy("Sending GIF…".to_owned()));
-        let spawned = std::thread::Builder::new()
-            .name("zaprust-gif-send".to_owned())
-            .spawn(move || {
+        let spawned =
+            std::thread::Builder::new().name("zaprust-gif-send".to_owned()).spawn(move || {
                 let result = giphy::fetch_mp4(&mp4_url).map_err(|e| e.to_string());
                 let _ = tx.send(crate::extras::MediaFetchResult { jid, title, result });
             });
@@ -706,8 +712,7 @@ impl App {
             // instead of leaving the Busy notice standing over
             // a send that will never complete.
             self.picker.media_fetch_rx = None;
-            self.notice =
-                Some(Notice::error("GIF: the fetch worker could not start.".to_owned()));
+            self.notice = Some(Notice::error("GIF: the fetch worker could not start.".to_owned()));
         }
     }
 

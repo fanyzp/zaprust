@@ -205,8 +205,7 @@ impl App {
         // The contributor profile is the repo URL's owner
         // segment, derived from the one builder instead of a
         // second hard-coded copy of the address.
-        let profile_url =
-            format!("https://github.com/{}", repo.split('/').next().unwrap_or(repo));
+        let profile_url = format!("https://github.com/{}", repo.split('/').next().unwrap_or(repo));
         let mut report_bug = false;
         group_label(ui, t, "App");
         settings_card(ui, t, |ui| {

@@ -342,21 +342,15 @@ impl Tokens {
         let ascending = ladder.windows(2).all(|w| w[0] <= w[1] + 0.02);
         let descending = ladder.windows(2).all(|w| w[0] + 0.02 >= w[1]);
         if !ascending && !descending {
-            return Err(ThemeError::InvalidLadder(
-                "surface ladder is not monotonic".to_owned(),
-            ));
+            return Err(ThemeError::InvalidLadder("surface ladder is not monotonic".to_owned()));
         }
         if contrast_ratio(self.text_primary, self.bg_panel) < 4.5
             || contrast_ratio(self.text_primary, self.bg_app) < 4.5
         {
-            return Err(ThemeError::InvalidLadder(
-                "primary text contrast below 4.5:1".to_owned(),
-            ));
+            return Err(ThemeError::InvalidLadder("primary text contrast below 4.5:1".to_owned()));
         }
         if contrast_ratio(self.text_secondary, self.bg_panel) < 3.0 {
-            return Err(ThemeError::InvalidLadder(
-                "secondary text contrast below 3:1".to_owned(),
-            ));
+            return Err(ThemeError::InvalidLadder("secondary text contrast below 3:1".to_owned()));
         }
         Ok(())
     }

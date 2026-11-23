@@ -287,7 +287,6 @@ impl App {
         self.persist_settings();
     }
 
-
     /// Starts a version check on a worker thread. `manual` checks
     /// surface failures in About; silent startup failures just reset
     /// to idle, nobody needs an error for a check they never asked

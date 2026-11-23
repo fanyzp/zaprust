@@ -128,7 +128,11 @@ impl App {
                 ui.label(RichText::new(format!("{} · {}", slot.label, owner)).size(12.0).strong());
                 let keys = self.credentials.keys_for(&slot.id);
                 if keys.is_empty() {
-                    ui.label(RichText::new(crate::i18n::t("features.no_keys_yet")).size(12.0).color(rgb(t.text_faint)));
+                    ui.label(
+                        RichText::new(crate::i18n::t("features.no_keys_yet"))
+                            .size(12.0)
+                            .color(rgb(t.text_faint)),
+                    );
                 }
                 let mut remove: Option<String> = None;
                 for key in &keys {

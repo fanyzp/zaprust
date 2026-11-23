@@ -66,12 +66,7 @@ pub(crate) fn floor_grapheme_boundary(text: &str, mut end: usize) -> usize {
         // A regional-indicator pair (a flag) splits when the
         // run of indicators before the cut is odd.
         let flag_split = next.is_some_and(is_regional_indicator)
-            && chars[..cut]
-                .iter()
-                .rev()
-                .take_while(|(_, c)| is_regional_indicator(*c))
-                .count()
-                % 2
+            && chars[..cut].iter().rev().take_while(|(_, c)| is_regional_indicator(*c)).count() % 2
                 == 1;
         if splits || flag_split {
             cut -= 1;

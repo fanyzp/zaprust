@@ -441,7 +441,9 @@ impl App {
                 show_popup(self.popup_frame(), self.tokens, ui, |ui| {
                     ui.set_width(240.0);
                     ui.add_enabled_ui(!exiting, |ui| {
-                        ui.label(RichText::new(crate::i18n::t("menu.message_info")).size(15.0).strong());
+                        ui.label(
+                            RichText::new(crate::i18n::t("menu.message_info")).size(15.0).strong(),
+                        );
                         ui.add_space(6.0);
                         if entries.is_empty() {
                             // The state glyph comes from the icon

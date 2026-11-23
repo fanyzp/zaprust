@@ -111,8 +111,9 @@ impl App {
                 if menu_p < 0.999 {
                     ui.set_opacity(menu_p);
                 }
-                let _menu_frame =
-                    crate::theme::glass_frame(t, crate::theme::RADIUS_PANEL).inner_margin(Margin::same(8)).show(ui, |ui| {
+                let _menu_frame = crate::theme::glass_frame(t, crate::theme::RADIUS_PANEL)
+                    .inner_margin(Margin::same(8))
+                    .show(ui, |ui| {
                         ui.set_width(220.0);
                         // The rows are the shared menu-item
                         // components (P2-28): one row anatomy
@@ -541,45 +542,47 @@ impl App {
             .order(egui::Order::Foreground)
             .fixed_pos(Pos2::new(strip_rect.right() - 252.0, strip_rect.bottom() + 6.0))
             .show(ui.ctx(), |ui| {
-                crate::theme::glass_frame(t, crate::theme::RADIUS_SMALL).inner_margin(Margin::same(12)).show(ui, |ui| {
-                    ui.set_width(228.0);
-                    ui.label(
-                        RichText::new(crate::i18n::t("search.jump_to_date"))
-                            .font(crate::theme::semibold(12.0))
-                            .color(rgb(t.text_primary)),
-                    );
-                    ui.add_space(6.0);
-                    ui.horizontal(|ui| {
-                        let resp = crate::widgets::text_field(
-                            ui,
-                            t,
-                            &mut self.chat_search.date_text,
-                            "YYYY-MM-DD",
-                            130.0,
+                crate::theme::glass_frame(t, crate::theme::RADIUS_SMALL)
+                    .inner_margin(Margin::same(12))
+                    .show(ui, |ui| {
+                        ui.set_width(228.0);
+                        ui.label(
+                            RichText::new(crate::i18n::t("search.jump_to_date"))
+                                .font(crate::theme::semibold(12.0))
+                                .color(rgb(t.text_primary)),
                         );
-                        if resp.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                            go = true;
-                        }
-                        if crate::widgets::button(
-                            ui,
-                            t,
-                            &crate::i18n::t("search.go"),
-                            crate::widgets::Btn::Primary,
-                        )
-                        .clicked()
-                        {
-                            go = true;
+                        ui.add_space(6.0);
+                        ui.horizontal(|ui| {
+                            let resp = crate::widgets::text_field(
+                                ui,
+                                t,
+                                &mut self.chat_search.date_text,
+                                "YYYY-MM-DD",
+                                130.0,
+                            );
+                            if resp.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                                go = true;
+                            }
+                            if crate::widgets::button(
+                                ui,
+                                t,
+                                &crate::i18n::t("search.go"),
+                                crate::widgets::Btn::Primary,
+                            )
+                            .clicked()
+                            {
+                                go = true;
+                            }
+                        });
+                        if self.chat_search.date_error {
+                            ui.add_space(6.0);
+                            ui.label(
+                                RichText::new(crate::i18n::t("search.date_invalid"))
+                                    .size(12.0)
+                                    .color(rgb(t.danger)),
+                            );
                         }
                     });
-                    if self.chat_search.date_error {
-                        ui.add_space(6.0);
-                        ui.label(
-                            RichText::new(crate::i18n::t("search.date_invalid"))
-                                .size(12.0)
-                                .color(rgb(t.danger)),
-                        );
-                    }
-                });
             });
         if go {
             match parse_search_date(&self.chat_search.date_text) {

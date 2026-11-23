@@ -176,10 +176,18 @@ pub(crate) fn rail_button(
         if press > 0.001 {
             let pressed = core::theme::pressed_step(t.bg_panel_alt);
             let fill = core::theme::mix(t.bg_panel_alt, pressed, press);
-            ui.painter().rect_filled(rect, CornerRadius::same(crate::theme::RADIUS_SMALL), rgb(fill));
+            ui.painter().rect_filled(
+                rect,
+                CornerRadius::same(crate::theme::RADIUS_SMALL),
+                rgb(fill),
+            );
         } else if hov > 0.001 {
             let fill = core::theme::mix(t.bg_panel, t.bg_panel_alt, hov);
-            ui.painter().rect_filled(rect, CornerRadius::same(crate::theme::RADIUS_SMALL), rgb(fill));
+            ui.painter().rect_filled(
+                rect,
+                CornerRadius::same(crate::theme::RADIUS_SMALL),
+                rgb(fill),
+            );
         }
     }
     let color = if selected { accent } else { rgb(t.text_secondary) };

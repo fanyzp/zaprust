@@ -781,14 +781,16 @@ fn settings_card(ui: &mut egui::Ui, t: core::theme::Tokens, body: impl FnOnce(&m
     // specular edge is deliberately not painted per card: a
     // repeated stack of cards is one surface language, not a set
     // of separate floating objects.
-    crate::theme::glass_text_frame(t, crate::theme::RADIUS_PANEL).inner_margin(Margin::symmetric(18, 12)).show(ui, |ui| {
-        // Every card spans the full content width, no ragged edges
-        // where a card's width depends on its longest line. The
-        // clamp matters on the first frame inside the nav layout,
-        // where the scroll area still reports a zero width.
-        ui.set_min_width((width - 36.0).max(0.0));
-        body(ui);
-    });
+    crate::theme::glass_text_frame(t, crate::theme::RADIUS_PANEL)
+        .inner_margin(Margin::symmetric(18, 12))
+        .show(ui, |ui| {
+            // Every card spans the full content width, no ragged edges
+            // where a card's width depends on its longest line. The
+            // clamp matters on the first frame inside the nav layout,
+            // where the scroll area still reports a zero width.
+            ui.set_min_width((width - 36.0).max(0.0));
+            body(ui);
+        });
 }
 
 /// Group break between rows inside a card. Rows on one flat

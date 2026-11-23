@@ -387,9 +387,7 @@ impl App {
     /// finishes, never silently dropped.
     fn dispatch_staged_send(&mut self, engaged: &mut bool) {
         if self.staged_send.is_some() {
-            self.notice = Some(Notice::info(
-                crate::i18n::t("attach.still_sending"),
-            ));
+            self.notice = Some(Notice::info(crate::i18n::t("attach.still_sending")));
             return;
         }
         let Some(jid) = self.live_jid(self.selected_chat) else {
@@ -942,101 +940,107 @@ impl App {
             .order(egui::Order::Foreground)
             .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
             .show(ctx, |ui| {
-                crate::theme::glass_frame(t, crate::theme::RADIUS_PANEL).inner_margin(Margin::same(16)).show(ui, |ui| {
-                    ui.set_width(panel_w - 32.0);
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            RichText::new(crate::i18n::t("editor.title"))
-                                .font(crate::theme::semibold(15.0))
-                                .color(rgb(t.text_primary)),
-                        );
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if crate::widgets::icon_button(
+                crate::theme::glass_frame(t, crate::theme::RADIUS_PANEL)
+                    .inner_margin(Margin::same(16))
+                    .show(ui, |ui| {
+                        ui.set_width(panel_w - 32.0);
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new(crate::i18n::t("editor.title"))
+                                    .font(crate::theme::semibold(15.0))
+                                    .color(rgb(t.text_primary)),
+                            );
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                if crate::widgets::icon_button(
+                                    ui,
+                                    t,
+                                    crate::icons::Icon::X,
+                                    26.0,
+                                    &crate::i18n::t("common.close"),
+                                    None,
+                                )
+                                .clicked()
+                                {
+                                    cancel = true;
+                                }
+                            });
+                        });
+                        ui.add_space(10.0);
+                        self.editor_preview(ui, t);
+                        ui.add_space(10.0);
+                        // Controls: rotate, then the aspect
+                        // presets as chips.
+                        ui.horizontal(|ui| {
+                            if crate::widgets::button(
                                 ui,
                                 t,
-                                crate::icons::Icon::X,
-                                26.0,
-                                &crate::i18n::t("common.close"),
-                                None,
+                                &crate::i18n::t("editor.rotate"),
+                                crate::widgets::Btn::Secondary,
+                            )
+                            .clicked()
+                            {
+                                rotate = true;
+                            }
+                            ui.add_space(8.0);
+                            let aspects = [
+                                (crate::i18n::t("editor.aspect_free"), state::CropAspect::Free),
+                                (
+                                    crate::i18n::t("editor.aspect_original"),
+                                    state::CropAspect::Original,
+                                ),
+                                ("1:1".to_owned(), state::CropAspect::Square),
+                                ("4:3".to_owned(), state::CropAspect::FourThree),
+                                ("3:4".to_owned(), state::CropAspect::ThreeFour),
+                                ("16:9".to_owned(), state::CropAspect::SixteenNine),
+                                ("9:16".to_owned(), state::CropAspect::NineSixteen),
+                            ];
+                            let current =
+                                self.photo_editor.as_ref().map(|e| e.aspect).unwrap_or_default();
+                            for (label, aspect) in aspects {
+                                if crate::widgets::chip(ui, &label, current == aspect, t).clicked()
+                                {
+                                    if let Some(editor) = &mut self.photo_editor {
+                                        editor.aspect = aspect;
+                                        if let Some(ratio) = aspect.ratio(
+                                            editor.image.width() as f32
+                                                / editor.image.height().max(1) as f32,
+                                        ) {
+                                            editor.crop = reframed_crop(
+                                                editor.image.width(),
+                                                editor.image.height(),
+                                                ratio,
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        });
+                        ui.add_space(12.0);
+                        ui.horizontal(|ui| {
+                            if crate::widgets::button(
+                                ui,
+                                t,
+                                &crate::i18n::t("common.cancel"),
+                                crate::widgets::Btn::Secondary,
                             )
                             .clicked()
                             {
                                 cancel = true;
                             }
-                        });
-                    });
-                    ui.add_space(10.0);
-                    self.editor_preview(ui, t);
-                    ui.add_space(10.0);
-                    // Controls: rotate, then the aspect
-                    // presets as chips.
-                    ui.horizontal(|ui| {
-                        if crate::widgets::button(
-                            ui,
-                            t,
-                            &crate::i18n::t("editor.rotate"),
-                            crate::widgets::Btn::Secondary,
-                        )
-                        .clicked()
-                        {
-                            rotate = true;
-                        }
-                        ui.add_space(8.0);
-                        let aspects = [
-                            (crate::i18n::t("editor.aspect_free"), state::CropAspect::Free),
-                            (crate::i18n::t("editor.aspect_original"), state::CropAspect::Original),
-                            ("1:1".to_owned(), state::CropAspect::Square),
-                            ("4:3".to_owned(), state::CropAspect::FourThree),
-                            ("3:4".to_owned(), state::CropAspect::ThreeFour),
-                            ("16:9".to_owned(), state::CropAspect::SixteenNine),
-                            ("9:16".to_owned(), state::CropAspect::NineSixteen),
-                        ];
-                        let current =
-                            self.photo_editor.as_ref().map(|e| e.aspect).unwrap_or_default();
-                        for (label, aspect) in aspects {
-                            if crate::widgets::chip(ui, &label, current == aspect, t).clicked() {
-                                if let Some(editor) = &mut self.photo_editor {
-                                    editor.aspect = aspect;
-                                    if let Some(ratio) = aspect.ratio(
-                                        editor.image.width() as f32
-                                            / editor.image.height().max(1) as f32,
-                                    ) {
-                                        editor.crop = reframed_crop(
-                                            editor.image.width(),
-                                            editor.image.height(),
-                                            ratio,
-                                        );
-                                    }
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                if crate::widgets::button(
+                                    ui,
+                                    t,
+                                    &crate::i18n::t("editor.apply"),
+                                    crate::widgets::Btn::Primary,
+                                )
+                                .clicked()
+                                {
+                                    apply = true;
                                 }
-                            }
-                        }
-                    });
-                    ui.add_space(12.0);
-                    ui.horizontal(|ui| {
-                        if crate::widgets::button(
-                            ui,
-                            t,
-                            &crate::i18n::t("common.cancel"),
-                            crate::widgets::Btn::Secondary,
-                        )
-                        .clicked()
-                        {
-                            cancel = true;
-                        }
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if crate::widgets::button(
-                                ui,
-                                t,
-                                &crate::i18n::t("editor.apply"),
-                                crate::widgets::Btn::Primary,
-                            )
-                            .clicked()
-                            {
-                                apply = true;
-                            }
+                            });
                         });
                     });
-                });
             });
         if rotate {
             if let Some(editor) = &mut self.photo_editor {

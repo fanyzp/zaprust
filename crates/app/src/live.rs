@@ -542,11 +542,15 @@ pub(crate) fn human_error(message: &str) -> String {
         "This poll cannot be voted on from Zaprust right now.".to_owned()
     } else if m.contains("timed out") || m.contains("timeout") || m.contains("network") {
         "The connection had a problem. Check your internet and try again.".to_owned()
-    } else if m.contains("connection closed") || m.contains("connection reset")
-        || m.contains("broken pipe") || m.contains("stream closed")
+    } else if m.contains("connection closed")
+        || m.contains("connection reset")
+        || m.contains("broken pipe")
+        || m.contains("stream closed")
     {
         "The connection dropped. Check your internet and try again.".to_owned()
-    } else if m.contains("not authorized") || m.contains("forbidden") || m.contains("401")
+    } else if m.contains("not authorized")
+        || m.contains("forbidden")
+        || m.contains("401")
         || m.contains("403")
     {
         "WhatsApp refused that action for this account.".to_owned()
@@ -5604,10 +5608,10 @@ impl crate::state::App {
         // is looked up under the Community target (P2-05).
         let id = jid_id(jid);
         let community = self.chat_parents.get(&id) == Some(&id);
-        let _ = session.channels.commands.send(BackendCommand::FetchAvatar {
-            jid: jid.to_owned(),
-            community,
-        });
+        let _ = session
+            .channels
+            .commands
+            .send(BackendCommand::FetchAvatar { jid: jid.to_owned(), community });
     }
 
     /// The decoded live profile picture for one identity, when

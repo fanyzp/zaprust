@@ -265,7 +265,7 @@ impl App {
                 phase: CallUiPhase::Ringing,
                 seconds: 0,
                 muted: false,
-            audio_backup: None,
+                audio_backup: None,
                 speaker: false,
                 reason: None,
                 ended_at: None,

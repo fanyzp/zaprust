@@ -631,8 +631,7 @@ impl App {
             if disconnected && !any_results {
                 // The worker died without reporting (P2-36):
                 // an error outcome, never a silent clear.
-                self.notice =
-                    Some(Notice::error("GIF: the fetch worker stopped.".to_owned()));
+                self.notice = Some(Notice::error("GIF: the fetch worker stopped.".to_owned()));
             }
             if landed {
                 // The fetch landed: a success leaves no notice

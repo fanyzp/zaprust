@@ -542,11 +542,17 @@ impl App {
                     ui.horizontal(|ui| {
                         let half = (ui.available_width() - 12.0) / 2.0;
                         ui.vertical(|ui| {
-                            ui.label(RichText::new(crate::i18n::t("attach.lat")).font(crate::theme::medium(12.0)));
+                            ui.label(
+                                RichText::new(crate::i18n::t("attach.lat"))
+                                    .font(crate::theme::medium(12.0)),
+                            );
                             crate::widgets::text_field(ui, t, &mut draft.latitude, "-6.2", half);
                         });
                         ui.vertical(|ui| {
-                            ui.label(RichText::new(crate::i18n::t("attach.lon")).font(crate::theme::medium(12.0)));
+                            ui.label(
+                                RichText::new(crate::i18n::t("attach.lon"))
+                                    .font(crate::theme::medium(12.0)),
+                            );
                             crate::widgets::text_field(ui, t, &mut draft.longitude, "106.8", half);
                         });
                     });
@@ -902,7 +908,8 @@ impl App {
         // stream, so every one gets the stacked-panel glass
         // treatment: the near-opaque fill whose content behind
         // cannot bleed through (see theme::glass_panel_frame).
-        crate::theme::glass_panel_frame(self.tokens, crate::theme::RADIUS_PANEL).inner_margin(Margin::symmetric(12, 10))
+        crate::theme::glass_panel_frame(self.tokens, crate::theme::RADIUS_PANEL)
+            .inner_margin(Margin::symmetric(12, 10))
     }
 }
 

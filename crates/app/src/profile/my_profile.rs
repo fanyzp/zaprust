@@ -423,7 +423,10 @@ pub fn draw_my_profile_panel(
         .collapsible(false)
         .resizable(false)
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-        .frame(crate::theme::glass_frame(t, crate::theme::RADIUS_PANEL).inner_margin(egui::Margin::same(20)))
+        .frame(
+            crate::theme::glass_frame(t, crate::theme::RADIUS_PANEL)
+                .inner_margin(egui::Margin::same(20)),
+        )
         .show(ctx, |ui| {
             if fade < 0.999 {
                 ui.set_opacity(fade);

@@ -4,6 +4,18 @@ All notable changes to Zaprust are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com), versions
 follow [SemVer](https://semver.org).
 
+## [1.6.12] - 2026-11-24
+
+### fix:
+
+- Incoming direct messages from history sync are no longer shown as your own outgoing messages. A 1:1 history payload names no participant, and the author now defaults to the conversation's other party.
+- A saved contact's name now replaces the phone number as the chat title. A formatted number no longer counts as a resolved title, so the name healing pass keeps working until a real name arrives, and group sender names and quote authors resolve through the same session identity book.
+- Profile photos for contacts whose identity is still in the hidden LID form are retried instead of being cached as missing for a day, and a chat that only has a number for a title shows the neutral person silhouette instead of a "+" initial.
+- Message lists and fenced code blocks render as lists and code. List markers become bullets or numbers and fences are consumed, with inline formatting intact.
+- A group join that waits for an admin's approval is reported as a pending request, not as an error.
+- An unrelated backend error no longer marks an in-flight send as failed; only a send failure does.
+- A GIF search failure and an export worker failure are reported as errors, and a chat archive that fails to open is surfaced as an error state instead of a footnote.
+
 ## [1.6.11] - 2026-11-23
 
 ### fix:

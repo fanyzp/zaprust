@@ -870,7 +870,7 @@ pub(super) async fn run_async(
                             sink.clone(),
                             vec![(chat.jid.clone(), chat.kind)],
                             heal_attempts.clone(),
-                            identities_msg.clone(),
+                            identities.clone(),
                         );
                     }
                 }

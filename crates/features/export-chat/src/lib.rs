@@ -108,7 +108,10 @@ fn body_text(msg: &Message) -> String {
             }
         }
         MessageKind::Voice { secs, .. } => format!("[voice message, {secs}s]"),
-        MessageKind::Document { name, size_kib } => format!("[document: {name}, {size_kib} KiB]"),
+        MessageKind::Audio { secs, name, .. } => format!("[audio: {name}, {secs}s]"),
+        MessageKind::Document { name, size_bytes, .. } => {
+            format!("[document: {name}, {} KiB]", size_bytes / 1024)
+        }
         MessageKind::Poll { question, options, .. } => {
             let opts: Vec<String> =
                 options.iter().map(|(label, votes)| format!("{label}, {votes}")).collect();

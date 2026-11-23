@@ -386,6 +386,77 @@ impl App {
                     } else {
                         None
                     };
+                    // The media extras for this message: the
+                    // sticker's animation state, the embedded
+                    // thumbnails of a location, a document and a
+                    // link preview (decoded once into the shared
+                    // embedded cache), the GIF flag and the
+                    // view-once state of the kinds whose kind
+                    // carries no flag of its own.
+                    let (sticker_animated, sticker_lottie) = self
+                        .live
+                        .as_ref()
+                        .and_then(|s| s.sticker_anim.get(&msg.id).copied())
+                        .unwrap_or((false, false));
+                    if sticker_lottie && !self.media.textures.contains_key(&msg.id) {
+                        // A Lottie sticker's picture is its
+                        // payload's static frame: decode it into
+                        // the texture cache the sticker tile
+                        // paints, exactly like fetched bytes.
+                        let frame = self
+                            .live
+                            .as_ref()
+                            .and_then(|s| s.sticker_thumbs.get(&msg.id).cloned());
+                        if let Some(frame) = frame {
+                            if let Some(tex) = crate::media::decode_photo(ui.ctx(), &frame) {
+                                self.media.textures.insert(msg.id, tex);
+                            }
+                        }
+                    }
+                    let location_thumb_pair =
+                        if matches!(msg.kind, core::model::MessageKind::Location { .. }) {
+                            let bytes = self
+                                .live
+                                .as_ref()
+                                .and_then(|s| s.location_thumbs.get(&msg.id).cloned());
+                            Self::embedded_thumb_texture(
+                                &mut self.media,
+                                ui.ctx(),
+                                msg.id,
+                                bytes.as_deref(),
+                            )
+                        } else {
+                            None
+                        };
+                    let document_thumb_pair =
+                        if matches!(msg.kind, core::model::MessageKind::Document { .. }) {
+                            let bytes = self
+                                .live
+                                .as_ref()
+                                .and_then(|s| s.document_thumbs.get(&msg.id).cloned());
+                            Self::embedded_thumb_texture(
+                                &mut self.media,
+                                ui.ctx(),
+                                msg.id,
+                                bytes.as_deref(),
+                            )
+                        } else {
+                            None
+                        };
+                    let preview_thumb_pair = if msg.link_preview.is_some() {
+                        let bytes = self
+                            .live
+                            .as_ref()
+                            .and_then(|s| s.preview_thumbs.get(&msg.id).cloned());
+                        Self::embedded_thumb_texture(
+                            &mut self.media,
+                            ui.ctx(),
+                            msg.id,
+                            bytes.as_deref(),
+                        )
+                    } else {
+                        None
+                    };
                     let media = MediaCtx {
                         photo: if photo_tile == crate::media::PhotoTile::Demo {
                             self.media.photo_texture.as_ref().map(egui::TextureHandle::id)
@@ -416,6 +487,20 @@ impl App {
                         voice_fetch: self.media.voice_fetch.get(&msg.id).copied(),
                         view_once_opened: self.media.opened_view_once.contains(&msg.id),
                         downloading: self.media.downloads.contains(&msg.id),
+                        video_gif: self
+                            .live
+                            .as_ref()
+                            .is_some_and(|s| s.gif_videos.contains(&msg.id)),
+                        sticker_animated,
+                        sticker_lottie,
+                        location_thumb: location_thumb_pair.map(|(id, _)| id),
+                        document_thumb: document_thumb_pair.map(|(id, _)| id),
+                        preview_thumb: preview_thumb_pair.map(|(id, _)| id),
+                        view_once: msg.is_view_once()
+                            || self
+                                .live
+                                .as_ref()
+                                .is_some_and(|s| s.view_once_ids.contains(&msg.id)),
                         sender_photo: if group_incoming {
                             msg.sender.as_deref().and_then(|name| sender_photos.get(name).copied())
                         } else {
@@ -636,6 +721,19 @@ impl App {
                 }
                 BubbleAction::Vote(id, idx) => {
                     self.vote_poll(id, idx);
+                }
+                BubbleAction::RetrySticker(id) => {
+                    self.retry_sticker_fetch(id);
+                }
+                BubbleAction::OpenLocation(latitude, longitude) => {
+                    // The card opens the coordinates in the
+                    // system browser at the map: the same
+                    // open-external route links take, on the
+                    // user's own click only.
+                    let url = format!(
+                        "https://www.openstreetmap.org/?mlat={latitude}&mlon={longitude}#map=16/{latitude}/{longitude}"
+                    );
+                    let _ = open::that(url);
                 }
                 BubbleAction::ContextMenu(id) => {
                     self.bubble_menu = Some(id);

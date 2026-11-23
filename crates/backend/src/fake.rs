@@ -338,6 +338,7 @@ pub fn scripted_messages() -> Vec<LiveMessage> {
         title: "City Guide 2026 (sample)".to_owned(),
         description: "Scripted link preview from test mode, not a real fetch result.".to_owned(),
         url: "https://example.com/city-guide".to_owned(),
+        thumbnail: None,
     });
     link.reactions = vec![("👍".to_owned(), 1)];
     let mut photo = LiveMessage::text(

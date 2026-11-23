@@ -2404,11 +2404,60 @@ pub(super) async fn run_async(
                         Err(e) => fail(format!("Invalid group address: {e}")),
                     }
                 }
-                BackendCommand::DownloadMedia { chat_jid, message_id } => {
+                BackendCommand::DownloadMedia { chat_jid, message_id, document_ref } => {
                     let proto = lock_cache(&proto_cache)
                         .0
                         .get(&(chat_jid.clone(), message_id.clone()))
                         .cloned();
+                    // A document received before this session is
+                    // no longer in the protocol cache; its
+                    // archived reference still downloads it, the
+                    // same fallback the display fetches use.
+                    if proto.is_none() {
+                        if let Some(reference) = document_ref {
+                            let client = client.clone();
+                            let events = events.clone();
+                            let targets = retry_for_commands.clone();
+                            let dir = config.data_dir.join("downloads");
+                            let stem = crate::downloaded_media_stem(&chat_jid, &message_id);
+                            tokio::spawn(async move {
+                                let saved = super::util::download_document_by_ref(
+                                    &client, &reference, &dir, &stem,
+                                )
+                                .await;
+                                let saved = match saved {
+                                    Ok(path) => Ok(path),
+                                    Err(message) => {
+                                        let fields = super::util::document_fields(&reference);
+                                        retry_download_file(
+                                            &client,
+                                            &events,
+                                            &targets,
+                                            &chat_jid,
+                                            &message_id,
+                                            &fields,
+                                            &dir,
+                                            &stem,
+                                            "bin",
+                                        )
+                                        .await
+                                        .ok_or(message)
+                                    }
+                                };
+                                match saved {
+                                    Ok(path) => events.emit(BackendEvent::MediaSaved {
+                                        chat_jid,
+                                        message_id,
+                                        path: path.to_string_lossy().into_owned(),
+                                    }),
+                                    Err(e) => {
+                                        events.emit(BackendEvent::Error { message: e });
+                                    }
+                                }
+                            });
+                            continue;
+                        }
+                    }
                     match proto {
                         Some(proto) => {
                             // The download runs as its own task: a
@@ -2485,8 +2534,9 @@ pub(super) async fn run_async(
                             });
                         }
                         None => events.emit(BackendEvent::Error {
-                            message: "Only media received during this session can be \
-                                          downloaded."
+                            message: "That media is not available: it was received \
+                                          before this session and has no stored \
+                                          download reference."
                                 .to_owned(),
                         }),
                     }

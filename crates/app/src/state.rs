@@ -746,6 +746,12 @@ pub(crate) struct MediaState {
     /// entry and paints its neutral tile; nothing generated is
     /// ever substituted. Bounded like `textures`.
     pub(crate) video_textures: crate::extras::TextureCache<u64>,
+    /// Decoded embedded-thumbnail textures per app message ID
+    /// for the kinds whose picture rides inside the payload: a
+    /// location's map snapshot, a document's preview image, a
+    /// link preview's picture. One message has one kind, so one
+    /// cache serves all three. Bounded like `video_textures`.
+    pub(crate) embedded_textures: crate::extras::TextureCache<u64>,
     /// Video byte fetches in flight or failed, per app message
     /// ID. Absence means no fetch has been requested yet. A
     /// landed fetch removes the entry and records the source in
@@ -2069,6 +2075,7 @@ impl App {
                 voice_sink: crate::player::VoiceSink::Device,
                 voice_rates: std::collections::HashMap::new(),
                 video_textures: crate::extras::TextureCache::new(crate::extras::MAX_MEDIA_TEXTURES),
+                embedded_textures: crate::extras::TextureCache::new(crate::extras::MAX_MEDIA_TEXTURES),
                 video_fetch: std::collections::HashMap::new(),
                 poster_fetch: std::collections::HashMap::new(),
                 video_files: std::collections::HashMap::new(),

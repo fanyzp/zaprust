@@ -306,7 +306,7 @@ mod tests {
         text.kind = MessageKind::Image { caption: "report cover".to_owned(), view_once: true };
         assert!(!message_text_matches(&text, "report"));
         // A document matches by file name.
-        text.kind = MessageKind::Document { name: "report.pdf".to_owned(), size_kib: 12 };
+        text.kind = MessageKind::Document { name: "report.pdf".to_owned(), size_bytes: 12 * 1024, page_count: None };
         assert!(message_text_matches(&text, "report"));
         // A deleted message never matches.
         text.deleted = true;

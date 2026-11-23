@@ -60,12 +60,15 @@ fn link_host(url: &str) -> String {
 }
 
 /// A document's size line, in the units the document bubble
-/// uses: KiB below a MiB, one-decimal MiB above it.
-fn doc_size(size_kib: u32) -> String {
-    if size_kib >= 1024 {
-        format!("{:.1} MB", size_kib as f64 / 1024.0)
+/// uses: bytes below 1 KiB, KiB below a MiB, one-decimal MiB
+/// above it.
+fn doc_size(size_bytes: u64) -> String {
+    if size_bytes < 1024 {
+        format!("{size_bytes} B")
+    } else if size_bytes < 1024 * 1024 {
+        format!("{} KB", size_bytes / 1024)
     } else {
-        format!("{size_kib} KB")
+        format!("{:.1} MB", size_bytes as f64 / (1024.0 * 1024.0))
     }
 }
 
@@ -367,7 +370,7 @@ fn docs_section(ui: &mut egui::Ui, t: Tokens, source: &[Message], actions: &mut 
         return;
     }
     for msg in docs.iter().rev() {
-        let MessageKind::Document { name, size_kib } = &msg.kind else {
+        let MessageKind::Document { name, size_bytes, .. } = &msg.kind else {
             continue;
         };
         let (rect, resp) =
@@ -396,9 +399,9 @@ fn docs_section(ui: &mut egui::Ui, t: Tokens, source: &[Message], actions: &mut 
         );
         let day = msg.day_label();
         let meta = if day.is_empty() || day == "Today" {
-            format!("{} · {}", doc_size(*size_kib), msg.time)
+            format!("{} · {}", doc_size(*size_bytes), msg.time)
         } else {
-            format!("{} · {} · {}", doc_size(*size_kib), day, msg.time)
+            format!("{} · {} · {}", doc_size(*size_bytes), day, msg.time)
         };
         painter.text(
             Pos2::new(left, rect.top() + 35.0),

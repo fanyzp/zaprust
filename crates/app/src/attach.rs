@@ -335,20 +335,31 @@ impl App {
                 StagedKind::Photo => {
                     MessageKind::Image { caption: item_caption.clone(), view_once }
                 }
-                StagedKind::Video => {
-                    MessageKind::Video { caption: item_caption.clone(), view_once, secs: 0 }
-                }
-                StagedKind::Document => {
-                    MessageKind::Document { name: item.name.clone(), size_kib: 0 }
-                }
+                StagedKind::Video => MessageKind::Video {
+                    caption: item_caption.clone(),
+                    view_once,
+                    // The staged file's own duration, probed
+                    // from its bytes: a sent video states the
+                    // length it actually has.
+                    secs: std::fs::read(&item.path)
+                        .map(|bytes| probe_video_seconds(&bytes))
+                        .unwrap_or(0),
+                },
+                StagedKind::Document => MessageKind::Document {
+                    name: item.name.clone(),
+                    size_bytes: 0,
+                    page_count: None,
+                },
             };
-            let size_kib =
-                u32::try_from(std::fs::metadata(&item.path).map(|m| m.len()).unwrap_or(0) / 1024)
-                    .unwrap_or(0);
+            let size_bytes = std::fs::metadata(&item.path).map(|m| m.len()).unwrap_or(0);
             self.sent_counter += 1;
             let msg_id = 900 + self.sent_counter;
             let kind = match item.kind {
-                StagedKind::Document => MessageKind::Document { name: item.name.clone(), size_kib },
+                StagedKind::Document => MessageKind::Document {
+                    name: item.name.clone(),
+                    size_bytes,
+                    page_count: None,
+                },
                 _ => msg_kind,
             };
             let (stamp, expires_at) = self.demo_send_stamp();
@@ -529,12 +540,25 @@ impl App {
             StagedKind::Video => backend::MediaKind::Video,
             StagedKind::Document => backend::MediaKind::Document,
         };
+        // A sent video states its real duration on the wire:
+        // probed from the staged bytes with the app's own
+        // demuxer (an unprobeable file honestly states 0). A
+        // sent document's size is its byte count, never a
+        // rounded-down figure.
+        let seconds = match item.kind {
+            StagedKind::Video => probe_video_seconds(&bytes),
+            _ => 0,
+        };
         let msg_kind = match item.kind {
             StagedKind::Photo => MessageKind::Image { caption: caption.clone(), view_once },
             StagedKind::Video => {
-                MessageKind::Video { caption: caption.clone(), view_once, secs: 0 }
+                MessageKind::Video { caption: caption.clone(), view_once, secs: seconds }
             }
-            StagedKind::Document => MessageKind::Document { name: item.name.clone(), size_kib: 0 },
+            StagedKind::Document => MessageKind::Document {
+                name: item.name.clone(),
+                size_bytes: bytes.len() as u64,
+                page_count: None,
+            },
         };
         self.send_backend(backend::BackendCommand::SendMedia {
             chat_jid: jid,
@@ -544,7 +568,7 @@ impl App {
             caption,
             file_name: Some(item.name.clone()),
             gif_playback: false,
-            seconds: 0,
+            seconds,
             view_once,
             ephemeral_secs,
         });
@@ -746,6 +770,16 @@ fn staged_from_path(ctx: &egui::Context, path: &std::path::Path) -> StagedMedia 
 
 /// Compresses the recording's level taps into the 28-bar waveform
 /// shape the voice bubble renders.
+/// A staged video's duration in whole seconds, probed from its
+/// bytes with the app's own demuxer. A file the demuxer cannot
+/// read (not an MP4, or damaged) honestly probes as 0: the send
+/// then states no duration rather than an invented one.
+fn probe_video_seconds(bytes: &[u8]) -> u32 {
+    crate::video::demux(bytes)
+        .map(|demuxed| demuxed.info.duration_secs.round() as u32)
+        .unwrap_or(0)
+}
+
 fn waveform_from_levels(levels: &[f32]) -> Vec<f32> {
     let mut bars: Vec<f32> = levels.to_vec();
     bars.resize(28, 0.0);

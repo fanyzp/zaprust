@@ -297,6 +297,46 @@ struct MessageData {
     /// message so its bytes stay fetchable in later sessions.
     #[serde(default)]
     sticker_ref: Option<backend::StickerRef>,
+    /// A video's GIF flag, archived with the message so the
+    /// clip still loops in later sessions.
+    #[serde(default)]
+    gif_playback: bool,
+    /// A sticker's animation flags, archived with the message
+    /// so its badge stays honest in later sessions.
+    #[serde(default)]
+    sticker_animated: bool,
+    /// A sticker's Lottie flag. See [`MessageData::sticker_animated`].
+    #[serde(default)]
+    sticker_lottie: bool,
+    /// A sticker's embedded static frame, archived with the
+    /// message (a Lottie sticker's only picture).
+    #[serde(default)]
+    sticker_thumbnail: Option<Vec<u8>>,
+    /// A document's re-download reference, archived with the
+    /// message so a document received in an earlier session
+    /// stays downloadable after a restart. Dropped for a
+    /// view-once document once its single view has been spent
+    /// (see [`Store::clear_document_ref`]).
+    #[serde(default)]
+    document_ref: Option<backend::DocumentRef>,
+    /// A document's own file name, archived with the message
+    /// in its own field (the kind's caption slot holds only
+    /// the sender's caption).
+    #[serde(default)]
+    document_name: Option<String>,
+    /// A document's stated page count.
+    #[serde(default)]
+    document_page_count: Option<u32>,
+    /// A document's embedded JPEG thumbnail, archived with
+    /// the message so its card can present the document's own
+    /// preview image in later sessions.
+    #[serde(default)]
+    document_thumbnail: Option<Vec<u8>>,
+    /// A location's embedded map snapshot, archived with the
+    /// message so its card can present the place's own picture
+    /// in later sessions.
+    #[serde(default)]
+    location_thumbnail: Option<Vec<u8>>,
     /// A poll's creation secret, archived with the poll so the
     /// app can hand it back to the backend in later sessions
     /// (votes are encrypted under it; without it the poll could
@@ -1040,6 +1080,23 @@ impl Store {
         // still refresh), and a secret or creator the rewrite
         // does not carry falls back to the stored one.
         let mut stored_kind = stored_kind;
+        // A fetched poster lands in the archive through
+        // set_video_thumbnail, not through the message mirror
+        // (whose thumbnail field stays empty for a video whose
+        // payload carried none). A later rewrite of the row (a
+        // reaction, an edit) must not erase the poster the fetch
+        // archived: when the incoming message carries no
+        // thumbnail, the stored one survives.
+        let preserved_thumbnail = if msg.video_thumbnail.is_none()
+            && matches!(
+                msg.kind,
+                backend::LiveMessageKind::Media { media: backend::MediaKind::Video, .. }
+            ) {
+            Self::read_message_data(conn, &msg.chat_jid, &msg.id)?
+                .and_then(|data| data.video_thumbnail)
+        } else {
+            None
+        };
         let mut poll_ballots: Vec<(String, Vec<usize>)> = msg.poll_ballots.clone();
         let existing_poll = if matches!(stored_kind, Some(backend::LiveMessageKind::Poll { .. })) {
             Self::read_message_data(conn, &msg.chat_jid, &msg.id)?
@@ -1078,7 +1135,7 @@ impl Store {
             photo_ref: msg.photo_ref.clone(),
             voice_ref: msg.voice_ref.clone(),
             video_ref: msg.video_ref.clone(),
-            video_thumbnail: msg.video_thumbnail.clone(),
+            video_thumbnail: msg.video_thumbnail.clone().or(preserved_thumbnail),
             poster_ref: msg.poster_ref.clone(),
             video_width: msg.video_width,
             video_height: msg.video_height,
@@ -1086,6 +1143,15 @@ impl Store {
             mentions: msg.mentions.clone(),
             photo_thumbnail: msg.photo_thumbnail.clone(),
             sticker_ref: msg.sticker_ref.clone(),
+            gif_playback: msg.gif_playback,
+            sticker_animated: msg.sticker_animated,
+            sticker_lottie: msg.sticker_lottie,
+            sticker_thumbnail: msg.sticker_thumbnail.clone(),
+            document_ref: msg.document_ref.clone(),
+            document_name: msg.document_name.clone(),
+            document_page_count: msg.document_page_count,
+            document_thumbnail: msg.document_thumbnail.clone(),
+            location_thumbnail: msg.location_thumbnail.clone(),
             poll_secret: msg
                 .poll_secret
                 .clone()
@@ -1378,6 +1444,111 @@ impl Store {
         data.video_ref = None;
         data.video_thumbnail = None;
         data.poster_ref = None;
+        let data_json = serde_json::to_string(&data).map_err(|e| {
+            StoreError::Sqlite(rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
+        })?;
+        self.conn.execute(
+            "UPDATE messages SET data = ?3 WHERE chat_jid = ?1 AND id = ?2",
+            params![chat_jid, id, data_json],
+        )?;
+        Ok(())
+    }
+
+    /// Clears one view-once voice message's re-download
+    /// reference (and its waveform) from the archive when its
+    /// single play has been spent: the reference is what makes
+    /// the bytes fetchable, and the waveform is the sealed
+    /// audio's own shape, so once the play has been spent the
+    /// archive must keep neither. A message without any (or no
+    /// such message) is a quiet no-op.
+    ///
+    /// # Errors
+    /// [`StoreError`] on SQLite failures.
+    pub fn clear_voice_ref(&self, chat_jid: &str, id: &str) -> Result<(), StoreError> {
+        use rusqlite::OptionalExtension;
+        let data_text: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT data FROM messages WHERE chat_jid = ?1 AND id = ?2",
+                params![chat_jid, id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()?
+            .flatten();
+        let Some(data_text) = data_text else { return Ok(()) };
+        let mut data: MessageData = serde_json::from_str(&data_text).unwrap_or_default();
+        if data.voice_ref.is_none() && data.voice_waveform.is_none() {
+            return Ok(());
+        }
+        data.voice_ref = None;
+        data.voice_waveform = None;
+        let data_json = serde_json::to_string(&data).map_err(|e| {
+            StoreError::Sqlite(rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
+        })?;
+        self.conn.execute(
+            "UPDATE messages SET data = ?3 WHERE chat_jid = ?1 AND id = ?2",
+            params![chat_jid, id, data_json],
+        )?;
+        Ok(())
+    }
+
+    /// Clears one view-once sticker message's re-download
+    /// reference from the archive when its single view has been
+    /// spent. A message without one (or no such message) is a
+    /// quiet no-op.
+    ///
+    /// # Errors
+    /// [`StoreError`] on SQLite failures.
+    pub fn clear_sticker_ref(&self, chat_jid: &str, id: &str) -> Result<(), StoreError> {
+        use rusqlite::OptionalExtension;
+        let data_text: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT data FROM messages WHERE chat_jid = ?1 AND id = ?2",
+                params![chat_jid, id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()?
+            .flatten();
+        let Some(data_text) = data_text else { return Ok(()) };
+        let mut data: MessageData = serde_json::from_str(&data_text).unwrap_or_default();
+        if data.sticker_ref.is_none() {
+            return Ok(());
+        }
+        data.sticker_ref = None;
+        let data_json = serde_json::to_string(&data).map_err(|e| {
+            StoreError::Sqlite(rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
+        })?;
+        self.conn.execute(
+            "UPDATE messages SET data = ?3 WHERE chat_jid = ?1 AND id = ?2",
+            params![chat_jid, id, data_json],
+        )?;
+        Ok(())
+    }
+
+    /// Clears one view-once document message's re-download
+    /// reference from the archive. A message without one (or no
+    /// such message) is a quiet no-op.
+    ///
+    /// # Errors
+    /// [`StoreError`] on SQLite failures.
+    pub fn clear_document_ref(&self, chat_jid: &str, id: &str) -> Result<(), StoreError> {
+        use rusqlite::OptionalExtension;
+        let data_text: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT data FROM messages WHERE chat_jid = ?1 AND id = ?2",
+                params![chat_jid, id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()?
+            .flatten();
+        let Some(data_text) = data_text else { return Ok(()) };
+        let mut data: MessageData = serde_json::from_str(&data_text).unwrap_or_default();
+        if data.document_ref.is_none() {
+            return Ok(());
+        }
+        data.document_ref = None;
         let data_json = serde_json::to_string(&data).map_err(|e| {
             StoreError::Sqlite(rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
         })?;
@@ -1753,6 +1924,15 @@ impl Store {
             msg.mentions = data.mentions;
             msg.photo_thumbnail = data.photo_thumbnail;
             msg.sticker_ref = data.sticker_ref;
+            msg.gif_playback = data.gif_playback;
+            msg.sticker_animated = data.sticker_animated;
+            msg.sticker_lottie = data.sticker_lottie;
+            msg.sticker_thumbnail = data.sticker_thumbnail;
+            msg.document_ref = data.document_ref;
+            msg.document_name = data.document_name;
+            msg.document_page_count = data.document_page_count;
+            msg.document_thumbnail = data.document_thumbnail;
+            msg.location_thumbnail = data.location_thumbnail;
             msg.poll_secret = data.poll_secret;
             msg.poll_creator = data.poll_creator;
             msg.poll_ballots = data.poll_ballots;
@@ -2621,6 +2801,69 @@ mod tests {
         assert_eq!(rows[0].0.kind, msg.kind);
         store.clear_video_ref(&msg.chat_jid, &msg.id).unwrap();
         store.clear_video_ref(&msg.chat_jid, "no-such-id").unwrap();
+    }
+
+    /// A document's reference, name, page count and thumbnail
+    /// round-trip with the message, as do the GIF flag, the
+    /// sticker's animation state and frame, and a location's
+    /// snapshot; the view-once spends drop exactly their own
+    /// kind's reference.
+    #[test]
+    fn media_extras_round_trip_and_spends_drop_their_refs() {
+        let store = Store::open_in_memory().unwrap();
+        let mut msg = scripted_messages()[0].clone();
+        msg.document_ref = Some(backend::DocumentRef {
+            direct_path: "/v/t62.7118-24/doc.enc".to_owned(),
+            media_key: vec![7u8; 32],
+            file_sha256: vec![8u8; 32],
+            file_enc_sha256: vec![9u8; 32],
+            file_length: 54_321,
+        });
+        msg.document_name = Some("report.pdf".to_owned());
+        msg.document_page_count = Some(12);
+        msg.document_thumbnail = Some(video_thumbnail());
+        msg.gif_playback = true;
+        msg.sticker_animated = true;
+        msg.sticker_thumbnail = Some(video_thumbnail());
+        msg.location_thumbnail = Some(video_thumbnail());
+        msg.voice_ref = Some(backend::VoiceRef {
+            direct_path: "/v/t62.7118-24/voice.enc".to_owned(),
+            media_key: vec![7u8; 32],
+            file_sha256: vec![8u8; 32],
+            file_enc_sha256: vec![9u8; 32],
+            file_length: 45_678,
+        });
+        msg.voice_waveform = Some(vec![1u8; 32]);
+        msg.sticker_ref = Some(backend::StickerRef {
+            direct_path: "/v/t62.7118-24/sticker.enc".to_owned(),
+            media_key: vec![7u8; 32],
+            file_sha256: vec![8u8; 32],
+            file_enc_sha256: vec![9u8; 32],
+            file_length: 12_345,
+        });
+        store.upsert_message(&msg, 0).unwrap();
+        let rows = store.messages(&msg.chat_jid).unwrap();
+        let row = &rows[0].0;
+        assert_eq!(row.document_ref, msg.document_ref);
+        assert_eq!(row.document_name.as_deref(), Some("report.pdf"));
+        assert_eq!(row.document_page_count, Some(12));
+        assert_eq!(row.document_thumbnail, Some(video_thumbnail()));
+        assert!(row.gif_playback);
+        assert!(row.sticker_animated);
+        assert_eq!(row.sticker_thumbnail, Some(video_thumbnail()));
+        assert_eq!(row.location_thumbnail, Some(video_thumbnail()));
+        // The spends drop exactly their own reference.
+        store.clear_voice_ref(&msg.chat_jid, &msg.id).unwrap();
+        store.clear_sticker_ref(&msg.chat_jid, &msg.id).unwrap();
+        store.clear_document_ref(&msg.chat_jid, &msg.id).unwrap();
+        let rows = store.messages(&msg.chat_jid).unwrap();
+        assert_eq!(rows[0].0.voice_ref, None);
+        assert_eq!(rows[0].0.voice_waveform, None);
+        assert_eq!(rows[0].0.sticker_ref, None);
+        assert_eq!(rows[0].0.document_ref, None);
+        // The rest of the row survives the spends.
+        assert_eq!(rows[0].0.document_name.as_deref(), Some("report.pdf"));
+        assert_eq!(rows[0].0.body, msg.body);
     }
 
     fn poster_reference() -> backend::PosterRef {

@@ -1055,6 +1055,7 @@ fn history_message(
     msg.voice_waveform = super::util::voice_waveform_of(proto);
     msg.photo_thumbnail = super::util::photo_thumbnail_of(proto);
     msg.sticker_ref = super::util::sticker_ref_of(proto);
+    carry_media_extras(&mut msg, proto);
     msg.mentions = super::util::mentioned_jids_of(proto);
     msg.sender_jid = sender_jid;
     if matches!(msg.kind, LiveMessageKind::Poll { .. }) {
@@ -1066,9 +1067,37 @@ fn history_message(
     Some(msg)
 }
 
+/// Carries the media extras both translation paths (history and
+/// live) attach to a message: the GIF flag, the sticker's
+/// animation flags and static frame, the document's download
+/// reference, name, page count and thumbnail, and the location's
+/// map snapshot. Each extractor yields nothing for payloads of
+/// other kinds, so this runs unconditionally.
+fn carry_media_extras(msg: &mut LiveMessage, proto: &whatsapp_rust::prelude::wa::Message) {
+    msg.gif_playback = super::util::gif_playback_of(proto);
+    let (animated, lottie) = super::util::sticker_flags_of(proto);
+    msg.sticker_animated = animated;
+    msg.sticker_lottie = lottie;
+    msg.sticker_thumbnail = super::util::sticker_thumbnail_of(proto);
+    msg.document_ref = super::util::document_ref_of(proto);
+    msg.document_name = super::util::document_name_of(proto);
+    msg.document_page_count = super::util::document_page_count_of(proto);
+    msg.document_thumbnail = super::util::document_thumbnail_of(proto);
+    msg.location_thumbnail = super::util::location_thumbnail_of(proto);
+    // A document without a caption keeps its file name as its
+    // body (search and previews name the file, not the bare
+    // kind label); a captioned document's body is its caption
+    // already, through body_for.
+    if msg.body == "Document" {
+        if let Some(name) = &msg.document_name {
+            msg.body = name.clone();
+        }
+    }
+}
+
 /// The display body for one translated message: its own text when
 /// it has any, otherwise a typed summary from its kind (a photo
-/// reads "Photo", a document its file name from the caption slot,
+/// reads "Photo", a document its caption or the bare label,
 /// a poll its question). A view-once caption stays sealed: it is
 /// part of the protected payload and is never promoted to the
 /// body, where previews, notifications and the archive would pick
@@ -1090,6 +1119,7 @@ pub(super) fn body_for(kind: &LiveMessageKind, view_once: bool, text: Option<&st
                     crate::MediaKind::Photo => "Photo",
                     crate::MediaKind::Video => "Video",
                     crate::MediaKind::Voice => "Voice message",
+                    crate::MediaKind::Audio => "Audio",
                     crate::MediaKind::Document => "Document",
                     crate::MediaKind::Sticker => "Sticker",
                 }
@@ -1382,6 +1412,7 @@ pub(super) fn translate_message(
     // render time.
     msg.photo_thumbnail = super::util::photo_thumbnail_of(&ctx.message);
     msg.sticker_ref = super::util::sticker_ref_of(&ctx.message);
+    carry_media_extras(&mut msg, &ctx.message);
     msg.mentions = super::util::mentioned_jids_of(&ctx.message);
     // Quote context, when the message carries one. The quoted
     // author resolves through the same book as the sender: the
@@ -1695,10 +1726,27 @@ fn classify_unwrapped_deep(
         return (LiveMessageKind::Other(label), false);
     }
     if let Some(audio) = msg.audio_message.as_option() {
+        // The ptt flag is the whole difference between a voice
+        // note and an audio file: a payload with ptt set is a
+        // voice note (waveform bubble, voice-note rails); a
+        // payload without it is a file the sender attached (a
+        // song, a recording), and it renders as a file card
+        // with a duration, never as a voice note it is not.
+        if audio.ptt.unwrap_or(false) {
+            return (
+                LiveMessageKind::Media {
+                    media: crate::MediaKind::Voice,
+                    caption: String::new(),
+                    seconds: audio.seconds.unwrap_or(0),
+                    size_bytes: audio.file_length.unwrap_or(0),
+                },
+                false,
+            );
+        }
         return (
             LiveMessageKind::Media {
-                media: crate::MediaKind::Voice,
-                caption: String::new(),
+                media: crate::MediaKind::Audio,
+                caption: audio_format_label(audio.mimetype.as_deref()),
                 seconds: audio.seconds.unwrap_or(0),
                 size_bytes: audio.file_length.unwrap_or(0),
             },
@@ -1706,10 +1754,14 @@ fn classify_unwrapped_deep(
         );
     }
     if let Some(document) = msg.document_message.as_option() {
+        // The caption slot holds the sender's caption only;
+        // the file's name, page count and thumbnail travel in
+        // the message's own document fields (see
+        // carry_media_extras).
         return (
             LiveMessageKind::Media {
                 media: crate::MediaKind::Document,
-                caption: document.file_name.clone().unwrap_or_default(),
+                caption: document.caption.clone().unwrap_or_default(),
                 seconds: 0,
                 size_bytes: document.file_length.unwrap_or(0),
             },
@@ -1746,7 +1798,36 @@ pub(super) fn embedded_link_preview(
     if title.is_empty() && description.is_empty() {
         return None;
     }
-    Some(LivePreview { title, description, url: extended.matched_text.clone().unwrap_or_default() })
+    Some(LivePreview {
+        title,
+        description,
+        url: extended.matched_text.clone().unwrap_or_default(),
+        thumbnail: super::util::preview_thumbnail_of(msg),
+    })
+}
+
+/// The display label of an audio file, from the payload's MIME
+/// type: an audio payload carries no file name, so the honest
+/// label is its format. An absent or unrecognized type is just
+/// an audio file.
+fn audio_format_label(mimetype: Option<&str>) -> String {
+    let subtype = mimetype
+        .and_then(|m| m.split('/').nth(1))
+        .map(|s| s.split(';').next().unwrap_or(s).trim().to_ascii_lowercase());
+    let format = match subtype.as_deref() {
+        Some("mpeg") => Some("MP3"),
+        Some("mp4") | Some("m4a") | Some("x-m4a") => Some("M4A"),
+        Some("ogg") | Some("opus") => Some("OGG"),
+        Some("wav") | Some("x-wav") => Some("WAV"),
+        Some("flac") => Some("FLAC"),
+        Some("aac") => Some("AAC"),
+        Some("webm") => Some("WebM"),
+        _ => None,
+    };
+    match format {
+        Some(format) => format!("{format} audio file"),
+        None => "Audio file".to_owned(),
+    }
 }
 
 /// Extracts (author JID, excerpt) when a message quotes another
@@ -2749,6 +2830,59 @@ mod live_pairing_fix_tests {
         let (kind, _) = classify_message(&msg);
         assert!(matches!(kind, LiveMessageKind::Media { media: MediaKind::Video, seconds: 9, .. }));
         assert_eq!(body_for(&kind, false, None), "round note");
+    }
+
+    /// The ptt flag is the whole difference between a voice
+    /// note and an audio file: set, the payload is a voice
+    /// note; unset, it is an audio file with a format label,
+    /// never a voice note.
+    #[test]
+    fn audio_ptt_flag_decides_voice_note_vs_audio_file() {
+        let build = |ptt: Option<bool>| {
+            let mut audio = wa::message::AudioMessage::default();
+            audio.ptt = ptt;
+            audio.seconds = Some(83);
+            audio.mimetype = Some("audio/mpeg".to_owned());
+            let mut msg = wa::Message::default();
+            msg.audio_message = MessageField::some(audio);
+            msg
+        };
+        let (kind, _) = classify_message(&build(Some(true)));
+        assert!(matches!(
+            kind,
+            LiveMessageKind::Media { media: crate::MediaKind::Voice, seconds: 83, .. }
+        ));
+        for ptt in [Some(false), None] {
+            let (kind, _) = classify_message(&build(ptt));
+            match kind {
+                LiveMessageKind::Media { media: crate::MediaKind::Audio, caption, seconds, .. } => {
+                    assert_eq!(caption, "MP3 audio file");
+                    assert_eq!(seconds, 83);
+                }
+                other => panic!("an audio file must not classify as {other:?}"),
+            }
+        }
+    }
+
+    /// A document's caption slot holds only the sender's
+    /// caption; its file name is not stuffed into it (the name
+    /// travels in the message's document fields).
+    #[test]
+    fn document_caption_is_the_caption_not_the_file_name() {
+        let mut document = wa::message::DocumentMessage::default();
+        document.file_name = Some("report.pdf".to_owned());
+        document.caption = Some("the quarterly report".to_owned());
+        document.file_length = Some(54_321);
+        let mut msg = wa::Message::default();
+        msg.document_message = MessageField::some(document);
+        let (kind, _) = classify_message(&msg);
+        match kind {
+            LiveMessageKind::Media { media: crate::MediaKind::Document, caption, size_bytes, .. } => {
+                assert_eq!(caption, "the quarterly report");
+                assert_eq!(size_bytes, 54_321);
+            }
+            other => panic!("expected a document, got {other:?}"),
+        }
     }
 
     /// The newer poll creation versions are the same struct in

@@ -714,6 +714,9 @@ impl App {
     ) -> f32 {
         let t = self.tokens();
         let route = self.video_play_route(id);
+        // A GIF loops and wears no transport: the player starts
+        // playing on sight and restarts at the end.
+        let is_gif = self.live.as_ref().is_some_and(|s| s.gif_videos.contains(&id));
         // Opening the viewer is what starts the byte fetch, and
         // landed bytes start the player (paused on its first
         // frame).
@@ -743,6 +746,10 @@ impl App {
         if let Some(player) = self.media.video_player.as_mut().filter(|p| p.key == id) {
             has_player = true;
             player.pump();
+            if is_gif && player.ended {
+                // The loop: an ended GIF starts over at once.
+                player.play();
+            }
             if let Some(frame) = &player.current {
                 let key = (id, frame.pts.to_bits());
                 if self.media.video_frame_key != Some(key) {
@@ -869,6 +876,16 @@ impl App {
                     .layout(egui::Layout::top_down(egui::Align::Center)),
             );
             crate::widgets::spinner(&mut slot, 28.0);
+        } else if has_player && is_gif {
+            // A GIF wears no transport: it plays and loops. The
+            // badge at the frame's corner is its whole chrome.
+            painter.text(
+                frame_rect.left_bottom() + egui::Vec2::new(10.0, -8.0),
+                egui::Align2::LEFT_BOTTOM,
+                "GIF",
+                egui::FontId::proportional(12.0),
+                note_color,
+            );
         } else if has_player {
             // Transport: a play/pause disc over the frame, and a
             // seek bar with real positions under it.

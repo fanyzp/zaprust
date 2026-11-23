@@ -234,7 +234,8 @@ fn unwrap_media_proto(
 }
 
 /// Whether a protocol message carries view-once media, in any of
-/// its wrapper forms (v1, v2, v2 extension). The walk cannot ride
+/// its wrapper forms (v1, v2, v2 extension) or in the in-band
+/// form (the media's own `viewOnce` field, no wrapper). The walk cannot ride
 /// on `get_base_message`: one library pass peels device-sent,
 /// ephemeral, and view-once in a single fixed order, so it can
 /// step clean over a view-once layer without ever exposing it as
@@ -251,6 +252,21 @@ pub(super) fn proto_is_view_once(proto: &whatsapp_rust::prelude::wa::Message) ->
             || current.view_once_message_v2.as_option().is_some()
             || current.view_once_message_v2_extension.as_option().is_some()
         {
+            return true;
+        }
+        // The in-band form: newer clients set the media's own
+        // viewOnce field (image 25, video 20, audio 21) with no
+        // wrapper at all. A wrapper-only probe reads those as
+        // ordinary media, downloadable and forwardable, which
+        // is exactly what the sender marked them not to be.
+        let in_band = current
+            .image_message
+            .as_option()
+            .and_then(|m| m.view_once)
+            .or_else(|| current.video_message.as_option().and_then(|m| m.view_once))
+            .or_else(|| current.ptv_message.as_option().and_then(|m| m.view_once))
+            .or_else(|| current.audio_message.as_option().and_then(|m| m.view_once));
+        if in_band == Some(true) {
             return true;
         }
         let inner = current
@@ -874,6 +890,79 @@ pub(super) async fn fetch_sticker_by_ref(
     client.download(&params, download_limits()).await.map_err(download_error_message)
 }
 
+/// Extracts the persistable re-download reference of a document
+/// message (see [`crate::DocumentRef`]), or `None` when the
+/// message is not a document or its payload does not carry a
+/// complete reference. The completeness rule is the photo one.
+pub(super) fn document_ref_of(
+    proto: &whatsapp_rust::prelude::wa::Message,
+) -> Option<crate::DocumentRef> {
+    let document = unwrap_media_proto(proto).document_message.as_option()?;
+    let direct_path = document.direct_path.clone().filter(|p| !p.is_empty())?;
+    let media_key = document.media_key.clone().filter(|k| k.len() == 32)?;
+    let file_sha256 = document.file_sha256.clone().filter(|h| h.len() == 32)?;
+    let file_enc_sha256 = document.file_enc_sha256.clone().filter(|h| h.len() == 32)?;
+    let file_length = document.file_length?;
+    Some(crate::DocumentRef { direct_path, media_key, file_sha256, file_enc_sha256, file_length })
+}
+
+/// Rebuilds the library's validated download parameters from an
+/// archived document reference (see [`photo_download_params`]).
+pub(super) fn document_download_params(
+    reference: &crate::DocumentRef,
+) -> Result<whatsapp_rust::download::DownloadParams, String> {
+    whatsapp_rust::download::DownloadParams::encrypted(
+        reference.direct_path.clone(),
+        &reference.media_key,
+        &reference.file_sha256,
+        &reference.file_enc_sha256,
+        reference.file_length,
+        whatsapp_rust::download::MediaType::Document,
+    )
+    .map_err(|_| "That document's stored download reference is not usable.".to_owned())
+}
+
+/// Downloads a document into a new file named `<stem>.bin`
+/// inside `dir` from its archived reference, for messages the
+/// session's protocol cache no longer holds. The library
+/// streams the decrypted plaintext straight into the file, the
+/// same discipline as [`download_proto`]: no whole-file buffer
+/// in memory, the byte budget bounds the transfer, and a
+/// partial file never survives a failure.
+pub(super) async fn download_document_by_ref(
+    client: &whatsapp_rust::Client,
+    reference: &crate::DocumentRef,
+    dir: &std::path::Path,
+    stem: &str,
+) -> Result<std::path::PathBuf, String> {
+    check_declared_length(Some(reference.file_length))?;
+    let params = document_download_params(reference)?;
+    let path = dir.join(format!("{stem}.bin"));
+    std::fs::create_dir_all(dir)
+        .map_err(|e| format!("Could not create the downloads folder: {e}"))?;
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let file = opts.open(&path).map_err(|e| format!("Could not create the download file: {e}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = file.set_permissions(std::fs::Permissions::from_mode(0o600));
+    }
+    let mut guard = PartialFileGuard { path: path.clone(), armed: true };
+    match client.download_to_writer(&params, file, download_limits()).await {
+        Ok(_file) => {
+            guard.armed = false;
+            Ok(path)
+        }
+        Err(e) => Err(download_error_message(e)),
+    }
+}
+
 /// The largest wire thumbnail a photo reference will archive.
 /// Same bound as the video thumbnail: a preview frame is a few
 /// kilobytes, anything larger is not a thumbnail worth carrying.
@@ -889,6 +978,105 @@ pub(super) fn photo_thumbnail_of(proto: &whatsapp_rust::prelude::wa::Message) ->
     let image =
         base.image_message.as_option().or_else(|| base.instant_image_message.as_option())?;
     image.jpeg_thumbnail.clone().filter(|t| !t.is_empty() && t.len() <= MAX_PHOTO_THUMBNAIL_BYTES)
+}
+
+/// Whether a video payload is marked as a GIF (VideoMessage
+/// `gifPlayback`): the clip loops and wears no playback
+/// controls. `false` for every other payload.
+pub(super) fn gif_playback_of(proto: &whatsapp_rust::prelude::wa::Message) -> bool {
+    let base = unwrap_media_proto(proto);
+    base.video_message
+        .as_option()
+        .or_else(|| base.ptv_message.as_option())
+        .and_then(|v| v.gif_playback)
+        .unwrap_or(false)
+}
+
+/// A sticker payload's animation flags (StickerMessage
+/// `isAnimated`, `isLottie`), `(false, false)` for every other
+/// payload.
+pub(super) fn sticker_flags_of(proto: &whatsapp_rust::prelude::wa::Message) -> (bool, bool) {
+    let base = unwrap_media_proto(proto);
+    match base.sticker_message.as_option() {
+        Some(sticker) => (
+            sticker.is_animated.unwrap_or(false),
+            sticker.is_lottie.unwrap_or(false),
+        ),
+        None => (false, false),
+    }
+}
+
+/// Extracts the static PNG frame a sticker payload embeds
+/// (StickerMessage `pngThumbnail`): the sticker's own still
+/// image, the only picture a Lottie sticker's payload carries.
+/// Same bound as the photo thumbnail.
+pub(super) fn sticker_thumbnail_of(proto: &whatsapp_rust::prelude::wa::Message) -> Option<Vec<u8>> {
+    let sticker = unwrap_media_proto(proto).sticker_message.as_option()?;
+    sticker
+        .png_thumbnail
+        .clone()
+        .filter(|t| !t.is_empty() && t.len() <= MAX_PHOTO_THUMBNAIL_BYTES)
+}
+
+/// Extracts the JPEG thumbnail a document payload embeds
+/// (DocumentMessage `jpegThumbnail`): the document's own
+/// preview image. Same bound as the photo thumbnail.
+pub(super) fn document_thumbnail_of(
+    proto: &whatsapp_rust::prelude::wa::Message,
+) -> Option<Vec<u8>> {
+    let document = unwrap_media_proto(proto).document_message.as_option()?;
+    document
+        .jpeg_thumbnail
+        .clone()
+        .filter(|t| !t.is_empty() && t.len() <= MAX_PHOTO_THUMBNAIL_BYTES)
+}
+
+/// A document's own file name as the sender's client stated it
+/// (DocumentMessage `fileName`, falling back to its `title`).
+/// `None` when the payload states neither.
+pub(super) fn document_name_of(proto: &whatsapp_rust::prelude::wa::Message) -> Option<String> {
+    let document = unwrap_media_proto(proto).document_message.as_option()?;
+    document
+        .file_name
+        .clone()
+        .filter(|n| !n.is_empty())
+        .or_else(|| document.title.clone().filter(|n| !n.is_empty()))
+}
+
+/// A document's stated page count (DocumentMessage
+/// `pageCount`), when it stated a positive one.
+pub(super) fn document_page_count_of(proto: &whatsapp_rust::prelude::wa::Message) -> Option<u32> {
+    let document = unwrap_media_proto(proto).document_message.as_option()?;
+    document.page_count.filter(|n| *n > 0)
+}
+
+/// Extracts the map snapshot a location payload embeds
+/// (LocationMessage `jpegThumbnail`): a real picture of the
+/// place, made by the sender's client. Same bound as the photo
+/// thumbnail.
+pub(super) fn location_thumbnail_of(
+    proto: &whatsapp_rust::prelude::wa::Message,
+) -> Option<Vec<u8>> {
+    let base = unwrap_media_proto(proto);
+    let thumb = base
+        .location_message
+        .as_option()
+        .and_then(|l| l.jpeg_thumbnail.clone())
+        .or_else(|| base.live_location_message.as_option().and_then(|l| l.jpeg_thumbnail.clone()));
+    thumb.filter(|t| !t.is_empty() && t.len() <= MAX_PHOTO_THUMBNAIL_BYTES)
+}
+
+/// Extracts the preview image an extended-text payload embeds
+/// (ExtendedTextMessage `jpegThumbnail`): the preview's own
+/// picture, attached by the sender's client. The receiver never
+/// fetches a preview image itself. Same bound as the photo
+/// thumbnail.
+pub(super) fn preview_thumbnail_of(proto: &whatsapp_rust::prelude::wa::Message) -> Option<Vec<u8>> {
+    let extended = proto.get_base_message().extended_text_message.as_option()?;
+    extended
+        .jpeg_thumbnail
+        .clone()
+        .filter(|t| !t.is_empty() && t.len() <= MAX_PHOTO_THUMBNAIL_BYTES)
 }
 
 /// The JIDs a message mentions, from the context info of
@@ -1027,6 +1215,18 @@ pub(super) fn photo_fields(reference: &crate::PhotoRef) -> MediaRefFields {
         file_enc_sha256: reference.file_enc_sha256.clone(),
         file_length: reference.file_length,
         media_type: whatsapp_rust::download::MediaType::Image,
+    }
+}
+
+/// The retry fields of an archived document reference.
+pub(super) fn document_fields(reference: &crate::DocumentRef) -> MediaRefFields {
+    MediaRefFields {
+        direct_path: reference.direct_path.clone(),
+        media_key: reference.media_key.clone(),
+        file_sha256: reference.file_sha256.clone(),
+        file_enc_sha256: reference.file_enc_sha256.clone(),
+        file_length: reference.file_length,
+        media_type: whatsapp_rust::download::MediaType::Document,
     }
 }
 
@@ -1669,6 +1869,63 @@ mod tests {
         }
         assert_eq!(video_dimensions_of(&zero), None);
         assert_eq!(video_dimensions_of(&wa::Message::default()), None);
+    }
+
+    fn document_proto_complete() -> wa::Message {
+        let mut document = wa::message::DocumentMessage::default();
+        document.direct_path = Some("/v/t62.7118-24/doc.enc".to_owned());
+        document.media_key = Some(vec![7u8; 32]);
+        document.file_sha256 = Some(vec![8u8; 32]);
+        document.file_enc_sha256 = Some(vec![9u8; 32]);
+        document.file_length = Some(54_321);
+        document.file_name = Some("report.pdf".to_owned());
+        document.page_count = Some(12);
+        document.caption = Some("the quarterly report".to_owned());
+        document.jpeg_thumbnail = Some(vec![0xFF, 0xD8, 0xFF, 0xE0]);
+        let mut msg = wa::Message::default();
+        msg.document_message = MessageField::some(document);
+        msg
+    }
+
+    /// The document reference is extracted whole from a complete
+    /// payload, and the document's own metadata (name, page
+    /// count, thumbnail) reads from its own fields.
+    #[test]
+    fn document_ref_and_metadata_come_from_a_complete_payload() {
+        for proto in [document_proto_complete(), wrap_ephemeral(document_proto_complete())] {
+            let reference =
+                document_ref_of(&proto).expect("a complete document yields a reference");
+            assert_eq!(reference.direct_path, "/v/t62.7118-24/doc.enc");
+            assert_eq!(reference.file_length, 54_321);
+            assert!(document_download_params(&reference).is_ok());
+            assert_eq!(document_name_of(&proto).as_deref(), Some("report.pdf"));
+            assert_eq!(document_page_count_of(&proto), Some(12));
+            assert!(document_thumbnail_of(&proto).is_some());
+        }
+        // A partial reference is no reference.
+        let mut incomplete = document_proto_complete();
+        if let Some(document) = incomplete.document_message.as_option_mut() {
+            document.media_key = None;
+        }
+        assert!(document_ref_of(&incomplete).is_none());
+        assert!(document_ref_of(&photo_proto_complete()).is_none());
+    }
+
+    /// The in-band view-once form (the media's own viewOnce
+    /// field, no wrapper) is view-once; an ordinary payload is
+    /// not, and neither is an ephemeral wrapper alone.
+    #[test]
+    fn view_once_probe_reads_the_in_band_flag() {
+        let mut audio = wa::message::AudioMessage::default();
+        audio.view_once = Some(true);
+        let mut msg = wa::Message::default();
+        msg.audio_message = MessageField::some(audio);
+        assert!(proto_is_view_once(&msg), "in-band audio view-once is view-once");
+        // Inside an ephemeral wrapper, too.
+        assert!(proto_is_view_once(&wrap_ephemeral(msg)));
+        // An ordinary voice note is not view-once.
+        assert!(!proto_is_view_once(&voice_proto_complete()));
+        assert!(!proto_is_view_once(&wrap_ephemeral(voice_proto_complete())));
     }
 
     /// Builds a wire poll-vote message the way a voter's client

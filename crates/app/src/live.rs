@@ -290,6 +290,44 @@ pub(crate) struct LiveSession {
     /// Sticker re-download references per numeric message ID,
     /// seeded and extended exactly like `photo_refs`.
     pub(crate) sticker_refs: HashMap<u64, backend::StickerRef>,
+    /// Document re-download references per numeric message ID,
+    /// seeded and extended exactly like `photo_refs`. A document
+    /// download passes the reference along, so a document from
+    /// before this session still downloads.
+    pub(crate) document_refs: HashMap<u64, backend::DocumentRef>,
+    /// GIF-marked videos per numeric message ID: the clip loops
+    /// and wears no playback controls in the viewer, and its
+    /// tile wears the GIF badge.
+    pub(crate) gif_videos: std::collections::HashSet<u64>,
+    /// Sticker animation flags per numeric message ID,
+    /// `(animated, lottie)`, seeded and extended exactly like
+    /// `sticker_refs`. The tile badges an animated sticker it
+    /// can only show as a still, and presents a Lottie
+    /// sticker's embedded frame instead of fetching its
+    /// (non-image) bytes.
+    pub(crate) sticker_anim: HashMap<u64, (bool, bool)>,
+    /// Sticker static frames (the wire PNG bytes) per numeric
+    /// message ID: a Lottie sticker's only picture.
+    pub(crate) sticker_thumbs: HashMap<u64, Vec<u8>>,
+    /// Document thumbnails (the wire JPEG bytes) per numeric
+    /// message ID, seeded and extended exactly like
+    /// `video_thumbs`, so a document's card can present the
+    /// document's own preview image.
+    pub(crate) document_thumbs: HashMap<u64, Vec<u8>>,
+    /// Location map snapshots (the wire JPEG bytes) per numeric
+    /// message ID, seeded and extended exactly like
+    /// `video_thumbs`, so a location's card can present the
+    /// place's own picture.
+    pub(crate) location_thumbs: HashMap<u64, Vec<u8>>,
+    /// Link preview images (the wire JPEG bytes) per numeric
+    /// message ID, seeded and extended exactly like
+    /// `video_thumbs`, so a preview card can present the page's
+    /// own picture instead of a stand-in.
+    pub(crate) preview_thumbs: HashMap<u64, Vec<u8>>,
+    /// View-once message IDs whose kind carries no view-once
+    /// flag of its own (voice notes, documents, stickers):
+    /// the stream reads the message's sealed state from here.
+    pub(crate) view_once_ids: std::collections::HashSet<u64>,
     /// Photo thumbnails (the wire JPEG bytes) per numeric
     /// message ID, seeded and extended exactly like
     /// `video_thumbs`, so a photo's tile can paint the photo
@@ -691,9 +729,26 @@ pub(crate) fn to_kind(kind: &backend::LiveMessageKind) -> MessageKind {
                     // its payload or not at all.
                     waveform: voice_waveform_bars(None),
                 },
+                MediaKind::Audio => MessageKind::Audio {
+                    secs: *seconds,
+                    // The caption slot of an audio file carries
+                    // its format label (the payload has no file
+                    // name); an empty one is just an audio file.
+                    name: if caption.is_empty() {
+                        "Audio file".to_owned()
+                    } else {
+                        caption.clone()
+                    },
+                    size_bytes: *size_bytes,
+                },
                 MediaKind::Document => MessageKind::Document {
-                    name: if caption.is_empty() { "Document".to_owned() } else { caption.clone() },
-                    size_kib: u32::try_from(size_bytes / 1024).unwrap_or(0),
+                    // The name comes from the message's own
+                    // document field at the message-level
+                    // conversion; the kind alone falls back to
+                    // the bare label.
+                    name: "Document".to_owned(),
+                    size_bytes: *size_bytes,
+                    page_count: None,
                 },
                 MediaKind::Sticker => MessageKind::Sticker,
             }
@@ -741,6 +796,15 @@ pub(crate) fn to_message_with_flags(live: &LiveMessage, flags: i64) -> Message {
     if let MessageKind::Voice { waveform, .. } = &mut kind {
         *waveform = voice_waveform_bars(live.voice_waveform.as_deref());
     }
+    if let MessageKind::Document { name, page_count, .. } = &mut kind {
+        // The document's name and page count live in the
+        // message's own document fields, not the kind's caption
+        // slot (that slot holds only the sender's caption).
+        if let Some(doc_name) = live.document_name.as_ref().filter(|n| !n.is_empty()) {
+            *name = doc_name.clone();
+        }
+        *page_count = live.document_page_count;
+    }
     if live.view_once {
         match &mut kind {
             MessageKind::Image { view_once, .. } | MessageKind::Video { view_once, .. } => {
@@ -768,8 +832,15 @@ pub(crate) fn to_message_with_flags(live: &LiveMessage, flags: i64) -> Message {
             title: p.title.clone(),
             description: p.description.clone(),
             url: p.url.clone(),
-            // The backend preview payload carries no image.
-            image: core::model::PreviewImage::None,
+            // The preview's own picture, when the sender's
+            // client embedded one: the card paints the real
+            // bytes (the stream decodes them from the session's
+            // preview map); the treatment is the small thumb.
+            image: if p.thumbnail.is_some() {
+                core::model::PreviewImage::Thumb
+            } else {
+                core::model::PreviewImage::None
+            },
         }),
         starred: flags & store::FLAG_STARRED != 0 || live.starred,
         kept: flags & store::FLAG_KEPT != 0,
@@ -1044,6 +1115,14 @@ impl crate::state::App {
             video_thumbs: HashMap::new(),
             poster_refs: HashMap::new(),
             video_dims: HashMap::new(),
+            document_refs: HashMap::new(),
+            gif_videos: HashSet::new(),
+            sticker_anim: HashMap::new(),
+            sticker_thumbs: HashMap::new(),
+            document_thumbs: HashMap::new(),
+            location_thumbs: HashMap::new(),
+            preview_thumbs: HashMap::new(),
+            view_once_ids: HashSet::new(),
             sticker_refs: HashMap::new(),
             photo_thumbs: HashMap::new(),
             message_mentions: HashMap::new(),
@@ -1171,6 +1250,55 @@ impl crate::state::App {
                                 session
                                     .photo_thumbs
                                     .insert(message_id(&m.chat_jid, &m.id), thumb.clone());
+                            }
+                            // The media extras seed the same
+                            // way: document references and
+                            // thumbnails, the GIF flag, sticker
+                            // animation state, location
+                            // snapshots, preview images and the
+                            // view-once set.
+                            if let Some(reference) = &m.document_ref {
+                                session
+                                    .document_refs
+                                    .insert(message_id(&m.chat_jid, &m.id), reference.clone());
+                            }
+                            if let Some(thumb) = &m.document_thumbnail {
+                                session
+                                    .document_thumbs
+                                    .insert(message_id(&m.chat_jid, &m.id), thumb.clone());
+                            }
+                            if m.gif_playback {
+                                session
+                                    .gif_videos
+                                    .insert(message_id(&m.chat_jid, &m.id));
+                            }
+                            if m.sticker_animated || m.sticker_lottie {
+                                session.sticker_anim.insert(
+                                    message_id(&m.chat_jid, &m.id),
+                                    (m.sticker_animated, m.sticker_lottie),
+                                );
+                            }
+                            if let Some(thumb) = &m.sticker_thumbnail {
+                                session
+                                    .sticker_thumbs
+                                    .insert(message_id(&m.chat_jid, &m.id), thumb.clone());
+                            }
+                            if let Some(thumb) = &m.location_thumbnail {
+                                session
+                                    .location_thumbs
+                                    .insert(message_id(&m.chat_jid, &m.id), thumb.clone());
+                            }
+                            if let Some(thumb) =
+                                m.link_preview.as_ref().and_then(|p| p.thumbnail.as_ref())
+                            {
+                                session
+                                    .preview_thumbs
+                                    .insert(message_id(&m.chat_jid, &m.id), thumb.clone());
+                            }
+                            if m.view_once {
+                                session
+                                    .view_once_ids
+                                    .insert(message_id(&m.chat_jid, &m.id));
                             }
                             if !m.mentions.is_empty() {
                                 session
@@ -2697,6 +2825,24 @@ impl crate::state::App {
                     Some(tex) => {
                         self.media.textures.insert(mid, tex);
                         self.media.sticker_fetch.remove(&mid);
+                        // A view-once sticker's view is spent
+                        // by its bytes actually landing as a
+                        // paintable picture: the opened state is
+                        // recorded and the archived reference
+                        // dropped, so the sticker cannot be
+                        // fetched again after a restart. The
+                        // decoded texture stays for this
+                        // session's viewing, like a view-once
+                        // photo's pixels stay until the viewer
+                        // closes.
+                        if self
+                            .live
+                            .as_ref()
+                            .is_some_and(|s| s.view_once_ids.contains(&mid))
+                        {
+                            self.mark_view_once_opened(mid);
+                            self.drop_sticker_ref(mid);
+                        }
                     }
                     None => {
                         self.media.sticker_fetch.insert(mid, crate::state::PhotoFetchState::Failed);
@@ -4121,6 +4267,30 @@ impl crate::state::App {
             if let Some(thumb) = &row.photo_thumbnail {
                 session.photo_thumbs.insert(msg_id, thumb.clone());
             }
+            if let Some(reference) = &row.document_ref {
+                session.document_refs.insert(msg_id, reference.clone());
+            }
+            if let Some(thumb) = &row.document_thumbnail {
+                session.document_thumbs.insert(msg_id, thumb.clone());
+            }
+            if row.gif_playback {
+                session.gif_videos.insert(msg_id);
+            }
+            if row.sticker_animated || row.sticker_lottie {
+                session.sticker_anim.insert(msg_id, (row.sticker_animated, row.sticker_lottie));
+            }
+            if let Some(thumb) = &row.sticker_thumbnail {
+                session.sticker_thumbs.insert(msg_id, thumb.clone());
+            }
+            if let Some(thumb) = &row.location_thumbnail {
+                session.location_thumbs.insert(msg_id, thumb.clone());
+            }
+            if let Some(thumb) = row.link_preview.as_ref().and_then(|p| p.thumbnail.as_ref()) {
+                session.preview_thumbs.insert(msg_id, thumb.clone());
+            }
+            if row.view_once {
+                session.view_once_ids.insert(msg_id);
+            }
             if !row.mentions.is_empty() {
                 session.message_mentions.insert(msg_id, row.mentions.clone());
             }
@@ -4364,6 +4534,32 @@ impl crate::state::App {
             }
             if let Some(thumb) = &live.photo_thumbnail {
                 session.photo_thumbs.insert(msg_id, thumb.clone());
+            }
+            if let Some(reference) = &live.document_ref {
+                session.document_refs.insert(msg_id, reference.clone());
+            }
+            if let Some(thumb) = &live.document_thumbnail {
+                session.document_thumbs.insert(msg_id, thumb.clone());
+            }
+            if live.gif_playback {
+                session.gif_videos.insert(msg_id);
+            }
+            if live.sticker_animated || live.sticker_lottie {
+                session
+                    .sticker_anim
+                    .insert(msg_id, (live.sticker_animated, live.sticker_lottie));
+            }
+            if let Some(thumb) = &live.sticker_thumbnail {
+                session.sticker_thumbs.insert(msg_id, thumb.clone());
+            }
+            if let Some(thumb) = &live.location_thumbnail {
+                session.location_thumbs.insert(msg_id, thumb.clone());
+            }
+            if let Some(thumb) = live.link_preview.as_ref().and_then(|p| p.thumbnail.as_ref()) {
+                session.preview_thumbs.insert(msg_id, thumb.clone());
+            }
+            if live.view_once {
+                session.view_once_ids.insert(msg_id);
             }
             if !live.mentions.is_empty() {
                 session.message_mentions.insert(msg_id, live.mentions.clone());
@@ -4984,12 +5180,23 @@ impl crate::state::App {
 
     /// Ensures one sticker's bytes are on their way, mirroring
     /// [`App::ensure_photo_fetch`] through the sticker fetch
-    /// path.
+    /// path. A Lottie sticker is never fetched: its bytes are
+    /// animation JSON, not an image, and the tile presents the
+    /// payload's embedded static frame instead (the stream
+    /// decodes it from the session's sticker thumbnails).
     pub(crate) fn ensure_sticker_fetch(&mut self, msg_id: u64) {
         if self.media.textures.contains_key(&msg_id) {
             return;
         }
         if self.media.sticker_fetch.contains_key(&msg_id) {
+            return;
+        }
+        if self
+            .live
+            .as_ref()
+            .and_then(|s| s.sticker_anim.get(&msg_id).copied())
+            .is_some_and(|(_, lottie)| lottie)
+        {
             return;
         }
         let (chat_jid, sticker_ref) = {
@@ -5018,6 +5225,54 @@ impl crate::state::App {
             self.media.photo_fetch.remove(&msg_id);
         }
         self.ensure_photo_fetch(msg_id);
+    }
+
+    /// Re-runs a failed sticker fetch (clicking a failed
+    /// sticker tile is the retry gesture, the sticker analogue
+    /// of opening the viewer on a failed photo).
+    pub(crate) fn retry_sticker_fetch(&mut self, msg_id: u64) {
+        if self.media.sticker_fetch.get(&msg_id) == Some(&crate::state::PhotoFetchState::Failed) {
+            self.media.sticker_fetch.remove(&msg_id);
+        }
+        self.ensure_sticker_fetch(msg_id);
+    }
+
+    /// Removes one message's voice re-download reference from
+    /// the session map and from the archive (the view-once
+    /// voice spend).
+    fn drop_voice_ref(&mut self, msg_id: u64) {
+        let protocol_id = self.protocol_ids.get(&msg_id).cloned();
+        let Some(session) = &mut self.live else { return };
+        session.voice_refs.remove(&msg_id);
+        let chat_jid = session
+            .messages
+            .iter()
+            .find(|(_, msgs)| msgs.iter().any(|(_, m)| m.id == msg_id))
+            .and_then(|(chat_id, _)| session.jids.get(chat_id).cloned());
+        if let (Some(store), Some(chat_jid), Some(protocol_id)) =
+            (&session.store, chat_jid, protocol_id)
+        {
+            let _ = store.clear_voice_ref(&chat_jid, &protocol_id);
+        }
+    }
+
+    /// Removes one message's sticker re-download reference from
+    /// the session map and from the archive (the view-once
+    /// sticker spend).
+    fn drop_sticker_ref(&mut self, msg_id: u64) {
+        let protocol_id = self.protocol_ids.get(&msg_id).cloned();
+        let Some(session) = &mut self.live else { return };
+        session.sticker_refs.remove(&msg_id);
+        let chat_jid = session
+            .messages
+            .iter()
+            .find(|(_, msgs)| msgs.iter().any(|(_, m)| m.id == msg_id))
+            .and_then(|(chat_id, _)| session.jids.get(chat_id).cloned());
+        if let (Some(store), Some(chat_jid), Some(protocol_id)) =
+            (&session.store, chat_jid, protocol_id)
+        {
+            let _ = store.clear_sticker_ref(&chat_jid, &protocol_id);
+        }
     }
 
     /// The play/pause gesture on one voice message. A note already
@@ -5123,6 +5378,17 @@ impl crate::state::App {
                 }
                 self.media.voice_fetch.remove(&msg_id);
                 self.media.voice_player = Some(player);
+                // A view-once voice note's single play is spent
+                // by playback actually starting on its real
+                // decoded audio: the opened state is recorded
+                // and the archived reference dropped, so the
+                // note cannot be fetched again after a restart.
+                // The loaded player remains usable until another
+                // note replaces it; that session is the viewing.
+                if self.live.as_ref().is_some_and(|s| s.view_once_ids.contains(&msg_id)) {
+                    self.mark_view_once_opened(msg_id);
+                    self.drop_voice_ref(msg_id);
+                }
             }
             Err(message) => {
                 self.media.voice_fetch.insert(msg_id, crate::state::VoiceFetchState::Failed);
@@ -5279,6 +5545,31 @@ impl crate::state::App {
         Some((id, size.x / size.y.max(1.0)))
     }
 
+    /// The decoded texture of one message's embedded thumbnail
+    /// (a location's map snapshot, a document's preview image,
+    /// a link preview's picture), with its aspect ratio,
+    /// decoding and caching the wire bytes on first use into
+    /// the shared embedded cache. `bytes` is the payload's own
+    /// image as the caller read it from the session's maps;
+    /// `None` (or undecodable bytes) paints the kind's neutral
+    /// card instead. Mirrors [`App::video_thumb_texture`].
+    pub(crate) fn embedded_thumb_texture(
+        media: &mut crate::state::MediaState,
+        ctx: &egui::Context,
+        msg_id: u64,
+        bytes: Option<&[u8]>,
+    ) -> Option<(egui::TextureId, f32)> {
+        if let Some(handle) = media.embedded_textures.get(&msg_id) {
+            let size = handle.size_vec2();
+            return Some((handle.id(), size.x / size.y.max(1.0)));
+        }
+        let handle = crate::media::decode_photo(ctx, bytes?)?;
+        let size = handle.size_vec2();
+        let id = handle.id();
+        media.embedded_textures.insert(msg_id, handle);
+        Some((id, size.x / size.y.max(1.0)))
+    }
+
     /// Where pressing play on one video message stands (see
     /// [`crate::media::VideoPlayRoute`]). One decision function
     /// for the bubble and the viewer, so the play gesture can
@@ -5405,7 +5696,14 @@ impl crate::state::App {
         };
         let info =
             crate::video::VideoInfo { width: 0, height: 0, duration_secs: f64::from(seconds) };
-        self.media.video_player = Some(crate::video::VideoPlayer::start(msg_id, source, info));
+        let mut player = crate::video::VideoPlayer::start(msg_id, source, info);
+        // A GIF plays on sight and loops (the viewer's pump
+        // restarts it at the end): it is not a video the user
+        // transports, it is a moving picture.
+        if self.live.as_ref().is_some_and(|s| s.gif_videos.contains(&msg_id)) {
+            player.play();
+        }
+        self.media.video_player = Some(player);
     }
 
     /// Removes one message's video re-download reference,
@@ -6808,9 +7106,11 @@ impl crate::state::App {
                 message_id: protocol_id,
                 sticker_ref: session.sticker_refs.get(&msg_id).cloned(),
             },
-            ZipKind::Document => {
-                BackendCommand::DownloadMedia { chat_jid, message_id: protocol_id }
-            }
+            ZipKind::Document => BackendCommand::DownloadMedia {
+                chat_jid,
+                message_id: protocol_id,
+                document_ref: session.document_refs.get(&msg_id).cloned(),
+            },
         };
         self.send_backend(command);
         true
@@ -6931,6 +7231,14 @@ mod burst_drain_tests {
             video_thumbs: HashMap::new(),
             poster_refs: HashMap::new(),
             video_dims: HashMap::new(),
+            document_refs: HashMap::new(),
+            gif_videos: HashSet::new(),
+            sticker_anim: HashMap::new(),
+            sticker_thumbs: HashMap::new(),
+            document_thumbs: HashMap::new(),
+            location_thumbs: HashMap::new(),
+            preview_thumbs: HashMap::new(),
+            view_once_ids: HashSet::new(),
             sticker_refs: HashMap::new(),
             photo_thumbs: HashMap::new(),
             message_mentions: HashMap::new(),
@@ -7761,6 +8069,7 @@ mod burst_drain_tests {
             title: "Example Page".to_owned(),
             description: "A page about examples".to_owned(),
             url: "https://example.com/page".to_owned(),
+            thumbnail: None,
         });
         tx.send(BackendEvent::MessageUpsert(live)).unwrap();
         drain_all(&mut app, &ctx);
@@ -8451,6 +8760,9 @@ mod burst_drain_tests {
         app.selected_chat = jid_id(CHAT_JID);
         let mid = message_id(CHAT_JID, "vid-p");
         app.ensure_poster_fetch(mid);
+        // Whatever the harness raised before is not this test's
+        // concern; the failure event must add nothing.
+        app.notice = None;
         tx.send(BackendEvent::VideoPosterFetchFailed {
             chat_jid: CHAT_JID.to_owned(),
             message_id: "vid-p".to_owned(),
@@ -8464,6 +8776,159 @@ mod burst_drain_tests {
         );
         assert_eq!(app.video_tile(mid), crate::media::VideoTile::Neutral);
         assert!(app.notice.is_none(), "a poster failure never raises a notice");
+    }
+
+    fn sticker_message(id: &str, view_once: bool) -> LiveMessage {
+        let mut live =
+            LiveMessage::text(id, CHAT_JID, Some("Sender".to_owned()), String::new(), BASE_TS, false);
+        live.kind = backend::LiveMessageKind::Media {
+            media: backend::MediaKind::Sticker,
+            caption: String::new(),
+            seconds: 0,
+            size_bytes: 12_345,
+        };
+        live.view_once = view_once;
+        live.sticker_ref = Some(backend::StickerRef {
+            direct_path: "/v/t62.7118-24/sticker.enc".to_owned(),
+            media_key: vec![7u8; 32],
+            file_sha256: vec![8u8; 32],
+            file_enc_sha256: vec![9u8; 32],
+            file_length: 12_345,
+        });
+        live
+    }
+
+    /// An audio file (no ptt flag) converts to the audio card
+    /// kind with its format label, duration and size, never to
+    /// the voice-note kind.
+    #[test]
+    fn audio_file_converts_to_an_audio_card() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        make_real(&mut app);
+        let mut live = LiveMessage::text(
+            "aud-1",
+            CHAT_JID,
+            Some("Sender".to_owned()),
+            String::new(),
+            BASE_TS,
+            false,
+        );
+        live.kind = backend::LiveMessageKind::Media {
+            media: backend::MediaKind::Audio,
+            caption: "MP3 audio file".to_owned(),
+            seconds: 83,
+            size_bytes: 1_234_567,
+        };
+        tx.send(BackendEvent::MessageUpsert(live)).unwrap();
+        drain_all(&mut app, &ctx);
+        let want = message_id(CHAT_JID, "aud-1");
+        let (_, msg) = stored_messages(&app).into_iter().find(|(_, m)| m.id == want).unwrap();
+        match &msg.kind {
+            core::model::MessageKind::Audio { secs, name, size_bytes } => {
+                assert_eq!(*secs, 83);
+                assert_eq!(name, "MP3 audio file");
+                assert_eq!(*size_bytes, 1_234_567);
+            }
+            other => panic!("an audio file must convert to the audio card, got {other:?}"),
+        }
+    }
+
+    /// A document converts with its own name and page count
+    /// from the message's document fields, its real size in
+    /// bytes, and its caption as the body.
+    #[test]
+    fn document_message_carries_its_own_metadata() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        make_real(&mut app);
+        let mut live = LiveMessage::text(
+            "doc-1",
+            CHAT_JID,
+            Some("Sender".to_owned()),
+            "the quarterly report".to_owned(),
+            BASE_TS,
+            false,
+        );
+        live.kind = backend::LiveMessageKind::Media {
+            media: backend::MediaKind::Document,
+            caption: "the quarterly report".to_owned(),
+            seconds: 0,
+            size_bytes: 54_321,
+        };
+        live.document_name = Some("report.pdf".to_owned());
+        live.document_page_count = Some(12);
+        tx.send(BackendEvent::MessageUpsert(live)).unwrap();
+        drain_all(&mut app, &ctx);
+        let want = message_id(CHAT_JID, "doc-1");
+        let (_, msg) = stored_messages(&app).into_iter().find(|(_, m)| m.id == want).unwrap();
+        match &msg.kind {
+            core::model::MessageKind::Document { name, size_bytes, page_count } => {
+                assert_eq!(name, "report.pdf");
+                assert_eq!(*size_bytes, 54_321);
+                assert_eq!(*page_count, Some(12));
+            }
+            other => panic!("expected the document kind, got {other:?}"),
+        }
+        assert_eq!(msg.body, "the quarterly report");
+    }
+
+    /// A failed sticker fetch is retried on demand, like a
+    /// failed photo's: the retry sends the fetch command again
+    /// with the archived reference.
+    #[test]
+    fn failed_sticker_retries_on_demand() {
+        let (mut app, tx, ctx, cmd_rx) = live_app();
+        make_real(&mut app);
+        tx.send(BackendEvent::MessageUpsert(sticker_message("stk-1", false))).unwrap();
+        drain_all(&mut app, &ctx);
+        app.selected_chat = jid_id(CHAT_JID);
+        let mid = message_id(CHAT_JID, "stk-1");
+        app.ensure_sticker_fetch(mid);
+        assert!(matches!(
+            cmd_rx.try_recv(),
+            Ok(BackendCommand::FetchSticker { message_id, .. }) if message_id == "stk-1"
+        ));
+        tx.send(BackendEvent::StickerFetchFailed {
+            chat_jid: CHAT_JID.to_owned(),
+            message_id: "stk-1".to_owned(),
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(app.sticker_tile(mid), crate::media::PhotoTile::Failed);
+        app.retry_sticker_fetch(mid);
+        assert_eq!(app.sticker_tile(mid), crate::media::PhotoTile::Loading);
+        match cmd_rx.try_recv() {
+            Ok(BackendCommand::FetchSticker { sticker_ref, .. }) => {
+                let reference = sticker_ref.expect("the archived reference rides along");
+                assert_eq!(reference.direct_path, "/v/t62.7118-24/sticker.enc");
+            }
+            other => panic!("expected a FetchSticker retry, got {other:?}"),
+        }
+    }
+
+    /// A view-once sticker's view is spent when its bytes land
+    /// as a paintable picture: the opened state is recorded and
+    /// the archived reference is dropped.
+    #[test]
+    fn view_once_sticker_spends_when_its_bytes_land() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        make_real(&mut app);
+        tx.send(BackendEvent::MessageUpsert(sticker_message("stk-vo", true))).unwrap();
+        drain_all(&mut app, &ctx);
+        app.selected_chat = jid_id(CHAT_JID);
+        let mid = message_id(CHAT_JID, "stk-vo");
+        tx.send(BackendEvent::StickerBytes {
+            chat_jid: CHAT_JID.to_owned(),
+            message_id: "stk-vo".to_owned(),
+            bytes: jpeg_bytes(),
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(app.media.opened_view_once.contains(&mid), "the spend is recorded");
+        let session = app.live.as_ref().unwrap();
+        assert!(!session.sticker_refs.contains_key(&mid), "the session reference is dropped");
+        let stored = session.store.as_ref().unwrap().messages(CHAT_JID).unwrap();
+        let row = &stored.iter().find(|(m, _)| m.id == "stk-vo").unwrap().0;
+        assert_eq!(row.sticker_ref, None, "the archived reference is dropped");
     }
 
     /// Item 111: view-once video bytes land in memory (never a
@@ -9625,6 +10090,14 @@ mod chat_state_routing_tests {
             video_thumbs: HashMap::new(),
             poster_refs: HashMap::new(),
             video_dims: HashMap::new(),
+            document_refs: HashMap::new(),
+            gif_videos: HashSet::new(),
+            sticker_anim: HashMap::new(),
+            sticker_thumbs: HashMap::new(),
+            document_thumbs: HashMap::new(),
+            location_thumbs: HashMap::new(),
+            preview_thumbs: HashMap::new(),
+            view_once_ids: HashSet::new(),
             sticker_refs: HashMap::new(),
             photo_thumbs: HashMap::new(),
             message_mentions: HashMap::new(),
@@ -11337,6 +11810,14 @@ mod mirror_pruning_tests {
             video_thumbs: HashMap::new(),
             poster_refs: HashMap::new(),
             video_dims: HashMap::new(),
+            document_refs: HashMap::new(),
+            gif_videos: HashSet::new(),
+            sticker_anim: HashMap::new(),
+            sticker_thumbs: HashMap::new(),
+            document_thumbs: HashMap::new(),
+            location_thumbs: HashMap::new(),
+            preview_thumbs: HashMap::new(),
+            view_once_ids: HashSet::new(),
             sticker_refs: HashMap::new(),
             photo_thumbs: HashMap::new(),
             message_mentions: HashMap::new(),
@@ -11893,6 +12374,14 @@ mod qr_gate_tests {
             video_thumbs: HashMap::new(),
             poster_refs: HashMap::new(),
             video_dims: HashMap::new(),
+            document_refs: HashMap::new(),
+            gif_videos: HashSet::new(),
+            sticker_anim: HashMap::new(),
+            sticker_thumbs: HashMap::new(),
+            document_thumbs: HashMap::new(),
+            location_thumbs: HashMap::new(),
+            preview_thumbs: HashMap::new(),
+            view_once_ids: HashSet::new(),
             sticker_refs: HashMap::new(),
             photo_thumbs: HashMap::new(),
             message_mentions: HashMap::new(),
@@ -12115,6 +12604,14 @@ mod logout_tests {
             video_thumbs: HashMap::new(),
             poster_refs: HashMap::new(),
             video_dims: HashMap::new(),
+            document_refs: HashMap::new(),
+            gif_videos: HashSet::new(),
+            sticker_anim: HashMap::new(),
+            sticker_thumbs: HashMap::new(),
+            document_thumbs: HashMap::new(),
+            location_thumbs: HashMap::new(),
+            preview_thumbs: HashMap::new(),
+            view_once_ids: HashSet::new(),
             sticker_refs: HashMap::new(),
             photo_thumbs: HashMap::new(),
             message_mentions: HashMap::new(),
@@ -12347,6 +12844,14 @@ mod reaction_tests {
             video_thumbs: HashMap::new(),
             poster_refs: HashMap::new(),
             video_dims: HashMap::new(),
+            document_refs: HashMap::new(),
+            gif_videos: HashSet::new(),
+            sticker_anim: HashMap::new(),
+            sticker_thumbs: HashMap::new(),
+            document_thumbs: HashMap::new(),
+            location_thumbs: HashMap::new(),
+            preview_thumbs: HashMap::new(),
+            view_once_ids: HashSet::new(),
             sticker_refs: HashMap::new(),
             photo_thumbs: HashMap::new(),
             message_mentions: HashMap::new(),
@@ -12681,6 +13186,14 @@ mod star_pin_tests {
             video_thumbs: HashMap::new(),
             poster_refs: HashMap::new(),
             video_dims: HashMap::new(),
+            document_refs: HashMap::new(),
+            gif_videos: HashSet::new(),
+            sticker_anim: HashMap::new(),
+            sticker_thumbs: HashMap::new(),
+            document_thumbs: HashMap::new(),
+            location_thumbs: HashMap::new(),
+            preview_thumbs: HashMap::new(),
+            view_once_ids: HashSet::new(),
             sticker_refs: HashMap::new(),
             photo_thumbs: HashMap::new(),
             message_mentions: HashMap::new(),

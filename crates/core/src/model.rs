@@ -62,12 +62,28 @@ pub enum MessageKind {
         /// Normalised bar heights (0.0–1.0).
         waveform: Vec<f32>,
     },
-    /// A document/file with a display name and size in KiB.
+    /// An audio file (a song or a recording sent as a file, the
+    /// wire audio payload without the voice-note flag): a file
+    /// card with a duration, never the voice-note bubble.
+    Audio {
+        /// Duration in seconds (0 when the protocol did not say).
+        secs: u32,
+        /// Display name: the format label the payload supports
+        /// (an audio payload carries no file name).
+        name: String,
+        /// Size in bytes, as announced (0 when unknown).
+        size_bytes: u64,
+    },
+    /// A document/file with a display name and its real size.
     Document {
         /// File name.
         name: String,
-        /// Size in KiB.
-        size_kib: u32,
+        /// Size in bytes, as announced (0 when unknown). Bytes,
+        /// not KiB: a sub-1 KiB file must not round down to a
+        /// displayed zero.
+        size_bytes: u64,
+        /// Page count when the sender's client stated one.
+        page_count: Option<u32>,
     },
     /// A poll with options and vote counts.
     Poll {
@@ -534,6 +550,8 @@ pub enum PreviewMedia {
     Video,
     /// A voice message, with its duration in seconds.
     Voice(u32),
+    /// An audio file, with its duration in seconds.
+    Audio(u32),
     /// A document or file.
     Document,
     /// A poll.
@@ -551,6 +569,7 @@ impl PreviewMedia {
             Self::Photo => "Photo".to_owned(),
             Self::Video => "Video".to_owned(),
             Self::Voice(secs) => format!("Voice message · {}:{:02}", secs / 60, secs % 60),
+            Self::Audio(secs) => format!("Audio · {}:{:02}", secs / 60, secs % 60),
             Self::Document => "Document".to_owned(),
             Self::Poll => "Poll".to_owned(),
             Self::Sticker => "Sticker".to_owned(),
@@ -565,6 +584,7 @@ impl PreviewMedia {
             MessageKind::Image { .. } => Some(Self::Photo),
             MessageKind::Video { .. } => Some(Self::Video),
             MessageKind::Voice { secs, .. } => Some(Self::Voice(*secs)),
+            MessageKind::Audio { secs, .. } => Some(Self::Audio(*secs)),
             MessageKind::Document { .. } => Some(Self::Document),
             MessageKind::Poll { .. } => Some(Self::Poll),
             MessageKind::Sticker => Some(Self::Sticker),
@@ -1057,7 +1077,8 @@ pub fn demo_conversation() -> Vec<Message> {
             // disc, file name, human size and a download chip.
             kind: MessageKind::Document {
                 name: "Launch Night Checklist.pdf".to_owned(),
-                size_kib: 470,
+                size_bytes: 470 * 1024,
+                page_count: Some(6),
             },
             ..Message::theirs(120, "Mike", "", "18:08")
         },
@@ -1469,7 +1490,7 @@ mod tests {
             view_once: false,
         };
         let mut doc = Message::theirs(2, "Sarah", "", "10:01");
-        doc.kind = MessageKind::Document { name: "notes.pdf".to_owned(), size_kib: 12 };
+        doc.kind = MessageKind::Document { name: "notes.pdf".to_owned(), size_bytes: 12 * 1024, page_count: None };
         // A preview alone proves a link even when the body that
         // carried the URL is not the visible text.
         let mut preview_only = Message::theirs(3, "Sarah", "look at this", "10:02");
@@ -1767,7 +1788,7 @@ mod tests {
         let mut photo = Message::theirs(1, "Ana", "", "10:00");
         photo.kind = MessageKind::Image { caption: "cover".to_owned(), view_once: false };
         let mut doc = Message::theirs(2, "Ana", "", "10:01");
-        doc.kind = MessageKind::Document { name: "notes.pdf".to_owned(), size_kib: 9 };
+        doc.kind = MessageKind::Document { name: "notes.pdf".to_owned(), size_bytes: 9 * 1024, page_count: None };
         let linked = Message::theirs(3, "Ana", "see https://example.com/spec now", "10:02");
         let mut gone = Message::theirs(4, "Ana", "", "10:03");
         gone.kind = MessageKind::Image { caption: String::new(), view_once: false };

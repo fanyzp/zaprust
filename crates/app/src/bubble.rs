@@ -84,6 +84,12 @@ pub(crate) enum BubbleAction {
     /// Download this message's media to disk (documents, voice
     /// notes, photos received from the other side).
     Download(u64),
+    /// Retry this sticker's failed display fetch (clicking the
+    /// failed sticker tile is its retry gesture).
+    RetrySticker(u64),
+    /// Open this location's coordinates externally (the system
+    /// browser at the map).
+    OpenLocation(f64, f64),
     /// Vote for poll option `usize` in the poll message `u64`.
     Vote(u64, usize),
     /// Secondary click: open the message context menu.
@@ -216,6 +222,29 @@ pub(crate) struct MediaCtx {
     /// flight: its download chip spins instead of offering the
     /// download again.
     pub(crate) downloading: bool,
+    /// This video is a GIF: it loops in the viewer and its tile
+    /// wears the GIF badge.
+    pub(crate) video_gif: bool,
+    /// This sticker is animated: its tile wears the badge when
+    /// it can only present a still frame.
+    pub(crate) sticker_animated: bool,
+    /// This sticker is a Lottie animation: its tile presents
+    /// the payload's static frame with the Lottie badge.
+    pub(crate) sticker_lottie: bool,
+    /// This location's decoded map snapshot, when the payload
+    /// embedded one.
+    pub(crate) location_thumb: Option<egui::TextureId>,
+    /// This document's decoded preview image, when the payload
+    /// embedded one.
+    pub(crate) document_thumb: Option<egui::TextureId>,
+    /// This link preview's decoded picture, when the sender's
+    /// client embedded one.
+    pub(crate) preview_thumb: Option<egui::TextureId>,
+    /// This message is view-once, for the kinds whose kind
+    /// carries no view-once flag of its own (voice notes,
+    /// documents, stickers): the card says so and offers no
+    /// save path.
+    pub(crate) view_once: bool,
 }
 
 /// Playback rates the speed pill cycles through, in order.
@@ -302,6 +331,80 @@ const DOC_DISC: f32 = 38.0;
 const DOC_GAP: f32 = 10.0;
 const DOC_ROW_H: f32 = 46.0;
 const DOC_DL: f32 = 34.0;
+/// Height of a document's preview banner (its own embedded
+/// image, painted above the file row).
+const DOC_THUMB_H: f32 = 96.0;
+
+/// A document card's sub-line: the honest size, the page count
+/// when the sender's client stated one, and the view-once
+/// state for a sealed document.
+fn doc_sub_line(size_bytes: u64, page_count: Option<u32>, view_once: bool, opened: bool) -> String {
+    let mut line = if size_bytes > 0 { human_size(size_bytes) } else { "Document".to_owned() };
+    if let Some(pages) = page_count {
+        line.push_str(&format!(" · {pages} pages"));
+    }
+    if view_once {
+        line.push_str(if opened { " · Opened" } else { " · View once" });
+    }
+    line
+}
+
+/// Paints a small state badge at a tile's bottom-left corner
+/// (a GIF's badge, an animated or Lottie sticker's): a dark
+/// chip with light text, the way the reference paints state
+/// over media.
+fn paint_tile_badge(ui: &egui::Ui, painter: &egui::Painter, tile: Rect, label: &str, t: Tokens) {
+    let g = layout_text(ui, label, FontId::proportional(10.5), rgb(t.text_primary), 80.0);
+    let chip = Rect::from_min_size(
+        Pos2::new(tile.left() + 6.0, tile.bottom() - 20.0),
+        Vec2::new(g.size().x + 10.0, 15.0),
+    );
+    painter.rect_filled(chip, CornerRadius::same(4), rgb(t.bg_panel_alt));
+    painter.galley(Pos2::new(chip.left() + 5.0, chip.top() + 1.5), g, rgb(t.text_primary));
+}
+
+/// Paints the collapsed receipt of a spent view-once message
+/// whose kind carries no view-once flag of its own (a voice
+/// note, a sticker): the looks-one glyph and "Opened", the
+/// same receipt the view-once photo and video collapse to.
+fn paint_opened_receipt(
+    ui: &egui::Ui,
+    painter: &egui::Painter,
+    x: f32,
+    y: f32,
+    inner_w: f32,
+    t: Tokens,
+) {
+    let faint = rgb(t.text_faint);
+    crate::icons::draw(
+        painter,
+        crate::icons::Icon::LooksOne,
+        Pos2::new(x + 13.0, y + 15.0),
+        crate::icons::SIZE_CONTROL,
+        faint,
+        faint,
+    );
+    let g = layout_text(ui, "Opened", FontId::proportional(14.0), faint, inner_w - 34.0);
+    painter.galley(Pos2::new(x + 32.0, y + 3.0), g, faint);
+}
+
+/// An audio file card's sub-line: its duration and honest
+/// size. A zero duration (the protocol did not say) is left
+/// out rather than stated as 0:00.
+fn audio_sub_line(secs: u32, size_bytes: u64) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if secs > 0 {
+        parts.push(format!("{}:{:02}", secs / 60, secs % 60));
+    }
+    if size_bytes > 0 {
+        parts.push(human_size(size_bytes));
+    }
+    if parts.is_empty() {
+        "Audio file".to_owned()
+    } else {
+        parts.join(" · ")
+    }
+}
 
 /// The download chip's slot width: received documents carry one,
 /// sent documents do not.
@@ -325,11 +428,16 @@ fn doc_dl_rect(x: f32, y: f32, inner_w: f32) -> Rect {
 /// Formats a KiB count the way the reference wireframe reads:
 /// whole KB under a megabyte ("470 KB"), one decimal above
 /// ("1.2 MB").
-fn human_size(size_kib: u32) -> String {
-    if size_kib < 1024 {
-        format!("{size_kib} KB")
+/// A byte count the way file cards state it: bytes under
+/// 1 KiB (a small file is never "0 KB"), KiB below 1 MiB,
+/// then MiB with one decimal.
+fn human_size(size_bytes: u64) -> String {
+    if size_bytes < 1024 {
+        format!("{size_bytes} B")
+    } else if size_bytes < 1024 * 1024 {
+        format!("{} KB", size_bytes / 1024)
     } else {
-        format!("{:.1} MB", size_kib as f32 / 1024.0)
+        format!("{:.1} MB", size_bytes as f64 / (1024.0 * 1024.0))
     }
 }
 
@@ -499,11 +607,11 @@ fn faded(c: Color32, f: f32) -> Color32 {
 /// accent bar over the text block, the site line, the title and
 /// the description. The preview image renders when the preview
 /// carries one: a wide band above the text, or a thumbnail at
-/// the card's right at text height. The bundled demo photo
-/// stands in for the image; previews without image data render
-/// the text card alone. (OpenGraph data itself arrives via the
-/// existing preview machinery and its SSRF guard; nothing is
-/// fetched here.)
+/// the card's right at text height. The image is the preview's
+/// own picture (embedded by the sender's client); in demo mode
+/// the bundled demo photo stands in for it. Previews without
+/// image data render the text card alone. Nothing is fetched
+/// here.
 #[allow(clippy::too_many_arguments)]
 fn paint_embed(
     ui: &egui::Ui,
@@ -526,7 +634,7 @@ fn paint_embed(
             CornerRadius { nw: INNER_CARD_RADIUS, ne: INNER_CARD_RADIUS, se: 0, sw: 0 },
             rgb(t.bg_panel_alt),
         );
-        if let Some(tex) = media.photo {
+        if let Some(tex) = media.preview_thumb.or(media.photo) {
             painter.image(
                 tex,
                 img,
@@ -567,7 +675,7 @@ fn paint_embed(
         let thumb =
             Rect::from_min_size(Pos2::new(x + inner_w - side - 6.0, ty + 4.0), Vec2::splat(side));
         painter.rect_filled(thumb, CornerRadius::same(6), rgb(t.bg_panel_alt));
-        if let Some(tex) = media.photo {
+        if let Some(tex) = media.preview_thumb.or(media.photo) {
             painter.image(
                 tex,
                 thumb,
@@ -789,6 +897,13 @@ pub(crate) fn message_bubble(
             kind_h = photo_tile_h(media.photo_aspect, tile_w)
                 + if caption.is_empty() { 0.0 } else { body_galley.size().y + 4.0 };
         }
+        MessageKind::Sticker if media.view_once && media.view_once_opened => {
+            // A spent view-once sticker collapses to its
+            // receipt, like a spent view-once photo.
+            body_galley = layout_text(ui, "", body_font.clone(), text_color, inner_max);
+            content_w = content_w.max(170.0);
+            kind_h = 34.0;
+        }
         MessageKind::Sticker => {
             body_galley = layout_text(ui, "", body_font.clone(), text_color, inner_max);
             let (w, h) = sticker_dims(media.photo_aspect);
@@ -821,29 +936,57 @@ pub(crate) fn message_bubble(
                     + if caption.is_empty() { 0.0 } else { body_galley.size().y + 4.0 };
             }
         }
+        MessageKind::Voice { .. } if media.view_once && media.view_once_opened => {
+            // A spent view-once voice note collapses to its
+            // receipt, like a spent view-once photo.
+            body_galley = layout_text(ui, "", body_font.clone(), text_color, inner_max);
+            content_w = content_w.max(170.0);
+            kind_h = 34.0;
+        }
         MessageKind::Voice { .. } => {
             body_galley = layout_text(ui, "", body_font.clone(), text_color, inner_max);
             content_w = content_w.max(264.0_f32.min(inner_max));
             kind_h = VOICE_H;
         }
-        MessageKind::Document { name, size_kib } => {
+        MessageKind::Document { name, size_bytes, page_count } => {
             // The reference wireframe's document card: an icon disc,
             // the file name over the human size, a download button
-            // on received files, the caption below.
+            // on received files, the caption below. The document's
+            // own preview image rides as a banner above the row
+            // when the payload embedded one. The text below the
+            // card is the sender's caption; an uncaptioned
+            // document's body repeats its name (search names the
+            // file) and is not painted twice.
             let col_w = (inner_max - DOC_DISC - DOC_GAP - doc_dl_w(mine)).max(80.0);
             let name_g = layout_text(ui, name, crate::theme::semibold(14.0), text_color, col_w);
             let size_g = layout_text(
                 ui,
-                &human_size(*size_kib),
+                &doc_sub_line(*size_bytes, *page_count, media.view_once, media.view_once_opened),
                 FontId::proportional(12.5),
                 secondary,
                 col_w,
             );
-            body_galley = layout_text(ui, &msg.body, body_font.clone(), text_color, inner_max);
+            let caption_below = if msg.body == *name { "" } else { msg.body.as_str() };
+            body_galley = layout_text(ui, caption_below, body_font.clone(), text_color, inner_max);
             let row_w = DOC_DISC + DOC_GAP + name_g.size().x.max(size_g.size().x) + doc_dl_w(mine);
             content_w = content_w.max(row_w.max(220.0).min(inner_max)).max(body_galley.size().x);
             kind_h = DOC_ROW_H.max(name_g.size().y + size_g.size().y + 4.0)
-                + if msg.body.is_empty() { 0.0 } else { body_galley.size().y + 4.0 };
+                + if caption_below.is_empty() { 0.0 } else { body_galley.size().y + 4.0 }
+                + if media.document_thumb.is_some() { DOC_THUMB_H + 6.0 } else { 0.0 };
+        }
+        MessageKind::Audio { secs, name, size_bytes } => {
+            // An audio file's card: the document card's grammar
+            // with a speaker disc, the format name over duration
+            // and size. It is a file, not a voice note: no
+            // waveform, no playback pill.
+            let col_w = (inner_max - DOC_DISC - DOC_GAP - doc_dl_w(mine)).max(80.0);
+            let name_g = layout_text(ui, name, crate::theme::semibold(14.0), text_color, col_w);
+            let sub = audio_sub_line(*secs, *size_bytes);
+            let size_g = layout_text(ui, &sub, FontId::proportional(12.5), secondary, col_w);
+            body_galley = layout_text(ui, "", body_font.clone(), text_color, inner_max);
+            let row_w = DOC_DISC + DOC_GAP + name_g.size().x.max(size_g.size().x) + doc_dl_w(mine);
+            content_w = content_w.max(row_w.max(220.0).min(inner_max));
+            kind_h = DOC_ROW_H.max(name_g.size().y + size_g.size().y + 4.0);
         }
         MessageKind::Poll { question, options, .. } => {
             body_galley = layout_text(ui, question, body_font.clone(), text_color, inner_max);
@@ -864,9 +1007,11 @@ pub(crate) fn message_bubble(
             let cw = measure_text(ui, &coords, FontId::proportional(12.0));
             // The paint pass offsets text by 34px (pin disc), the
             // measure must budget that offset plus slack, or a long
-            // title wraps into the coordinates row.
+            // title wraps into the coordinates row. The payload's
+            // own map snapshot rides above the row when it
+            // carried one, at a fixed banner height.
             content_w = content_w.max((body_galley.size().x + 44.0).max(cw + 44.0));
-            kind_h = 42.0;
+            kind_h = 42.0 + if media.location_thumb.is_some() { 106.0 } else { 0.0 };
         }
         MessageKind::Contact { name, phone } => {
             body_galley = layout_text(ui, name, body_font.clone(), text_color, inner_max);
@@ -968,7 +1113,24 @@ pub(crate) fn message_bubble(
                             Some(BubbleAction::ToggleVoice(msg.id))
                         }
                     }
-                    MessageKind::Document { .. } if !mine => {
+                    MessageKind::Document { .. } if !mine && !media.view_once => {
+                        response.interact_pointer_pos().and_then(|pos| {
+                            let dx = rect.left() + pad_x;
+                            let dy = rect.top()
+                                + pad_top
+                                + sender_h
+                                + quote_h
+                                + if media.document_thumb.is_some() {
+                                    DOC_THUMB_H + 6.0
+                                } else {
+                                    0.0
+                                };
+                            doc_dl_rect(dx, dy, inner_w)
+                                .contains(pos)
+                                .then_some(BubbleAction::Download(msg.id))
+                        })
+                    }
+                    MessageKind::Audio { .. } if !mine && !media.view_once => {
                         response.interact_pointer_pos().and_then(|pos| {
                             let dx = rect.left() + pad_x;
                             let dy = rect.top() + pad_top + sender_h + quote_h;
@@ -976,6 +1138,14 @@ pub(crate) fn message_bubble(
                                 .contains(pos)
                                 .then_some(BubbleAction::Download(msg.id))
                         })
+                    }
+                    MessageKind::Sticker
+                        if media.sticker_tile == crate::media::PhotoTile::Failed =>
+                    {
+                        Some(BubbleAction::RetrySticker(msg.id))
+                    }
+                    MessageKind::Location { latitude, longitude, .. } => {
+                        Some(BubbleAction::OpenLocation(*latitude, *longitude))
                     }
                     MessageKind::Image { view_once: true, .. }
                     | MessageKind::Video { view_once: true, .. }
@@ -1231,6 +1401,9 @@ pub(crate) fn message_bubble(
                     painter.galley(Pos2::new(x, y + tile_h + 4.0), g, text_color);
                 }
             }
+            MessageKind::Sticker if media.view_once && media.view_once_opened => {
+                paint_opened_receipt(ui, painter, x, y, inner_w, t);
+            }
             MessageKind::Sticker => {
                 // A sticker paints at sticker size (its longest
                 // side capped, its own aspect kept), never as a
@@ -1246,6 +1419,16 @@ pub(crate) fn message_bubble(
                             Color32::WHITE,
                         );
                     }
+                    // An animated sticker presented as a still
+                    // says so: the badge is the honest statement
+                    // that the real thing moves. A Lottie
+                    // sticker's frame is a still by construction
+                    // and wears its own badge.
+                    if media.sticker_lottie {
+                        paint_tile_badge(ui, painter, rect, "Lottie", t);
+                    } else if media.sticker_animated {
+                        paint_tile_badge(ui, painter, rect, "Animated", t);
+                    }
                 } else if media.sticker_tile == crate::media::PhotoTile::Loading {
                     let spinner_rect = Rect::from_center_size(rect.center(), Vec2::splat(20.0));
                     let mut slot = ui.new_child(
@@ -1260,9 +1443,19 @@ pub(crate) fn message_bubble(
                         CornerRadius::same(INNER_CARD_RADIUS),
                         rgb(t.bg_panel_alt),
                     );
+                    // A failed fetch paints the Info glyph, not
+                    // the generic image glyph: it is a state,
+                    // not a picture, and clicking the tile
+                    // retries (the voice note's failure glyph
+                    // swap is the same signal).
+                    let glyph = if media.sticker_tile == crate::media::PhotoTile::Failed {
+                        crate::icons::Icon::Info
+                    } else {
+                        crate::icons::Icon::Image
+                    };
                     crate::icons::draw(
                         painter,
-                        crate::icons::Icon::Image,
+                        glyph,
                         rect.center(),
                         crate::icons::SIZE_LARGE,
                         rgb(t.text_faint),
@@ -1339,6 +1532,17 @@ pub(crate) fn message_bubble(
                     let dur = format!("{}:{:02}", secs / 60, secs % 60);
                     let g = layout_text(ui, &dur, FontId::proportional(11.0), text_color, 60.0);
                     painter.galley(Pos2::new(x + 8.0, y + tile_h - 24.0), g, rgb(t.text_secondary));
+                    if media.video_gif {
+                        // The badge rides the tile's top-left
+                        // (the duration owns the bottom-left): a
+                        // short strip rect at the top makes the
+                        // shared badge painter land there.
+                        let strip = Rect::from_min_size(
+                            Pos2::new(x, y),
+                            Vec2::new(inner_w, 26.0),
+                        );
+                        paint_tile_badge(ui, painter, strip, "GIF", t);
+                    }
                     if !caption.is_empty() {
                         let g = crate::markdown::galley(
                             ui,
@@ -1352,6 +1556,9 @@ pub(crate) fn message_bubble(
                         painter.galley(Pos2::new(x, y + tile_h + 4.0), g, text_color);
                     }
                 }
+            }
+            MessageKind::Voice { .. } if media.view_once && media.view_once_opened => {
+                paint_opened_receipt(ui, painter, x, y, inner_w, t);
             }
             MessageKind::Voice { secs, waveform } => {
                 // WhatsApp layout: a round play button on the left,
@@ -1540,12 +1747,33 @@ pub(crate) fn message_bubble(
                     );
                 }
             }
-            MessageKind::Document { name, size_kib } => {
-                // The document card: icon disc, name over the human
-                // size, download chip on received files, caption
-                // below. Geometry matches the measure pass.
+            MessageKind::Document { name, size_bytes, page_count } => {
+                // The document card: the document's own preview
+                // banner when it embedded one, then icon disc,
+                // name over the sub-line, download chip on
+                // received files, caption below. Geometry matches
+                // the measure pass.
+                let mut row_y = y;
+                if let Some(tex) = media.document_thumb {
+                    let banner = Rect::from_min_size(
+                        Pos2::new(x, y),
+                        Vec2::new(inner_w, DOC_THUMB_H),
+                    );
+                    painter.rect_filled(
+                        banner,
+                        CornerRadius::same(INNER_CARD_RADIUS),
+                        rgb(t.bg_panel_alt),
+                    );
+                    painter.image(
+                        tex,
+                        banner,
+                        Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(1.0, 1.0)),
+                        Color32::WHITE,
+                    );
+                    row_y += DOC_THUMB_H + 6.0;
+                }
                 let disc = Rect::from_min_size(
-                    Pos2::new(x, y + (DOC_ROW_H - DOC_DISC) / 2.0),
+                    Pos2::new(x, row_y + (DOC_ROW_H - DOC_DISC) / 2.0),
                     Vec2::splat(DOC_DISC),
                 );
                 painter.rect_filled(disc, CornerRadius::same(10), inner_card_fill(t, mine));
@@ -1560,21 +1788,26 @@ pub(crate) fn message_bubble(
                 let col_x = x + DOC_DISC + DOC_GAP;
                 let col_w = (inner_w - DOC_DISC - DOC_GAP - doc_dl_w(mine)).max(60.0);
                 let name_g = layout_text(ui, name, crate::theme::semibold(14.0), text_color, col_w);
-                painter.galley(Pos2::new(col_x, y + 5.0), name_g.clone(), text_color);
+                painter.galley(Pos2::new(col_x, row_y + 5.0), name_g.clone(), text_color);
                 let size_g = layout_text(
                     ui,
-                    &human_size(*size_kib),
+                    &doc_sub_line(
+                        *size_bytes,
+                        *page_count,
+                        media.view_once,
+                        media.view_once_opened,
+                    ),
                     FontId::proportional(12.5),
                     secondary,
                     col_w,
                 );
                 painter.galley(
-                    Pos2::new(col_x, y + 5.0 + name_g.size().y + 1.0),
+                    Pos2::new(col_x, row_y + 5.0 + name_g.size().y + 1.0),
                     size_g,
                     secondary,
                 );
-                if !mine {
-                    let dl = doc_dl_rect(x, y, inner_w);
+                if !mine && !media.view_once {
+                    let dl = doc_dl_rect(x, row_y, inner_w);
                     let resp = ui
                         .interact(dl, egui::Id::unique(("doc_dl", msg.id)), egui::Sense::click())
                         .on_hover_cursor(egui::CursorIcon::PointingHand);
@@ -1607,9 +1840,76 @@ pub(crate) fn message_bubble(
                         );
                     }
                 }
-                if !msg.body.is_empty() {
+                if !msg.body.is_empty() && msg.body != *name {
                     let g = layout_text(ui, &msg.body, body_font.clone(), text_color, inner_w);
-                    painter.galley(Pos2::new(x, y + DOC_ROW_H + 4.0), g, text_color);
+                    painter.galley(Pos2::new(x, row_y + DOC_ROW_H + 4.0), g, text_color);
+                }
+            }
+            MessageKind::Audio { secs, name, size_bytes } => {
+                // The audio file card: the document card's
+                // grammar with a speaker disc and duration +
+                // size under the format name. Geometry matches
+                // the measure pass.
+                let disc = Rect::from_min_size(
+                    Pos2::new(x, y + (DOC_ROW_H - DOC_DISC) / 2.0),
+                    Vec2::splat(DOC_DISC),
+                );
+                painter.rect_filled(disc, CornerRadius::same(10), inner_card_fill(t, mine));
+                crate::icons::draw(
+                    painter,
+                    crate::icons::Icon::VolumeUp,
+                    disc.center(),
+                    crate::icons::SIZE_CONTROL,
+                    rgb(t.accent),
+                    rgb(t.bg_panel_alt),
+                );
+                let col_x = x + DOC_DISC + DOC_GAP;
+                let col_w = (inner_w - DOC_DISC - DOC_GAP - doc_dl_w(mine)).max(60.0);
+                let name_g = layout_text(ui, name, crate::theme::semibold(14.0), text_color, col_w);
+                painter.galley(Pos2::new(col_x, y + 5.0), name_g.clone(), text_color);
+                let size_g = layout_text(
+                    ui,
+                    &audio_sub_line(*secs, *size_bytes),
+                    FontId::proportional(12.5),
+                    secondary,
+                    col_w,
+                );
+                painter.galley(
+                    Pos2::new(col_x, y + 5.0 + name_g.size().y + 1.0),
+                    size_g,
+                    secondary,
+                );
+                if !mine && !media.view_once {
+                    let dl = doc_dl_rect(x, y, inner_w);
+                    let resp = ui
+                        .interact(dl, egui::Id::unique(("doc_dl", msg.id)), egui::Sense::click())
+                        .on_hover_cursor(egui::CursorIcon::PointingHand);
+                    let fill = if resp.is_pointer_button_down_on() {
+                        rgb(core::theme::pressed_step(t.bg_panel_alt))
+                    } else if resp.hovered() {
+                        rgb(core::theme::hover_step(t.bg_panel_alt))
+                    } else {
+                        rgb(t.bg_panel_alt)
+                    };
+                    painter.circle_filled(dl.center(), DOC_DL / 2.0, fill);
+                    if media.downloading {
+                        let slot_rect = Rect::from_center_size(dl.center(), Vec2::splat(DOC_DL));
+                        let mut slot = ui.new_child(
+                            egui::UiBuilder::new()
+                                .max_rect(slot_rect)
+                                .layout(Layout::centered_and_justified(egui::Direction::TopDown)),
+                        );
+                        crate::widgets::spinner(&mut slot, 17.0);
+                    } else {
+                        crate::icons::draw(
+                            painter,
+                            crate::icons::Icon::Download,
+                            dl.center(),
+                            crate::icons::SIZE_ROW,
+                            rgb(t.accent),
+                            fill,
+                        );
+                    }
                 }
             }
             MessageKind::Poll { question, options, my_votes, .. } => {
@@ -1661,8 +1961,29 @@ pub(crate) fn message_bubble(
                 }
             }
             MessageKind::Location { name, latitude, longitude } => {
-                // Render-only location card: pin + name + coordinates.
-                let cy = y + 21.0;
+                // Location card: the payload's own map snapshot
+                // above the pin row when it carried one, then
+                // pin + name + coordinates. Clicking the card
+                // opens the coordinates externally (the click
+                // arm is with the other bubble actions).
+                let mut row_y = y;
+                if let Some(tex) = media.location_thumb {
+                    let banner =
+                        Rect::from_min_size(Pos2::new(x, y), Vec2::new(inner_w, 100.0));
+                    painter.rect_filled(
+                        banner,
+                        CornerRadius::same(INNER_CARD_RADIUS),
+                        rgb(t.bg_panel_alt),
+                    );
+                    painter.image(
+                        tex,
+                        banner,
+                        Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(1.0, 1.0)),
+                        Color32::WHITE,
+                    );
+                    row_y += 106.0;
+                }
+                let cy = row_y + 21.0;
                 painter.circle_filled(Pos2::new(x + 15.0, cy), 13.0, rgb(t.bg_panel_alt));
                 crate::icons::draw(
                     painter,
@@ -1674,11 +1995,11 @@ pub(crate) fn message_bubble(
                 );
                 let title = if name.is_empty() { "Location" } else { name.as_str() };
                 let g = layout_text(ui, title, body_font.clone(), text_color, inner_w - 34.0);
-                painter.galley(Pos2::new(x + 34.0, y + 2.0), g, text_color);
+                painter.galley(Pos2::new(x + 34.0, row_y + 2.0), g, text_color);
                 let coords = format!("{latitude:.5}, {longitude:.5}");
                 let g =
                     layout_text(ui, &coords, FontId::proportional(12.0), secondary, inner_w - 34.0);
-                painter.galley(Pos2::new(x + 34.0, y + 22.0), g, secondary);
+                painter.galley(Pos2::new(x + 34.0, row_y + 22.0), g, secondary);
             }
             MessageKind::Contact { name, phone } => {
                 // Render-only contact card: initial disc + name + number.
@@ -2020,9 +2341,10 @@ mod tests {
 
     #[test]
     fn human_size_reads_like_the_reference() {
-        assert_eq!(human_size(470), "470 KB");
-        assert_eq!(human_size(1023), "1023 KB");
-        assert_eq!(human_size(1024), "1.0 MB");
-        assert_eq!(human_size(1229), "1.2 MB");
+        assert_eq!(human_size(400), "400 B");
+        assert_eq!(human_size(1023), "1023 B");
+        assert_eq!(human_size(470 * 1024), "470 KB");
+        assert_eq!(human_size(1024 * 1024), "1.0 MB");
+        assert_eq!(human_size(1_258_291), "1.2 MB");
     }
 }

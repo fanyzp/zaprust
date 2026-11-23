@@ -1075,6 +1075,7 @@ fn create_group_fetch_members_and_download_honesty() {
         .send(BackendCommand::DownloadMedia {
             chat_jid: "10000000001@s.whatsapp.net".to_owned(),
             message_id: "fake-photo-1".to_owned(),
+            document_ref: None,
         })
         .unwrap();
     let events = collect_until(&ch.events, 5, |e| matches!(e, BackendEvent::Error { .. }));

@@ -1171,6 +1171,10 @@ impl App {
             self.send_backend(backend::BackendCommand::DownloadMedia {
                 chat_jid: jid,
                 message_id: pid,
+                document_ref: self
+                    .live
+                    .as_ref()
+                    .and_then(|s| s.document_refs.get(&msg_id).cloned()),
             });
             self.media.downloads.insert(msg_id);
             self.notice = Some(Notice::busy("Downloading…".to_owned()));

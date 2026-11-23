@@ -811,6 +811,12 @@ pub enum BackendCommand {
         chat_jid: String,
         /// Protocol ID of the media message.
         message_id: String,
+        /// Archived re-download reference of a document, when
+        /// the caller has one. Used when the message is no
+        /// longer in the session's protocol cache (a document
+        /// received before this session); without either source
+        /// the download fails.
+        document_ref: Option<DocumentRef>,
     },
     /// Fetch a photo message's bytes for display. Answered with
     /// `PhotoBytes` or `PhotoFetchFailed`. The bytes travel in
@@ -1109,6 +1115,11 @@ pub enum MediaKind {
     Video,
     /// Voice note / audio.
     Voice,
+    /// An audio file (a song, a recording sent as a file): the
+    /// wire audio payload whose `ptt` flag is not set. It is a
+    /// file with a duration, not a voice note: no waveform
+    /// bubble, no voice-note styling.
+    Audio,
     /// File/document.
     Document,
     /// Sticker.
@@ -1155,6 +1166,11 @@ pub struct LivePreview {
     pub description: String,
     /// The URL.
     pub url: String,
+    /// The preview image's own bytes (the sender's client
+    /// embedded them in the message), when it carried any.
+    /// The receiver never fetches the image itself.
+    #[serde(default)]
+    pub thumbnail: Option<Vec<u8>>,
 }
 
 /// Receipt kinds surfaced to the UI.
@@ -1421,6 +1437,27 @@ pub struct StickerRef {
     pub file_length: u64,
 }
 
+/// The persistable CDN reference of one document message: the
+/// same re-download material as [`PhotoRef`], extracted from
+/// the wire document payload and archived with the message so a
+/// document received in an earlier session stays downloadable
+/// after a restart (the session's protocol cache no longer
+/// holds it then). It carries the media key, so it belongs in
+/// the encrypted archive only.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct DocumentRef {
+    /// CDN path of the encrypted media.
+    pub direct_path: String,
+    /// Media decryption key (32 bytes).
+    pub media_key: Vec<u8>,
+    /// SHA-256 of the decrypted bytes (32 bytes).
+    pub file_sha256: Vec<u8>,
+    /// SHA-256 of the encrypted bytes (32 bytes).
+    pub file_enc_sha256: Vec<u8>,
+    /// Announced plaintext size in bytes.
+    pub file_length: u64,
+}
+
 /// A message as the backend reports it (protocol-neutral).
 #[derive(Debug, Clone, PartialEq)]
 pub struct LiveMessage {
@@ -1547,6 +1584,57 @@ pub struct LiveMessage {
     /// other kind, and for stickers whose wire payload did not
     /// carry a complete reference.
     pub sticker_ref: Option<StickerRef>,
+    /// For a video message: the sender's client marked the clip
+    /// as a GIF (VideoMessage `gifPlayback`): it loops and wears
+    /// no playback controls. `false` for every other kind.
+    pub gif_playback: bool,
+    /// For a sticker message: the sender's client marked the
+    /// sticker animated (StickerMessage `isAnimated`). Its WebP
+    /// carries frames; the tile wears an honest badge when it
+    /// can only present the first frame. `false` for every
+    /// other kind.
+    pub sticker_animated: bool,
+    /// For a sticker message: the sticker is a Lottie animation
+    /// (StickerMessage `isLottie`). Its bytes are animation
+    /// JSON, not an image; the tile presents the payload's own
+    /// static frame ([`Self::sticker_thumbnail`]) with a badge
+    /// instead of failing to decode the JSON as a picture.
+    /// `false` for every other kind.
+    pub sticker_lottie: bool,
+    /// For a sticker message: the static PNG frame the sender's
+    /// client embedded in the payload (StickerMessage
+    /// `pngThumbnail`), the sticker's own still image. The tile
+    /// paints it for a Lottie sticker, whose bytes are not an
+    /// image at all. `None` for every other kind, and for
+    /// stickers whose payload carried none.
+    pub sticker_thumbnail: Option<Vec<u8>>,
+    /// For a document message: the reference its bytes can be
+    /// re-downloaded from (see [`DocumentRef`]). `None` for
+    /// every other kind, and for documents whose wire payload
+    /// did not carry a complete reference.
+    pub document_ref: Option<DocumentRef>,
+    /// For a document message: the file's own name as the
+    /// sender's client stated it (DocumentMessage `fileName`,
+    /// falling back to its `title`). The document model carries
+    /// it in its own field; the kind's caption slot holds only
+    /// the sender's caption. `None` for every other kind.
+    pub document_name: Option<String>,
+    /// For a document message: the page count the sender's
+    /// client stated (DocumentMessage `pageCount`), when it
+    /// stated one. `None` for every other kind.
+    pub document_page_count: Option<u32>,
+    /// For a document message: the JPEG thumbnail the sender's
+    /// client embedded in the payload (DocumentMessage
+    /// `jpegThumbnail`), the document's own preview image.
+    /// `None` for every other kind, and for documents whose
+    /// payload carried none.
+    pub document_thumbnail: Option<Vec<u8>>,
+    /// For a location message: the map snapshot the sender's
+    /// client embedded in the payload (LocationMessage
+    /// `jpegThumbnail`), a real picture of the place. `None`
+    /// for every other kind, and for locations whose payload
+    /// carried none.
+    pub location_thumbnail: Option<Vec<u8>>,
     /// For a poll message: the JID of the poll's creator (the
     /// creation message's author). The vote encryption key is
     /// derived over the creator and voter JIDs, so the creator is
@@ -1607,6 +1695,15 @@ impl LiveMessage {
             mentions: Vec::new(),
             photo_thumbnail: None,
             sticker_ref: None,
+            gif_playback: false,
+            sticker_animated: false,
+            sticker_lottie: false,
+            sticker_thumbnail: None,
+            document_ref: None,
+            document_name: None,
+            document_page_count: None,
+            document_thumbnail: None,
+            location_thumbnail: None,
             poll_secret: None,
             poll_creator: None,
             poll_ballots: Vec::new(),

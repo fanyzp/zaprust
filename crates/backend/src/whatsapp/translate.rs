@@ -2596,6 +2596,53 @@ mod live_pairing_fix_tests {
     /// the phone had starred before linking is starred in the
     /// archive whichever sync lands first; a message without
     /// the flag arrives unstarred.
+    /// QC1614-A0-1: history translation reads the wire's
+    /// per-message status for outgoing messages, so a fresh
+    /// link restores the ticks the peer already earned.
+    #[test]
+    fn history_sync_message_carries_its_delivery_status() {
+        let mut text = wa::Message::default();
+        text.conversation = Some("hello".to_owned());
+        let mut read_info = history_info("r1", true, 100, text.clone());
+        read_info.status = Some(wa::web_message_info::Status::Read);
+        let mut sent_info = history_info("r2", true, 200, text);
+        sent_info.status = Some(wa::web_message_info::Status::ServerAck);
+        let mut conv = wa::Conversation::default();
+        conv.id = "12345@s.whatsapp.net".to_owned();
+        conv.messages = vec![
+            {
+                let mut e = wa::HistorySyncMsg::default();
+                e.message = MessageField::some(read_info);
+                e
+            },
+            {
+                let mut e = wa::HistorySyncMsg::default();
+                e.message = MessageField::some(sent_info);
+                e
+            },
+        ];
+        let mut sync = wa::HistorySync::default();
+        sync.conversations = vec![conv];
+        let (tx, rx) = std::sync::mpsc::sync_channel(16);
+        let sink = EventSink { tx, wake: std::sync::Arc::new(|| {}) };
+        translate_history_sync(&sync, &sink, &mut super::IdentityBook::default());
+        let events: Vec<BackendEvent> = rx.try_iter().collect();
+        let deliveries: Vec<(&str, Option<crate::DeliveryState>)> = events
+            .iter()
+            .filter_map(|e| match e {
+                BackendEvent::MessageUpsert(m) => Some((m.id.as_str(), m.delivery)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            deliveries,
+            vec![
+                ("r1", Some(crate::DeliveryState::Read)),
+                ("r2", Some(crate::DeliveryState::Sent)),
+            ]
+        );
+    }
+
     #[test]
     fn history_sync_message_carries_its_star() {
         let mut text = wa::Message::default();

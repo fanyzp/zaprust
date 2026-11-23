@@ -3840,6 +3840,40 @@ impl crate::state::App {
         } else {
             self.chats.push(to_chat(&merged));
         }
+        // The community tag is the parent community's title:
+        // the parent's own tag is its title, a linked subgroup
+        // takes its parent's title once the parent is known,
+        // and a parent landing now retags its known children.
+        if merged.is_parent && !is_raw_identifier(&merged.title) {
+            if let Some(chat) = self.chats.iter_mut().find(|c| c.id == id) {
+                chat.community = Some(merged.title.clone());
+            }
+            let children: Vec<u64> = self
+                .chat_parents
+                .iter()
+                .filter(|(_, parent)| **parent == id)
+                .map(|(child, _)| *child)
+                .collect();
+            for child in children {
+                if let Some(chat) = self.chats.iter_mut().find(|c| c.id == child) {
+                    chat.community = Some(merged.title.clone());
+                }
+            }
+        }
+        if let Some(parent) = &merged.parent_jid {
+            let pid = jid_id(parent);
+            let tag = self
+                .chats
+                .iter()
+                .find(|c| c.id == pid)
+                .map(|c| c.title.clone())
+                .filter(|t| !t.is_empty() && !is_raw_identifier(t));
+            if let Some(tag) = tag {
+                if let Some(chat) = self.chats.iter_mut().find(|c| c.id == id) {
+                    chat.community = Some(tag);
+                }
+            }
+        }
         self.sort_live_chats();
     }
 
@@ -9550,6 +9584,137 @@ mod burst_drain_tests {
         let archived =
             app.live.as_ref().unwrap().store.as_ref().unwrap().messages(CHAT_JID).unwrap();
         assert_eq!(archived.len(), 2, "both burst messages reached the archive");
+    }
+
+    /// QC1614-A0-1: a Read receipt survives a re-upsert of the
+    /// same message (a reaction, an edit, a history re-delivery)
+    /// in the mirror and in the archive.
+    #[test]
+    fn receipt_then_reupsert_keeps_read_ticks() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        app.selected_chat = jid_id(CHAT_JID);
+        let upsert = || {
+            BackendEvent::MessageUpsert(LiveMessage::text(
+                "mine-1",
+                CHAT_JID,
+                None,
+                "sent from here",
+                BASE_TS,
+                true,
+            ))
+        };
+        tx.send(upsert()).unwrap();
+        tx.send(BackendEvent::Receipt {
+            chat_jid: CHAT_JID.to_owned(),
+            message_ids: vec!["mine-1".to_owned()],
+            kind: ReceiptKind::Read,
+            at: BASE_TS + 60,
+            actor: None,
+        })
+        .unwrap();
+        tx.send(upsert()).unwrap();
+        drain_all(&mut app, &ctx);
+        let stored = stored_messages(&app);
+        let mine = stored.iter().find(|(_, m)| m.body == "sent from here").unwrap();
+        assert_eq!(mine.1.delivery, Some(Delivery::Read), "re-upsert must not downgrade Read");
+        let archived =
+            app.live.as_ref().unwrap().store.as_ref().unwrap().messages(CHAT_JID).unwrap();
+        let archived_mine = archived.iter().find(|(m, _)| m.id == "mine-1").unwrap();
+        assert_eq!(
+            archived_mine.0.delivery,
+            Some(backend::DeliveryState::Read),
+            "the receipt persisted to the archive"
+        );
+    }
+
+    /// QC1614-A0-1: one group member's Read receipt advances a
+    /// group message to Delivered at most, never to Read.
+    #[test]
+    fn group_receipt_from_one_member_caps_at_delivered() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        const GROUP: &str = "120363000000000001@g.us";
+        tx.send(BackendEvent::ChatUpsert(LiveChat {
+            jid: GROUP.to_owned(),
+            title: "Group".to_owned(),
+            kind: LiveChatKind::Group,
+            preview: String::new(),
+            preview_sender: None,
+            timestamp: BASE_TS,
+            unread: 0,
+            archived: false,
+            pinned: false,
+            ephemeral_secs: 0,
+            muted: false,
+            mute_until: 0,
+            parent_jid: None,
+            is_parent: false,
+        }))
+        .unwrap();
+        tx.send(BackendEvent::MessageUpsert(LiveMessage::text(
+            "g-1",
+            GROUP,
+            None,
+            "group hello",
+            BASE_TS,
+            true,
+        )))
+        .unwrap();
+        tx.send(BackendEvent::Receipt {
+            chat_jid: GROUP.to_owned(),
+            message_ids: vec!["g-1".to_owned()],
+            kind: ReceiptKind::Read,
+            at: BASE_TS + 60,
+            actor: Some("6281111111111@s.whatsapp.net".to_owned()),
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        let entry = app.live.as_ref().unwrap().messages.get(&jid_id(GROUP)).unwrap();
+        let mine = entry.iter().find(|(_, m)| m.body == "group hello").unwrap();
+        assert_eq!(mine.1.delivery, Some(Delivery::Delivered));
+    }
+
+    /// QC1614-A0-5 W1: an interrupted drain is not a completion:
+    /// the sync row stays up and synced_once stays unlatched
+    /// until a real completion arrives.
+    #[test]
+    fn interrupted_sync_never_latches_synced_once() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        tx.send(BackendEvent::SyncProgress { percent: None }).unwrap();
+        tx.send(BackendEvent::SyncInterrupted).unwrap();
+        drain_all(&mut app, &ctx);
+        let session = app.live.as_ref().unwrap();
+        assert!(session.syncing, "the row stays up after an interruption");
+        assert!(!session.synced_once, "an interruption never latches synced_once");
+        tx.send(BackendEvent::SyncCompleted).unwrap();
+        drain_all(&mut app, &ctx);
+        let session = app.live.as_ref().unwrap();
+        assert!(!session.syncing);
+        assert!(session.synced_once);
+    }
+
+    /// QC1614-A0-3: a fake roster with a parent group and a
+    /// linked child yields one community containing the child.
+    #[test]
+    fn community_structure_derives_from_parent_links() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        for chat in backend::fake::scripted_chats() {
+            tx.send(BackendEvent::ChatUpsert(chat)).unwrap();
+        }
+        drain_all(&mut app, &ctx);
+        let communities = app.communities();
+        assert_eq!(communities.len(), 1, "one community from the parent link");
+        let community = &communities[0];
+        assert_eq!(community.name, "Weekend Community (live demo)");
+        assert_eq!(
+            community.announcement_chat_id,
+            jid_id(backend::fake::FAKE_COMMUNITY_JID),
+            "the parent is the announcement chat"
+        );
+        assert_eq!(
+            community.group_chat_ids,
+            vec![jid_id(backend::fake::FAKE_GROUP_JID)],
+            "the linked group is its member"
+        );
     }
 
     /// The message-info popover renders exactly what the

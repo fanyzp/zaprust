@@ -2649,11 +2649,60 @@ mod tests {
             store.upsert_message(&msg, 0).unwrap();
         }
         let chats = store.chats().unwrap();
-        assert_eq!(chats.len(), 3);
+        assert_eq!(chats.len(), 4);
         assert_eq!(chats[0].jid, scripted_chats()[0].jid, "most recent first");
         let msgs: Vec<LiveMessage> =
             store.messages(&scripted_chats()[0].jid).unwrap().into_iter().map(|(m, _)| m).collect();
         assert_eq!(msgs, scripted_messages());
+    }
+
+    #[test]
+    fn delivery_state_round_trips_and_never_downgrades() {
+        // QC1614-A0-1: delivery is persisted synced state. A
+        // Read message reloads as Read, a Sent-only message as
+        // Sent, and a later rewrite carrying a lesser state
+        // never lowers the archived one.
+        let store = Store::open_in_memory().unwrap();
+        let chat = &scripted_chats()[0];
+        store.upsert_chat(chat).unwrap();
+        let mut read_msg = LiveMessage::text("d1", chat.jid.clone(), None, "seen", 100, true);
+        read_msg.delivery = Some(backend::DeliveryState::Read);
+        store.upsert_message(&read_msg, 0).unwrap();
+        let mut sent_msg = LiveMessage::text("d2", chat.jid.clone(), None, "sent", 200, true);
+        sent_msg.delivery = Some(backend::DeliveryState::Sent);
+        store.upsert_message(&sent_msg, 0).unwrap();
+        let loaded = store.messages(&chat.jid).unwrap();
+        assert_eq!(loaded[0].0.delivery, Some(backend::DeliveryState::Read));
+        assert_eq!(loaded[1].0.delivery, Some(backend::DeliveryState::Sent));
+        // A re-upsert with a lesser state keeps Read.
+        let mut lesser = read_msg.clone();
+        lesser.delivery = Some(backend::DeliveryState::Delivered);
+        store.upsert_message(&lesser, 0).unwrap();
+        // The receipt path advances monotonically too.
+        assert!(store.set_message_delivery(&chat.jid, "d2", backend::DeliveryState::Read).unwrap());
+        assert!(!store.set_message_delivery(&chat.jid, "d2", backend::DeliveryState::Sent).unwrap());
+        let loaded = store.messages(&chat.jid).unwrap();
+        assert_eq!(loaded[0].0.delivery, Some(backend::DeliveryState::Read));
+        assert_eq!(loaded[1].0.delivery, Some(backend::DeliveryState::Read));
+    }
+
+    #[test]
+    fn starred_messages_span_all_chats() {
+        // QC1614-A0-4: the Starred panel's source is the
+        // persisted flags across chats, including chats that
+        // were never opened.
+        let store = Store::open_in_memory().unwrap();
+        for chat in scripted_chats() {
+            store.upsert_chat(&chat).unwrap();
+        }
+        let a = LiveMessage::text("sa", scripted_chats()[0].jid.clone(), Some("A".into()), "one", 100, false);
+        let b = LiveMessage::text("sb", scripted_chats()[1].jid.clone(), Some("B".into()), "two", 200, false);
+        store.upsert_message(&a, FLAG_STARRED).unwrap();
+        store.upsert_message(&b, FLAG_STARRED).unwrap();
+        let starred = store.starred_messages().unwrap();
+        assert_eq!(starred.len(), 2);
+        assert_eq!(starred[0].0.id, "sb", "newest first");
+        assert_eq!(starred[1].0.id, "sa");
     }
 
     #[test]

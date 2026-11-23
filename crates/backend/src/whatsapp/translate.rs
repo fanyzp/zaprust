@@ -185,9 +185,9 @@ pub(super) type RetryMarks = Vec<(String, String, super::util::RetryMark)>;
 /// the QR code, fix the connection), and the raw error text
 /// never reaches the banner.
 pub(super) fn pairing_error_message(
-    err: &whatsapp_rust::prelude::PairingCodeError,
+    err: &whatsapp_rust::wacore::types::events::PairingCodeError,
 ) -> String {
-    use whatsapp_rust::prelude::PairCodeRejection;
+    use whatsapp_rust::wacore::pair_code::PairCodeRejection;
     match &err.rejection {
         Some(PairCodeRejection::FeatureNotAvailable) => {
             "Pairing by code is not available for this account. Use the QR code instead."
@@ -3002,7 +3002,8 @@ mod live_pairing_fix_tests {
     /// and a throttle says to wait.
     #[test]
     fn pairing_errors_map_to_human_categories() {
-        use whatsapp_rust::prelude::{PairCodeRejection, PairingCodeError};
+        use whatsapp_rust::wacore::pair_code::PairCodeRejection;
+        use whatsapp_rust::wacore::types::events::PairingCodeError;
         let local = PairingCodeError::builder().error("boom".to_owned()).build();
         let text = pairing_error_message(&local);
         assert!(text.contains("did not complete"), "{text}");

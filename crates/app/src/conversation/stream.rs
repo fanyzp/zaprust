@@ -43,6 +43,7 @@ impl App {
         // dispatched after the scroll pass, before the return.
         let mut pending_photo_fetches: Vec<u64> = Vec::new();
         let mut pending_sticker_fetches: Vec<u64> = Vec::new();
+        let mut pending_poster_fetches: Vec<u64> = Vec::new();
         let scroll_out = egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .stick_to_bottom(!self.qa_scroll_top && self.scroll_to_message.is_none())
@@ -245,6 +246,8 @@ impl App {
                         };
                         // Video cells in the grid paint their own
                         // thumbnails; decode any that are here.
+                        // A cell with no thumbnail bytes asks for
+                        // the video's hosted poster instead.
                         for item in run_items {
                             if matches!(item.kind, core::model::MessageKind::Video { .. }) {
                                 Self::video_thumb_texture(
@@ -253,6 +256,11 @@ impl App {
                                     ui.ctx(),
                                     item.id,
                                 );
+                                if self.video_tile(item.id) == crate::media::VideoTile::Neutral
+                                    && !self.media.poster_fetch.contains_key(&item.id)
+                                {
+                                    pending_poster_fetches.push(item.id);
+                                }
                             }
                         }
                         let album_actions = ui
@@ -359,6 +367,25 @@ impl App {
                         } else {
                             None
                         };
+                    // A video with no thumbnail bytes yet asks
+                    // for its hosted poster (dispatched after
+                    // the scroll pass), and until the poster
+                    // lands the tile takes the frame's shape
+                    // from the dimensions the wire stated.
+                    if matches!(msg.kind, core::model::MessageKind::Video { .. })
+                        && video_thumb_pair.is_none()
+                        && !self.media.poster_fetch.contains_key(&msg.id)
+                    {
+                        pending_poster_fetches.push(msg.id);
+                    }
+                    let wire_aspect = if video_thumb_pair.is_none() {
+                        self.live
+                            .as_ref()
+                            .and_then(|s| s.video_dims.get(&msg.id))
+                            .map(|(w, h)| *w as f32 / (*h).max(1) as f32)
+                    } else {
+                        None
+                    };
                     let media = MediaCtx {
                         photo: if photo_tile == crate::media::PhotoTile::Demo {
                             self.media.photo_texture.as_ref().map(egui::TextureHandle::id)
@@ -372,7 +399,7 @@ impl App {
                         sticker_tile,
                         video_tile: self.video_tile(msg.id),
                         video_thumb: video_thumb_pair.map(|(id, _)| id),
-                        video_aspect: video_thumb_pair.map(|(_, a)| a),
+                        video_aspect: video_thumb_pair.map(|(_, a)| a).or(wire_aspect),
                         voice: match &self.media.voice_player {
                             Some(player) if player.id == msg.id => {
                                 Some(crate::bubble::VoiceSnap {
@@ -656,6 +683,9 @@ impl App {
         }
         for id in pending_sticker_fetches {
             self.ensure_sticker_fetch(id);
+        }
+        for id in pending_poster_fetches {
+            self.ensure_poster_fetch(id);
         }
 
         (scroll_out, full_rect)

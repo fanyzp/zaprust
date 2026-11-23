@@ -2755,6 +2755,50 @@ pub(super) async fn run_async(
                         }
                     });
                 }
+                BackendCommand::FetchVideoPoster { chat_jid, message_id, poster_ref } => {
+                    // Display fetch, in memory only, mirroring
+                    // FetchPhoto: the session's protocol payload
+                    // first, then the archived reference. Unlike
+                    // the media fetches there is no media-retry
+                    // recovery: the re-upload flow is addressed
+                    // by the message's own media key and answers
+                    // for the media object, and the poster is a
+                    // separate object whose digest pair would
+                    // reject the video's bytes anyway, so a retry
+                    // could only spend a request to stand still.
+                    let proto = lock_cache(&proto_cache)
+                        .0
+                        .get(&(chat_jid.clone(), message_id.clone()))
+                        .cloned();
+                    let client = client.clone();
+                    let events = events.clone();
+                    tokio::spawn(async move {
+                        let fetched = match (&proto, &poster_ref) {
+                            (Some(proto), _) => {
+                                super::util::fetch_poster_bytes(&client, proto).await
+                            }
+                            (None, Some(reference)) => {
+                                super::util::fetch_poster_by_ref(&client, reference).await
+                            }
+                            (None, None) => Err("That video's poster is not available: it was \
+                                                 received before this session and has no stored \
+                                                 poster reference."
+                                .to_owned()),
+                        };
+                        match fetched {
+                            Ok(bytes) => events.emit(BackendEvent::VideoPosterBytes {
+                                chat_jid,
+                                message_id,
+                                bytes,
+                            }),
+                            Err(message) => events.emit(BackendEvent::VideoPosterFetchFailed {
+                                chat_jid,
+                                message_id,
+                                message,
+                            }),
+                        }
+                    });
+                }
                 BackendCommand::FetchSticker { chat_jid, message_id, sticker_ref } => {
                     // Display fetch, in memory only, mirroring
                     // FetchPhoto: the session's protocol payload

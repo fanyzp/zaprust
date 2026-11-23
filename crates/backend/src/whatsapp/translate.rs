@@ -1047,6 +1047,11 @@ fn history_message(
     msg.voice_ref = super::util::voice_ref_of(proto);
     msg.video_ref = super::util::video_ref_of(proto);
     msg.video_thumbnail = super::util::video_thumbnail_of(proto);
+    msg.poster_ref = super::util::poster_ref_of(proto);
+    if let Some((width, height)) = super::util::video_dimensions_of(proto) {
+        msg.video_width = Some(width);
+        msg.video_height = Some(height);
+    }
     msg.voice_waveform = super::util::voice_waveform_of(proto);
     msg.photo_thumbnail = super::util::photo_thumbnail_of(proto);
     msg.sticker_ref = super::util::sticker_ref_of(proto);
@@ -1366,6 +1371,11 @@ pub(super) fn translate_message(
     // video's visual identity until its bytes are played.
     msg.video_ref = super::util::video_ref_of(&ctx.message);
     msg.video_thumbnail = super::util::video_thumbnail_of(&ctx.message);
+    msg.poster_ref = super::util::poster_ref_of(&ctx.message);
+    if let Some((width, height)) = super::util::video_dimensions_of(&ctx.message) {
+        msg.video_width = Some(width);
+        msg.video_height = Some(height);
+    }
     // A photo's embedded thumbnail and a sticker's reference
     // travel the same way, and so do the message's mentions: the
     // app resolves each mentioned JID to a display name at

@@ -2011,6 +2011,14 @@ impl Backend for FakeBackend {
                             .to_owned(),
                     });
                 }
+                BackendCommand::FetchVideoPoster { chat_jid, message_id, .. } => {
+                    events.emit(BackendEvent::VideoPosterFetchFailed {
+                        chat_jid,
+                        message_id,
+                        message: "Test mode has no fetchable media: its messages are scripted."
+                            .to_owned(),
+                    });
+                }
                 BackendCommand::FetchSticker { chat_jid, message_id, .. } => {
                     if self.demo_script {
                         let bytes = fixture_png(&message_id);

@@ -590,6 +590,39 @@ pub(super) fn video_thumbnail_of(proto: &whatsapp_rust::prelude::wa::Message) ->
     video.jpeg_thumbnail.clone().filter(|t| !t.is_empty() && t.len() <= MAX_VIDEO_THUMBNAIL_BYTES)
 }
 
+/// Extracts the persistable download reference of a video's
+/// hosted poster (see [`crate::PosterRef`]), or `None` when the
+/// message is not a video or its payload does not carry a
+/// complete poster reference (VideoMessage fields 21-23 plus
+/// the video's own media key, under which the poster is
+/// encrypted). The completeness rule is the photo one: every
+/// field the CDN download validates must be present and
+/// well-formed.
+pub(super) fn poster_ref_of(proto: &whatsapp_rust::prelude::wa::Message) -> Option<crate::PosterRef> {
+    let proto = unwrap_media_proto(proto);
+    let video = proto.video_message.as_option().or_else(|| proto.ptv_message.as_option())?;
+    let direct_path = video.thumbnail_direct_path.clone().filter(|p| !p.is_empty())?;
+    let media_key = video.media_key.clone().filter(|k| k.len() == 32)?;
+    let file_sha256 = video.thumbnail_sha256.clone().filter(|h| h.len() == 32)?;
+    let file_enc_sha256 = video.thumbnail_enc_sha256.clone().filter(|h| h.len() == 32)?;
+    Some(crate::PosterRef { direct_path, media_key, file_sha256, file_enc_sha256 })
+}
+
+/// The frame dimensions a video message's payload states
+/// (VideoMessage fields 10 and 9), as `(width, height)`. `None`
+/// when the message is not a video or either dimension is
+/// absent or zero: a partial statement is not a proportion.
+pub(super) fn video_dimensions_of(
+    proto: &whatsapp_rust::prelude::wa::Message,
+) -> Option<(u32, u32)> {
+    let proto = unwrap_media_proto(proto);
+    let video = proto.video_message.as_option().or_else(|| proto.ptv_message.as_option())?;
+    match (video.width, video.height) {
+        (Some(w), Some(h)) if w > 0 && h > 0 => Some((w, h)),
+        _ => None,
+    }
+}
+
 /// The waveform preview bytes a voice note's payload carries
 /// (AudioMessage field 19): the sender's client computed them
 /// from the actual audio, and they are the only waveform a
@@ -647,6 +680,59 @@ pub(super) async fn fetch_video_by_ref(
 ) -> Result<Vec<u8>, String> {
     check_declared_length(Some(reference.file_length))?;
     let params = video_download_params(reference)?;
+    client.download(&params, download_limits()).await.map_err(download_error_message)
+}
+
+/// The declared plaintext length a poster download runs under.
+/// The wire states no length for the poster, so this is a
+/// budget figure, not a measurement: a poster is one JPEG
+/// frame, and 16 MiB sits far above any real frame while the
+/// digest pair (not the length) carries the integrity check,
+/// exactly as the library validates downloads.
+pub(super) const POSTER_DECLARED_BYTES: u64 = 16 * 1024 * 1024;
+
+/// Rebuilds the library's validated download parameters from a
+/// poster reference (see [`photo_download_params`] for why a
+/// rebuild failure means the stored value is malformed). The
+/// poster is encrypted under the video's media key with the
+/// video media type, the same key material the video itself
+/// uses.
+pub(super) fn poster_download_params(
+    reference: &crate::PosterRef,
+) -> Result<whatsapp_rust::download::DownloadParams, String> {
+    whatsapp_rust::download::DownloadParams::encrypted(
+        reference.direct_path.clone(),
+        &reference.media_key,
+        &reference.file_sha256,
+        &reference.file_enc_sha256,
+        POSTER_DECLARED_BYTES,
+        whatsapp_rust::download::MediaType::Video,
+    )
+    .map_err(|_| "That video's stored poster reference is not usable.".to_owned())
+}
+
+/// Downloads a video's hosted poster bytes into memory for
+/// display, from the session's protocol payload. Nothing is
+/// written to disk, like the other display fetches.
+pub(super) async fn fetch_poster_bytes(
+    client: &whatsapp_rust::Client,
+    proto: &whatsapp_rust::prelude::wa::Message,
+) -> Result<Vec<u8>, String> {
+    let Some(reference) = poster_ref_of(proto) else {
+        return Err("That video carries no hosted poster.".to_owned());
+    };
+    fetch_poster_by_ref(client, &reference).await
+}
+
+/// Downloads a video's hosted poster bytes into memory from
+/// its archived reference, for messages the session's protocol
+/// cache no longer holds. Same in-memory discipline as
+/// [`fetch_poster_bytes`].
+pub(super) async fn fetch_poster_by_ref(
+    client: &whatsapp_rust::Client,
+    reference: &crate::PosterRef,
+) -> Result<Vec<u8>, String> {
+    let params = poster_download_params(reference)?;
     client.download(&params, download_limits()).await.map_err(download_error_message)
 }
 
@@ -964,6 +1050,18 @@ pub(super) fn video_fields(reference: &crate::VideoRef) -> MediaRefFields {
         file_sha256: reference.file_sha256.clone(),
         file_enc_sha256: reference.file_enc_sha256.clone(),
         file_length: reference.file_length,
+        media_type: whatsapp_rust::download::MediaType::Video,
+    }
+}
+
+/// The retry fields of an archived poster reference.
+pub(super) fn poster_fields(reference: &crate::PosterRef) -> MediaRefFields {
+    MediaRefFields {
+        direct_path: reference.direct_path.clone(),
+        media_key: reference.media_key.clone(),
+        file_sha256: reference.file_sha256.clone(),
+        file_enc_sha256: reference.file_enc_sha256.clone(),
+        file_length: POSTER_DECLARED_BYTES,
         media_type: whatsapp_rust::download::MediaType::Video,
     }
 }
@@ -1524,6 +1622,65 @@ mod tests {
         // Not a video at all.
         assert!(video_thumbnail_of(&voice_proto_complete()).is_none());
         assert!(video_thumbnail_of(&wa::Message::default()).is_none());
+    }
+
+    fn poster_proto_complete() -> wa::Message {
+        let mut video = wa::message::VideoMessage::default();
+        video.direct_path = Some("/v/t62.7118-24/video.enc".to_owned());
+        video.media_key = Some(vec![7u8; 32]);
+        video.file_sha256 = Some(vec![8u8; 32]);
+        video.file_enc_sha256 = Some(vec![9u8; 32]);
+        video.file_length = Some(1_234_567);
+        video.thumbnail_direct_path = Some("/v/t62.7118-24/poster.enc".to_owned());
+        video.thumbnail_sha256 = Some(vec![11u8; 32]);
+        video.thumbnail_enc_sha256 = Some(vec![12u8; 32]);
+        video.width = Some(1280);
+        video.height = Some(720);
+        let mut msg = wa::Message::default();
+        msg.video_message = MessageField::some(video);
+        msg
+    }
+
+    /// The poster reference is the thumbnail's own path and
+    /// digest pair under the video's media key; any missing or
+    /// malformed piece makes it absent, because a partial
+    /// reference can only fail later.
+    #[test]
+    fn poster_ref_comes_from_a_complete_payload() {
+        for proto in [poster_proto_complete(), wrap_ephemeral(poster_proto_complete())] {
+            let reference = poster_ref_of(&proto).expect("a complete poster yields a reference");
+            assert_eq!(reference.direct_path, "/v/t62.7118-24/poster.enc");
+            assert_eq!(reference.media_key, vec![7u8; 32], "the poster uses the video's key");
+            assert_eq!(reference.file_sha256, vec![11u8; 32]);
+            assert_eq!(reference.file_enc_sha256, vec![12u8; 32]);
+            // The reference rebuilds validated download parameters.
+            assert!(poster_download_params(&reference).is_ok());
+        }
+        // No poster fields at all.
+        assert!(poster_ref_of(&video_proto_complete()).is_none());
+        // One digest missing.
+        let mut incomplete = poster_proto_complete();
+        if let Some(video) = incomplete.video_message.as_option_mut() {
+            video.thumbnail_enc_sha256 = None;
+        }
+        assert!(poster_ref_of(&incomplete).is_none());
+        // Not a video at all.
+        assert!(poster_ref_of(&photo_proto_complete()).is_none());
+        assert!(poster_ref_of(&wa::Message::default()).is_none());
+    }
+
+    /// The wire dimensions are the video's own statement of its
+    /// proportions; a partial or zero statement is no statement.
+    #[test]
+    fn video_dimensions_come_from_the_payload() {
+        assert_eq!(video_dimensions_of(&poster_proto_complete()), Some((1280, 720)));
+        assert_eq!(video_dimensions_of(&video_proto_complete()), None);
+        let mut zero = poster_proto_complete();
+        if let Some(video) = zero.video_message.as_option_mut() {
+            video.height = Some(0);
+        }
+        assert_eq!(video_dimensions_of(&zero), None);
+        assert_eq!(video_dimensions_of(&wa::Message::default()), None);
     }
 
     /// Builds a wire poll-vote message the way a voter's client

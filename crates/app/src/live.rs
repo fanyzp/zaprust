@@ -275,6 +275,18 @@ pub(crate) struct LiveSession {
     /// its own frame in later sessions without fetching its
     /// bytes.
     pub(crate) video_thumbs: HashMap<u64, Vec<u8>>,
+    /// Video poster references per numeric message ID, seeded
+    /// and extended exactly like `photo_refs`. A poster fetch
+    /// for a video whose payload carried no embedded thumbnail
+    /// passes the reference along, so the tile can present the
+    /// video's own hosted frame.
+    pub(crate) poster_refs: HashMap<u64, backend::PosterRef>,
+    /// Video frame dimensions (width, height) per numeric
+    /// message ID, as the wire payload stated them, seeded and
+    /// extended exactly like `video_refs`. The tile takes the
+    /// video's own proportions from here before any thumbnail
+    /// or bytes are here.
+    pub(crate) video_dims: HashMap<u64, (u32, u32)>,
     /// Sticker re-download references per numeric message ID,
     /// seeded and extended exactly like `photo_refs`.
     pub(crate) sticker_refs: HashMap<u64, backend::StickerRef>,
@@ -1030,6 +1042,8 @@ impl crate::state::App {
             voice_refs: HashMap::new(),
             video_refs: HashMap::new(),
             video_thumbs: HashMap::new(),
+            poster_refs: HashMap::new(),
+            video_dims: HashMap::new(),
             sticker_refs: HashMap::new(),
             photo_thumbs: HashMap::new(),
             message_mentions: HashMap::new(),
@@ -1134,6 +1148,16 @@ impl crate::state::App {
                                 session
                                     .video_thumbs
                                     .insert(message_id(&m.chat_jid, &m.id), thumb.clone());
+                            }
+                            if let Some(reference) = &m.poster_ref {
+                                session
+                                    .poster_refs
+                                    .insert(message_id(&m.chat_jid, &m.id), reference.clone());
+                            }
+                            if let (Some(w), Some(h)) = (m.video_width, m.video_height) {
+                                session
+                                    .video_dims
+                                    .insert(message_id(&m.chat_jid, &m.id), (w, h));
                             }
                             // A sticker's reference and a
                             // photo's thumbnail are seeded the
@@ -2966,6 +2990,42 @@ impl crate::state::App {
                     self.notice = Some(Notice::error(message));
                 }
             }
+            BackendEvent::VideoPosterBytes { chat_jid, message_id: pid, bytes } => {
+                // The fetched poster becomes the video's
+                // thumbnail everywhere a thumbnail lives: the
+                // session map the tiles decode from, and the
+                // archive row, so later sessions present the
+                // frame without fetching again. Bytes that do
+                // not decode are a failed fetch, never a reason
+                // to substitute another image.
+                let mid = message_id(&chat_jid, &pid);
+                if self.media.poster_fetch.get(&mid) != Some(&crate::state::PhotoFetchState::Loading)
+                {
+                    // A poster nobody is waiting for (its fetch
+                    // was superseded) is dropped, not landed.
+                } else if crate::media::decode_photo(ctx, &bytes).is_some() {
+                    self.media.poster_fetch.remove(&mid);
+                    if let Some(session) = &mut self.live {
+                        session.video_thumbs.insert(mid, bytes.clone());
+                        if let Some(store) = &session.store {
+                            let _ = store.set_video_thumbnail(&chat_jid, &pid, &bytes);
+                        }
+                    }
+                } else {
+                    self.media.poster_fetch.insert(mid, crate::state::PhotoFetchState::Failed);
+                }
+            }
+            BackendEvent::VideoPosterFetchFailed { chat_jid, message_id: pid, .. } => {
+                let mid = message_id(&chat_jid, &pid);
+                // Only a fetch still in flight can fail (see
+                // the photo arm). A failed poster is quiet: the
+                // tile stays neutral and the video itself still
+                // fetches on play.
+                if self.media.poster_fetch.get(&mid) == Some(&crate::state::PhotoFetchState::Loading)
+                {
+                    self.media.poster_fetch.insert(mid, crate::state::PhotoFetchState::Failed);
+                }
+            }
             BackendEvent::TypingReceived { chat_jid, typing } => {
                 let chat_id = jid_id(&chat_jid);
                 if typing {
@@ -4049,6 +4109,12 @@ impl crate::state::App {
             if let Some(thumb) = &row.video_thumbnail {
                 session.video_thumbs.insert(msg_id, thumb.clone());
             }
+            if let Some(reference) = &row.poster_ref {
+                session.poster_refs.insert(msg_id, reference.clone());
+            }
+            if let (Some(w), Some(h)) = (row.video_width, row.video_height) {
+                session.video_dims.insert(msg_id, (w, h));
+            }
             if let Some(reference) = &row.sticker_ref {
                 session.sticker_refs.insert(msg_id, reference.clone());
             }
@@ -4286,6 +4352,12 @@ impl crate::state::App {
             }
             if let Some(thumb) = &live.video_thumbnail {
                 session.video_thumbs.insert(msg_id, thumb.clone());
+            }
+            if let Some(reference) = &live.poster_ref {
+                session.poster_refs.insert(msg_id, reference.clone());
+            }
+            if let (Some(w), Some(h)) = (live.video_width, live.video_height) {
+                session.video_dims.insert(msg_id, (w, h));
             }
             if let Some(reference) = &live.sticker_ref {
                 session.sticker_refs.insert(msg_id, reference.clone());
@@ -5264,6 +5336,47 @@ impl crate::state::App {
         });
     }
 
+    /// Starts the poster fetch for one video message of the
+    /// open chat whose payload carried no embedded thumbnail,
+    /// unless the poster bytes are already here (as the
+    /// message's thumbnail) or a fetch is already running or
+    /// has failed. The fetch passes the message's archived
+    /// poster reference along, so a video the backend no longer
+    /// holds in its session cache still gets its frame. Only
+    /// real live sessions fetch: demo and test mode have no
+    /// poster bytes to fetch, the same rule the photo fetch
+    /// follows.
+    pub(crate) fn ensure_poster_fetch(&mut self, msg_id: u64) {
+        if self.photo_demo_allowed()
+            || self.media.video_textures.contains_key(&msg_id)
+            || self.media.poster_fetch.contains_key(&msg_id)
+        {
+            return;
+        }
+        let (chat_jid, poster_ref) = {
+            let Some(session) = &self.live else { return };
+            if session.video_thumbs.contains_key(&msg_id) {
+                return;
+            }
+            let Some(chat_jid) = session.jids.get(&self.selected_chat).cloned() else {
+                return;
+            };
+            (chat_jid, session.poster_refs.get(&msg_id).cloned())
+        };
+        let Some(protocol_id) = self.protocol_ids.get(&msg_id).cloned() else {
+            // A live video without a protocol id can never be
+            // addressed; record the failure instead of spinning.
+            self.media.poster_fetch.insert(msg_id, crate::state::PhotoFetchState::Failed);
+            return;
+        };
+        self.media.poster_fetch.insert(msg_id, crate::state::PhotoFetchState::Loading);
+        self.send_backend(BackendCommand::FetchVideoPoster {
+            chat_jid,
+            message_id: protocol_id,
+            poster_ref,
+        });
+    }
+
     /// Re-runs a failed video byte fetch (the viewer's retry
     /// gesture).
     pub(crate) fn retry_video_fetch(&mut self, msg_id: u64, view_once: bool) {
@@ -5295,13 +5408,15 @@ impl crate::state::App {
         self.media.video_player = Some(crate::video::VideoPlayer::start(msg_id, source, info));
     }
 
-    /// Removes one message's video re-download reference and
-    /// thumbnail from the session maps and from the archive.
+    /// Removes one message's video re-download reference,
+    /// thumbnail and poster reference from the session maps and
+    /// from the archive.
     fn drop_video_ref(&mut self, msg_id: u64) {
         let protocol_id = self.protocol_ids.get(&msg_id).cloned();
         let Some(session) = &mut self.live else { return };
         session.video_refs.remove(&msg_id);
         session.video_thumbs.remove(&msg_id);
+        session.poster_refs.remove(&msg_id);
         let chat_jid = session
             .messages
             .iter()
@@ -6814,6 +6929,8 @@ mod burst_drain_tests {
             voice_refs: HashMap::new(),
             video_refs: HashMap::new(),
             video_thumbs: HashMap::new(),
+            poster_refs: HashMap::new(),
+            video_dims: HashMap::new(),
             sticker_refs: HashMap::new(),
             photo_thumbs: HashMap::new(),
             message_mentions: HashMap::new(),
@@ -8256,6 +8373,99 @@ mod burst_drain_tests {
         assert_eq!(app.video_play_route(mid), crate::media::VideoPlayRoute::Loading);
     }
 
+    /// Row 22: a video whose payload carried no embedded
+    /// thumbnail fetches its hosted poster with the archived
+    /// reference riding along; the landed poster becomes the
+    /// message's thumbnail in the session and in the archive,
+    /// and the wire dimensions seed alongside.
+    #[test]
+    fn poster_fetch_lands_as_the_videos_thumbnail() {
+        let (mut app, tx, ctx, cmd_rx) = live_app();
+        make_real(&mut app);
+        let mut live = video_message("vid-p", BASE_TS, false, false);
+        live.poster_ref = Some(backend::PosterRef {
+            direct_path: "/v/t62.7118-24/poster.enc".to_owned(),
+            media_key: vec![7u8; 32],
+            file_sha256: vec![11u8; 32],
+            file_enc_sha256: vec![12u8; 32],
+        });
+        live.video_width = Some(1280);
+        live.video_height = Some(720);
+        tx.send(BackendEvent::MessageUpsert(live)).unwrap();
+        drain_all(&mut app, &ctx);
+        app.selected_chat = jid_id(CHAT_JID);
+        let mid = message_id(CHAT_JID, "vid-p");
+        {
+            let session = app.live.as_ref().unwrap();
+            assert!(session.poster_refs.contains_key(&mid), "the poster reference is seeded");
+            assert_eq!(session.video_dims.get(&mid), Some(&(1280, 720)));
+        }
+        assert_eq!(app.video_tile(mid), crate::media::VideoTile::Neutral);
+
+        app.ensure_poster_fetch(mid);
+        match cmd_rx.try_recv() {
+            Ok(BackendCommand::FetchVideoPoster { chat_jid, message_id, poster_ref }) => {
+                assert_eq!(chat_jid, CHAT_JID);
+                assert_eq!(message_id, "vid-p");
+                let reference = poster_ref.expect("the archived reference rides along");
+                assert_eq!(reference.direct_path, "/v/t62.7118-24/poster.enc");
+            }
+            other => panic!("expected a FetchVideoPoster command, got {other:?}"),
+        }
+        app.ensure_poster_fetch(mid);
+        assert!(cmd_rx.try_recv().is_err(), "a running poster fetch is not duplicated");
+
+        tx.send(BackendEvent::VideoPosterBytes {
+            chat_jid: CHAT_JID.to_owned(),
+            message_id: "vid-p".to_owned(),
+            bytes: jpeg_bytes(),
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(app.video_tile(mid), crate::media::VideoTile::Thumb);
+        assert!(!app.media.poster_fetch.contains_key(&mid), "the fetch state clears on landing");
+        let stored = app.live.as_ref().unwrap().store.as_ref().unwrap().messages(CHAT_JID).unwrap();
+        let row = &stored.iter().find(|(m, _)| m.id == "vid-p").unwrap().0;
+        assert_eq!(
+            row.video_thumbnail.as_deref(),
+            Some(jpeg_bytes().as_slice()),
+            "the poster is archived as the video's thumbnail"
+        );
+    }
+
+    /// Row 22: a failed poster fetch is recorded and quiet: the
+    /// tile stays neutral and no notice fires.
+    #[test]
+    fn poster_fetch_failure_stays_neutral() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        make_real(&mut app);
+        let mut live = video_message("vid-p", BASE_TS, false, false);
+        live.poster_ref = Some(backend::PosterRef {
+            direct_path: "/v/t62.7118-24/poster.enc".to_owned(),
+            media_key: vec![7u8; 32],
+            file_sha256: vec![11u8; 32],
+            file_enc_sha256: vec![12u8; 32],
+        });
+        tx.send(BackendEvent::MessageUpsert(live)).unwrap();
+        drain_all(&mut app, &ctx);
+        app.selected_chat = jid_id(CHAT_JID);
+        let mid = message_id(CHAT_JID, "vid-p");
+        app.ensure_poster_fetch(mid);
+        tx.send(BackendEvent::VideoPosterFetchFailed {
+            chat_jid: CHAT_JID.to_owned(),
+            message_id: "vid-p".to_owned(),
+            message: "Download failed.".to_owned(),
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(
+            app.media.poster_fetch.get(&mid),
+            Some(&crate::state::PhotoFetchState::Failed)
+        );
+        assert_eq!(app.video_tile(mid), crate::media::VideoTile::Neutral);
+        assert!(app.notice.is_none(), "a poster failure never raises a notice");
+    }
+
     /// Item 111: view-once video bytes land in memory (never a
     /// file), the player starts from them and presents a real
     /// decoded frame of the actual video.
@@ -9413,6 +9623,8 @@ mod chat_state_routing_tests {
             voice_refs: HashMap::new(),
             video_refs: HashMap::new(),
             video_thumbs: HashMap::new(),
+            poster_refs: HashMap::new(),
+            video_dims: HashMap::new(),
             sticker_refs: HashMap::new(),
             photo_thumbs: HashMap::new(),
             message_mentions: HashMap::new(),
@@ -11123,6 +11335,8 @@ mod mirror_pruning_tests {
             voice_refs: HashMap::new(),
             video_refs: HashMap::new(),
             video_thumbs: HashMap::new(),
+            poster_refs: HashMap::new(),
+            video_dims: HashMap::new(),
             sticker_refs: HashMap::new(),
             photo_thumbs: HashMap::new(),
             message_mentions: HashMap::new(),
@@ -11677,6 +11891,8 @@ mod qr_gate_tests {
             voice_refs: HashMap::new(),
             video_refs: HashMap::new(),
             video_thumbs: HashMap::new(),
+            poster_refs: HashMap::new(),
+            video_dims: HashMap::new(),
             sticker_refs: HashMap::new(),
             photo_thumbs: HashMap::new(),
             message_mentions: HashMap::new(),
@@ -11897,6 +12113,8 @@ mod logout_tests {
             voice_refs: HashMap::new(),
             video_refs: HashMap::new(),
             video_thumbs: HashMap::new(),
+            poster_refs: HashMap::new(),
+            video_dims: HashMap::new(),
             sticker_refs: HashMap::new(),
             photo_thumbs: HashMap::new(),
             message_mentions: HashMap::new(),
@@ -12127,6 +12345,8 @@ mod reaction_tests {
             voice_refs: HashMap::new(),
             video_refs: HashMap::new(),
             video_thumbs: HashMap::new(),
+            poster_refs: HashMap::new(),
+            video_dims: HashMap::new(),
             sticker_refs: HashMap::new(),
             photo_thumbs: HashMap::new(),
             message_mentions: HashMap::new(),
@@ -12459,6 +12679,8 @@ mod star_pin_tests {
             voice_refs: HashMap::new(),
             video_refs: HashMap::new(),
             video_thumbs: HashMap::new(),
+            poster_refs: HashMap::new(),
+            video_dims: HashMap::new(),
             sticker_refs: HashMap::new(),
             photo_thumbs: HashMap::new(),
             message_mentions: HashMap::new(),

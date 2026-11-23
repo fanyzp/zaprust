@@ -883,6 +883,24 @@ pub enum BackendCommand {
         /// Archived re-download reference, when the caller has one.
         sticker_ref: Option<StickerRef>,
     },
+    /// Fetch a video message's hosted poster (the full-size
+    /// frame image the sender's client uploaded alongside the
+    /// video) for display. Answered with `VideoPosterBytes` or
+    /// `VideoPosterFetchFailed`. The bytes travel in memory
+    /// only. The app asks for the poster when the payload
+    /// carried no embedded thumbnail, so the tile can present
+    /// the video's own frame. When the message is no longer in
+    /// the session's protocol cache, the caller passes the
+    /// archived [`PosterRef`] it stored with the message;
+    /// without either source the fetch fails.
+    FetchVideoPoster {
+        /// Chat JID.
+        chat_jid: String,
+        /// Protocol ID of the video message.
+        message_id: String,
+        /// Archived poster reference, when the caller has one.
+        poster_ref: Option<PosterRef>,
+    },
     /// Fetch the profile picture of one contact, group, or
     /// community for display. Answered with `AvatarBytes` when the
     /// identity has a picture, `AvatarMissing` when it has none or
@@ -1361,6 +1379,29 @@ pub struct VideoRef {
     pub file_length: u64,
 }
 
+/// The persistable CDN reference of one video's hosted poster:
+/// the full-size frame image the sender's client uploaded
+/// alongside the video (VideoMessage fields 21-23), downloadable
+/// on its own so a video whose payload carried no embedded
+/// thumbnail (or only a tiny one) can still present its own
+/// frame. The poster is encrypted under the video's own media
+/// key, so the reference carries that key alongside the
+/// thumbnail's path and digests; it belongs in the encrypted
+/// archive only. The wire carries no plaintext length for the
+/// poster, so none is stored: the download's integrity rests on
+/// the digest pair, exactly as the library validates it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PosterRef {
+    /// CDN path of the encrypted poster.
+    pub direct_path: String,
+    /// Media decryption key (the video's own, 32 bytes).
+    pub media_key: Vec<u8>,
+    /// SHA-256 of the decrypted poster bytes (32 bytes).
+    pub file_sha256: Vec<u8>,
+    /// SHA-256 of the encrypted poster bytes (32 bytes).
+    pub file_enc_sha256: Vec<u8>,
+}
+
 /// The persistable CDN reference of one sticker message: the same
 /// re-download material as [`PhotoRef`], extracted from the wire
 /// sticker payload and archived with the message so a sticker stays
@@ -1449,6 +1490,25 @@ pub struct LiveMessage {
     /// locally. `None` for every other kind, and for videos
     /// whose payload carried no thumbnail.
     pub video_thumbnail: Option<Vec<u8>>,
+    /// For a video message: the reference its hosted poster (the
+    /// full-size frame image the sender's client uploaded
+    /// alongside the video) can be downloaded from, when the
+    /// wire payload carried one. The app fetches it when the
+    /// payload carried no embedded thumbnail, so the tile can
+    /// present the video's own frame instead of a neutral tile.
+    /// `None` for every other kind, and for videos whose payload
+    /// carried no complete poster reference.
+    pub poster_ref: Option<PosterRef>,
+    /// For a video message: the frame width the wire payload
+    /// states (VideoMessage field 10). The video's own
+    /// proportions, known before any thumbnail or byte fetch,
+    /// so the tile can reserve the right shape from the start.
+    /// `None` for every other kind, and for videos whose payload
+    /// stated no dimensions.
+    pub video_width: Option<u32>,
+    /// For a video message: the frame height the wire payload
+    /// states (VideoMessage field 9). See [`Self::video_width`].
+    pub video_height: Option<u32>,
     /// For a voice message: the waveform preview bytes the
     /// sender's client computed from the actual audio and
     /// carried in the wire payload (AudioMessage field 19).
@@ -1540,6 +1600,9 @@ impl LiveMessage {
             voice_ref: None,
             video_ref: None,
             video_thumbnail: None,
+            poster_ref: None,
+            video_width: None,
+            video_height: None,
             voice_waveform: None,
             mentions: Vec::new(),
             photo_thumbnail: None,
@@ -2252,6 +2315,28 @@ pub enum BackendEvent {
         message_id: String,
         /// Absolute path of the cached video file.
         path: String,
+    },
+    /// A video poster fetch for display finished; the decrypted
+    /// bytes are carried in memory and were never written to
+    /// disk.
+    VideoPosterBytes {
+        /// Chat JID the video belongs to.
+        chat_jid: String,
+        /// Protocol ID of the video message.
+        message_id: String,
+        /// The poster's decrypted bytes (an encoded image).
+        bytes: Vec<u8>,
+    },
+    /// A video poster fetch for display failed. Reported per
+    /// message (not as a global `Error`); the message is in user
+    /// words.
+    VideoPosterFetchFailed {
+        /// Chat JID the video belongs to.
+        chat_jid: String,
+        /// Protocol ID of the video message.
+        message_id: String,
+        /// Why the fetch failed, in user words.
+        message: String,
     },
     /// A video fetch for playback failed. Reported per message
     /// (not as a global `Error`); the message is in user words.

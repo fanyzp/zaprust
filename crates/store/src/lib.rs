@@ -260,6 +260,24 @@ struct MessageData {
     /// has been spent.
     #[serde(default)]
     video_thumbnail: Option<Vec<u8>>,
+    /// A video's hosted poster reference, archived with the
+    /// message so the poster stays fetchable in later sessions
+    /// for videos whose payload carried no embedded thumbnail.
+    /// Dropped together with the video reference for a view-once
+    /// video once its single view has been spent (see
+    /// [`Store::clear_video_ref`]): the poster is a real frame
+    /// of the sealed content.
+    #[serde(default)]
+    poster_ref: Option<backend::PosterRef>,
+    /// A video's wire-stated frame width, archived with the
+    /// message so its tile can take the video's own proportions
+    /// in later sessions before any bytes are fetched.
+    #[serde(default)]
+    video_width: Option<u32>,
+    /// A video's wire-stated frame height. See
+    /// [`MessageData::video_width`].
+    #[serde(default)]
+    video_height: Option<u32>,
     /// A voice note's wire waveform bytes, archived with the
     /// message so its bubble renders the sender's own waveform
     /// in later sessions, never a locally invented shape.
@@ -1061,6 +1079,9 @@ impl Store {
             voice_ref: msg.voice_ref.clone(),
             video_ref: msg.video_ref.clone(),
             video_thumbnail: msg.video_thumbnail.clone(),
+            poster_ref: msg.poster_ref.clone(),
+            video_width: msg.video_width,
+            video_height: msg.video_height,
             voice_waveform: msg.voice_waveform.clone(),
             mentions: msg.mentions.clone(),
             photo_thumbnail: msg.photo_thumbnail.clone(),
@@ -1327,14 +1348,14 @@ impl Store {
         Ok(())
     }
 
-    /// Drops the stored video reference and thumbnail of one
-    /// message, leaving the rest of the row untouched. This is
-    /// how a view-once video's re-download capability ends: the
-    /// reference is what makes the bytes fetchable, and the
-    /// thumbnail is a real frame of the sealed content, so once
-    /// the single view has been spent the archive must keep
-    /// neither. A message without either (or no such message) is
-    /// a quiet no-op.
+    /// Drops the stored video reference, thumbnail and poster
+    /// reference of one message, leaving the rest of the row
+    /// untouched. This is how a view-once video's re-download
+    /// capability ends: the reference is what makes the bytes
+    /// fetchable, and the thumbnail and poster are real frames
+    /// of the sealed content, so once the single view has been
+    /// spent the archive must keep none of them. A message
+    /// without any (or no such message) is a quiet no-op.
     ///
     /// # Errors
     /// [`StoreError`] on SQLite failures.
@@ -1351,11 +1372,54 @@ impl Store {
             .flatten();
         let Some(data_text) = data_text else { return Ok(()) };
         let mut data: MessageData = serde_json::from_str(&data_text).unwrap_or_default();
-        if data.video_ref.is_none() && data.video_thumbnail.is_none() {
+        if data.video_ref.is_none() && data.video_thumbnail.is_none() && data.poster_ref.is_none() {
             return Ok(());
         }
         data.video_ref = None;
         data.video_thumbnail = None;
+        data.poster_ref = None;
+        let data_json = serde_json::to_string(&data).map_err(|e| {
+            StoreError::Sqlite(rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
+        })?;
+        self.conn.execute(
+            "UPDATE messages SET data = ?3 WHERE chat_jid = ?1 AND id = ?2",
+            params![chat_jid, id, data_json],
+        )?;
+        Ok(())
+    }
+
+    /// Stores fetched poster bytes as one message's video
+    /// thumbnail, leaving the rest of the row untouched. The
+    /// poster a video's payload did not embed is downloaded on
+    /// demand; archiving it with the message means later
+    /// sessions present the video's own frame without fetching
+    /// again, exactly like an embedded thumbnail. A message
+    /// that is not archived is a quiet no-op.
+    ///
+    /// # Errors
+    /// [`StoreError`] on SQLite failures.
+    pub fn set_video_thumbnail(
+        &self,
+        chat_jid: &str,
+        id: &str,
+        thumbnail: &[u8],
+    ) -> Result<(), StoreError> {
+        use rusqlite::OptionalExtension;
+        let data_text: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT data FROM messages WHERE chat_jid = ?1 AND id = ?2",
+                params![chat_jid, id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()?
+            .flatten();
+        let Some(data_text) = data_text else { return Ok(()) };
+        let mut data: MessageData = serde_json::from_str(&data_text).unwrap_or_default();
+        if data.video_thumbnail.as_deref() == Some(thumbnail) {
+            return Ok(());
+        }
+        data.video_thumbnail = Some(thumbnail.to_vec());
         let data_json = serde_json::to_string(&data).map_err(|e| {
             StoreError::Sqlite(rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
         })?;
@@ -1682,6 +1746,9 @@ impl Store {
             msg.voice_ref = data.voice_ref;
             msg.video_ref = data.video_ref;
             msg.video_thumbnail = data.video_thumbnail;
+            msg.poster_ref = data.poster_ref;
+            msg.video_width = data.video_width;
+            msg.video_height = data.video_height;
             msg.voice_waveform = data.voice_waveform;
             msg.mentions = data.mentions;
             msg.photo_thumbnail = data.photo_thumbnail;
@@ -2554,6 +2621,46 @@ mod tests {
         assert_eq!(rows[0].0.kind, msg.kind);
         store.clear_video_ref(&msg.chat_jid, &msg.id).unwrap();
         store.clear_video_ref(&msg.chat_jid, "no-such-id").unwrap();
+    }
+
+    fn poster_reference() -> backend::PosterRef {
+        backend::PosterRef {
+            direct_path: "/v/t62.7118-24/poster.enc".to_owned(),
+            media_key: vec![7u8; 32],
+            file_sha256: vec![11u8; 32],
+            file_enc_sha256: vec![12u8; 32],
+        }
+    }
+
+    /// A video's poster reference and wire dimensions round-trip
+    /// with the message, a fetched poster lands in the thumbnail
+    /// slot, and the view-once spend drops the poster reference
+    /// with the rest of the video's fetchable material.
+    #[test]
+    fn poster_ref_dimensions_and_fetched_poster_round_trip() {
+        let store = Store::open_in_memory().unwrap();
+        let mut msg = scripted_messages()[0].clone();
+        msg.video_ref = Some(video_reference());
+        msg.poster_ref = Some(poster_reference());
+        msg.video_width = Some(1280);
+        msg.video_height = Some(720);
+        store.upsert_message(&msg, 0).unwrap();
+        let rows = store.messages(&msg.chat_jid).unwrap();
+        assert_eq!(rows[0].0.poster_ref, Some(poster_reference()));
+        assert_eq!(rows[0].0.video_width, Some(1280));
+        assert_eq!(rows[0].0.video_height, Some(720));
+        assert_eq!(rows[0].0.video_thumbnail, None);
+        // A fetched poster becomes the archived thumbnail.
+        store.set_video_thumbnail(&msg.chat_jid, &msg.id, &video_thumbnail()).unwrap();
+        let rows = store.messages(&msg.chat_jid).unwrap();
+        assert_eq!(rows[0].0.video_thumbnail, Some(video_thumbnail()));
+        // Storing a thumbnail for a missing row is a quiet no-op.
+        store.set_video_thumbnail(&msg.chat_jid, "no-such-id", &video_thumbnail()).unwrap();
+        // The spend drops the poster reference too.
+        store.clear_video_ref(&msg.chat_jid, &msg.id).unwrap();
+        let rows = store.messages(&msg.chat_jid).unwrap();
+        assert_eq!(rows[0].0.poster_ref, None);
+        assert_eq!(rows[0].0.video_thumbnail, None);
     }
 
     /// Clearing a photo reference (the view-once spend) removes

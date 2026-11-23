@@ -752,6 +752,13 @@ pub(crate) struct MediaState {
     /// `video_files` (regular videos) or `video_bytes`
     /// (view-once videos) instead.
     pub(crate) video_fetch: std::collections::HashMap<u64, PhotoFetchState>,
+    /// Video poster fetches in flight or failed, per app
+    /// message ID. Absence means no poster fetch has been
+    /// requested yet. A landed fetch removes the entry and the
+    /// bytes join the session's video thumbnails (and the
+    /// archive's thumbnail slot), so the poster is fetched at
+    /// most once per message.
+    pub(crate) poster_fetch: std::collections::HashMap<u64, PhotoFetchState>,
     /// Fetched cache files for regular videos, per app message
     /// ID, ready to hand to the player.
     pub(crate) video_files: std::collections::HashMap<u64, String>,
@@ -2063,6 +2070,7 @@ impl App {
                 voice_rates: std::collections::HashMap::new(),
                 video_textures: crate::extras::TextureCache::new(crate::extras::MAX_MEDIA_TEXTURES),
                 video_fetch: std::collections::HashMap::new(),
+                poster_fetch: std::collections::HashMap::new(),
                 video_files: std::collections::HashMap::new(),
                 video_bytes: std::collections::HashMap::new(),
                 video_player: None,

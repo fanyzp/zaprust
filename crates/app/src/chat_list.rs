@@ -99,6 +99,57 @@ pub(crate) fn chat_preview_display(chat: &Chat) -> String {
     }
 }
 
+/// Minimum width of a chat row's context menu (P2-26).
+const ROW_MENU_MIN_W: f32 = 170.0;
+
+impl App {
+    /// The visible chats for the current filter and query,
+    /// memoized on a cheap roster fingerprint (P2-68): an
+    /// FNV fold over everything the filter reads (ids, titles,
+    /// previews, senders, pin/archive/mute state, timestamps),
+    /// plus the filter and query themselves. Byte folding is
+    /// O(text) with no allocation; the full filter (with its
+    /// three lowercase allocations per chat) runs only when
+    /// the fingerprint changes.
+    pub(crate) fn visible_chats(&self) -> Vec<&Chat> {
+        let mut fp: u64 = 0xcbf2_9ce4_8422_2325;
+        let mut mix = |bytes: &[u8]| {
+            for b in bytes {
+                fp ^= u64::from(*b);
+                fp = fp.wrapping_mul(0x0100_0000_01b3);
+            }
+        };
+        mix(self.search.as_bytes());
+        mix(&[self.filter as u8]);
+        mix(&self.chats.len().to_le_bytes());
+        for c in &self.chats {
+            mix(&c.id.to_le_bytes());
+            mix(c.title.as_bytes());
+            mix(c.preview.as_bytes());
+            if let Some(s) = &c.preview_sender {
+                mix(s.as_bytes());
+            }
+            mix(c.time.as_bytes());
+            mix(&c.unread.to_le_bytes());
+            mix(&[c.kind as u8, u8::from(c.pinned), u8::from(c.archived), u8::from(c.favorite)]);
+        }
+        if let Some((key, indices)) = self.filter_memo.borrow().as_ref() {
+            if *key == fp {
+                return indices.iter().filter_map(|i| self.chats.get(*i)).collect();
+            }
+        }
+        let filtered = filter_chats(&self.chats, self.filter, &self.search);
+        let base = self.chats.as_ptr() as usize;
+        let indices: Vec<usize> = filtered
+            .iter()
+            .map(|c| ((*c as *const Chat) as usize - base) / std::mem::size_of::<Chat>())
+            .collect();
+        let out: Vec<&Chat> = indices.iter().filter_map(|i| self.chats.get(*i)).collect();
+        *self.filter_memo.borrow_mut() = Some((fp, indices));
+        out
+    }
+}
+
 impl App {
     pub(crate) fn draw_chat_list(&mut self, root: &mut egui::Ui) {
         // Channels, Groups and Archived are modes of this list,
@@ -430,10 +481,19 @@ impl App {
                     // for every roster chat (it dedups and
                     // caches), and whatever has landed overlays
                     // the demo map.
-                    let roster = self.chats.clone();
-                    for chat in &roster {
-                        if let Some(tex) = self.chat_avatar_photo(ui.ctx(), chat) {
-                            photos.insert(chat.id, tex);
+                    // Ids only (P2-68): cloning the whole
+                    // roster every frame just to satisfy the
+                    // borrow checker was steady allocation
+                    // churn on the UI thread at large rosters.
+                    // The live avatar path needs only the id.
+                    let roster_ids: Vec<u64> = self.chats.iter().map(|c| c.id).collect();
+                    for id in roster_ids {
+                        let jid = self.live.as_ref().and_then(|s| s.jids.get(&id)).cloned();
+                        if let Some(jid) = jid {
+                            self.ensure_avatar(ui.ctx(), &jid);
+                            if let Some(tex) = self.live_avatar(&jid) {
+                                photos.insert(id, tex.id());
+                            }
                         }
                     }
                 }
@@ -468,7 +528,7 @@ impl App {
                         self.ensure_verified_name(jid);
                     }
                 }
-                let visible = filter_chats(&self.chats, self.filter, &self.search);
+                let visible = self.visible_chats();
                 let mut clicked: Option<u64> = None;
                 // A row context-menu pick (chat id, what it asks
                 // for), applied after the list renders. Archiving
@@ -510,7 +570,7 @@ impl App {
                             clicked = Some(chat.id);
                         }
                         resp.context_menu(|ui| {
-                            ui.set_min_width(170.0);
+                            ui.set_min_width(ROW_MENU_MIN_W);
                             let label = if chat.archived {
                                 crate::i18n::t("conversation.unarchive")
                             } else {
@@ -683,9 +743,18 @@ impl App {
                     }
                 }
                 if no_visible {
+                    // A fresh account with zero chats and no
+                    // filter or search active gets its own
+                    // honest state (P2-69): nothing was matched
+                    // against anything, so "no match" would lie.
+                    let roster_empty = self.chats.is_empty() && !searching;
                     ui.label(
-                        RichText::new(crate::i18n::t("chats.no_match"))
-                            .color(rgb(t.text_secondary)),
+                        RichText::new(crate::i18n::t(if roster_empty {
+                            "chats.none_yet"
+                        } else {
+                            "chats.no_match"
+                        }))
+                        .color(rgb(t.text_secondary)),
                     );
                 }
                 if searching {

@@ -151,7 +151,7 @@ pub(super) enum AvatarOutcome {
 /// contact who may well have one. That case is Unavailable
 /// (retryable, never cached), so a later paint retries once
 /// the mapping is learned.
-pub(super) async fn fetch_avatar(client: &Client, jid_str: &str) -> AvatarOutcome {
+pub(super) async fn fetch_avatar(client: &Client, jid_str: &str, community: bool) -> AvatarOutcome {
     use whatsapp_rust::ProfilePictureLookup;
     let Ok(jid) = jid_str.parse::<Jid>() else { return AvatarOutcome::Unavailable };
     let (target_jid, is_group) = if jid_str.ends_with("@g.us") {
@@ -169,7 +169,12 @@ pub(super) async fn fetch_avatar(client: &Client, jid_str: &str) -> AvatarOutcom
     } else {
         (jid.clone(), false)
     };
-    let target = if is_group {
+    let target = if is_group && community {
+        // A community parent's picture lives under its own
+        // target; asking the Group target for it answers for
+        // the announcement group instead (P2-05).
+        ProfilePictureTarget::Community(&target_jid)
+    } else if is_group {
         ProfilePictureTarget::Group(&target_jid)
     } else {
         ProfilePictureTarget::Contact(&target_jid)

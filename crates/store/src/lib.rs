@@ -459,9 +459,11 @@ impl Store {
     /// too-new schema.
     pub fn open(path: &Path, key: &[u8; 32]) -> Result<Self, StoreError> {
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| {
-                StoreError::Sqlite(rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
-            })?;
+            // A directory failure is an I/O failure, not a SQL
+            // conversion error (P2-42): the old mapping made the
+            // user-facing string blame the database format for
+            // what was a filesystem problem.
+            std::fs::create_dir_all(parent).map_err(StoreError::Io)?;
         }
         encrypt_file_in_place(path, key)?;
         let conn = Connection::open(path)?;
@@ -491,7 +493,33 @@ impl Store {
         store.migrate()?;
         store.purge_freelist_once()?;
         store.scrub_view_once_captions_once()?;
+        store.prune_unbounded_tables()?;
         Ok(store)
+    }
+
+    /// Bounds the two tables that otherwise grow forever
+    /// (P2-39): avatar rows are one full picture per identity,
+    /// and the calls table accretes one row per call. Aged
+    /// NEGATIVE avatar rows (no bytes: a "no picture" answer)
+    /// older than 30 days are dropped; the app re-asks on its
+    /// own 24-hour negative rule anyway, so nothing current is
+    /// lost. Positive rows stay: they are the offline picture
+    /// cache. Call history is capped at the newest 1,000 rows,
+    /// far beyond what the Calls panel can show.
+    fn prune_unbounded_tables(&self) -> Result<(), StoreError> {
+        let cutoff = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0))
+            - 30 * 86_400;
+        self.conn.execute(
+            "DELETE FROM avatars WHERE bytes IS NULL AND fetched_at > 0 AND fetched_at < ?1",
+            params![cutoff],
+        )?;
+        self.conn.execute(
+            "DELETE FROM calls WHERE id NOT IN (SELECT id FROM calls ORDER BY started_at DESC, id DESC LIMIT 1000)",
+            [],
+        )?;
+        Ok(())
     }
 
     /// The one-time purge of free pages accumulated before
@@ -908,6 +936,12 @@ impl Store {
     ///
     /// # Errors
     /// [`StoreError`] on SQLite failures.
+    /// The preview group (preview, preview sender, timestamp,
+    /// unread) is monotonic in the store itself (P2-38): an
+    /// upsert older than the stored row cannot move the
+    /// preview backwards or resurrect a read chat's unread
+    /// count, whichever writer produced it. The title guard
+    /// above is the same idea for names.
     pub fn upsert_chat(&self, chat: &LiveChat) -> Result<(), StoreError> {
         self.conn.execute(
             "INSERT INTO chats (jid, title, kind, preview, preview_sender, timestamp, unread, archived, pinned, ephemeral_secs, muted, mute_until)
@@ -917,10 +951,13 @@ impl Store {
                                   AND NOT (length(chats.title) >= 9 AND chats.title NOT GLOB '*[^0-9]*')
                              THEN chats.title ELSE excluded.title END,
                 kind = excluded.kind,
-                preview = excluded.preview,
-                preview_sender = excluded.preview_sender,
-                timestamp = excluded.timestamp,
-                unread = excluded.unread,
+                preview = CASE WHEN excluded.timestamp >= chats.timestamp
+                               THEN excluded.preview ELSE chats.preview END,
+                preview_sender = CASE WHEN excluded.timestamp >= chats.timestamp
+                               THEN excluded.preview_sender ELSE chats.preview_sender END,
+                timestamp = MAX(chats.timestamp, excluded.timestamp),
+                unread = CASE WHEN excluded.timestamp >= chats.timestamp
+                               THEN excluded.unread ELSE chats.unread END,
                 archived = excluded.archived,
                 pinned = excluded.pinned,
                 ephemeral_secs = excluded.ephemeral_secs,

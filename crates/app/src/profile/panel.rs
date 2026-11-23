@@ -804,10 +804,18 @@ impl App {
                     // action lives in the row's kebab menu.
                     if chat.kind == ChatKind::Group {
                         if let Some(live_list) = &live_members {
-                            // Member photos resolve before the
-                            // section closure borrows the panel.
+                            // The painted list is capped (P2-66):
+                            // a group can exceed 1,000 members,
+                            // and painting every row (plus a
+                            // per-member avatar lookup) every
+                            // frame degrades the whole panel. The
+                            // tail states the remainder honestly,
+                            // the demo fallback's own pattern.
+                            const MEMBER_LIST_CAP: usize = 200;
+                            let shown = live_list.len().min(MEMBER_LIST_CAP);
                             let member_photos: Vec<Option<egui::TextureId>> = live_list
                                 .iter()
+                                .take(shown)
                                 .map(|row| self.member_avatar_photo(&ctx, &row.address, &row.label))
                                 .collect();
                             let mut member_action: Option<MemberAction> = None;
@@ -822,7 +830,7 @@ impl App {
                                 None,
                                 |ui| {
                                     for (row, photo) in
-                                        live_list.iter().zip(member_photos.iter())
+                                        live_list.iter().take(shown).zip(member_photos.iter())
                                     {
                                         let Some(kebab) = dock_member_row(
                                             ui,
@@ -937,6 +945,16 @@ impl App {
                                                 }
                                             });
                                         ui.add_space(SP_1);
+                                    }
+                                    if live_list.len() > shown {
+                                        ui.label(
+                                            RichText::new(format!(
+                                                "… and {} more",
+                                                live_list.len() - shown
+                                            ))
+                                            .size(12.0)
+                                            .color(rgb(t.text_faint)),
+                                        );
                                     }
                                 },
                             );

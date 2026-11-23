@@ -35,7 +35,75 @@ pub(crate) fn ellipsize(ui: &egui::Ui, text: &str, font: FontId, max_w: f32) -> 
             hi = mid - 1;
         }
     }
-    format!("{}…", &text[..bounds[lo]])
+    format!("{}…", &text[..floor_grapheme_boundary(text, bounds[lo])])
+}
+
+/// Lowers a char-boundary byte offset so the cut never splits
+/// a grapheme cluster (P2-64): not a base letter from its
+/// combining marks, not a flag's regional-indicator pair, not
+/// a ZWJ emoji sequence. The width search above works on char
+/// boundaries; this walks the chosen boundary back over any
+/// continuation characters that belong to the previous
+/// cluster, and over a ZWJ joiner itself. No segmentation
+/// crate: the continuation classes are small and stable.
+pub(crate) fn floor_grapheme_boundary(text: &str, mut end: usize) -> usize {
+    let chars: Vec<(usize, char)> = text.char_indices().collect();
+    let pos = chars.iter().position(|(i, _)| *i == end).unwrap_or(chars.len());
+    let mut cut = pos;
+    while cut > 0 {
+        let next = chars.get(cut).map(|(_, c)| *c);
+        let prev = chars[cut - 1].1;
+        let splits = match next {
+            // Combining marks, variation selectors and skin
+            // tones belong to the previous cluster.
+            Some(c) if is_combining(c) => true,
+            // A ZWJ joins the next cluster to the previous
+            // one: a cut before it strands the joiner, a cut
+            // after it splits the sequence.
+            Some('\u{200d}') => true,
+            _ => prev == '\u{200d}',
+        };
+        // A regional-indicator pair (a flag) splits when the
+        // run of indicators before the cut is odd.
+        let flag_split = next.is_some_and(|c| is_regional_indicator(c))
+            && chars[..cut]
+                .iter()
+                .rev()
+                .take_while(|(_, c)| is_regional_indicator(*c))
+                .count()
+                % 2
+                == 1;
+        if splits || flag_split {
+            cut -= 1;
+            end = chars[cut].0;
+        } else {
+            break;
+        }
+    }
+    end
+}
+
+fn is_combining(c: char) -> bool {
+    matches!(c,
+        '\u{0300}'..='\u{036f}'
+        | '\u{0483}'..='\u{0489}'
+        | '\u{0591}'..='\u{05bd}'
+        | '\u{0610}'..='\u{061a}'
+        | '\u{064b}'..='\u{065f}'
+        | '\u{0670}'..='\u{0670}'
+        | '\u{06d6}'..='\u{06dc}'
+        | '\u{0e31}'..='\u{0e3a}'
+        | '\u{0e47}'..='\u{0e4e}'
+        | '\u{1ab0}'..='\u{1aff}'
+        | '\u{1dc0}'..='\u{1dff}'
+        | '\u{20d0}'..='\u{20f0}'
+        | '\u{fe00}'..='\u{fe0f}'
+        | '\u{fe20}'..='\u{fe2f}'
+        | '\u{1f3fb}'..='\u{1f3ff}')
+}
+
+fn is_regional_indicator(c: char) -> bool {
+    matches!(c, '\u{1f1e6}'..='\u{1f1ff}')
 }
 
 /// The one empty state for list panels: a quiet secondary label

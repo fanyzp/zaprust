@@ -1719,6 +1719,12 @@ pub(crate) struct App {
     /// and LiveChat parent fields); the Communities panel
     /// derives from it, never from name heuristics.
     pub(crate) chat_parents: std::collections::HashMap<u64, u64>,
+    /// Memoized chat-list filter result (P2-68): the roster
+    /// fingerprint it was computed for, and the visible chats'
+    /// indices into `chats`. Recomputed only when the
+    /// fingerprint moves, so a steady frame does no filtering
+    /// (and none of its per-chat lowercase allocations).
+    pub(crate) filter_memo: std::cell::RefCell<Option<(u64, Vec<usize>)>>,
     /// The announcement chats of the session-created communities,
     /// kept outside `chats` under the same rule as the demo
     /// announcement chat: the chat list never renders them as
@@ -2266,6 +2272,7 @@ impl App {
             community_create_error: None,
             session_communities: Vec::new(),
             chat_parents: std::collections::HashMap::new(),
+            filter_memo: std::cell::RefCell::new(None),
             session_announcements: Vec::new(),
             header_menu_open: args.header_menu,
             pending_notifications: Vec::new(),

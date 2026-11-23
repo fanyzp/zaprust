@@ -212,8 +212,7 @@ file.
 `core` and `store` errors are hand-rolled enums with human
 Display text (no error-framework dependency). The updater's
 failures are a typed kind plus a human message
-end to end, AI provider misconfiguration (such as a cleartext
-http:// base URL) is a typed provider error, and at the app's
+end to end, and at the app's
 display boundary, backend error strings are mapped to short
 human sentences (the raw text goes to the log, never verbatim
 into a banner). Free-form strings remain only where they cross

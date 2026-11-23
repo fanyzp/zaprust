@@ -622,6 +622,9 @@ fn kind_of(kind: LiveChatKind) -> ChatKind {
         LiveChatKind::Dm => ChatKind::Dm,
         LiveChatKind::Group => ChatKind::Group,
         LiveChatKind::Channel => ChatKind::Channel,
+        // Broadcast lists render with the direct-chat row
+        // shape; the core model has no broadcast kind (P2-06).
+        LiveChatKind::Broadcast => ChatKind::Dm,
     }
 }
 
@@ -1101,13 +1104,17 @@ impl crate::state::App {
         let repaint_ctx = ctx.clone();
         let wake: backend::WakeFn = std::sync::Arc::new(move || repaint_ctx.request_repaint());
         let config = BackendConfig { data_dir, account_id: "default".to_owned(), db_key };
-        if !fake {
-            // Convert a plaintext session store left by an older
-            // build before the backend opens it with the key; a
-            // failure here surfaces as the backend's own
-            // session-store error.
-            let _ = store::encrypt_file_in_place(&config.session_db_path(), &config.db_key);
-        }
+        // Convert a plaintext session store left by an older
+        // build before the backend opens it with the key. A
+        // failure is no longer swallowed (P2-42): it is kept and
+        // posted as an error once the session exists, because a
+        // store that could not be converted will fail the
+        // backend's open too, and the user should see why.
+        let conversion_error = if fake {
+            None
+        } else {
+            store::encrypt_file_in_place(&config.session_db_path(), &config.db_key).err()
+        };
         let channels = if fake {
             // The factory must build a fresh backend per (re)start.
             spawn_backend(
@@ -1411,6 +1418,11 @@ impl crate::state::App {
         self.apply_stored_favorites();
         self.live_start_error = None;
         self.logged_out = false;
+        if let Some(e) = conversion_error {
+            self.notice = Some(Notice::error(format!(
+                "Zaprust could not convert the stored session to its encrypted form: {e}"
+            )));
+        }
         if let Some(note) = archive_note {
             // An archive that failed to open is an error state,
             // not a footnote: the session is running without
@@ -1465,7 +1477,20 @@ impl crate::state::App {
             self.trace_push("command", &format!("Command {name} sent to backend"), None);
         }
         if let Some(session) = &self.live {
-            let _ = session.channels.commands.send(cmd);
+            // A failed dispatch is never silent (P2-70): the
+            // channel only fails when the backend worker is
+            // gone, and a user action vanishing without a word
+            // reads as the app ignoring the click. The failure
+            // is logged with the command's name and surfaced
+            // once per burst (the notice is only replaced when
+            // it is not already this one).
+            if session.channels.commands.send(cmd).is_err() {
+                tracing::warn!("backend command could not be dispatched (worker gone)");
+                let text = crate::i18n::t("notice.dispatch_failed");
+                if self.notice.as_ref().map(|n| n.text.as_str()) != Some(text.as_str()) {
+                    self.notice = Some(Notice::error(text));
+                }
+            }
         }
     }
 
@@ -4404,6 +4429,34 @@ impl crate::state::App {
         }
         if let Some(session) = &self.live {
             if let Some(store) = &session.store {
+                if !delete_starred {
+                    // One source of truth for "starred" at
+                    // clear time (P2-43): the store clear spares
+                    // rows by their ARCHIVE flags, so a star
+                    // known only from a live upsert (held in the
+                    // session flag map, not yet persisted) is
+                    // flushed into the archive first. Without
+                    // this, the mirror kept a message the
+                    // archive deleted.
+                    let starred: Vec<(String, i64)> = session
+                        .messages
+                        .get(&chat_id)
+                        .map(|msgs| {
+                            msgs.iter()
+                                .filter(|(_, m)| m.starred)
+                                .filter_map(|(_, m)| {
+                                    let pid = self.protocol_ids.get(&m.id)?;
+                                    let flags = session.flags.get(&m.id).copied().unwrap_or(0)
+                                        | store::FLAG_STARRED;
+                                    Some((pid.clone(), flags))
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    for (pid, flags) in starred {
+                        let _ = store.set_message_flags(chat_jid, &pid, flags);
+                    }
+                }
                 let _ =
                     store.delete_chat_messages(chat_jid, !delete_starred, last_message_timestamp);
             }
@@ -5227,12 +5280,48 @@ impl crate::state::App {
         self.protocol_ids.remove(&msg_id);
         if let Some(session) = &mut self.live {
             session.photo_refs.remove(&msg_id);
+            // Every per-message map goes (P2-40): media refs
+            // and thumbnails of every kind, mentions, poll
+            // ballots. A forgotten message that leaves refs
+            // behind keeps dead bytes and stale state the next
+            // message with a recycled id would inherit.
+            session.voice_refs.remove(&msg_id);
+            session.video_refs.remove(&msg_id);
+            session.video_thumbs.remove(&msg_id);
+            session.poster_refs.remove(&msg_id);
+            session.video_dims.remove(&msg_id);
+            session.sticker_refs.remove(&msg_id);
+            session.sticker_anim.remove(&msg_id);
+            session.sticker_thumbs.remove(&msg_id);
+            session.document_refs.remove(&msg_id);
+            session.document_thumbs.remove(&msg_id);
+            session.location_thumbs.remove(&msg_id);
+            session.preview_thumbs.remove(&msg_id);
+            session.photo_thumbs.remove(&msg_id);
+            session.message_mentions.remove(&msg_id);
+            session.poll_ballots.remove(&msg_id);
         }
         self.media.photo_fetch.remove(&msg_id);
+        self.media.voice_fetch.remove(&msg_id);
+        self.media.video_fetch.remove(&msg_id);
+        self.media.poster_fetch.remove(&msg_id);
+        self.media.sticker_fetch.remove(&msg_id);
+        self.media.video_files.remove(&msg_id);
+        self.media.video_bytes.remove(&msg_id);
+        self.media.textures.remove(&msg_id);
         self.sender_jids.remove(&msg_id);
         self.receipt_log.remove(&msg_id);
         self.my_reactions.remove(&msg_id);
         self.pending_reactions.remove(&msg_id);
+        // Pending action state for the forgotten message:
+        // a star/pin/keep/vote outcome arriving later must
+        // not resurrect bookkeeping for a message that is gone.
+        self.pending_stars.remove(&msg_id);
+        self.pending_pins.remove(&msg_id);
+        self.pending_keeps.remove(&msg_id);
+        self.pending_poll_votes.remove(&msg_id);
+        self.pending_edits.remove(&msg_id);
+        self.pending_revokes.remove(&msg_id);
         self.reaction_actors.remove(&format!("{chat_id}:{msg_id}"));
         if let Some(pid) = protocol_id {
             let mut drained = false;
@@ -5491,7 +5580,14 @@ impl crate::state::App {
             }
         }
         session.avatar_requested.insert(jid.to_owned());
-        let _ = session.channels.commands.send(BackendCommand::FetchAvatar { jid: jid.to_owned() });
+        // A community parent (it is its own parent in the map)
+        // is looked up under the Community target (P2-05).
+        let id = jid_id(jid);
+        let community = self.chat_parents.get(&id) == Some(&id);
+        let _ = session.channels.commands.send(BackendCommand::FetchAvatar {
+            jid: jid.to_owned(),
+            community,
+        });
     }
 
     /// The decoded live profile picture for one identity, when

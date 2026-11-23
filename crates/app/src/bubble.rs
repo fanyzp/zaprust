@@ -121,9 +121,13 @@ pub(crate) struct VoiceSnap {
 pub(crate) fn photo_tile_h(aspect: Option<f32>, w: f32) -> f32 {
     match aspect {
         Some(a) if a > 0.05 && a < 20.0 => (w / a).clamp(90.0, 340.0),
-        _ => 200.0,
+        _ => PHOTO_TILE_FALLBACK_H,
     }
 }
+
+/// Tile height when a photo's aspect is unknown: the
+/// long-standing 300 by 200 card proportion's height (P2-26).
+const PHOTO_TILE_FALLBACK_H: f32 = 200.0;
 
 /// The cover-crop UV window for painting a texture of size
 /// `tex_size` into a cell of size `cell`: the texture fills
@@ -571,7 +575,17 @@ fn ellipsize_lines(ui: &egui::Ui, text: &str, font: FontId, wrap: f32, max_lines
             hi = mid - 1;
         }
     }
-    let mut out: String = chars[..lo].iter().collect();
+    // The cut lands on a grapheme boundary, never inside a
+    // cluster (P2-64): convert the char count to its byte
+    // offset, floor it with the shared helper, and take the
+    // prefix up to it.
+    let byte_end = if lo == 0 {
+        0
+    } else {
+        text.char_indices().nth(lo).map_or(text.len(), |(i, _)| i)
+    };
+    let byte_end = crate::widgets::floor_grapheme_boundary(text, byte_end);
+    let mut out: String = text[..byte_end].to_owned();
     out.push('\u{2026}');
     out
 }
@@ -734,9 +748,10 @@ pub(crate) fn message_bubble(
     let small_font = FontId::proportional(10.0);
     let text_color = rgb(t.text_primary);
     let secondary = rgb(t.text_secondary);
-    // WhatsApp mention color: light blue on dark, deeper blue on light.
-    let mention_color =
-        if t.is_light() { Color32::from_rgb(2, 115, 165) } else { rgb(t.tick_read) };
+    // Mention color is the read-tick token in both modes
+    // (P2-19): the token already carries the mode-appropriate
+    // blue, so no hard-coded light-mode value remains here.
+    let mention_color = rgb(t.tick_read);
 
     // Grouping: the sender name belongs to the first message of
     // a sender group only, not to every bubble in the run.

@@ -129,6 +129,19 @@ impl eframe::App for App {
     }
 }
 
+/// The media viewer's stage palette (P2-19): the viewer is a
+/// fixed dark stage in both themes (the WhatsApp viewer
+/// convention), so its greys do not come from the theme
+/// tokens; they are named once here instead of scattered as
+/// literals across the paint code.
+const VIEWER_BACKDROP: egui::Color32 = egui::Color32::from_rgba_unmultiplied(8, 10, 12, 242);
+/// Primary text on the viewer stage.
+const VIEWER_TEXT: egui::Color32 = egui::Color32::from_rgb(234, 238, 241);
+/// Secondary text on the viewer stage.
+const VIEWER_TEXT_SECONDARY: egui::Color32 = egui::Color32::from_rgb(200, 208, 214);
+/// Faint text on the viewer stage.
+const VIEWER_TEXT_FAINT: egui::Color32 = egui::Color32::from_rgb(160, 170, 178);
+
 impl App {
     /// Whether the content pane (the conversation, or the open
     /// community's home) is the pane on screen in single-pane
@@ -542,11 +555,7 @@ impl App {
                     ui.set_opacity(view_p);
                 }
                 let (rect, _) = ui.allocate_exact_size(screen_rect.size(), egui::Sense::hover());
-                ui.painter().rect_filled(
-                    rect,
-                    egui::CornerRadius::ZERO,
-                    egui::Color32::from_rgba_unmultiplied(8, 10, 12, 242),
-                );
+                ui.painter().rect_filled(rect, egui::CornerRadius::ZERO, VIEWER_BACKDROP);
                 // Videos paint through their own body (the real
                 // thumbnail, real decoded frames, honest states);
                 // photos keep the reveal sequence below.
@@ -635,7 +644,7 @@ impl App {
                         egui::Align2::CENTER_CENTER,
                         crate::i18n::t("viewer.photo_failed"),
                         egui::FontId::proportional(15.0),
-                        egui::Color32::from_rgb(200, 208, 214),
+                        VIEWER_TEXT_SECONDARY,
                     );
                 }
                 // The caption reveals with the content, not
@@ -664,7 +673,7 @@ impl App {
                     egui::Align2::CENTER_TOP,
                     header,
                     egui::FontId::proportional(12.0),
-                    egui::Color32::from_rgb(160, 170, 178),
+                    VIEWER_TEXT_FAINT,
                 );
                 // Close button (bottom centre). The overlay is
                 // painted in absolute coordinates, so this stays a
@@ -673,7 +682,7 @@ impl App {
                 // the shared controls do.
                 let btn_rect = egui::Rect::from_center_size(
                     egui::Pos2::new(rect.center().x, rect.bottom() - 44.0),
-                    egui::Vec2::new(96.0, 34.0),
+                    egui::Vec2::new(96.0, 40.0),
                 );
                 let resp =
                     ui.interact(btn_rect, egui::Id::unique("viewer_close"), egui::Sense::click());
@@ -685,7 +694,7 @@ impl App {
                     rgb(t.accent)
                 };
                 let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
-                ui.painter().rect_filled(btn_rect, egui::CornerRadius::same(17), fill);
+                ui.painter().rect_filled(btn_rect, egui::CornerRadius::same(20), fill);
                 crate::icons::draw(
                     ui.painter(),
                     crate::icons::Icon::X,
@@ -699,7 +708,7 @@ impl App {
                     egui::Align2::CENTER_CENTER,
                     "Close",
                     egui::FontId::proportional(15.0),
-                    egui::Color32::from_rgb(234, 238, 241),
+                    VIEWER_TEXT,
                 );
                 if resp.clicked() {
                     close = true;
@@ -873,7 +882,7 @@ impl App {
                 rgb(t.bg_panel_alt),
             );
         }
-        let note_color = egui::Color32::from_rgb(200, 208, 214);
+        let note_color = VIEWER_TEXT_SECONDARY;
         if let Some(message) = &player_failed {
             // A decode or read failure, in the player's own
             // user-facing words.

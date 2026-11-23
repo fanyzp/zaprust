@@ -225,7 +225,20 @@ pub fn sweep_stale_key_temp_files(data_dir: &Path) {
 fn read_key_file(file: &Path) -> Result<Option<[u8; 32]>, StoreError> {
     match std::fs::read_to_string(file) {
         Ok(saved) => match decode_key(&saved) {
-            Some(key) => Ok(Some(key)),
+            Some(key) => {
+                // The 0600 guarantee is re-asserted at every
+                // load, not only at creation (P2-41): a key
+                // file copied or restored with looser modes is
+                // tightened before its key is used, the same
+                // treatment archive.db gets at open.
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ =
+                        std::fs::set_permissions(file, std::fs::Permissions::from_mode(0o600));
+                }
+                Ok(Some(key))
+            }
             None => Err(StoreError::Io(std::io::Error::other(format!(
                 "the database key file {} exists but does not contain a valid key",
                 file.display()

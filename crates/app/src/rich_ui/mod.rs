@@ -1,5 +1,5 @@
 //! Rich-message UI: the per-message action implementations
-//! (react, translate, remind, edit, delete) and the shared
+//! (react, edit, delete, forward, star, pin) and the shared
 //! popup helpers live here; the pickers are in
 //! `pickers`, the menus and dialogs in `menus`, and polls in
 //! `poll`. Everything here drives real state; demo and live

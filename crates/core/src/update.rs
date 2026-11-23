@@ -305,7 +305,13 @@ pub const RELEASE_SIGNING_PUBKEY: [u8; 32] = [
 #[must_use]
 pub fn verify_sums_signature(sums: &[u8], signature_text: &str) -> bool {
     use base64::Engine;
-    let Ok(sig) = base64::engine::general_purpose::STANDARD.decode(signature_text.trim()) else {
+    // Whitespace is stripped before decoding (P2-61): a
+    // signature file wrapped at 76 columns (a `base64` call
+    // without `-w0`) is the same signature, and refusing it
+    // would make every update to that release read as
+    // unsigned. The documented flow still emits one line.
+    let compact: String = signature_text.chars().filter(|c| !c.is_whitespace()).collect();
+    let Ok(sig) = base64::engine::general_purpose::STANDARD.decode(compact) else {
         return false;
     };
     let key =

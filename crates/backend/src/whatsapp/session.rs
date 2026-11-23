@@ -344,6 +344,12 @@ async fn heal_one(
                 Err(_) => false,
             }
         }
+        crate::LiveChatKind::Broadcast => {
+            // A broadcast list has no contact or metadata name
+            // to heal: its translated title already reads
+            // "Broadcast list", never the raw id (P2-06).
+            true
+        }
     }
 }
 
@@ -2947,7 +2953,7 @@ pub(super) async fn run_async(
                         }
                     });
                 }
-                BackendCommand::FetchAvatar { jid } => {
+                BackendCommand::FetchAvatar { jid, community } => {
                     // Profile picture lookup (see the command's
                     // docs). Runs as its own task: the lookup and
                     // the CDN download take network time, and the
@@ -2956,7 +2962,7 @@ pub(super) async fn run_async(
                     let events = events.clone();
                     tokio::spawn(async move {
                         use super::profile::AvatarOutcome;
-                        match super::profile::fetch_avatar(&client, &jid).await {
+                        match super::profile::fetch_avatar(&client, &jid, community).await {
                             AvatarOutcome::Bytes { picture_id, bytes } => {
                                 events.emit(BackendEvent::AvatarBytes { jid, picture_id, bytes });
                             }

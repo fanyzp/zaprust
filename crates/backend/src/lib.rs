@@ -969,6 +969,10 @@ pub enum BackendCommand {
     FetchAvatar {
         /// JID of the contact, group, or community.
         jid: String,
+        /// The JID is a community parent group: its picture is
+        /// served under the library's Community target, not the
+        /// Group target every other @g.us uses (P2-05).
+        community: bool,
     },
     /// Ask for one identity's verified business name (the
     /// usync business query). Answered with
@@ -1300,6 +1304,11 @@ pub enum LiveChatKind {
     Group,
     /// A channel / newsletter.
     Channel,
+    /// A broadcast list (`<id>@broadcast`): a one-to-many
+    /// list the account sends to. Not a DM: its title is never
+    /// the raw list id, no contact/LID healing applies to it,
+    /// and its preview names the message's author (P2-06).
+    Broadcast,
 }
 
 /// One completed call, as recorded in the call history. The app
@@ -2407,9 +2416,6 @@ pub enum BackendEvent {
         /// Whether the offer asks for video.
         video: bool,
     },
-    /// The current call changed phase. While `Active`, the
-    /// backend re-emits this roughly once a second with the
-    /// running duration in `seconds`.
     /// An in-call audio toggle (mute, speaker) was applied by
     /// the call engine: the confirmed state, answering
     /// [`BackendCommand::SetCallMuted`] or
@@ -2426,6 +2432,9 @@ pub enum BackendEvent {
         /// answers the speaker toggle.
         speaker: Option<bool>,
     },
+    /// The current call changed phase. While `Active`, the
+    /// backend re-emits this roughly once a second with the
+    /// running duration in `seconds`.
     CallChanged {
         /// Call identifier.
         call_id: String,

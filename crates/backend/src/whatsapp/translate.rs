@@ -71,6 +71,45 @@ pub(super) fn translate_special(
         }
     };
     let msg = &ctx.message;
+    {
+        // Non-content payloads (P2-04): sender-key distribution
+        // and limit-sharing records are protocol housekeeping,
+        // not chat content. When one of them is the message's
+        // ONLY payload (no text, media, contact, location, poll
+        // or interactive field rides along), consume it here so
+        // it can never surface as a fake "Message" bubble, the
+        // same treatment protocolMessage's non-content types
+        // get below. Reachability through the library's own
+        // dispatch is unverified; the arm is harmless if the
+        // library consumes them first.
+        let base = msg.get_base_message();
+        let non_content = base.sender_key_distribution_message.as_option().is_some()
+            || base.limit_sharing_message.as_option().is_some();
+        let has_content = base.conversation.as_deref().is_some_and(|c| !c.is_empty())
+            || base.extended_text_message.as_option().is_some()
+            || base.image_message.as_option().is_some()
+            || base.video_message.as_option().is_some()
+            || base.ptv_message.as_option().is_some()
+            || base.audio_message.as_option().is_some()
+            || base.document_message.as_option().is_some()
+            || base.document_with_caption_message.as_option().is_some()
+            || base.sticker_message.as_option().is_some()
+            || base.lottie_sticker_message.as_option().is_some()
+            || base.contact_message.as_option().is_some()
+            || base.contacts_array_message.as_option().is_some()
+            || base.location_message.as_option().is_some()
+            || base.live_location_message.as_option().is_some()
+            || base.poll_creation_message.as_option().is_some()
+            || base.interactive_message.as_option().is_some()
+            || base.list_message.as_option().is_some()
+            || base.event_message.as_option().is_some()
+            || base.group_invite_message.as_option().is_some()
+            || base.product_message.as_option().is_some()
+            || base.order_message.as_option().is_some();
+        if non_content && !has_content {
+            return true;
+        }
+    }
     if let Some(pin) = msg.pin_in_chat_message.as_option() {
         // The pin state change is an event, not the message:
         // emit it, then let the message itself translate too,
@@ -970,6 +1009,9 @@ fn translate_history_conversation(
     let title = named_title
         .or_else(|| match kind {
             LiveChatKind::Dm => book.phone_for(&chat_jid),
+            // A broadcast list has no contact name to heal and
+            // its raw id is never a title (P2-06).
+            LiveChatKind::Broadcast => Some("Broadcast list".to_owned()),
             _ => None,
         })
         .unwrap_or_else(|| user_part(&chat_jid));
@@ -985,7 +1027,7 @@ fn translate_history_conversation(
         title,
         kind,
         preview: last.map(|m| core::model::flatten_preview(&m.body)).unwrap_or_default(),
-        preview_sender: if kind == LiveChatKind::Group {
+        preview_sender: if kind == LiveChatKind::Group || kind == LiveChatKind::Broadcast {
             last.and_then(|m| m.sender.clone()).map(|s| core::model::flatten_preview(&s))
         } else {
             None
@@ -1432,10 +1474,40 @@ pub(super) fn unhandled_label(msg: &whatsapp_rust::prelude::wa::Message) -> Stri
         "Phone number request"
     } else if base.request_location_message.as_option().is_some() {
         "Location request"
-    } else if base.split_payment_message.as_option().is_some() {
+    } else if base.split_payment_message.as_option().is_some()
+        || base.send_payment_message.as_option().is_some()
+    {
+        // The payment family is parity-excluded by design; an
+        // honest typed placeholder is its end state (P2-02).
         "Payment"
+    } else if base.request_payment_message.as_option().is_some() {
+        "Payment request"
+    } else if base.cancel_payment_request_message.as_option().is_some() {
+        "Payment request cancelled"
+    } else if base.decline_payment_request_message.as_option().is_some() {
+        "Payment request declined"
+    } else if base.payment_invite_message.as_option().is_some() {
+        "Payment invite"
     } else if base.payment_reminder_message.as_option().is_some() {
         "Payment reminder"
+    } else if base.invoice_message.as_option().is_some() {
+        "Invoice"
+    } else if base.conditional_reveal_message.as_option().is_some() {
+        // Rare and status-surface kinds get their own typed
+        // labels instead of the generic fallthrough (P2-03).
+        "Conditionally revealed message"
+    } else if base.status_mention_message.as_option().is_some()
+        || base.group_status_mention_message.as_option().is_some()
+    {
+        "Status mention"
+    } else if base.group_status_message.as_option().is_some() {
+        "Group status"
+    } else if base.question_message.as_option().is_some() {
+        "Question"
+    } else if base.question_reply_message.as_option().is_some() {
+        "Question answer"
+    } else if base.scheduled_call_edit_message.as_option().is_some() {
+        "Scheduled call edited"
     } else if base.music_message.as_option().is_some() {
         "Music"
     } else if base.message_history_bundle.as_option().is_some()
@@ -1520,6 +1592,7 @@ pub(super) fn translate_message(
     };
     let title = match kind {
         LiveChatKind::Dm => book.dm_title(&chat_jid, sender_name.as_deref()),
+        LiveChatKind::Broadcast => "Broadcast list".to_owned(),
         _ => user_part(&chat_jid),
     };
     let timestamp = ctx.info.timestamp.timestamp();
@@ -1528,7 +1601,7 @@ pub(super) fn translate_message(
         title,
         kind,
         preview: core::model::flatten_preview(&body),
-        preview_sender: if kind == LiveChatKind::Group {
+        preview_sender: if kind == LiveChatKind::Group || kind == LiveChatKind::Broadcast {
             sender_name.clone().map(|s| core::model::flatten_preview(&s))
         } else {
             None
@@ -2134,6 +2207,10 @@ pub(super) fn kind_of(jid: &str) -> LiveChatKind {
         LiveChatKind::Group
     } else if jid.ends_with("@newsletter") {
         LiveChatKind::Channel
+    } else if jid.ends_with("@broadcast") {
+        // Broadcast lists (status@broadcast never reaches
+        // here: it is filtered before classification).
+        LiveChatKind::Broadcast
     } else {
         LiveChatKind::Dm
     }

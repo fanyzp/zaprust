@@ -47,6 +47,9 @@ pub enum ThemeError {
     Json(String),
     /// A required token is missing.
     MissingToken(String),
+    /// The token set fails the surface-ladder or contrast
+    /// floors the built-in themes are generated under.
+    InvalidLadder(String),
 }
 
 impl fmt::Display for ThemeError {
@@ -55,6 +58,7 @@ impl fmt::Display for ThemeError {
             Self::BadHex(s) => write!(f, "invalid color {s:?}, expected #RRGGBB"),
             Self::Json(s) => write!(f, "invalid theme JSON: {s}"),
             Self::MissingToken(s) => write!(f, "theme is missing required token {s}"),
+            Self::InvalidLadder(s) => write!(f, "theme fails the design floors: {s}"),
         }
     }
 }
@@ -296,7 +300,7 @@ impl Tokens {
                 file.tokens.get(key).ok_or_else(|| ThemeError::MissingToken(key.to_owned()))?;
             Rgb::from_hex(raw)
         };
-        Ok(Self {
+        let tokens = Self {
             bg_app: get("bg_app")?,
             bg_panel: get("bg_panel")?,
             bg_panel_alt: get("bg_panel_alt")?,
@@ -316,7 +320,45 @@ impl Tokens {
             tick_read: get("tick_read")?,
             system_text: get("system_text")?,
             glow: true,
-        })
+        };
+        tokens.validate_ladder()?;
+        Ok(tokens)
+    }
+
+    /// The design floors a token set must satisfy, built-in or
+    /// custom (P2-29): the surface ladder must be monotonic in
+    /// luminance (app background, panel, panel alt, chat
+    /// background in one consistent direction), primary text
+    /// must reach 4.5:1 on the panel and app backgrounds, and
+    /// secondary text 3:1. A custom theme that fails is
+    /// rejected whole; the app keeps the current theme.
+    fn validate_ladder(&self) -> Result<(), ThemeError> {
+        let ladder = [
+            relative_luminance(self.bg_app),
+            relative_luminance(self.bg_panel),
+            relative_luminance(self.bg_panel_alt),
+            relative_luminance(self.bg_chat),
+        ];
+        let ascending = ladder.windows(2).all(|w| w[0] <= w[1] + 0.02);
+        let descending = ladder.windows(2).all(|w| w[0] + 0.02 >= w[1]);
+        if !ascending && !descending {
+            return Err(ThemeError::InvalidLadder(
+                "surface ladder is not monotonic".to_owned(),
+            ));
+        }
+        if contrast_ratio(self.text_primary, self.bg_panel) < 4.5
+            || contrast_ratio(self.text_primary, self.bg_app) < 4.5
+        {
+            return Err(ThemeError::InvalidLadder(
+                "primary text contrast below 4.5:1".to_owned(),
+            ));
+        }
+        if contrast_ratio(self.text_secondary, self.bg_panel) < 3.0 {
+            return Err(ThemeError::InvalidLadder(
+                "secondary text contrast below 3:1".to_owned(),
+            ));
+        }
+        Ok(())
     }
 
     /// The built-in dark scheme: [`DEFAULT_SEED`], generated.

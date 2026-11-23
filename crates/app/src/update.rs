@@ -37,14 +37,13 @@ pub(crate) fn release_page_url() -> String {
     format!("https://github.com/{}/releases/latest", core::crash::GITHUB_REPO)
 }
 
-/// The version this build reports for itself.
-pub(crate) fn current_version() -> Version {
-    Version::parse(env!("CARGO_PKG_VERSION")).unwrap_or(Version {
-        major: 0,
-        minor: 0,
-        patch: 0,
-        pre: Vec::new(),
-    })
+/// The version this build reports for itself. A build whose
+/// embedded version does not parse is broken; it reports
+/// `None` and the check refuses to run (P2-63), instead of
+/// falling back to 0.0.0, under which every release would
+/// compare as newer and be offered.
+pub(crate) fn current_version() -> Option<Version> {
+    Version::parse(env!("CARGO_PKG_VERSION")).ok()
 }
 
 /// Where this copy of the app lives, and whether the app may
@@ -277,15 +276,17 @@ impl App {
         matches!(self.update.phase, UpdatePhase::Available | UpdatePhase::Ready)
     }
 
-    /// Records a finished version check (F17): the daily-check
-    /// timestamp is stamped when a check completes, in either
-    /// outcome, never when it starts, so a failed silent check does
-    /// not suppress retries for the next 24 hours by itself and a
-    /// crashed worker still counts as "checked".
+    /// Records a successful version check (F17, P2-62): the
+    /// daily-check timestamp is stamped only when a check
+    /// completes successfully, so a failed check (silent or
+    /// manual) does not suppress the next auto-check for 24
+    /// hours. The earlier comment claimed exactly this while
+    /// the code stamped on either outcome.
     fn note_update_check_completed(&mut self) {
         self.update.last_check = now_unix();
         self.persist_settings();
     }
+
 
     /// Starts a version check on a worker thread. `manual` checks
     /// surface failures in About; silent startup failures just reset
@@ -389,7 +390,9 @@ impl App {
                 self.update.rx = None;
                 match self.update.phase {
                     UpdatePhase::Checking => {
-                        self.note_update_check_completed();
+                        // A dead worker is a failed check: no
+                        // stamp (P2-62), so the next auto-check
+                        // is not suppressed for a day.
                         if self.update.manual {
                             self.update.phase = UpdatePhase::Failed(UpdateFailure::new(
                                 UpdateErrorKind::WorkerStopped,
@@ -413,11 +416,18 @@ impl App {
         self.update.rx = None;
         match msg {
             UpdateMsg::Checked(result) => {
-                // F17: stamp on completion, success or failure.
-                self.note_update_check_completed();
+                // F17 + P2-62: stamp on success only, so a
+                // failed check does not suppress retries for
+                // the next 24 hours.
+                if result.is_ok() {
+                    self.note_update_check_completed();
+                }
                 match result {
                     Ok(release) => {
-                        if release.version.is_newer_than(&current_version()) {
+                        // An unparseable own version refuses
+                        // the comparison (P2-63): nothing is
+                        // offered on a guess.
+                        if current_version().is_some_and(|v| release.version.is_newer_than(&v)) {
                             self.update.release = Some(release);
                             self.update.phase = UpdatePhase::Available;
                         } else {
@@ -480,20 +490,51 @@ fn fetch_sha256sums(
     agent: &ureq::Agent,
     sums_asset: &core::update::ReleaseAsset,
 ) -> Result<String, UpdateFailure> {
-    let mut resp = agent.get(&sums_asset.url).call().map_err(|e| UpdateFailure::network(&e))?;
+    fetch_small_text(agent, sums_asset, false)
+}
+
+/// Fetches one small release text asset (the checksums or
+/// their signature). The two map their failures differently
+/// (P2-60): a signature that cannot be fetched or read is a
+/// signature failure, not a checksum failure, so the user is
+/// told which of the two artifacts actually went wrong.
+/// Verification itself is unaffected either way (fail-closed).
+fn fetch_small_text(
+    agent: &ureq::Agent,
+    asset: &core::update::ReleaseAsset,
+    is_signature: bool,
+) -> Result<String, UpdateFailure> {
+    let (read_failure, oversize_failure) = if is_signature {
+        (
+            UpdateFailure::new(
+                UpdateErrorKind::SignatureInvalid,
+                "The checksum signature could not be read, so the update was refused.",
+            ),
+            UpdateFailure::new(
+                UpdateErrorKind::SignatureInvalid,
+                "The checksum signature was unexpectedly large, so the update was refused.",
+            ),
+        )
+    } else {
+        (
+            UpdateFailure::from(UpdateError::BadChecksumFile),
+            UpdateFailure::new(
+                UpdateErrorKind::BadChecksumFile,
+                "The checksum file was unexpectedly large, so nothing was changed.",
+            ),
+        )
+    };
+    let mut resp = agent.get(&asset.url).call().map_err(|e| UpdateFailure::network(&e))?;
     let mut bytes = Vec::new();
     resp.body_mut()
         .as_reader()
         .take(MAX_SHA256SUMS_BYTES + 1)
         .read_to_end(&mut bytes)
-        .map_err(|_| UpdateFailure::from(UpdateError::BadChecksumFile))?;
+        .map_err(|_| read_failure.clone())?;
     if bytes.len() as u64 > MAX_SHA256SUMS_BYTES {
-        return Err(UpdateFailure::new(
-            UpdateErrorKind::BadChecksumFile,
-            "The checksum file was unexpectedly large, so nothing was changed.",
-        ));
+        return Err(oversize_failure);
     }
-    String::from_utf8(bytes).map_err(|_| UpdateFailure::from(UpdateError::BadChecksumFile))
+    String::from_utf8(bytes).map_err(|_| read_failure)
 }
 
 /// Streams the binary asset to `part_path`, enforcing the size the
@@ -585,7 +626,7 @@ fn download_verify_swap(
     // checksums fetched from the same origin as the binary only
     // prove the download was not corrupted, never who published it.
     let sums_text = fetch_sha256sums(&agent, sums_asset)?;
-    let sig_text = fetch_sha256sums(&agent, sig_asset)?;
+    let sig_text = fetch_small_text(&agent, sig_asset, true)?;
     if !core::update::verify_sums_signature(sums_text.as_bytes(), &sig_text) {
         return Err(UpdateFailure::new(
             UpdateErrorKind::SignatureInvalid,

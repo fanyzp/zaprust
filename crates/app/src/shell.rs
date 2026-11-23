@@ -134,7 +134,9 @@ impl eframe::App for App {
 /// convention), so its greys do not come from the theme
 /// tokens; they are named once here instead of scattered as
 /// literals across the paint code.
-const VIEWER_BACKDROP: egui::Color32 = egui::Color32 { r: 8, g: 10, b: 12, a: 242 };
+fn viewer_backdrop() -> egui::Color32 {
+    egui::Color32::from_rgba_unmultiplied(8, 10, 12, 242)
+}
 /// Primary text on the viewer stage.
 const VIEWER_TEXT: egui::Color32 = egui::Color32::from_rgb(234, 238, 241);
 /// Secondary text on the viewer stage.
@@ -555,7 +557,7 @@ impl App {
                     ui.set_opacity(view_p);
                 }
                 let (rect, _) = ui.allocate_exact_size(screen_rect.size(), egui::Sense::hover());
-                ui.painter().rect_filled(rect, egui::CornerRadius::ZERO, VIEWER_BACKDROP);
+                ui.painter().rect_filled(rect, egui::CornerRadius::ZERO, viewer_backdrop());
                 // Videos paint through their own body (the real
                 // thumbnail, real decoded frames, honest states);
                 // photos keep the reveal sequence below.

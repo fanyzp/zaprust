@@ -456,7 +456,13 @@ impl App {
                 if crate::widgets::button(ui, t, "Delete pack", crate::widgets::Btn::Danger)
                     .clicked()
                 {
-                    let _ = stickers::delete_pack(&pack.dir);
+                    // Deleting a pack removes files with no
+                    // undo: it confirms through the shared modal
+                    // (section 24), which also speaks the result.
+                    self.ui_confirm = Some(crate::state::UiConfirm::DeleteStickerPack {
+                        dir: pack.dir.clone(),
+                        name: pack.name.clone(),
+                    });
                 }
             });
         }

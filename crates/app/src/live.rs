@@ -648,12 +648,12 @@ pub(crate) fn to_kind(kind: &backend::LiveMessageKind) -> MessageKind {
                 },
                 MediaKind::Voice => MessageKind::Voice {
                     secs: *seconds,
-                    waveform: (0..28)
-                        .map(|i| {
-                            let h = (caption.len() as u32 * 31 + i * 17) % 10;
-                            0.3 + f32::from(h as u8) * 0.07
-                        })
-                        .collect(),
+                    // The neutral form until the message-level
+                    // conversion replaces it with the wire
+                    // waveform's bars (see voice_waveform_bars):
+                    // a received voice note's shape comes from
+                    // its payload or not at all.
+                    waveform: voice_waveform_bars(None),
                 },
                 MediaKind::Document => MessageKind::Document {
                     name: if caption.is_empty() { "Document".to_owned() } else { caption.clone() },
@@ -686,8 +686,25 @@ fn to_call_entry(record: &backend::CallRecord) -> CallEntry {
 }
 
 /// Converts a backend message (+ archive flags) into a core message.
+/// The bars a voice note renders: the wire waveform's bytes
+/// scaled into bar heights, or the neutral flat form when the
+/// payload carried none. A received waveform is never invented
+/// locally; an earlier conversion derived bar heights from the
+/// caption's length, a shape with no relation to the audio.
+fn voice_waveform_bars(wire: Option<&[u8]>) -> Vec<f32> {
+    match wire {
+        Some(bytes) if !bytes.is_empty() => {
+            bytes.iter().map(|b| 0.12 + f32::from(*b) / 255.0 * 0.88).collect()
+        }
+        _ => vec![0.3; 28],
+    }
+}
+
 pub(crate) fn to_message_with_flags(live: &LiveMessage, flags: i64) -> Message {
     let mut kind = to_kind(&live.kind);
+    if let MessageKind::Voice { waveform, .. } = &mut kind {
+        *waveform = voice_waveform_bars(live.voice_waveform.as_deref());
+    }
     if live.view_once {
         match &mut kind {
             MessageKind::Image { view_once, .. } | MessageKind::Video { view_once, .. } => {
@@ -1146,7 +1163,13 @@ impl crate::state::App {
                         );
                     }
                 }
-                self.chats = chats.iter().map(to_chat).collect();
+                // Archives written before the status fix can
+                // hold the bogus "status" DM row for
+                // status@broadcast: it never becomes a chat
+                // here (its stored messages stay in the
+                // archive, unrendered, for the Updates round).
+                self.chats =
+                    chats.iter().filter(|c| c.jid != "status@broadcast").map(to_chat).collect();
             }
         }
         self.live = Some(session);
@@ -2336,6 +2359,10 @@ impl crate::state::App {
                 self.pending_timers.remove(&chat_id);
                 self.apply_disappearing_changed(chat_id, duration_secs);
             }
+            BackendEvent::MessagePinChanged { chat_jid, message_id: pid, pinned } => {
+                self.apply_server_pin_changed(&chat_jid, &pid, pinned);
+                EventBatch::default()
+            }
             BackendEvent::DisappearingTimerFailed { chat_jid, message } => {
                 let chat_id = jid_id(&chat_jid);
                 let message = core::crash::scrub_for_display(&message);
@@ -3191,6 +3218,12 @@ impl crate::state::App {
     }
 
     fn apply_chat_upsert(&mut self, live: &LiveChat) {
+        if live.jid == "status@broadcast" {
+            // The status broadcast address is not a chat (see
+            // apply_message_upsert's guard): no source may
+            // materialize it as one.
+            return;
+        }
         let id = jid_id(&live.jid);
         // The disappearing timer is the one field a message-arrival
         // upsert cannot know (the wire does not carry it there), so
@@ -3214,6 +3247,24 @@ impl crate::state::App {
         if !merged.muted {
             if let Some(known) = self.chats.iter().find(|c| c.id == id) {
                 merged.muted = known.muted;
+            }
+        }
+        // The mute's end time gets the same protection, and
+        // without it the protection above was a trap: an
+        // arrival upsert reports mute_until 0 ("no end"),
+        // the merge kept `muted` but zeroed the end, and a
+        // timed mute silently became a permanent one. Only a
+        // live timed mute is preserved (a known end already in
+        // the past is spent either way), and real unmutes and
+        // re-mutes arrive through MuteChanged, never through
+        // this merge.
+        if merged.mute_until == 0 {
+            if let Some(known) = self.chats.iter().find(|c| c.id == id) {
+                let now = i64::try_from(unix_now_secs()).unwrap_or(0);
+                let known_until = i64::try_from(known.mute_until).unwrap_or(0);
+                if known.muted && known_until > now {
+                    merged.mute_until = known_until;
+                }
             }
         }
         // Same protection for pin and archive: an arrival upsert
@@ -3492,6 +3543,31 @@ impl crate::state::App {
         // The protocol-id bookkeeping an upsert would have done,
         // so the flag write-through below finds the archive row.
         self.protocol_ids.insert(msg_id, protocol_id.to_owned());
+        if let Some(entry) = self.live.as_mut().and_then(|s| s.messages.get_mut(&chat_id)) {
+            for (_, m) in entry.iter_mut() {
+                if m.id == msg_id {
+                    m.pinned = pinned;
+                }
+            }
+        }
+        self.set_live_flag(chat_id, msg_id, store::FLAG_PINNED_MESSAGE, pinned);
+        if self.selected_chat == chat_id {
+            self.sync_conversation();
+        }
+    }
+
+    /// Applies a pin state the server reported (a pin made on
+    /// another device, or by another member): the mirror flips
+    /// and the flag write-through persists it, the same landing
+    /// a rollback takes. Nothing of mine is in flight for
+    /// someone else's pin, so no pending entry is involved.
+    fn apply_server_pin_changed(&mut self, chat_jid: &str, protocol_id: &str, pinned: bool) {
+        let chat_id = jid_id(chat_jid);
+        let Some((&msg_id, _)) =
+            self.protocol_ids.iter().find(|(_, p)| p.as_str() == protocol_id)
+        else {
+            return;
+        };
         if let Some(entry) = self.live.as_mut().and_then(|s| s.messages.get_mut(&chat_id)) {
             for (_, m) in entry.iter_mut() {
                 if m.id == msg_id {
@@ -4050,6 +4126,15 @@ impl crate::state::App {
     /// the upsert pushed a genuinely new incoming message (not an
     /// echo replacement and not a re-upsert of a known id).
     pub(crate) fn apply_message_upsert(&mut self, live: &LiveMessage) -> bool {
+        if live.chat_jid == "status@broadcast" {
+            // A status post is not a message in a conversation
+            // (the backend drops these at translation; this is
+            // the same rule at the app boundary, so no source
+            // can file one as a fake DM): no mirror row, no
+            // archive write, no unread, no notification. The
+            // Updates feed round owns received statuses.
+            return false;
+        }
         let chat_id = jid_id(&live.chat_jid);
         // Set inside the session block when this upsert pushes a
         // genuinely new incoming message (not an echo replacement,
@@ -12095,6 +12180,30 @@ mod star_pin_tests {
         msg
     }
 
+    const DM_JID: &str = "6281234567890@s.whatsapp.net";
+
+    fn alice_dm_message() -> LiveMessage {
+        let mut msg = LiveMessage::text(
+            "d1",
+            DM_JID,
+            Some("Partner".to_owned()),
+            "hi",
+            1_700_000_000,
+            false,
+        );
+        msg.sender_jid = Some(DM_JID.to_owned());
+        msg
+    }
+
+    fn archived_has(app: &App, chat_jid: &str, protocol_id: &str) -> bool {
+        let store = app.live.as_ref().unwrap().store.as_ref().unwrap();
+        store.messages(chat_jid).unwrap().iter().any(|(m, _)| m.id == protocol_id)
+    }
+
+    fn notice_kind(app: &App) -> Option<crate::state::NoticeKind> {
+        app.notice.as_ref().map(|n| n.kind)
+    }
+
     fn mirror_flag(app: &App, chat_id: u64, mid: u64, pin: bool) -> bool {
         let mirror = app.live.as_ref().unwrap().messages.get(&chat_id).unwrap();
         let msg = &mirror.iter().find(|(_, m)| m.id == mid).unwrap().1;
@@ -12447,8 +12556,11 @@ mod star_pin_tests {
         assert!(!chat.muted && chat.mute_until == 0, "the mute lifts itself at its end");
     }
 
-    /// Section 24: clearing with keep-starred keeps the starred
-    /// message and drops the rest, locally and in the command.
+    /// Section 24: clearing is ack-gated. The command goes out
+    /// with the keep-starred choice and a Busy notice shows,
+    /// but nothing is removed until the server confirms; the
+    /// confirmation then keeps the starred message and drops
+    /// the rest.
     #[test]
     fn clear_chat_keeps_starred_when_asked() {
         let (mut app, tx, ctx, cmd_rx) = live_app();
@@ -12460,8 +12572,6 @@ mod star_pin_tests {
         let mid2 = open_message(&mut app, &tx, &ctx, other);
         let chat_id = jid_id(GROUP_JID);
         app.clear_chat(chat_id, true);
-        assert!(app.conversation.iter().any(|m| m.id == mid), "the starred message stays");
-        assert!(app.conversation.iter().all(|m| m.id != mid2), "the rest is cleared");
         let sent = sent_commands(&cmd_rx);
         assert!(
             sent.iter().any(|c| matches!(
@@ -12470,10 +12580,45 @@ mod star_pin_tests {
             )),
             "the clear command carries the keep-starred choice: {sent:?}"
         );
+        assert!(notice_kind(&app) == Some(crate::state::NoticeKind::Busy), "the wait is announced");
+        assert!(
+            app.conversation.iter().any(|m| m.id == mid2),
+            "nothing is cleared before the server answers"
+        );
+        tx.send(BackendEvent::ChatCleared { chat_jid: GROUP_JID.to_owned(), keep_starred: true })
+            .unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(app.conversation.iter().any(|m| m.id == mid), "the starred message stays");
+        assert!(app.conversation.iter().all(|m| m.id != mid2), "the rest is cleared");
+        assert!(app.pending_clears.is_empty(), "the wait is settled");
     }
 
-    /// Section 24: deleting a chat removes it from the list
-    /// and sends the delete command.
+    /// Section 24: a failed clear destroys nothing: every
+    /// message stays, in the view and in the archive, and the
+    /// failure is the notice.
+    #[test]
+    fn clear_chat_failure_keeps_everything() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        let mid = open_message(&mut app, &tx, &ctx, alice_group_message());
+        let chat_id = jid_id(GROUP_JID);
+        app.clear_chat(chat_id, false);
+        tx.send(BackendEvent::ClearChatFailed {
+            chat_jid: GROUP_JID.to_owned(),
+            message: "Clearing the chat failed: connection lost".to_owned(),
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(app.conversation.iter().any(|m| m.id == mid), "the message survives");
+        assert!(
+            archived_has(&app, GROUP_JID, "g1"),
+            "the archive row survives"
+        );
+        assert!(notice_kind(&app) == Some(crate::state::NoticeKind::Error), "the failure is announced");
+        assert!(app.pending_clears.is_empty(), "the wait is settled");
+    }
+
+    /// Section 24: deleting a chat is ack-gated too: the chat
+    /// stays in the list until the server confirms the delete.
     #[test]
     fn delete_chat_removes_and_sends() {
         let (mut app, tx, ctx, cmd_rx) = live_app();
@@ -12481,7 +12626,6 @@ mod star_pin_tests {
         let chat_id = jid_id(GROUP_JID);
         assert!(app.chats.iter().any(|c| c.id == chat_id));
         app.delete_chat(chat_id);
-        assert!(app.chats.iter().all(|c| c.id != chat_id), "the chat leaves the list");
         let sent = sent_commands(&cmd_rx);
         assert!(
             sent.iter().any(
@@ -12489,6 +12633,469 @@ mod star_pin_tests {
             ),
             "the delete command is sent: {sent:?}"
         );
+        assert!(
+            app.chats.iter().any(|c| c.id == chat_id),
+            "the chat stays until the server confirms"
+        );
+        tx.send(BackendEvent::ChatDeleted { chat_jid: GROUP_JID.to_owned() }).unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(app.chats.iter().all(|c| c.id != chat_id), "the chat leaves the list");
+        assert!(app.pending_chat_deletes.is_empty(), "the wait is settled");
+    }
+
+    /// Section 24: a failed delete keeps the chat, its
+    /// messages, and its archive rows.
+    #[test]
+    fn delete_chat_failure_keeps_the_chat() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        let _mid = open_message(&mut app, &tx, &ctx, alice_group_message());
+        let chat_id = jid_id(GROUP_JID);
+        app.delete_chat(chat_id);
+        tx.send(BackendEvent::DeleteChatFailed {
+            chat_jid: GROUP_JID.to_owned(),
+            message: "Deleting the chat failed: connection lost".to_owned(),
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(app.chats.iter().any(|c| c.id == chat_id), "the chat stays");
+        assert!(archived_has(&app, GROUP_JID, "g1"), "its messages stay");
+        assert!(notice_kind(&app) == Some(crate::state::NoticeKind::Error), "the failure is announced");
+    }
+
+    /// Section 24: a failed timed mute restores the exact
+    /// previous state (unmuted, no end), and a failed unmute of
+    /// a timed mute restores the end with it.
+    #[test]
+    fn failed_chat_action_restores_the_mute_snapshot() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        let _mid = open_message(&mut app, &tx, &ctx, alice_group_message());
+        let chat_id = jid_id(GROUP_JID);
+        app.apply_mute_for(chat_id, MuteChoice::Hours8);
+        let until = app.chats.iter().find(|c| c.id == chat_id).unwrap().mute_until;
+        assert!(until > 0);
+        tx.send(BackendEvent::ChatActionFailed {
+            chat_jid: GROUP_JID.to_owned(),
+            action: backend::ChatAction::MuteUntil(1),
+            message: "Changing the chat failed: connection lost".to_owned(),
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        let chat = app.chats.iter().find(|c| c.id == chat_id).unwrap();
+        assert!(!chat.muted && chat.mute_until == 0, "the failed mute rolls back fully");
+        assert!(notice_kind(&app) == Some(crate::state::NoticeKind::Error));
+        // And the other direction: a settled timed mute whose
+        // unmute fails keeps its end.
+        app.apply_mute_for(chat_id, MuteChoice::Hours8);
+        let until = app.chats.iter().find(|c| c.id == chat_id).unwrap().mute_until;
+        tx.send(BackendEvent::MuteChanged { chat_jid: GROUP_JID.to_owned(), muted: true, mute_until: i64::try_from(until).unwrap_or(0) })
+            .unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(app.pending_chat_actions.is_empty(), "the report settles the mute");
+        app.apply_chat_action(chat_id, false, false, false);
+        tx.send(BackendEvent::ChatActionFailed {
+            chat_jid: GROUP_JID.to_owned(),
+            action: backend::ChatAction::Unmute,
+            message: "Changing the chat failed: connection lost".to_owned(),
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        let chat = app.chats.iter().find(|c| c.id == chat_id).unwrap();
+        assert!(chat.muted && chat.mute_until == until, "the failed unmute restores the timed mute");
+    }
+
+    /// Section 24: mark-as-unread rolls the badge back when
+    /// the server refuses it.
+    #[test]
+    fn failed_mark_unread_restores_the_badge() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        let _mid = open_message(&mut app, &tx, &ctx, alice_group_message());
+        let chat_id = jid_id(GROUP_JID);
+        app.apply_chat_read_changed(chat_id, true, 0);
+        app.mark_chat_unread(chat_id);
+        assert_eq!(app.chats.iter().find(|c| c.id == chat_id).map_or(0, |c| c.unread), 1);
+        tx.send(BackendEvent::MarkUnreadFailed {
+            chat_jid: GROUP_JID.to_owned(),
+            message: "Marking the chat unread failed: connection lost".to_owned(),
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(
+            app.chats.iter().find(|c| c.id == chat_id).map_or(9, |c| c.unread),
+            0,
+            "the badge rolls back"
+        );
+        assert!(notice_kind(&app) == Some(crate::state::NoticeKind::Error));
+    }
+
+    /// Section 24: a block is announced only when the
+    /// server's blocklist confirms it, and a failed block
+    /// restores the set.
+    #[test]
+    fn block_waits_for_the_blocklist_and_rolls_back_on_failure() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        let _mid = open_message(&mut app, &tx, &ctx, alice_dm_message());
+        let chat_id = jid_id(DM_JID);
+        app.notice = None;
+        app.toggle_block_contact(chat_id);
+        assert!(app.blocked_chats.contains(&chat_id), "the set flips at once");
+        assert!(app.notice.is_none(), "no success is claimed before the server answers");
+        tx.send(BackendEvent::Blocklist { jids: vec![DM_JID.to_owned()] }).unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(
+            app.notice_str() == Some("Contact blocked."),
+            "the confirmation speaks the success: {:?}",
+            app.notice
+        );
+        // Unblock, then fail it: the contact stays blocked.
+        app.toggle_block_contact(chat_id);
+        assert!(!app.blocked_chats.contains(&chat_id));
+        tx.send(BackendEvent::BlockFailed {
+            chat_jid: DM_JID.to_owned(),
+            message: "Changing the block failed: connection lost".to_owned(),
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(app.blocked_chats.contains(&chat_id), "the failed unblock restores the block");
+        assert!(notice_kind(&app) == Some(crate::state::NoticeKind::Error));
+    }
+
+    /// Section 24: a group info save applies its title only
+    /// when the backend confirms it; a failure keeps the old
+    /// title and says so.
+    #[test]
+    fn group_info_save_waits_for_confirmation() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        let _mid = open_message(&mut app, &tx, &ctx, alice_group_message());
+        let chat_id = jid_id(GROUP_JID);
+        let old_title = app.chats.iter().find(|c| c.id == chat_id).unwrap().title.clone();
+        app.group_subject_edit = "Renamed Group".to_owned();
+        app.group_desc_edit = String::new();
+        app.notice = None;
+        app.save_group_info(chat_id);
+        assert_eq!(
+            app.chats.iter().find(|c| c.id == chat_id).unwrap().title,
+            old_title,
+            "the title does not move at click time"
+        );
+        assert!(app.notice.is_none(), "nothing is claimed at click time");
+        tx.send(BackendEvent::GroupInfoFailed {
+            chat_jid: GROUP_JID.to_owned(),
+            message: "Saving the group info failed: connection lost".to_owned(),
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(app.chats.iter().find(|c| c.id == chat_id).unwrap().title, old_title);
+        assert!(notice_kind(&app) == Some(crate::state::NoticeKind::Error));
+        app.save_group_info(chat_id);
+        tx.send(BackendEvent::GroupInfoSaved { chat_jid: GROUP_JID.to_owned() }).unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(
+            app.chats.iter().find(|c| c.id == chat_id).unwrap().title,
+            "Renamed Group",
+            "the confirmed save applies the title"
+        );
+        assert!(
+            app.notice_str() == Some("Group info saved."),
+            "the confirmation speaks the success"
+        );
+    }
+
+    /// Section 24: a failed leave restores the row the
+    /// optimistic archive took out of the archived view.
+    #[test]
+    fn failed_leave_restores_the_row() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        let _mid = open_message(&mut app, &tx, &ctx, alice_group_message());
+        let chat_id = jid_id(GROUP_JID);
+        app.leave_group(chat_id);
+        assert!(app.chats.iter().find(|c| c.id == chat_id).unwrap().archived);
+        tx.send(BackendEvent::LeaveGroupFailed {
+            chat_jid: GROUP_JID.to_owned(),
+            message: "Leaving the group failed: connection lost".to_owned(),
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(
+            !app.chats.iter().find(|c| c.id == chat_id).unwrap().archived,
+            "the failed leave un-archives the row"
+        );
+        assert!(notice_kind(&app) == Some(crate::state::NoticeKind::Error));
+    }
+
+    /// Section 24: a failed timer change restores the
+    /// previous duration quietly.
+    #[test]
+    fn failed_timer_restores_the_previous_duration() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        let _mid = open_message(&mut app, &tx, &ctx, alice_group_message());
+        let chat_id = jid_id(GROUP_JID);
+        app.set_disappearing_timer(chat_id, 86_400);
+        assert_eq!(app.ephemeral_secs_of(chat_id), 86_400);
+        tx.send(BackendEvent::DisappearingTimerFailed {
+            chat_jid: GROUP_JID.to_owned(),
+            message: "Changing the timer failed: connection lost".to_owned(),
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(app.ephemeral_secs_of(chat_id), 0, "the timer rolls back");
+        assert!(notice_kind(&app) == Some(crate::state::NoticeKind::Error));
+    }
+
+    /// Section 24: a failed edit restores the original body,
+    /// and a failed revoke restores the message itself.
+    #[test]
+    fn failed_edit_and_revoke_restore_the_message() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        let mut mine = alice_group_message();
+        mine.sender = None;
+        mine.from_me = true;
+        let mid = open_message(&mut app, &tx, &ctx, mine);
+        let original = app.conversation.iter().find(|m| m.id == mid).unwrap().body.clone();
+        app.apply_edit(mid, "a corrected body");
+        assert_eq!(
+            app.conversation.iter().find(|m| m.id == mid).unwrap().body,
+            "a corrected body"
+        );
+        tx.send(BackendEvent::EditMessageFailed {
+            chat_jid: GROUP_JID.to_owned(),
+            message_id: "g1".to_owned(),
+            message: "Editing the message failed: connection lost".to_owned(),
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        let msg = app.conversation.iter().find(|m| m.id == mid).unwrap();
+        assert_eq!(msg.body, original, "the failed edit restores the body");
+        assert!(!msg.edited, "and the edited mark");
+        app.delete_for_everyone(mid);
+        assert!(app.conversation.iter().find(|m| m.id == mid).unwrap().deleted);
+        tx.send(BackendEvent::RevokeMessageFailed {
+            chat_jid: GROUP_JID.to_owned(),
+            message_id: "g1".to_owned(),
+            message: "Deleting the message failed: connection lost".to_owned(),
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(
+            !app.conversation.iter().find(|m| m.id == mid).unwrap().deleted,
+            "the failed revoke restores the message"
+        );
+    }
+
+    /// Section 24: a failed delete-for-me restores the
+    /// message everywhere the optimistic removal took it
+    /// from: the view, the mirror, and the archive.
+    #[test]
+    fn failed_delete_for_me_restores_the_message() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        let mid = open_message(&mut app, &tx, &ctx, alice_group_message());
+        app.delete_for_me(mid);
+        assert!(app.conversation.iter().all(|m| m.id != mid), "the removal applies at once");
+        tx.send(BackendEvent::DeleteForMeFailed {
+            chat_jid: GROUP_JID.to_owned(),
+            message_id: "g1".to_owned(),
+            message: "Deleting the message failed: connection lost".to_owned(),
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(app.conversation.iter().any(|m| m.id == mid), "the view gets it back");
+        assert!(archived_has(&app, GROUP_JID, "g1"), "the archive gets it back");
+        assert!(notice_kind(&app) == Some(crate::state::NoticeKind::Error));
+        assert!(app.pending_delete_for_me.is_empty(), "the wait is settled");
+    }
+
+    /// Section 24: a failed poll vote restores my previous
+    /// selection in the view, and the notice names the
+    /// failure.
+    #[test]
+    fn failed_poll_vote_restores_my_selection() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        let mut poll = alice_group_message();
+        poll.kind = backend::LiveMessageKind::Poll {
+            question: "Lunch?".to_owned(),
+            options: vec![("Deli".to_owned(), 1), ("Sushi".to_owned(), 0)],
+            multiple: false,
+            my_votes: vec![0],
+            correct: None,
+        };
+        let mid = open_message(&mut app, &tx, &ctx, poll);
+        let my_votes = |app: &App| match &app
+            .conversation
+            .iter()
+            .find(|m| m.id == mid)
+            .unwrap()
+            .kind
+        {
+            MessageKind::Poll { ref my_votes, .. } => my_votes.clone(),
+            _ => panic!("not a poll"),
+        };
+        app.vote_poll(mid, 1);
+        assert_eq!(my_votes(&app), vec![1], "the vote applies at once");
+        tx.send(BackendEvent::PollVoteFailed {
+            chat_jid: GROUP_JID.to_owned(),
+            message_id: "g1".to_owned(),
+            message: "Voting failed: connection lost".to_owned(),
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(my_votes(&app), vec![0], "the failed vote restores my selection");
+        assert!(notice_kind(&app) == Some(crate::state::NoticeKind::Error));
+        assert!(app.pending_poll_votes.is_empty(), "the wait is settled");
+    }
+
+    /// A pin made on another device arrives as a
+    /// MessagePinChanged report and lands on the message in
+    /// the view, the mirror, and the archive.
+    #[test]
+    fn server_pin_change_lands_on_the_message() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        let mid = open_message(&mut app, &tx, &ctx, alice_group_message());
+        let chat_id = jid_id(GROUP_JID);
+        tx.send(BackendEvent::MessagePinChanged {
+            chat_jid: GROUP_JID.to_owned(),
+            message_id: "g1".to_owned(),
+            pinned: true,
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(view_flag(&app, mid, true), "the view shows the pin");
+        assert!(mirror_flag(&app, chat_id, mid, true), "the mirror shows the pin");
+        assert_eq!(archived_flags(&app, GROUP_JID, "g1"), store::FLAG_PINNED_MESSAGE);
+        tx.send(BackendEvent::MessagePinChanged {
+            chat_jid: GROUP_JID.to_owned(),
+            message_id: "g1".to_owned(),
+            pinned: false,
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(!view_flag(&app, mid, true), "the unpin lands too");
+    }
+
+    /// The status broadcast address never becomes a chat:
+    /// neither a chat upsert nor a message filed under it
+    /// creates the fake "status" DM an earlier build showed.
+    #[test]
+    fn status_broadcast_never_becomes_a_chat() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        tx.send(BackendEvent::ChatUpsert(LiveChat {
+            jid: "status@broadcast".to_owned(),
+            title: "status".to_owned(),
+            kind: LiveChatKind::Dm,
+            preview: "a status".to_owned(),
+            preview_sender: None,
+            timestamp: 1_700_000_000,
+            unread: 1,
+            archived: false,
+            pinned: false,
+            ephemeral_secs: 0,
+            muted: false,
+            mute_until: 0,
+        }))
+        .unwrap();
+        let mut status_msg = alice_dm_message();
+        status_msg.chat_jid = "status@broadcast".to_owned();
+        tx.send(BackendEvent::MessageUpsert(status_msg)).unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(
+            app.chats.iter().all(|c| c.title != "status"),
+            "no status chat exists: {:?}",
+            app.chats.iter().map(|c| &c.title).collect::<Vec<_>>()
+        );
+        assert!(
+            app.live.as_ref().unwrap().messages.get(&jid_id("status@broadcast")).is_none(),
+            "no mirror is kept under the broadcast address"
+        );
+    }
+
+    /// A timed mute survives message-arrival upserts, which
+    /// report mute_until 0 without knowing better; the merged
+    /// row keeps the end in the view and the archive.
+    #[test]
+    fn timed_mute_survives_arrival_upserts() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        let _mid = open_message(&mut app, &tx, &ctx, alice_group_message());
+        let chat_id = jid_id(GROUP_JID);
+        app.apply_mute_for(chat_id, MuteChoice::Hours8);
+        let until = app.chats.iter().find(|c| c.id == chat_id).unwrap().mute_until;
+        tx.send(BackendEvent::ChatUpsert(LiveChat {
+            jid: GROUP_JID.to_owned(),
+            title: "Group".to_owned(),
+            kind: LiveChatKind::Group,
+            preview: "new message".to_owned(),
+            preview_sender: None,
+            timestamp: 1_700_000_060,
+            unread: 0,
+            archived: false,
+            pinned: false,
+            ephemeral_secs: 0,
+            muted: false,
+            mute_until: 0,
+        }))
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        let chat = app.chats.iter().find(|c| c.id == chat_id).unwrap();
+        assert!(chat.muted && chat.mute_until == until, "the timed mute keeps its end");
+        let store = app.live.as_ref().unwrap().store.as_ref().unwrap();
+        let archived = store.chats().unwrap();
+        let row = archived.iter().find(|c| c.jid == GROUP_JID).unwrap();
+        assert_eq!(row.mute_until, i64::try_from(until).unwrap_or(0), "the archive keeps it too");
+    }
+
+    /// The dock's Report row opens the spam-report
+    /// confirmation for the chat's latest incoming message,
+    /// and refuses honestly when there is nothing to report.
+    #[test]
+    fn report_chat_opens_the_spam_confirmation() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        let mid = open_message(&mut app, &tx, &ctx, alice_dm_message());
+        let chat_id = jid_id(DM_JID);
+        app.report_chat(chat_id);
+        assert!(
+            matches!(
+                app.ui_confirm,
+                Some(crate::state::UiConfirm::ReportSpam { chat_id: c, msg_id: m, .. })
+                    if c == chat_id && m == mid
+            ),
+            "the confirmation names the latest incoming message: {:?}",
+            app.ui_confirm.as_ref().map(|_| "other")
+        );
+        // A chat with no incoming message: an honest refusal,
+        // no modal that could only fail.
+        let (mut app2, tx2, ctx2, _rx2) = live_app();
+        let mut mine = alice_dm_message();
+        mine.sender = None;
+        mine.from_me = true;
+        let _ = open_message(&mut app2, &tx2, &ctx2, mine);
+        app2.report_chat(chat_id);
+        assert!(app2.ui_confirm.is_none(), "no confirmation opens");
+        assert!(notice_kind(&app2) == Some(crate::state::NoticeKind::Error), "the refusal is spoken");
+    }
+
+    /// A received voice note renders the waveform its payload
+    /// carried; a payload without one renders the neutral
+    /// flat form, never a shape derived from the caption.
+    #[test]
+    fn voice_waveform_comes_from_the_wire_or_is_neutral() {
+        let bars = voice_waveform_bars(Some(&[0, 128, 255]));
+        assert_eq!(bars.len(), 3);
+        assert!(bars[0] < bars[1] && bars[1] < bars[2], "the bars follow the bytes: {bars:?}");
+        let flat = voice_waveform_bars(None);
+        assert!(flat.iter().all(|b| *b == flat[0]), "no payload, one flat height");
+        let mut msg = alice_dm_message();
+        msg.kind = backend::LiveMessageKind::Media {
+            media: backend::MediaKind::Voice,
+            caption: String::new(),
+            seconds: 3,
+            size_bytes: 10,
+        };
+        msg.voice_waveform = Some(vec![255, 0]);
+        let converted = to_message_with_flags(&msg, 0);
+        match converted.kind {
+            MessageKind::Voice { waveform, .. } => {
+                assert_eq!(waveform.len(), 2);
+                assert!(waveform[0] > waveform[1], "the wire shape survives conversion");
+            }
+            other => panic!("expected a voice message, got {other:?}"),
+        }
     }
 
     /// Section 24: the pin command carries the duration the

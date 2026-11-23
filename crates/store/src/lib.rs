@@ -260,6 +260,11 @@ struct MessageData {
     /// has been spent.
     #[serde(default)]
     video_thumbnail: Option<Vec<u8>>,
+    /// A voice note's wire waveform bytes, archived with the
+    /// message so its bubble renders the sender's own waveform
+    /// in later sessions, never a locally invented shape.
+    #[serde(default)]
+    voice_waveform: Option<Vec<u8>>,
     /// The JIDs the message mentions, archived so the app can
     /// keep resolving them to display names after a restart.
     #[serde(default)]
@@ -1023,6 +1028,7 @@ impl Store {
             voice_ref: msg.voice_ref.clone(),
             video_ref: msg.video_ref.clone(),
             video_thumbnail: msg.video_thumbnail.clone(),
+            voice_waveform: msg.voice_waveform.clone(),
             mentions: msg.mentions.clone(),
             photo_thumbnail: msg.photo_thumbnail.clone(),
             sticker_ref: msg.sticker_ref.clone(),
@@ -1643,6 +1649,7 @@ impl Store {
             msg.voice_ref = data.voice_ref;
             msg.video_ref = data.video_ref;
             msg.video_thumbnail = data.video_thumbnail;
+            msg.voice_waveform = data.voice_waveform;
             msg.mentions = data.mentions;
             msg.photo_thumbnail = data.photo_thumbnail;
             msg.sticker_ref = data.sticker_ref;

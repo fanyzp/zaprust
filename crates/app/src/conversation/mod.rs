@@ -150,6 +150,40 @@ impl App {
                                 action = Some(key);
                             }
                         };
+                        // The same row in the danger colour, for
+                        // the destructive entries (section 24).
+                        let mut row_danger = |ui: &mut egui::Ui,
+                                              icon: crate::icons::Icon,
+                                              label: &str,
+                                              key: &'static str| {
+                            let (rect, resp) =
+                                ui.allocate_exact_size(Vec2::new(204.0, 32.0), Sense::click());
+                            if resp.hovered() {
+                                ui.painter().rect_filled(
+                                    rect,
+                                    CornerRadius::same(8),
+                                    rgb(t.bg_panel_alt),
+                                );
+                            }
+                            crate::icons::draw(
+                                ui.painter(),
+                                icon,
+                                Pos2::new(rect.left() + 17.0, rect.center().y),
+                                crate::icons::SIZE_ROW,
+                                rgb(t.danger),
+                                rgb(t.bg_panel),
+                            );
+                            ui.painter().text(
+                                Pos2::new(rect.left() + 38.0, rect.center().y),
+                                egui::Align2::LEFT_CENTER,
+                                label,
+                                FontId::proportional(13.0),
+                                rgb(t.danger),
+                            );
+                            if resp.clicked() && !exiting {
+                                action = Some(key);
+                            }
+                        };
                         row(
                             ui,
                             crate::icons::Icon::Person,
@@ -236,13 +270,17 @@ impl App {
                             );
                         }
                         ui.add_space(4.0);
-                        row(
+                        // Destructive rows carry the danger
+                        // colour on icon and label alike (design
+                        // standard section 24); the neutral row
+                        // closure above must not render them.
+                        row_danger(
                             ui,
                             crate::icons::Icon::Delete,
                             &crate::i18n::t("chat.clear_title"),
                             "clear",
                         );
-                        row(
+                        row_danger(
                             ui,
                             crate::icons::Icon::Delete,
                             &crate::i18n::t("chat.delete_title"),

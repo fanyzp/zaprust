@@ -2650,6 +2650,102 @@ mod tests {
         while ch.events.recv_timeout(Duration::from_millis(100)).is_ok() {}
     }
 
+    /// Failure injection: a kind named in `fail_next` fails
+    /// once with its typed failure event and changes no state,
+    /// so the same command succeeds on the next attempt. This
+    /// is what lets the app prove its rollbacks.
+    #[test]
+    fn injected_clear_chat_failure_leaves_the_chat_intact() {
+        let mut fake = FakeBackend::auto();
+        fake.fail_next = vec!["ClearChat"];
+        let ch = start(fake);
+        linked(&ch);
+        ch.commands
+            .send(BackendCommand::ClearChat {
+                chat_jid: FAKE_DM_JID.to_owned(),
+                keep_starred: false,
+            })
+            .unwrap();
+        let failed = collect_until(&ch, &|e| matches!(e, BackendEvent::ClearChatFailed { .. }));
+        assert!(
+            matches!(&failed[failed.len() - 1], BackendEvent::ClearChatFailed { chat_jid, .. } if chat_jid == FAKE_DM_JID),
+            "the injected failure answers with the typed event: {failed:?}"
+        );
+        ch.commands
+            .send(BackendCommand::ClearChat {
+                chat_jid: FAKE_DM_JID.to_owned(),
+                keep_starred: false,
+            })
+            .unwrap();
+        let cleared = collect_until(&ch, &|e| matches!(e, BackendEvent::ChatCleared { .. }));
+        assert!(
+            matches!(&cleared[cleared.len() - 1], BackendEvent::ChatCleared { chat_jid, .. } if chat_jid == FAKE_DM_JID),
+            "the injection is one-shot and the chat survived it: {cleared:?}"
+        );
+        ch.commands.send(BackendCommand::Shutdown).unwrap();
+    }
+
+    /// Failure injection for a poll vote: the failed vote emits
+    /// no PollVote, and the retry lands.
+    #[test]
+    fn injected_vote_failure_then_success() {
+        let mut fake = FakeBackend::auto();
+        fake.fail_next = vec!["VotePoll"];
+        let ch = start(fake);
+        linked(&ch);
+        let vote = BackendCommand::VotePoll {
+            chat_jid: FAKE_DM_JID.to_owned(),
+            message_id: "fake-poll-1".to_owned(),
+            options: vec![1],
+        };
+        ch.commands.send(vote.clone()).unwrap();
+        let failed = collect_until(&ch, &|e| matches!(e, BackendEvent::PollVoteFailed { .. }));
+        assert!(
+            failed.iter().all(|e| !matches!(e, BackendEvent::PollVote { .. })),
+            "a failed vote emits no vote: {failed:?}"
+        );
+        ch.commands.send(vote).unwrap();
+        let voted = collect_until(&ch, &|e| matches!(e, BackendEvent::PollVote { .. }));
+        assert!(
+            matches!(&voted[voted.len() - 1], BackendEvent::PollVote { selected, .. } if selected == &vec![1]),
+            "the retry lands: {voted:?}"
+        );
+        ch.commands.send(BackendCommand::Shutdown).unwrap();
+    }
+
+    /// Failure injection for delete-for-me: the message stays
+    /// until the uninjected retry removes it.
+    #[test]
+    fn injected_delete_for_me_failure_then_success() {
+        let mut fake = FakeBackend::auto();
+        fake.fail_next = vec!["DeleteMessageForMe"];
+        let ch = start(fake);
+        linked(&ch);
+        let delete = BackendCommand::DeleteMessageForMe {
+            chat_jid: FAKE_DM_JID.to_owned(),
+            message_id: "fake-poll-1".to_owned(),
+            sender_jid: None,
+            from_me: false,
+            delete_media: false,
+            message_timestamp: None,
+        };
+        ch.commands.send(delete.clone()).unwrap();
+        let failed =
+            collect_until(&ch, &|e| matches!(e, BackendEvent::DeleteForMeFailed { .. }));
+        assert!(
+            failed.iter().all(|e| !matches!(e, BackendEvent::MessageDeletedForMe { .. })),
+            "a failed delete removes nothing: {failed:?}"
+        );
+        ch.commands.send(delete).unwrap();
+        let deleted =
+            collect_until(&ch, &|e| matches!(e, BackendEvent::MessageDeletedForMe { .. }));
+        assert!(
+            matches!(&deleted[deleted.len() - 1], BackendEvent::MessageDeletedForMe { message_id, .. } if message_id == "fake-poll-1"),
+            "the retry lands: {deleted:?}"
+        );
+        ch.commands.send(BackendCommand::Shutdown).unwrap();
+    }
+
     /// Collects events until `done` matches one, with a
     /// deadline; returns everything collected, match included.
     fn collect_until(

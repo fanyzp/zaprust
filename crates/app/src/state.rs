@@ -502,6 +502,12 @@ pub(crate) enum UiConfirm {
     /// confirming sends it. The chat and message are named so
     /// the outcome notice can say what was reported.
     ReportSpam { chat_id: u64, msg_id: u64, name: String },
+    /// Delete a local sticker pack (design standard
+    /// section 24): the pack's folder is removed from disk,
+    /// which no undo in this client can reverse, so it
+    /// confirms like the other destructive actions; the
+    /// deletion's result is reported, never swallowed.
+    DeleteStickerPack { dir: std::path::PathBuf, name: String },
     /// Log out: unlink this device from the account. Confirming
     /// sends the backend's disconnect command; the local chats
     /// stay in the archive on this computer.

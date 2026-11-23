@@ -370,3 +370,6 @@
 "editor.aspect_free" = "Bebas"
 "editor.aspect_original" = "Asli"
 "composer.edit_photo" = "Edit foto"
+"stickers.delete_pack_title" = "Hapus paket stiker"
+"stickers.delete_pack_body" = "Hapus paket stiker {name}? Stikernya dihapus dari perangkat ini."
+"stickers.pack_deleted" = "Paket stiker dihapus."

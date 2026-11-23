@@ -1449,6 +1449,15 @@ pub struct LiveMessage {
     /// locally. `None` for every other kind, and for videos
     /// whose payload carried no thumbnail.
     pub video_thumbnail: Option<Vec<u8>>,
+    /// For a voice message: the waveform preview bytes the
+    /// sender's client computed from the actual audio and
+    /// carried in the wire payload (AudioMessage field 19).
+    /// This is the only waveform a received voice note may
+    /// render; a payload without one renders a neutral flat
+    /// form, never a locally invented shape. `None` for every
+    /// other kind, and for voice notes whose payload carried
+    /// no waveform.
+    pub voice_waveform: Option<Vec<u8>>,
     /// For a poll message: the poll's creation secret, carried in
     /// the creation message's context info. Votes on the poll are
     /// encrypted under a key derived from this secret, so the
@@ -1531,6 +1540,7 @@ impl LiveMessage {
             voice_ref: None,
             video_ref: None,
             video_thumbnail: None,
+            voice_waveform: None,
             mentions: Vec::new(),
             photo_thumbnail: None,
             sticker_ref: None,
@@ -2063,6 +2073,19 @@ pub enum BackendEvent {
         chat_jid: String,
         /// Why the timer change failed, in user words.
         message: String,
+    },
+    /// A message was pinned or unpinned in a chat (a
+    /// pin-in-chat protocol notice from any device): apply
+    /// the state to the named message. The notice itself also
+    /// translates as a message and renders as the system line
+    /// that names the act.
+    MessagePinChanged {
+        /// Chat JID.
+        chat_jid: String,
+        /// Protocol ID of the message whose pin state changed.
+        message_id: String,
+        /// The new pin state.
+        pinned: bool,
     },
     /// Current privacy settings as fetched from the account
     /// (category → value spellings; see [`BackendCommand::SetPrivacy`]).

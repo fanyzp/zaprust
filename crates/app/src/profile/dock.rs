@@ -607,7 +607,7 @@ pub(crate) fn profile_user_body(
         }
         dock_separator(ui, t);
         if dock_row(ui, t, None, &crate::i18n::t("profile.report"), t.danger, false).clicked() {
-            intents.toggle_block = true;
+            intents.report = true;
         }
     });
 }

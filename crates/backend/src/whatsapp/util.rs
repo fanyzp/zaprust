@@ -432,7 +432,9 @@ pub(super) async fn download_proto(
 /// one is worthless after the session ends, so it is reported as
 /// absent rather than archived in a shape that can only fail.
 pub(super) fn photo_ref_of(proto: &whatsapp_rust::prelude::wa::Message) -> Option<crate::PhotoRef> {
-    let image = unwrap_media_proto(proto).image_message.as_option()?;
+    let base = unwrap_media_proto(proto);
+    let image =
+        base.image_message.as_option().or_else(|| base.instant_image_message.as_option())?;
     let direct_path = image.direct_path.clone().filter(|p| !p.is_empty())?;
     let media_key = image.media_key.clone().filter(|k| k.len() == 32)?;
     let file_sha256 = image.file_sha256.clone().filter(|h| h.len() == 32)?;
@@ -471,7 +473,9 @@ pub(super) async fn fetch_photo_bytes(
     proto: &whatsapp_rust::prelude::wa::Message,
 ) -> Result<Vec<u8>, String> {
     let proto = unwrap_media_proto(proto);
-    let Some(image) = proto.image_message.as_option() else {
+    let Some(image) =
+        proto.image_message.as_option().or_else(|| proto.instant_image_message.as_option())
+    else {
         return Err("That message is not a photo.".to_owned());
     };
     check_declared_length(image.file_length)?;
@@ -584,6 +588,18 @@ pub(super) fn video_thumbnail_of(proto: &whatsapp_rust::prelude::wa::Message) ->
     let proto = unwrap_media_proto(proto);
     let video = proto.video_message.as_option().or_else(|| proto.ptv_message.as_option())?;
     video.jpeg_thumbnail.clone().filter(|t| !t.is_empty() && t.len() <= MAX_VIDEO_THUMBNAIL_BYTES)
+}
+
+/// The waveform preview bytes a voice note's payload carries
+/// (AudioMessage field 19): the sender's client computed them
+/// from the actual audio, and they are the only waveform a
+/// received voice note may render. An absent or empty field
+/// yields `None`, and the app renders a neutral flat form
+/// rather than inventing a shape.
+pub(super) fn voice_waveform_of(proto: &whatsapp_rust::prelude::wa::Message) -> Option<Vec<u8>> {
+    let proto = unwrap_media_proto(proto);
+    let audio = proto.audio_message.as_option()?;
+    audio.waveform.clone().filter(|w| !w.is_empty())
 }
 
 /// Rebuilds the library's validated download parameters from an
@@ -783,7 +799,9 @@ const MAX_PHOTO_THUMBNAIL_BYTES: usize = 256 * 1024;
 /// carries no thumbnail, or carries one too large to be a
 /// thumbnail.
 pub(super) fn photo_thumbnail_of(proto: &whatsapp_rust::prelude::wa::Message) -> Option<Vec<u8>> {
-    let image = unwrap_media_proto(proto).image_message.as_option()?;
+    let base = unwrap_media_proto(proto);
+    let image =
+        base.image_message.as_option().or_else(|| base.instant_image_message.as_option())?;
     image.jpeg_thumbnail.clone().filter(|t| !t.is_empty() && t.len() <= MAX_PHOTO_THUMBNAIL_BYTES)
 }
 

@@ -456,3 +456,6 @@
 "editor.aspect_free" = "Free"
 "editor.aspect_original" = "Original"
 "composer.edit_photo" = "Edit photo"
+"stickers.delete_pack_title" = "Delete sticker pack"
+"stickers.delete_pack_body" = "Delete the sticker pack {name}? Its stickers are removed from this device."
+"stickers.pack_deleted" = "Sticker pack deleted."

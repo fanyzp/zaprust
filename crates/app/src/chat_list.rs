@@ -545,24 +545,22 @@ impl App {
                                 row_action.set(Some((chat.id, RowPick::MarkUnread)));
                                 ui.close();
                             }
-                            if crate::widgets::menu_item_icon(
+                            if crate::widgets::menu_item_danger(
                                 ui,
                                 t,
-                                Some(crate::icons::Icon::Delete),
+                                crate::icons::Icon::Delete,
                                 &crate::i18n::t("chat.clear_title"),
-                                None,
                             )
                             .clicked()
                             {
                                 row_action.set(Some((chat.id, RowPick::ClearChat)));
                                 ui.close();
                             }
-                            if crate::widgets::menu_item_icon(
+                            if crate::widgets::menu_item_danger(
                                 ui,
                                 t,
-                                Some(crate::icons::Icon::Delete),
+                                crate::icons::Icon::Delete,
                                 &crate::i18n::t("chat.delete_title"),
-                                None,
                             )
                             .clicked()
                             {

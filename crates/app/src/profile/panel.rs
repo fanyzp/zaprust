@@ -1103,6 +1103,9 @@ impl App {
         if intents.toggle_block {
             self.toggle_block_contact(chat.id);
         }
+        if intents.report {
+            self.report_chat(chat.id);
+        }
         if let Some(secs) = intents.ephemeral_pick {
             self.set_disappearing_timer(chat.id, secs);
         }
@@ -1303,6 +1306,48 @@ impl App {
         if self.live.is_none() {
             self.notice = Some(Notice::info("You left the group.".to_owned()));
         }
+    }
+
+    /// Reports a DM contact from the info dock's Report row.
+    /// The report flow is the message menu's own: a
+    /// confirmation modal naming the contact, then the
+    /// ReportSpam command over a real message. The dock names
+    /// no message, so the chat's latest incoming message with
+    /// an archived protocol identity carries the report (the
+    /// report sends the message with it, as the modal's text
+    /// says). A chat with nothing reportable answers with the
+    /// honest refusal instead of opening a modal that could
+    /// only fail; until this routing existed, the dock's
+    /// Report row blocked the contact, which its label never
+    /// said.
+    pub(crate) fn report_chat(&mut self, chat_id: u64) {
+        if self.live.is_none() {
+            self.notice = Some(Notice::error(crate::i18n::t("notice.report_needs_connection")));
+            return;
+        }
+        let candidate = self
+            .live
+            .as_ref()
+            .and_then(|s| s.messages.get(&chat_id))
+            .and_then(|msgs| {
+                msgs.iter().rev().find(|(_, m)| m.sender.is_some()).map(|(_, m)| m.id)
+            })
+            .filter(|id| self.protocol_ids.contains_key(id));
+        let Some(msg_id) = candidate else {
+            self.notice = Some(Notice::error(crate::i18n::t("notice.report_unavailable")));
+            return;
+        };
+        let name = self
+            .chats
+            .iter()
+            .find(|c| c.id == chat_id)
+            .map(|c| c.title.clone())
+            .unwrap_or_else(|| "this contact".to_owned());
+        self.ui_confirm = Some(crate::state::UiConfirm::ReportSpam {
+            chat_id,
+            msg_id,
+            name,
+        });
     }
 
     /// Blocks/unblocks a DM contact: local state plus the backend

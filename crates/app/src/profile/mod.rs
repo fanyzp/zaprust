@@ -68,6 +68,10 @@ pub(crate) struct ProfileIntents {
     pub close: bool,
     /// Toggle block on the contact (user variant danger rows).
     pub toggle_block: bool,
+    /// Report the contact (user variant danger rows): opens the
+    /// spam-report confirmation for the chat's latest incoming
+    /// message, the same flow the message menu's Report uses.
+    pub report: bool,
     /// Focus the chat-list search (user variant Search action).
     pub focus_search: bool,
     /// An AI suggestion chip was clicked: put this text in the

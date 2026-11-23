@@ -746,6 +746,11 @@ impl App {
                 crate::i18n::tf("chat.report_body", "name", name),
                 crate::i18n::t("chat.report_confirm"),
             ),
+            UiConfirm::DeleteStickerPack { name, .. } => (
+                crate::i18n::t("stickers.delete_pack_title"),
+                crate::i18n::tf("stickers.delete_pack_body", "name", name),
+                crate::i18n::t("common.delete"),
+            ),
         };
         let mut decision: Option<bool> = None;
         if !exiting && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
@@ -871,6 +876,21 @@ impl App {
                 }
                 Some(UiConfirm::ReportSpam { chat_id, msg_id, .. }) => {
                     self.report_spam(chat_id, msg_id);
+                }
+                Some(UiConfirm::DeleteStickerPack { dir, .. }) => {
+                    // The result is spoken either way: a pack
+                    // that failed to delete stays listed, and
+                    // the user hears why instead of watching a
+                    // button silently do nothing.
+                    match stickers::delete_pack(&dir) {
+                        Ok(()) => {
+                            self.notice =
+                                Some(Notice::info(crate::i18n::t("stickers.pack_deleted")));
+                        }
+                        Err(e) => {
+                            self.notice = Some(Notice::error(e));
+                        }
+                    }
                 }
                 None => {}
             },

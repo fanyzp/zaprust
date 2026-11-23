@@ -69,6 +69,24 @@ pub(super) fn translate_special(ctx: &MessageContext, sink: &EventSink) -> bool 
         }
     };
     let msg = &ctx.message;
+    if let Some(pin) = msg.pin_in_chat_message.as_option() {
+        // The pin state change is an event, not the message:
+        // emit it, then let the message itself translate too,
+        // so its classifier arm renders the "Pinned a message"
+        // system line in the stream.
+        if let Some(target_id) = pin.key.as_option().and_then(|k| k.id.as_deref()) {
+            sink.emit(BackendEvent::MessagePinChanged {
+                chat_jid: chat_jid.clone(),
+                message_id: target_id.to_owned(),
+                pinned: !matches!(
+                    pin.r#type,
+                    Some(
+                        whatsapp_rust::prelude::wa::message::pin_in_chat_message::Type::UnpinForAll
+                    )
+                ),
+            });
+        }
+    }
     if let Some(reaction) = msg.reaction_message.as_option() {
         if let Some(key) = reaction.key.as_option() {
             if let Some(target_id) = key.id.as_deref() {
@@ -732,7 +750,9 @@ fn translate_history_conversation(
     sink: &EventSink,
 ) -> Option<(String, LiveChatKind)> {
     let chat_jid = conv.id.clone();
-    if chat_jid.is_empty() {
+    if chat_jid.is_empty() || chat_jid == STATUS_BROADCAST_JID {
+        // The status broadcast "conversation" in a history
+        // payload is not a chat: see STATUS_BROADCAST_JID.
         return None;
     }
     let kind = kind_of(&chat_jid);
@@ -857,9 +877,16 @@ fn history_message(
     let sender_name = if from_me {
         None
     } else {
+        // The book first (it prefers the saved contact name
+        // over any push name), then this payload's push name,
+        // then the formatted phone number: a saved name must
+        // never be downgraded by a push name the same payload
+        // happens to carry.
         let own_push_name = info.push_name.clone().filter(|n| !n.trim().is_empty());
-        let resolved = own_push_name
-            .or_else(|| sender_jid.as_deref().and_then(|jid| book.name_for(jid)))
+        let resolved = sender_jid
+            .as_deref()
+            .and_then(|jid| book.name_for(jid))
+            .or_else(|| own_push_name)
             .or_else(|| sender_jid.as_deref().and_then(|jid| book.phone_for(jid)));
         if let (Some(jid), Some(name)) = (&sender_jid, &resolved) {
             if !is_raw_identifier(name) {
@@ -885,6 +912,7 @@ fn history_message(
     msg.voice_ref = super::util::voice_ref_of(proto);
     msg.video_ref = super::util::video_ref_of(proto);
     msg.video_thumbnail = super::util::video_thumbnail_of(proto);
+    msg.voice_waveform = super::util::voice_waveform_of(proto);
     msg.photo_thumbnail = super::util::photo_thumbnail_of(proto);
     msg.sticker_ref = super::util::sticker_ref_of(proto);
     msg.mentions = super::util::mentioned_jids_of(proto);
@@ -996,6 +1024,45 @@ pub(super) fn structured_text(msg: &whatsapp_rust::prelude::wa::Message) -> Opti
             return Some(text);
         }
     }
+    // Replies to structured messages carry the words the
+    // sender picked: the tapped button's label, the chosen
+    // list row, the answer text. Those words are the message;
+    // without this recovery they fell through to a generic
+    // label, and a conversation lost what was actually said.
+    if let Some(reply) = base.template_button_reply_message.as_option() {
+        if let Some(text) = clean(reply.selected_display_text.clone()) {
+            return Some(text);
+        }
+    }
+    if let Some(reply) = base.buttons_response_message.as_option() {
+        if let Some(
+            whatsapp_rust::prelude::wa::message::buttons_response_message::Response::SelectedDisplayText(
+                text,
+            ),
+        ) = &reply.response
+        {
+            if let Some(text) = clean(Some(text.clone())) {
+                return Some(text);
+            }
+        }
+    }
+    if let Some(reply) = base.list_response_message.as_option() {
+        if let Some(text) =
+            clean(reply.title.clone()).or_else(|| clean(reply.description.clone()))
+        {
+            return Some(text);
+        }
+    }
+    if let Some(reply) = base.interactive_response_message.as_option() {
+        if let Some(text) = clean(reply.body.as_option().and_then(|b| b.text.clone())) {
+            return Some(text);
+        }
+    }
+    if let Some(reply) = base.question_response_message.as_option() {
+        if let Some(text) = clean(reply.text.clone()) {
+            return Some(text);
+        }
+    }
     None
 }
 
@@ -1024,6 +1091,17 @@ pub(super) fn unhandled_label(msg: &whatsapp_rust::prelude::wa::Message) -> Stri
         "Poll results"
     } else if base.secret_encrypted_message.as_option().is_some() {
         "Encrypted message"
+    } else if base.enc_reaction_message.as_option().is_some() {
+        "Encrypted reaction"
+    } else if base.enc_event_response_message.as_option().is_some() {
+        "Encrypted response"
+    } else if base.template_button_reply_message.as_option().is_some()
+        || base.buttons_response_message.as_option().is_some()
+        || base.list_response_message.as_option().is_some()
+        || base.interactive_response_message.as_option().is_some()
+        || base.question_response_message.as_option().is_some()
+    {
+        "Reply"
     } else if base.template_message.as_option().is_some() {
         "Template message"
     } else if base.scheduled_call_creation_message.as_option().is_some() {
@@ -1038,6 +1116,10 @@ pub(super) fn unhandled_label(msg: &whatsapp_rust::prelude::wa::Message) -> Stri
         "Payment reminder"
     } else if base.music_message.as_option().is_some() {
         "Music"
+    } else if base.message_history_bundle.as_option().is_some()
+        || base.message_history_notice.as_option().is_some()
+    {
+        "Shared chat history"
     } else if base.rich_response_message.as_option().is_some() {
         "AI response"
     } else if base.bcall_message.as_option().is_some() {
@@ -1053,6 +1135,11 @@ pub(super) fn unhandled_label(msg: &whatsapp_rust::prelude::wa::Message) -> Stri
 pub(super) fn translate_message(ctx: &MessageContext) -> Option<(LiveChat, LiveMessage)> {
     let source = &ctx.info.source;
     let chat_jid = source.chat.to_string();
+    if chat_jid == STATUS_BROADCAST_JID {
+        // A status post, not a message in a conversation: see
+        // STATUS_BROADCAST_JID. No chat, no message.
+        return None;
+    }
     let kind = kind_of(&chat_jid);
     let text =
         ctx.message.text_content().map(ToOwned::to_owned).or_else(|| structured_text(&ctx.message));
@@ -1153,6 +1240,9 @@ pub(super) fn translate_message(ctx: &MessageContext) -> Option<(LiveChat, LiveM
     // app can archive it with the poll and hand it back in later
     // sessions; without it the poll could neither be voted on nor
     // tallied after a restart. The creator is the message author.
+    // A voice note's waveform travels from its wire payload,
+    // never from a local guess (see voice_waveform_of).
+    msg.voice_waveform = super::util::voice_waveform_of(&ctx.message);
     if matches!(msg.kind, LiveMessageKind::Poll { .. }) {
         if let Some((secret, _names)) = super::util::received_poll_secret(&ctx.message) {
             msg.poll_secret = Some(secret);
@@ -1223,6 +1313,7 @@ fn classify_unwrapped_deep(
             .or_else(|| msg.spoiler_message.as_option())
             .or_else(|| msg.limit_sharing_message.as_option())
             .or_else(|| msg.audio_sticker_message.as_option())
+            .or_else(|| msg.event_cover_image.as_option())
             .or_else(|| msg.newsletter_scheduled_message.as_option());
         if let Some(inner) = envelope.and_then(|e| e.message.as_option()) {
             return classify_unwrapped_deep(inner.get_base_message(), depth + 1);
@@ -1319,7 +1410,12 @@ fn classify_unwrapped_deep(
             return (LiveMessageKind::Carousel { body, cards }, false);
         }
     }
-    if let Some(image) = msg.image_message.as_option() {
+    if let Some(image) =
+        msg.image_message.as_option().or_else(|| msg.instant_image_message.as_option())
+    {
+        // An instant image is an ImageMessage in its own slot
+        // (field 135): same struct, same presentation, same
+        // fetch rails as a regular photo.
         return (
             LiveMessageKind::Media {
                 media: crate::MediaKind::Photo,
@@ -1408,6 +1504,24 @@ fn classify_unwrapped_deep(
             .filter(|n| !n.is_empty())
             .unwrap_or_else(|| "Group invite".to_owned());
         return (LiveMessageKind::Other(label), false);
+    }
+    if let Some(pin) = msg.pin_in_chat_message.as_option() {
+        // A pin/unpin notice: the state change itself travels
+        // as a MessagePinChanged event (see translate_special);
+        // the message renders as the neutral system line that
+        // names the act, like WhatsApp's own in-stream notice.
+        let unpin = matches!(
+            pin.r#type,
+            Some(whatsapp_rust::prelude::wa::message::pin_in_chat_message::Type::UnpinForAll)
+        );
+        return (
+            LiveMessageKind::Other(if unpin {
+                "Unpinned a message".to_owned()
+            } else {
+                "Pinned a message".to_owned()
+            }),
+            false,
+        );
     }
     if let Some(invite) = msg.newsletter_admin_invite_message.as_option() {
         let label = invite
@@ -1589,6 +1703,15 @@ fn now_millis() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
 }
+
+/// The broadcast address WhatsApp delivers status posts under.
+/// It is not a conversation: no chat row may ever be built from
+/// it. Until the Updates feed consumes received statuses (the
+/// status round), status posts are dropped at this boundary
+/// rather than filed as a fake direct chat titled "status";
+/// history sync redelivers them, so nothing is lost for the
+/// round that builds the feed.
+pub(super) const STATUS_BROADCAST_JID: &str = "status@broadcast";
 
 pub(super) fn kind_of(jid: &str) -> LiveChatKind {
     if jid.ends_with("@g.us") {
@@ -2525,6 +2648,144 @@ mod live_pairing_fix_tests {
         assert_eq!(structured_text(&bare_template), None);
         assert_eq!(unhandled_label(&bare_template), "Template message");
         assert_eq!(unhandled_label(&wa::Message::default()), "Message");
+    }
+
+    /// An instant image is an ImageMessage in its own slot:
+    /// it classifies as a photo with its caption, and its
+    /// thumbnail and download reference extract like a
+    /// photo's.
+    #[test]
+    fn instant_image_is_a_photo() {
+        let mut image = wa::message::ImageMessage::default();
+        image.caption = Some("made for you".to_owned());
+        image.file_length = Some(1234);
+        image.jpeg_thumbnail = Some(vec![0xFF, 0xD8, 0xFF]);
+        let mut msg = wa::Message::default();
+        msg.instant_image_message = MessageField::some(image);
+        let (kind, _) = classify_message(&msg);
+        assert!(
+            matches!(
+                kind,
+                LiveMessageKind::Media {
+                    media: crate::MediaKind::Photo,
+                    ref caption,
+                    size_bytes: 1234,
+                    ..
+                } if caption == "made for you"
+            ),
+            "got {kind:?}"
+        );
+        assert_eq!(
+            super::super::util::photo_thumbnail_of(&msg),
+            Some(vec![0xFF, 0xD8, 0xFF]),
+            "the thumbnail extracts from the instant slot too"
+        );
+    }
+
+    /// A pin-in-chat notice names the act as a system line;
+    /// an unpin names its own.
+    #[test]
+    fn pin_in_chat_names_the_act() {
+        use wa::message::pin_in_chat_message::Type;
+        let mut pin = wa::message::PinInChatMessage::default();
+        pin.r#type = Some(Type::PinForAll);
+        let mut key = wa::MessageKey::default();
+        key.id = Some("target-1".to_owned());
+        pin.key = MessageField::some(key);
+        let mut msg = wa::Message::default();
+        msg.pin_in_chat_message = MessageField::some(pin);
+        let (kind, _) = classify_message(&msg);
+        assert!(
+            matches!(kind, LiveMessageKind::Other(ref label) if label == "Pinned a message"),
+            "got {kind:?}"
+        );
+        let mut unpin = wa::message::PinInChatMessage::default();
+        unpin.r#type = Some(Type::UnpinForAll);
+        let mut msg = wa::Message::default();
+        msg.pin_in_chat_message = MessageField::some(unpin);
+        let (kind, _) = classify_message(&msg);
+        assert!(
+            matches!(kind, LiveMessageKind::Other(ref label) if label == "Unpinned a message"),
+            "got {kind:?}"
+        );
+    }
+
+    /// Replies to structured messages recover the words the
+    /// sender picked, in each reply shape.
+    #[test]
+    fn reply_kinds_recover_the_picked_words() {
+        let mut reply = wa::message::TemplateButtonReplyMessage::default();
+        reply.selected_display_text = Some("Tomorrow at 9".to_owned());
+        let mut msg = wa::Message::default();
+        msg.template_button_reply_message = MessageField::some(reply);
+        assert_eq!(structured_text(&msg).as_deref(), Some("Tomorrow at 9"));
+
+        let mut reply = wa::message::ListResponseMessage::default();
+        reply.title = Some("The sushi place".to_owned());
+        let mut msg = wa::Message::default();
+        msg.list_response_message = MessageField::some(reply);
+        assert_eq!(structured_text(&msg).as_deref(), Some("The sushi place"));
+
+        let mut reply = wa::message::QuestionResponseMessage::default();
+        reply.text = Some("Blue, please".to_owned());
+        let mut msg = wa::Message::default();
+        msg.question_response_message = MessageField::some(reply);
+        assert_eq!(structured_text(&msg).as_deref(), Some("Blue, please"));
+
+        let mut body = wa::message::interactive_response_message::Body::default();
+        body.text = Some("Confirmed".to_owned());
+        let mut reply = wa::message::InteractiveResponseMessage::default();
+        reply.body = MessageField::some(body);
+        let mut msg = wa::Message::default();
+        msg.interactive_response_message = MessageField::some(reply);
+        assert_eq!(structured_text(&msg).as_deref(), Some("Confirmed"));
+    }
+
+    /// A voice note's waveform comes from its payload
+    /// (AudioMessage field 19); a payload without one yields
+    /// None, so the app renders the neutral form.
+    #[test]
+    fn voice_waveform_comes_from_the_payload() {
+        let mut audio = wa::message::AudioMessage::default();
+        audio.waveform = Some(vec![10, 200, 90]);
+        let mut msg = wa::Message::default();
+        msg.audio_message = MessageField::some(audio);
+        assert_eq!(super::super::util::voice_waveform_of(&msg), Some(vec![10, 200, 90]));
+        let mut bare = wa::Message::default();
+        bare.audio_message = MessageField::some(wa::message::AudioMessage::default());
+        assert_eq!(super::super::util::voice_waveform_of(&bare), None);
+    }
+
+    /// History sender resolution prefers the saved contact
+    /// name over the payload's push name: a push name must
+    /// never downgrade a saved name.
+    #[test]
+    fn history_sender_prefers_the_saved_name() {
+        let mut book = super::IdentityBook::default();
+        book.saved.insert(
+            "6281234567890@s.whatsapp.net".to_owned(),
+            "Saved Sarah".to_owned(),
+        );
+        let mut info = wa::WebMessageInfo::default();
+        let mut key = wa::MessageKey::default();
+        key.id = Some("h1".to_owned());
+        key.from_me = Some(false);
+        key.participant = Some("6281234567890@s.whatsapp.net".to_owned());
+        info.key = MessageField::some(key);
+        info.push_name = Some("Push Sarah".to_owned());
+        info.message_timestamp = Some(1_700_000_000);
+        let mut inner = wa::Message::default();
+        inner.conversation = Some("hello".to_owned());
+        info.message = MessageField::some(inner);
+        let mut resolved = Vec::new();
+        let msg = super::history_message(
+            "6281234567890@s.whatsapp.net",
+            &info,
+            &book,
+            &mut resolved,
+        )
+        .expect("the message translates");
+        assert_eq!(msg.sender.as_deref(), Some("Saved Sarah"));
     }
 }
 

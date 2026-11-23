@@ -184,7 +184,38 @@ fn job(
             }
         }
     }
+    // Minimum RTL handling (P2-65): when the message's first
+    // strong character is right-to-left (Hebrew or Arabic
+    // blocks), the job right-aligns, so an RTL paragraph reads
+    // from the edge it starts at instead of trailing off the
+    // left. egui does no bidi reordering; mixed-direction runs
+    // inside a line keep logical order, which this does not
+    // claim to solve.
+    if first_strong_is_rtl(text) {
+        job.halign = egui::Align::RIGHT;
+    }
     job
+}
+
+/// Whether the first strong directional character of `text`
+/// is right-to-left: a letter from the Hebrew or Arabic
+/// blocks. Digits, punctuation and spaces are weak and are
+/// skipped, the standard first-strong rule.
+fn first_strong_is_rtl(text: &str) -> bool {
+    for c in text.chars() {
+        match c {
+            '\u{0590}'..='\u{05ff}'
+            | '\u{0600}'..='\u{06ff}'
+            | '\u{0750}'..='\u{077f}'
+            | '\u{08a0}'..='\u{08ff}'
+            | '\u{fb1d}'..='\u{fb4f}'
+            | '\u{fb50}'..='\u{fdcf}'
+            | '\u{fdf0}'..='\u{fffd}' => return true,
+            _ if c.is_alphabetic() => return false,
+            _ => {}
+        }
+    }
+    false
 }
 
 /// Appends one line's inline-parsed segments to the job.

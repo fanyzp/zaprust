@@ -4,6 +4,29 @@ All notable changes to Zaprust are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com), versions
 follow [SemVer](https://semver.org).
 
+## [1.6.15] - 2026-11-24
+
+### fix:
+
+- Video calls are refused honestly. Starting one fails at once with a clear notice instead of ringing into nothing; accepting an incoming video call connects as a voice call and says so; the call picker offers voice only.
+- In-call mute and speaker toggles now confirm against the backend, and a failed toggle flips back instead of lying about the call state.
+- Community pictures load through the community lookup, so a community's own photo shows instead of a letter tile.
+- Broadcast lists are their own kind of chat: they no longer wear a raw identifier as their name or borrow another chat's identity.
+- Contact cards read real-world vCards: tel: links and parameter-heavy phone lines parse to the number, and a card without a display name falls back to the name inside the vCard.
+- Group creation, poll creation, contact sending and forwarding show a working state until the server answers, and creating a group reports its success when the group actually arrives.
+- Clearing a chat with "keep starred" now also keeps messages starred during this session; before, the archive check could miss them.
+- The chat archive can no longer rewind: an older sync cannot overwrite a newer preview, timestamp or unread count, and stale bookkeeping (aged missing-photo records, unbounded call history, per-message leftovers) is pruned.
+- Expiring messages follow a guarded clock: a system clock jump during a session can no longer make messages vanish early or linger far past their time.
+- The updater only accepts an installer that is really this app (a downloaded file that is not a Zaprust AppImage is refused), wrapped signatures verify, a failed daily check no longer suppresses the next one, and the session key file's permissions are re-asserted on every load.
+- Payment requests, invoices, scheduled calls, sticker packs, music shares and other rare message kinds now show a truthful label instead of a generic placeholder, and protocol bookkeeping payloads no longer surface as messages.
+- Long names and captions truncate on whole characters in every script, including emoji and combining marks; right-to-left messages (Hebrew, Arabic) align to the right.
+- A fresh account sees "No chats yet" instead of "No chats match"; the member list caps at 200 with an honest "and N more"; a group member-add box clears only when the add actually lands.
+- Favorites in Settings say plainly that they are stored on this device only, the account menu names the live connection honestly, the profile panel's Search opens the in-chat search, and two dozen leftover hard-coded labels (message info, poll creation, profile fields, sticker packs, day separators and more) now follow the chosen language.
+
+### feat:
+
+- The design system is finished: every panel, card and frame sits on the canonical corner radii, every text size sits on the canonical scale, and icons sit on the canonical grid. The conversation header menu uses the same shared menu rows as every other menu.
+
 ## [1.6.14] - 2026-11-24
 
 ### fix:

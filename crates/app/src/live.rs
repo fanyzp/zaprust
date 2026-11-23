@@ -803,7 +803,9 @@ fn voice_waveform_bars(wire: Option<&[u8]>) -> Vec<f32> {
 /// receipt handler's conversions run the other way).
 fn backend_delivery(d: Delivery) -> backend::DeliveryState {
     match d {
-        Delivery::Sent => backend::DeliveryState::Sent,
+        // The backend state has no sending or failed rung: both
+        // sit at the Sent floor (a failed send never advances).
+        Delivery::Sending | Delivery::Failed | Delivery::Sent => backend::DeliveryState::Sent,
         Delivery::Delivered => backend::DeliveryState::Delivered,
         Delivery::Read => backend::DeliveryState::Read,
     }

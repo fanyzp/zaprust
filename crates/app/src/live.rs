@@ -2693,6 +2693,13 @@ impl crate::state::App {
                 }
             }
             BackendEvent::AvatarBytes { jid, picture_id, bytes } => {
+                // The request is answered: the in-flight mark
+                // clears whatever the bytes turn out to be, or
+                // every retry rule below it stays unreachable
+                // for the whole session.
+                if let Some(session) = &mut self.live {
+                    session.avatar_requested.remove(&jid);
+                }
                 // Persist first (the store is the launch seed),
                 // then decode into the live texture cache. Bytes
                 // that do not decode are dropped, never painted
@@ -2708,13 +2715,6 @@ impl crate::state::App {
                         session.avatar_bytes.insert(jid.clone(), bytes);
                     }
                     self.media.live_avatar_textures.insert(jid, tex);
-                }
-                if let Some(session) = &mut self.live {
-                    // The request is answered either way (bytes
-                    // or undecodable bytes): the in-flight mark
-                    // clears, or every later retry rule below it
-                    // stays unreachable for the whole session.
-                    session.avatar_requested.remove(&jid);
                 }
             }
             BackendEvent::AvatarMissing { jid } => {

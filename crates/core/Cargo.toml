@@ -25,9 +25,23 @@ sha2 = "0.10"
 idna = "1"
 ring = "0.17"
 base64 = "0.22"
-keyring = { version = "3", optional = true }
-
 zip = { version = "2", default-features = false, features = ["deflate"] }
+
+# The keyring backend must be a real persistent platform store,
+# selected explicitly per target (see the store crate's manifest
+# for the full story): with no platform feature the keyring crate
+# silently substitutes an in-memory mock that persists nothing.
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3", optional = true, features = ["linux-native-sync-persistent", "crypto-rust"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3", optional = true, features = ["apple-native"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring = { version = "3", optional = true, features = ["windows-native"] }
+
+[target.'cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))'.dependencies]
+keyring = { version = "3", optional = true }
 
 [dev-dependencies]
 proptest = "1"

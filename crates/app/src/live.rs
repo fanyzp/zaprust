@@ -662,8 +662,8 @@ fn key_decision(key_result: &Result<[u8; 32], store::StoreError>, fake: bool) ->
         Err(e) => KeyDecision::Abort(format!(
             "Zaprust could not unlock your saved chats, so it did not connect. \
              The unlock key stored on this device could not be read ({e}). \
-             Nothing was changed. Make the key available again (for example, \
-             unlock your keyring) and try connecting again."
+             Nothing was changed. Make the key available again (the key file \
+             in the app data folder, or unlock your keyring) and try connecting again."
         )),
     }
 }
@@ -768,7 +768,7 @@ impl crate::state::App {
         }
         let data_dir = backend::data_dir();
         // Both local databases are encrypted under one key from
-        // the OS keyring (SEC-F01). Without the key neither can
+        // the app key file (SEC-F01; see store::dbkey). Without the key neither can
         // open, and a real start does not try: it fails closed
         // before anything is spawned or opened, leaving the app
         // untouched so the user can retry (audit finding 6).

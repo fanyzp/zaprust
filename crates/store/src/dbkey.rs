@@ -2,21 +2,33 @@
 //!
 //! One random 32-byte key encrypts both local databases (this
 //! archive and the protocol session store) through SQLCipher. The
-//! key itself lives in the OS keyring (Secret Service, Keychain,
-//! or Credential Manager, via the `keyring` crate), so copying the
-//! database files on their own yields nothing readable.
+//! key's durable home is an owner-only file `db.key` inside the
+//! data directory, so copying a database file on its own yields
+//! nothing readable, and the key's survival depends only on files
+//! the app itself controls.
 //!
-//! When no keyring is available (a headless session, a locked
-//! keychain), the key falls back to an owner-only file `db.key`
-//! inside the data directory. That fallback is weaker by design
-//! and says so: it still protects a database file copied on its
-//! own, but not a copy of the whole data directory. Which source
-//! provided the key is not recorded; lookup order is keyring
-//! first, then the file. A fresh key is generated only when
-//! neither source has one AND no database exists yet: if a
-//! database is already on disk, its key existed once and is now
-//! lost, and minting a replacement would strand the data while
-//! looking like a fresh install, so the load fails instead.
+//! The OS keyring (Secret Service, Keychain, or Credential
+//! Manager, via the `keyring` crate) is a mirror and a recovery
+//! source, never the only copy: a key found only in the keyring is
+//! adopted and written to the file, and a fresh key is written to
+//! the file first and mirrored to the keyring best-effort. This
+//! ordering is a repair, not a preference. The previous design
+//! trusted the keyring as the primary store and wrote the file
+//! only when the keyring write failed; the build had compiled the
+//! keyring crate with no platform store selected, so the crate
+//! silently substituted its in-memory mock store, the write
+//! reported success, no file was ever written, and the key died
+//! with the process. A linked session must survive any keyring
+//! failure mode (volatile, locked, absent), so durability lives
+//! in the file; the file is weaker against a copy of the whole
+//! data directory and says so, but a database file copied on its
+//! own is still protected.
+//!
+//! A fresh key is generated only when neither source has one AND
+//! no database exists yet: if a database is already on disk, its
+//! key existed once and is now lost, and minting a replacement
+//! would strand the data while looking like a fresh install, so
+//! the load fails instead.
 
 use std::path::{Path, PathBuf};
 
@@ -28,21 +40,30 @@ const KEY_FILE_NAME: &str = "db.key";
 
 /// Loads the database key, creating and storing one on first use.
 ///
-/// A fresh key is created only when both sources affirmatively
-/// have none and no database exists yet. A source that exists but
-/// cannot be read (a locked or unavailable keyring, an unreadable
-/// or malformed key file) is an error, never a reason to invent a
-/// replacement: a new key would leave every database encrypted
-/// under the stored one unreadable. The same applies when both
-/// sources are empty but a database is already on disk: its key
-/// was lost (the keyring entry removed or reset, the key file
-/// deleted), and a replacement would strand the data.
+/// Lookup order is the key file first (the durable source), then
+/// the keyring as a recovery source. A key recovered from the
+/// keyring is written to the file before it is returned, so the
+/// file is the key's home from that load on. A fresh key is
+/// created only when both sources affirmatively have none and no
+/// database exists yet, and creating one always writes the file:
+/// a key that exists only in the keyring is one keyring failure
+/// away from stranding every database, which is how the previous
+/// keyring-first design lost a linked session on relaunch.
+///
+/// A source that exists but cannot be read (a locked or
+/// unavailable keyring, an unreadable or malformed key file) is
+/// an error, never a reason to invent a replacement: a new key
+/// would leave every database encrypted under the stored one
+/// unreadable. The same applies when both sources are empty but
+/// a database is already on disk: its key was lost (the key file
+/// deleted, the keyring entry removed or reset), and a
+/// replacement would strand the data.
 ///
 /// # Errors
 /// [`StoreError::Io`] when a stored key could not be read, when a
 /// database exists but its key is missing from both sources, or
-/// when a fresh key could be generated but neither the keyring
-/// nor the key file could store it.
+/// when a fresh key could be generated but the key file could
+/// not store it.
 pub fn load_or_create_key(data_dir: &Path) -> Result<[u8; 32], StoreError> {
     // A previous run can have died between writing a key temp
     // file and renaming it into place, leaving a full copy of
@@ -51,39 +72,63 @@ pub fn load_or_create_key(data_dir: &Path) -> Result<[u8; 32], StoreError> {
     // the one point every key load passes through, before this
     // process can start a key write of its own.
     sweep_stale_key_temp_files(data_dir);
+    let file = data_dir.join(KEY_FILE_NAME);
+    if let Some(key) = read_key_file(&file)? {
+        return Ok(key);
+    }
     let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT).ok();
     if let Some(entry) = &entry {
         match entry.get_password() {
             Ok(saved) => {
                 if let Some(key) = decode_key(&saved) {
+                    // Recovery: the key survived only in the
+                    // keyring (an archive from a build whose key
+                    // never reached the file). Adopt it and give
+                    // it its durable home before returning it. A
+                    // failed heal write does not block this load:
+                    // the key in hand is the right one, and
+                    // refusing to start over a bookkeeping failure
+                    // would strand a working session; the next
+                    // load retries the write.
+                    let _ = std::fs::create_dir_all(data_dir);
+                    let _ = write_key_file(&file, &encode_key(&key));
                     return Ok(key);
                 }
                 // An entry exists but does not hold a key this
-                // build wrote; the key file is the second source,
-                // so fall through to it before concluding anything.
+                // build wrote; conclude nothing from it and fall
+                // through to the missing-key guard.
             }
-            // The keyring affirmatively holds no entry: the key,
-            // if there is one, is in the file.
+            // The keyring affirmatively holds no entry: no key
+            // exists in either source.
             Err(keyring::Error::NoEntry) => {}
             Err(e) => {
-                return Err(StoreError::Io(std::io::Error::other(format!(
-                    "the database key could not be read from the system keyring: {e}"
-                ))));
+                // The keyring cannot answer (locked, no Secret
+                // Service on this session). If a database exists,
+                // its key may be the one the keyring is hiding:
+                // fail closed. If nothing exists yet, an
+                // unreadable keyring hides nothing this data
+                // directory needs, and creation may proceed; the
+                // guard below re-checks the same condition.
+                if existing_database(data_dir).is_some() {
+                    return Err(StoreError::Io(std::io::Error::other(format!(
+                        "the database key could not be read from the system keyring: {e}"
+                    ))));
+                }
             }
         }
-    }
-    let file = data_dir.join(KEY_FILE_NAME);
-    if let Some(key) = read_key_file(&file)? {
-        return Ok(key);
     }
     refuse_to_replace_a_missing_key(data_dir)?;
     let mut key = [0u8; 32];
     getrandom::fill(&mut key).map_err(|e| StoreError::Io(std::io::Error::other(e.to_string())))?;
     let encoded = encode_key(&key);
-    let in_keyring = entry.as_ref().and_then(|e| e.set_password(&encoded).ok()).is_some();
-    if !in_keyring {
-        std::fs::create_dir_all(data_dir).map_err(StoreError::Io)?;
-        write_key_file(&file, &encoded)?;
+    // The file write is the durability contract and must
+    // succeed; the keyring mirror is best-effort only, because a
+    // keyring that cannot store must never veto a key the file
+    // already holds safely.
+    std::fs::create_dir_all(data_dir).map_err(StoreError::Io)?;
+    write_key_file(&file, &encoded)?;
+    if let Some(entry) = &entry {
+        let _ = entry.set_password(&encoded);
     }
     Ok(key)
 }
@@ -204,7 +249,7 @@ fn refuse_to_replace_a_missing_key(data_dir: &Path) -> Result<(), StoreError> {
     if let Some(db) = existing_database(data_dir) {
         return Err(StoreError::Io(std::io::Error::other(format!(
             "saved data exists on this device ({}), but its unlock key is missing: \
-             it is not in the system keyring and no key file remains, so the data \
+             no key file remains and it is not in the system keyring, so the data \
              cannot be opened. No new key was created and nothing was changed",
             db.display()
         ))));
@@ -451,6 +496,32 @@ mod tests {
         std::fs::write(dir.join("archive.db"), b"encrypted archive bytes").unwrap();
         assert!(load_or_create_key(&dir).is_err());
         assert!(!dir.join(KEY_FILE_NAME).exists(), "no replacement key file may appear");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn created_key_lands_in_the_file_and_reloads_from_it() {
+        // The durability contract, and the regression test for
+        // the volatile-keyring loss: a key created on first run
+        // must be in `db.key`, owner-only, decoding to the
+        // returned key, and a second load must return the same
+        // key. On the old keyring-first design, a keyring that
+        // reported success without persisting (the keyring
+        // crate's mock store, which the build silently selected)
+        // left no file at all, and this test fails at the
+        // existence assert.
+        let dir = scratch_dir("created");
+        let key = load_or_create_key(&dir).unwrap();
+        let file = dir.join(KEY_FILE_NAME);
+        assert!(file.exists(), "a created key must be written to the key file");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&file).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600, "the created key file is owner-only");
+        }
+        assert_eq!(read_key_file(&file).unwrap(), Some(key));
+        assert_eq!(load_or_create_key(&dir).unwrap(), key, "the reload returns the created key");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

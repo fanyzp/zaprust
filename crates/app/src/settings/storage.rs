@@ -86,8 +86,9 @@ impl App {
             ui.label(
                 RichText::new(
                     "Your chat archive and linked-account data are encrypted \
-                     on this device, with the key kept in your operating \
-                     system keyring. Backups you export are not encrypted.",
+                     on this device, with the key kept in an owner-only \
+                     key file in the app data folder and mirrored to your \
+                     operating system keyring. Backups you export are not encrypted.",
                 )
                 .size(12.0)
                 .color(rgb(t.text_secondary)),

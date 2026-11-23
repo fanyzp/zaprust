@@ -11,7 +11,8 @@
 //!   migrations (see [`migrate`]).
 //! - **Encrypted at rest** (security audit SEC-F01): the archive
 //!   and the protocol library's session store are both SQLCipher
-//!   databases under one key held in the OS keyring (see
+//!   databases under one key whose durable home is an owner-only
+//!   key file beside the data, mirrored to the OS keyring (see
 //!   [`dbkey`]). Archives written by older, plaintext builds are
 //!   converted in place on first open ([`encrypt_file_in_place`]).
 //! - **Physical deletion** (privacy audit A2): connections run

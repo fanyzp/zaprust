@@ -824,10 +824,7 @@ pub(super) async fn run_async(
                         );
                     }
                     if let Some(alt) = &ctx.info.source.sender_alt {
-                        guard.note_mapping(
-                            &ctx.info.source.sender.to_string(),
-                            &alt.to_string(),
-                        );
+                        guard.note_mapping(&ctx.info.source.sender.to_string(), &alt.to_string());
                     }
                     guard
                 };

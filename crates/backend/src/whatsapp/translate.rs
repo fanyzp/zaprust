@@ -2482,7 +2482,8 @@ mod live_pairing_fix_tests {
 
         let (tx, rx) = std::sync::mpsc::sync_channel(32);
         let sink = EventSink { tx, wake: std::sync::Arc::new(|| {}) };
-        let (unresolved, _retry_marks) = translate_history_sync(&sync, &sink, &mut super::IdentityBook::default());
+        let (unresolved, _retry_marks) =
+            translate_history_sync(&sync, &sink, &mut super::IdentityBook::default());
         let events: Vec<BackendEvent> = rx.try_iter().collect();
 
         let title_of = |jid: &str| {

@@ -143,7 +143,12 @@ fn job(
             job.append(
                 "\n",
                 0.0,
-                TextFormat { font_id: plain.clone(), color, line_height: leading, ..Default::default() },
+                TextFormat {
+                    font_id: plain.clone(),
+                    color,
+                    line_height: leading,
+                    ..Default::default()
+                },
             );
         }
         started = true;
@@ -165,7 +170,12 @@ fn job(
                 job.append(
                     &marker,
                     0.0,
-                    TextFormat { font_id: plain.clone(), color, line_height: leading, ..Default::default() },
+                    TextFormat {
+                        font_id: plain.clone(),
+                        color,
+                        line_height: leading,
+                        ..Default::default()
+                    },
                 );
                 append_inline(&mut job, item, size, color, code_bg, mention_color, leading, &plain);
             }
@@ -491,7 +501,10 @@ mod tests {
         assert_eq!(parts[0].1, Style::default());
     }
 
-    fn section_text(job: &eframe::egui::text::LayoutJob, section: &eframe::egui::text::LayoutSection) -> String {
+    fn section_text(
+        job: &eframe::egui::text::LayoutJob,
+        section: &eframe::egui::text::LayoutSection,
+    ) -> String {
         job.text[section.byte_range.start.0..section.byte_range.end.0].to_string()
     }
 
@@ -502,17 +515,35 @@ mod tests {
     #[test]
     fn block_lines_classify_lists_and_fences() {
         let mut in_fence = false;
-        assert_eq!(block_line("- milk", &mut in_fence), Some(BlockLine::Item("•  ".to_owned(), "milk")));
-        assert_eq!(block_line("• bread", &mut in_fence), Some(BlockLine::Item("•  ".to_owned(), "bread")));
-        assert_eq!(block_line("1. first", &mut in_fence), Some(BlockLine::Item("1.  ".to_owned(), "first")));
-        assert_eq!(block_line("12. twelfth", &mut in_fence), Some(BlockLine::Item("12.  ".to_owned(), "twelfth")));
-        assert_eq!(block_line("1.5 not a list", &mut in_fence), Some(BlockLine::Text("1.5 not a list")));
+        assert_eq!(
+            block_line("- milk", &mut in_fence),
+            Some(BlockLine::Item("•  ".to_owned(), "milk"))
+        );
+        assert_eq!(
+            block_line("• bread", &mut in_fence),
+            Some(BlockLine::Item("•  ".to_owned(), "bread"))
+        );
+        assert_eq!(
+            block_line("1. first", &mut in_fence),
+            Some(BlockLine::Item("1.  ".to_owned(), "first"))
+        );
+        assert_eq!(
+            block_line("12. twelfth", &mut in_fence),
+            Some(BlockLine::Item("12.  ".to_owned(), "twelfth"))
+        );
+        assert_eq!(
+            block_line("1.5 not a list", &mut in_fence),
+            Some(BlockLine::Text("1.5 not a list"))
+        );
         assert_eq!(block_line("-5 degrees", &mut in_fence), Some(BlockLine::Text("-5 degrees")));
         assert_eq!(block_line("plain", &mut in_fence), Some(BlockLine::Text("plain")));
         assert_eq!(block_line("```", &mut in_fence), None);
         assert!(in_fence);
         // Inside a fence, list markers are literal code.
-        assert_eq!(block_line("- not a list", &mut in_fence), Some(BlockLine::Code("- not a list")));
+        assert_eq!(
+            block_line("- not a list", &mut in_fence),
+            Some(BlockLine::Code("- not a list"))
+        );
         assert_eq!(block_line("```rust", &mut in_fence), None);
         assert!(!in_fence);
     }
@@ -520,8 +551,12 @@ mod tests {
     #[test]
     fn job_renders_lists_and_code_blocks() {
         let text = "groceries:\n- milk\n- *fresh* bread\n2. eggs\n```\nlet x = -1;\n```\ndone";
-        let job = job(text, 14.0, Color32::WHITE, Color32::from_gray(40), Color32::LIGHT_BLUE, None);
-        assert_eq!(job_text(&job), "groceries:\n•  milk\n•  fresh bread\n2.  eggs\nlet x = -1;\ndone");
+        let job =
+            job(text, 14.0, Color32::WHITE, Color32::from_gray(40), Color32::LIGHT_BLUE, None);
+        assert_eq!(
+            job_text(&job),
+            "groceries:\n•  milk\n•  fresh bread\n2.  eggs\nlet x = -1;\ndone"
+        );
         // The code line is one monospace section on the code
         // background; the fence delimiters never appear.
         let code = job
@@ -532,19 +567,30 @@ mod tests {
         assert_eq!(code.format.font_id.family, FontFamily::Monospace);
         assert_eq!(code.format.background, Color32::from_gray(40));
         // Inline formatting still applies inside list items.
-        let fresh = job
-            .sections
-            .iter()
-            .find(|s| section_text(&job, s) == "fresh")
-            .expect("bold section");
+        let fresh =
+            job.sections.iter().find(|s| section_text(&job, s) == "fresh").expect("bold section");
         assert_eq!(fresh.format.font_id.family, FontFamily::Name("bold".into()));
     }
 
     #[test]
     fn job_fence_at_the_edges_leaves_no_blank_rows() {
-        let fenced = job("```\ncode\n```", 14.0, Color32::WHITE, Color32::from_gray(40), Color32::LIGHT_BLUE, None);
+        let fenced = job(
+            "```\ncode\n```",
+            14.0,
+            Color32::WHITE,
+            Color32::from_gray(40),
+            Color32::LIGHT_BLUE,
+            None,
+        );
         assert_eq!(job_text(&fenced), "code");
-        let plain = job("plain\ntext", 14.0, Color32::WHITE, Color32::from_gray(40), Color32::LIGHT_BLUE, None);
+        let plain = job(
+            "plain\ntext",
+            14.0,
+            Color32::WHITE,
+            Color32::from_gray(40),
+            Color32::LIGHT_BLUE,
+            None,
+        );
         assert_eq!(job_text(&plain), "plain\ntext");
     }
 }

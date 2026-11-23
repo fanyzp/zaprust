@@ -905,10 +905,9 @@ impl Store {
         if title.trim().is_empty() || is_raw_identifier(title) {
             return Ok(false);
         }
-        let changed = self.conn.execute(
-            "UPDATE chats SET title = ?2 WHERE jid = ?1",
-            params![chat_jid, title],
-        )?;
+        let changed = self
+            .conn
+            .execute("UPDATE chats SET title = ?2 WHERE jid = ?1", params![chat_jid, title])?;
         Ok(changed > 0)
     }
 

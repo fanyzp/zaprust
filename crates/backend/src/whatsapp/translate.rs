@@ -1237,7 +1237,92 @@ pub(super) fn structured_text(msg: &whatsapp_rust::prelude::wa::Message) -> Opti
             return Some(text);
         }
     }
+    // A poll result snapshot carries the whole result in the
+    // clear: the poll's name and every option's vote count.
+    // The summary is the message; nothing about it needs a
+    // label-only rendering.
+    if let Some(snapshot) = base
+        .poll_result_snapshot_message
+        .as_option()
+        .or_else(|| base.poll_result_snapshot_message_v3.as_option())
+    {
+        let mut parts: Vec<String> = Vec::new();
+        if let Some(name) = clean(snapshot.name.clone()) {
+            parts.push(name);
+        }
+        for vote in &snapshot.poll_votes {
+            if let (Some(name), Some(count)) =
+                (clean(vote.option_name.clone()), vote.option_vote_count)
+            {
+                parts.push(format!("{name}: {count}"));
+            }
+        }
+        if !parts.is_empty() {
+            return Some(parts.join("\n"));
+        }
+    }
+    // An added poll option names itself.
+    if let Some(added) = base.poll_add_option_message.as_option() {
+        if let Some(option) = added.add_option.as_option() {
+            if let Some(text) = clean(option.option_name.clone()) {
+                return Some(text);
+            }
+        }
+    }
+    // A scheduled call carries its title.
+    if let Some(call) = base.scheduled_call_creation_message.as_option() {
+        if let Some(text) = clean(call.title.clone()) {
+            return Some(text);
+        }
+    }
+    // A sticker pack carries its name (and publisher).
+    if let Some(pack) = base.sticker_pack_message.as_option() {
+        if let Some(name) = clean(pack.name.clone()) {
+            return Some(match clean(pack.publisher.clone()) {
+                Some(publisher) => format!("{name} · {publisher}"),
+                None => name,
+            });
+        }
+    }
+    // A music share carries the song's title and author.
+    if let Some(music) = base.music_message.as_option() {
+        if let Some(embedded) = music.embedded_music.as_option() {
+            if let Some(title) = clean(embedded.title.clone()) {
+                return Some(match clean(embedded.author.clone()) {
+                    Some(author) => format!("{title} · {author}"),
+                    None => title,
+                });
+            }
+        }
+    }
     None
+}
+
+/// The typed label for the readable-but-not-media kinds whose
+/// carried text [`structured_text`] recovers (a poll result
+/// snapshot, an added poll option, a scheduled call, a sticker
+/// pack, a music share): they classify as typed summaries with
+/// the recovered text as the body, on both the live and the
+/// history path.
+pub(super) fn typed_summary_label(
+    msg: &whatsapp_rust::prelude::wa::Message,
+) -> Option<&'static str> {
+    let base = msg.get_base_message();
+    if base.poll_result_snapshot_message.as_option().is_some()
+        || base.poll_result_snapshot_message_v3.as_option().is_some()
+    {
+        Some("Poll results")
+    } else if base.poll_add_option_message.as_option().is_some() {
+        Some("Poll option added")
+    } else if base.scheduled_call_creation_message.as_option().is_some() {
+        Some("Scheduled call")
+    } else if base.sticker_pack_message.as_option().is_some() {
+        Some("Sticker pack")
+    } else if base.music_message.as_option().is_some() {
+        Some("Music")
+    } else {
+        None
+    }
 }
 
 /// The truthful label for a payload no classifier arm claims:
@@ -1690,6 +1775,12 @@ fn classify_unwrapped_deep(
         // stream; the header itself is a typed summary, never
         // a fake text.
         return (LiveMessageKind::Other("Album".to_owned()), false);
+    }
+    if let Some(label) = typed_summary_label(msg) {
+        // Readable summary kinds (poll results, an added poll
+        // option, a scheduled call, a sticker pack, a music
+        // share): typed, with the text they carry as the body.
+        return (LiveMessageKind::Other(label.to_owned()), false);
     }
     if let Some(event) = msg.event_message.as_option() {
         let label =
@@ -2888,6 +2979,47 @@ mod live_pairing_fix_tests {
             }
             other => panic!("expected a document, got {other:?}"),
         }
+    }
+
+    /// A poll result snapshot classifies as a typed summary
+    /// whose body is the result itself (name plus every
+    /// option's count), and an added poll option names itself:
+    /// readable payloads are consumed, not merely labeled.
+    #[test]
+    fn poll_snapshot_and_added_option_are_consumed() {
+        let mut snapshot = wa::message::PollResultSnapshotMessage::default();
+        snapshot.name = Some("Lunch?".to_owned());
+        snapshot.poll_votes = vec![
+            wa::message::poll_result_snapshot_message::PollVote {
+                option_name: Some("Nasi Padang".to_owned()),
+                option_vote_count: Some(3),
+                ..Default::default()
+            },
+            wa::message::poll_result_snapshot_message::PollVote {
+                option_name: Some("Soto".to_owned()),
+                option_vote_count: Some(1),
+                ..Default::default()
+            },
+        ];
+        let mut msg = wa::Message::default();
+        msg.poll_result_snapshot_message = MessageField::some(snapshot);
+        let (kind, _) = classify_message(&msg);
+        assert!(matches!(&kind, LiveMessageKind::Other(label) if label == "Poll results"));
+        assert_eq!(
+            structured_text(&msg).as_deref(),
+            Some("Lunch?\nNasi Padang: 3\nSoto: 1")
+        );
+
+        let mut added = wa::message::PollAddOptionMessage::default();
+        added.add_option = MessageField::some(wa::message::poll_creation_message::Option {
+            option_name: Some("Bakso".to_owned()),
+            ..Default::default()
+        });
+        let mut msg = wa::Message::default();
+        msg.poll_add_option_message = MessageField::some(added);
+        let (kind, _) = classify_message(&msg);
+        assert!(matches!(&kind, LiveMessageKind::Other(label) if label == "Poll option added"));
+        assert_eq!(structured_text(&msg).as_deref(), Some("Bakso"));
     }
 
     /// The newer poll creation versions are the same struct in

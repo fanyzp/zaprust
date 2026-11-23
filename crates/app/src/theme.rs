@@ -335,9 +335,9 @@ pub(crate) fn apply_visuals(ctx: &egui::Context, t: Tokens) {
     // through core's hover/pressed derivations like the shared button,
     // strokes come from the border token (accent while pressed/open),
     // and radii follow the Material shape scale the hand-drawn
-    // surfaces use (controls 10, open popups 12, windows 16, and full
-    // pills on the shared button itself).
-    let border = Stroke::new(1.0_f32, rgb(t.border));
+    // surfaces use (controls 10, open popups 12, windows 20).
+    // Borderless (design standard): widget bg strokes are NONE;
+    // only the pressed state keeps the accent stroke.
     let fg = Stroke::new(1.0_f32, rgb(t.text_primary));
     let alt = t.bg_panel_alt;
     let wv = |bg: Rgb, weak: Rgb, stroke: Stroke, radius: u8| egui::style::WidgetVisuals {

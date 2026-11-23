@@ -2611,7 +2611,7 @@ impl App {
         // (design standard): the shell blends tokens from the
         // current set to the target across frames. Motion Off
         // snaps, as it does for every animation.
-        if self.motion == crate::motion::Motion::Off {
+        if self.motion == crate::motion::MotionSetting::Off {
             self.tokens = target;
             self.theme_fade_from = None;
             self.theme_fade_target = None;

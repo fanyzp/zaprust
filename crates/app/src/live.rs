@@ -799,7 +799,7 @@ fn voice_waveform_bars(wire: Option<&[u8]>) -> Vec<f32> {
     }
 }
 
-pub(crate) /// The backend delivery state for a core delivery value (the
+/// The backend delivery state for a core delivery value (the
 /// receipt handler's conversions run the other way).
 fn backend_delivery(d: Delivery) -> backend::DeliveryState {
     match d {

@@ -4,6 +4,21 @@ All notable changes to Zaprust are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com), versions
 follow [SemVer](https://semver.org).
 
+## [1.6.14] - 2026-11-24
+
+### fix:
+
+- Read ticks now tell the truth. A message's delivery state (sent, delivered, read) is real data end to end: it arrives from history sync and live receipts, is saved in the archive, and never moves backwards when a message is delivered again by a later sync. One group member reading a message no longer turns its ticks blue for the whole group. A chat you have read stays read after a restart.
+- The photo viewer shows photos at their real shape instead of stretching them into a fixed frame.
+- Communities are detected from the real group structure: a community and its groups now appear because the server says they belong together, not because of a name guess.
+- The Starred panel shows every starred message from every chat, read from the archive, not only the stars of the chat you happen to have open.
+- The syncing indicator is honest: an interrupted sync no longer reports itself as finished, and the indicator no longer disappears during the long quiet gaps a big account's sync legitimately has.
+- Quick Replies is removed, at the owner's request: the chip strip above the composer, its editor, and its settings are gone.
+
+### feat:
+
+- The interface adopts the owner's design system: no borders on cards, menus or panels, depth from surface tones alone, one thin shadow reserved for floating surfaces, panel corners at the canonical radius, text on the canonical size scale, and theme changes crossfade instead of snapping. The Liquid Glass (Glow) appearance option is retired; floating surfaces are solid now.
+
 ## [1.6.13] - 2026-11-24
 
 ### feat:

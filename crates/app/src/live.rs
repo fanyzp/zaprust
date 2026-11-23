@@ -452,6 +452,20 @@ pub(crate) fn is_formatted_phone(text: &str) -> bool {
     text.len() >= 10 && text.starts_with('+') && text[1..].bytes().all(|b| b.is_ascii_digit())
 }
 
+/// Whether a backend error message reports a failed send. The
+/// backend's send paths word their failures so ("Sending
+/// failed:", "Media sending failed:", "Media sending timed
+/// out", "Sending the location failed:", "Sending the contact
+/// failed:"); every other error leaves in-flight sends alone,
+/// because it says nothing about them.
+pub(crate) fn is_send_failure(message: &str) -> bool {
+    message.starts_with("Sending failed:")
+        || message.starts_with("Media sending failed:")
+        || message.starts_with("Media sending timed out")
+        || message.starts_with("Sending the location failed:")
+        || message.starts_with("Sending the contact failed:")
+}
+
 /// Maps a backend error string to a human sentence for the
 /// notice banner. The caller (the BackendEvent::Error arm) has
 /// already scrubbed the text for display; this function only
@@ -1191,7 +1205,14 @@ impl crate::state::App {
         self.live_start_error = None;
         self.logged_out = false;
         if let Some(note) = archive_note {
-            self.notice = Some(Notice::info(note));
+            // An archive that failed to open is an error state,
+            // not a footnote: the session is running without
+            // its history and every archive write is being
+            // skipped, so the failure is recorded as start
+            // state (which the connect screen presents) and
+            // posted as an error, never an info note.
+            self.live_start_error = Some(note.clone());
+            self.notice = Some(Notice::error(note));
         }
         self.live_mode = true;
         // The Calls panel's live history loads from the same
@@ -2688,6 +2709,13 @@ impl crate::state::App {
                     }
                     self.media.live_avatar_textures.insert(jid, tex);
                 }
+                if let Some(session) = &mut self.live {
+                    // The request is answered either way (bytes
+                    // or undecodable bytes): the in-flight mark
+                    // clears, or every later retry rule below it
+                    // stays unreachable for the whole session.
+                    session.avatar_requested.remove(&jid);
+                }
             }
             BackendEvent::AvatarMissing { jid } => {
                 let now = i64::try_from(crate::state::now_unix()).unwrap_or(0);
@@ -2696,6 +2724,24 @@ impl crate::state::App {
                         let _ = store.put_avatar(&jid, None, None, now);
                     }
                     session.avatar_missing.insert(jid, now);
+                    // Answered: the in-flight mark clears, so
+                    // the negative's own 24-hour re-ask rule in
+                    // ensure_avatar can actually fire later.
+                    session.avatar_requested.remove(&jid);
+                }
+            }
+            BackendEvent::AvatarUnavailable { jid } => {
+                // No answer arrived, so nothing is recorded as
+                // a miss (and nothing is persisted): the
+                // in-flight mark clears and an in-memory
+                // timestamp backdated to five minutes before
+                // the negative window ends rate-limits the
+                // retry to once per five minutes of display
+                // instead of once per paint.
+                let now = i64::try_from(crate::state::now_unix()).unwrap_or(0);
+                if let Some(session) = &mut self.live {
+                    session.avatar_requested.remove(&jid);
+                    session.avatar_missing.insert(jid, now - 86_400 + 300);
                 }
             }
             BackendEvent::AvatarChanged { jid } => {
@@ -3077,13 +3123,26 @@ impl crate::state::App {
                 self.media.downloads.clear();
                 // A failed send must surface on its own bubble, not
                 // only as a transient notice (logic review F6).
-                self.fail_pending_echoes(false);
+                // Only a send failure may mark an echo, though:
+                // this arm carries every backend error, and an
+                // unrelated failure (a rename, a lookup) says
+                // nothing about an in-flight send, so marking
+                // the oldest one failed from it is a false report.
+                if is_send_failure(&message) {
+                    self.fail_pending_echoes(false);
+                }
                 if let Some(session) = &mut self.live {
                     if !session.status.is_linked() {
                         session.status = LinkStatus::Failed(message);
                         session.clear_qr();
                     }
                 }
+            }
+            BackendEvent::JoinRequestPending => {
+                self.notice = Some(Notice::info(
+                    "Join request sent. The group appears here once an admin approves it."
+                        .to_owned(),
+                ));
             }
             BackendEvent::IncomingCall { call_id, chat_jid, video } => {
                 let chat_id = jid_id(&chat_jid);
@@ -6900,6 +6959,74 @@ mod burst_drain_tests {
         let store = session.store.as_ref().unwrap();
         let (_, bytes, _) = store.avatar(CHAT_JID).unwrap().unwrap();
         assert!(bytes.is_none(), "the negative is archived without bytes");
+    }
+
+    /// An unanswered picture lookup (transport failure, or a
+    /// LID whose mapping is still unknown) must not latch the
+    /// in-flight mark for the whole session: the outcome event
+    /// clears it, records no persisted miss, and the answered
+    /// outcomes clear it too, so the negative's 24-hour re-ask
+    /// can fire. Before the fix the mark was only ever removed
+    /// by a picture change, so one failure froze the avatar
+    /// until restart.
+    #[test]
+    fn avatar_outcomes_clear_the_in_flight_mark() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        {
+            let session = app.live.as_mut().unwrap();
+            session.avatar_requested.insert(CHAT_JID.to_owned());
+        }
+        tx.send(BackendEvent::AvatarUnavailable { jid: CHAT_JID.to_owned() }).unwrap();
+        drain_all(&mut app, &ctx);
+        {
+            let session = app.live.as_ref().unwrap();
+            assert!(!session.avatar_requested.contains(CHAT_JID), "unavailable clears the mark");
+            let store = session.store.as_ref().unwrap();
+            assert!(store.avatar(CHAT_JID).unwrap().is_none(), "no miss is persisted");
+        }
+        {
+            let session = app.live.as_mut().unwrap();
+            session.avatar_requested.insert(CHAT_JID.to_owned());
+        }
+        tx.send(BackendEvent::AvatarMissing { jid: CHAT_JID.to_owned() }).unwrap();
+        drain_all(&mut app, &ctx);
+        let session = app.live.as_ref().unwrap();
+        assert!(!session.avatar_requested.contains(CHAT_JID), "an answer clears the mark");
+        assert!(session.avatar_missing.contains_key(CHAT_JID), "the miss is remembered");
+    }
+
+    /// A backend error that is not a send failure must not
+    /// mark an in-flight send failed: the error arm carries
+    /// every failure, and an unrelated one (a rename, a lookup)
+    /// says nothing about the send. A send failure still marks
+    /// the oldest pending echo.
+    #[test]
+    fn unrelated_backend_errors_leave_pending_sends_alone() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        tx.send(dm_upsert(CHAT_JID)).unwrap();
+        drain_all(&mut app, &ctx);
+        let chat_id = jid_id(CHAT_JID);
+        {
+            let session = app.live.as_mut().unwrap();
+            let echo = Message {
+                delivery: Some(Delivery::Sending),
+                ..Message::mine(9_000_001, "on its way".to_owned(), "…")
+            };
+            session.messages.entry(chat_id).or_default().push((BASE_TS, echo));
+        }
+        let delivery_of =
+            |app: &App| app.live.as_ref().unwrap().messages[&chat_id][0].1.delivery;
+        tx.send(BackendEvent::Error { message: "Renaming the group failed: boom".to_owned() })
+            .unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(
+            delivery_of(&app),
+            Some(Delivery::Sending),
+            "an unrelated error is not a send outcome"
+        );
+        tx.send(BackendEvent::Error { message: "Sending failed: boom".to_owned() }).unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(delivery_of(&app), Some(Delivery::Failed), "a send failure marks the echo");
     }
 
     /// A picture negative recorded for a LID identity while its

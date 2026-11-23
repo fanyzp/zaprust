@@ -2375,6 +2375,21 @@ pub enum BackendEvent {
         /// JID that was looked up.
         jid: String,
     },
+    /// A profile picture lookup could not be answered at all
+    /// (a transport failure, or an identity form the lookup
+    /// cannot address yet, such as a LID whose phone mapping is
+    /// still unknown). Nothing is cached either way: the app
+    /// clears the in-flight mark so a later display retries,
+    /// under a short cooldown instead of a per-paint storm.
+    AvatarUnavailable {
+        /// JID that was looked up.
+        jid: String,
+    },
+    /// A group join asked through an invite link is waiting
+    /// for an admin's approval: a successful outcome, not an
+    /// error. No chat row exists yet; the group appears when
+    /// the approval lands and the roster syncs it in.
+    JoinRequestPending,
     /// A profile picture changed on the wire (or its owner's
     /// contact entry was updated, which is the signal WA Web
     /// refreshes pictures on). Any cached picture for this JID

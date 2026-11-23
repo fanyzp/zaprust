@@ -530,6 +530,12 @@ impl App {
                     self.export_rx = None;
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    // The worker died without reporting: the
+                    // export did not happen, and leaving the
+                    // Busy notice standing would claim otherwise
+                    // forever.
+                    self.notice =
+                        Some(Notice::error("Export failed: the export worker stopped.".to_owned()));
                     self.export_rx = None;
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
@@ -556,6 +562,8 @@ impl App {
                     self.zip_export_rx = None;
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.notice =
+                        Some(Notice::error("Export failed: the export worker stopped.".to_owned()));
                     self.zip_export_rx = None;
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
@@ -597,7 +605,7 @@ impl App {
                         if e.contains("401") || e.contains("403") {
                             self.picker.giphy_rejected = true;
                         }
-                        self.notice = Some(Notice::info(format!("GIF: {e}")));
+                        self.notice = Some(Notice::error(format!("GIF: {e}")));
                         failed = true;
                     }
                     GiphyMsg::Preview(url, bytes) => {

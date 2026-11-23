@@ -2353,9 +2353,10 @@ pub(super) async fn run_async(
                         Ok(whatsapp_rust::JoinGroupResult::PendingApproval(_)) => {
                             // Not a member yet: no chat row
                             // may appear until an admin approves.
-                            events.emit(BackendEvent::Error {
-                                    message: "Join request sent. The group appears here once an admin approves it.".to_owned(),
-                                });
+                            // A pending approval is a successful
+                            // outcome with its own event, never an
+                            // error.
+                            events.emit(BackendEvent::JoinRequestPending);
                         }
                         Ok(joined) => {
                             let group_jid = joined.group_jid().clone();
@@ -2830,7 +2831,9 @@ pub(super) async fn run_async(
                             AvatarOutcome::Missing => {
                                 events.emit(BackendEvent::AvatarMissing { jid });
                             }
-                            AvatarOutcome::Unavailable => {}
+                            AvatarOutcome::Unavailable => {
+                                events.emit(BackendEvent::AvatarUnavailable { jid });
+                            }
                         }
                     });
                 }

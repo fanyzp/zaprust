@@ -85,11 +85,13 @@ on every upsert and loaded at start.
 Both databases are encrypted with SQLCipher under one random
 32-byte key: the archive directly, and the library session store
 through the connection init hook the library provides for
-keying. The key is generated on first run and held in the OS
-keyring (Secret Service, Keychain, or Credential Manager); when
-no keyring is available it falls back to an owner-only `db.key`
-file in the data directory, which protects a database copied on
-its own but not a copy of the whole directory. Databases written
+keying. The key is generated on first run and held primarily in
+an owner-only `db.key` file in the data directory; the OS
+keyring (Secret Service, Keychain, or Credential Manager) is a
+mirror and a recovery source, never the only copy, so a linked
+session survives any keyring failure mode. The file protects a
+database copied on its own but not a copy of the whole
+directory. Databases written
 by older plaintext builds are converted in place on first open.
 Permissions stay enforced as a second layer: on Unix the data
 directory is set to 0700 and the database and secrets files to
@@ -195,10 +197,12 @@ streamed with a size cap (the release's declared asset size,
 with a fixed fallback) and the checksum file is size-capped
 too. The SHA-256 check against the release's SHA256SUMS is
 mandatory and runs before anything is swapped; a mismatch
-aborts with the old binary intact. The known limitation: the
-checksum and the binary share one trust root (there is no
-separate update signature), so this protects against corrupted
-or substituted downloads, not against a compromised release.
+aborts with the old binary intact. The checksum file itself is
+authenticated separately: every release carries an Ed25519
+signature over SHA256SUMS (SHA256SUMS.sig), and the app pins
+the release signing public key and refuses a release whose
+signature does not verify, so a substituted checksum file
+cannot bless a substituted binary.
 On Linux, an AppImage path from the environment is
 only treated as the install target when it exists and is a
 file.

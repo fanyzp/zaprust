@@ -807,6 +807,46 @@ pub enum BackendCommand {
         /// Whether the message is view-once (memory-only fetch).
         view_once: bool,
     },
+    /// Fetch a sticker message's bytes for display. Answered
+    /// with `StickerBytes` or `StickerFetchFailed`. The bytes
+    /// travel in memory only. When the message is no longer in
+    /// the session's protocol cache (a sticker from before this
+    /// session), the caller passes the archived [`StickerRef`] it
+    /// stored with the message; without either source the fetch
+    /// fails.
+    FetchSticker {
+        /// Chat JID.
+        chat_jid: String,
+        /// Protocol ID of the sticker message.
+        message_id: String,
+        /// Archived re-download reference, when the caller has one.
+        sticker_ref: Option<StickerRef>,
+    },
+    /// Fetch the profile picture of one contact, group, or
+    /// community for display. Answered with `AvatarBytes` when the
+    /// identity has a picture, `AvatarMissing` when it has none or
+    /// its privacy settings refuse the lookup. The backend
+    /// resolves the address form itself: a contact known under a
+    /// LID is looked up under its phone-number form when the
+    /// session's LID-to-phone cache knows the mapping, so the
+    /// picture provably belongs to the identity it labels.
+    FetchAvatar {
+        /// JID of the contact, group, or community.
+        jid: String,
+    },
+    /// Resolve the display titles of chats whose stored title is
+    /// still a raw identifier (a group JID or a bare number).
+    /// Sent by the app when the session connects, carrying every
+    /// such chat, so no chat waits for an unrelated event to be
+    /// healed. Answered per chat with `ChatRenamed` (and
+    /// `SenderNamed` for a DM whose contact name resolves).
+    /// Failures are retried a bounded number of times inside the
+    /// backend; a chat that still cannot resolve stays raw and is
+    /// reported again on the next connect.
+    ResolveTitles {
+        /// Chat JIDs whose titles are raw identifiers.
+        jids: Vec<String>,
+    },
     /// Stop the backend worker.
     Shutdown,
 }
@@ -1126,6 +1166,25 @@ pub struct VideoRef {
     pub file_length: u64,
 }
 
+/// The persistable CDN reference of one sticker message: the same
+/// re-download material as [`PhotoRef`], extracted from the wire
+/// sticker payload and archived with the message so a sticker stays
+/// fetchable for display after a restart. It carries the media
+/// key, so it belongs in the encrypted archive only.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct StickerRef {
+    /// CDN path of the encrypted media.
+    pub direct_path: String,
+    /// Media decryption key (32 bytes).
+    pub media_key: Vec<u8>,
+    /// SHA-256 of the decrypted bytes (32 bytes).
+    pub file_sha256: Vec<u8>,
+    /// SHA-256 of the encrypted bytes (32 bytes).
+    pub file_enc_sha256: Vec<u8>,
+    /// Announced plaintext size in bytes.
+    pub file_length: u64,
+}
+
 /// A message as the backend reports it (protocol-neutral).
 #[derive(Debug, Clone, PartialEq)]
 pub struct LiveMessage {
@@ -1207,6 +1266,23 @@ pub struct LiveMessage {
     /// every other kind, and for polls whose creation payload
     /// carried no secret.
     pub poll_secret: Option<Vec<u8>>,
+    /// JIDs this message mentions (the wire's
+    /// `context_info.mentioned_jid`, in wire order, deduplicated).
+    /// The body carries the mentions as `@<number>` text; the app
+    /// resolves each JID to a display name at render time from its
+    /// name directory. Empty for messages that mention nobody.
+    pub mentions: Vec<String>,
+    /// For a photo message: the JPEG thumbnail the sender's client
+    /// embedded in the wire payload, the photo itself at preview
+    /// fidelity. The tile paints it immediately, before (and
+    /// while) the full bytes are fetched. `None` for every other
+    /// kind, and for photos whose payload carried no thumbnail.
+    pub photo_thumbnail: Option<Vec<u8>>,
+    /// For a sticker message: the reference its bytes can be
+    /// re-downloaded from (see [`StickerRef`]). `None` for every
+    /// other kind, and for stickers whose wire payload did not
+    /// carry a complete reference.
+    pub sticker_ref: Option<StickerRef>,
     /// For a poll message: the JID of the poll's creator (the
     /// creation message's author). The vote encryption key is
     /// derived over the creator and voter JIDs, so the creator is
@@ -1260,6 +1336,9 @@ impl LiveMessage {
             voice_ref: None,
             video_ref: None,
             video_thumbnail: None,
+            mentions: Vec::new(),
+            photo_thumbnail: None,
+            sticker_ref: None,
             poll_secret: None,
             poll_creator: None,
             poll_ballots: Vec::new(),
@@ -1842,6 +1921,101 @@ pub enum BackendEvent {
         /// its own data or masks the identifier; it is never the
         /// raw phone number or LID.
         requests: Vec<(String, String)>,
+    },
+    /// A sticker's bytes, answering `FetchSticker`.
+    StickerBytes {
+        /// Chat JID.
+        chat_jid: String,
+        /// Protocol ID of the sticker message.
+        message_id: String,
+        /// The sticker bytes (WebP as sent).
+        bytes: Vec<u8>,
+    },
+    /// A sticker fetch failed; the tile keeps its placeholder.
+    StickerFetchFailed {
+        /// Chat JID.
+        chat_jid: String,
+        /// Protocol ID of the sticker message.
+        message_id: String,
+    },
+    /// A profile picture's bytes, answering `FetchAvatar`.
+    AvatarBytes {
+        /// JID the picture belongs to (the JID the app asked
+        /// for, which is the identity the picture labels).
+        jid: String,
+        /// The picture's server-side ID, for change detection.
+        picture_id: Option<String>,
+        /// The picture bytes (JPEG as served).
+        bytes: Vec<u8>,
+    },
+    /// The identity has no profile picture, or its privacy
+    /// settings refuse the lookup; the avatar falls back to the
+    /// initial disc. A transport failure does NOT produce this
+    /// event: it stays retryable instead of being cached as a
+    /// negative.
+    AvatarMissing {
+        /// JID that was looked up.
+        jid: String,
+    },
+    /// A profile picture changed on the wire (or its owner's
+    /// contact entry was updated, which is the signal WA Web
+    /// refreshes pictures on). Any cached picture for this JID
+    /// is stale: drop it and refetch on next display.
+    AvatarChanged {
+        /// JID whose picture changed.
+        jid: String,
+    },
+    /// A media fetch recovered through the media-retry flow: the
+    /// sender's device re-uploaded the media and the message's
+    /// CDN path changed. The app persists the fresh path with
+    /// the archived reference so later sessions download directly.
+    MediaRefreshed {
+        /// Chat JID.
+        chat_jid: String,
+        /// Protocol ID of the media message.
+        message_id: String,
+        /// The fresh CDN direct path.
+        direct_path: String,
+    },
+    /// The phone's favorite-chat set, synced from app state. The
+    /// list is complete: it replaces the app's favorite set.
+    FavoritesSync {
+        /// Chat JIDs marked favorite on the account.
+        chat_jids: Vec<String>,
+    },
+    /// One call from the phone's own call history, delivered by
+    /// the pairing-time history or a later app-state sync. The
+    /// record's direction was derived from the event's creator
+    /// comparison, never from the wire record's own incoming
+    /// flag (the library documents that flag as unreliable). The
+    /// store dedups by call ID, so replays are harmless.
+    CallHistoryRecord {
+        /// The completed call.
+        record: CallRecord,
+    },
+    /// A group changed on the wire in a way that is not a rename
+    /// (members added or removed, modes flipped): any cached
+    /// member list for this group is stale.
+    GroupChanged {
+        /// Group JID.
+        chat_jid: String,
+    },
+    /// A message arrived that this client could not decrypt, and
+    /// the wire's failure mode says to show a placeholder (WA Web
+    /// renders one in the same case). The app inserts the
+    /// placeholder only if it has no copy of the message: a later
+    /// successful decryption upserts the real message over it.
+    MessageUnavailable {
+        /// Chat JID.
+        chat_jid: String,
+        /// Protocol ID of the message.
+        message_id: String,
+        /// Author JID, when known.
+        sender_jid: Option<String>,
+        /// True when this device sent the message.
+        from_me: bool,
+        /// Unix timestamp (seconds).
+        timestamp: i64,
     },
     /// The connection dropped (the backend will try to reconnect).
     ConnectionLost {

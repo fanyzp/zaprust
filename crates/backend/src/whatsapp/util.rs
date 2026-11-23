@@ -692,6 +692,376 @@ pub(super) async fn fetch_video_file_by_ref(
     }
 }
 
+/// Extracts the persistable re-download reference of a sticker
+/// message (see [`crate::StickerRef`]), or `None` when the
+/// message is not a sticker or its payload does not carry a
+/// complete reference. The completeness rule is the photo one.
+pub(super) fn sticker_ref_of(
+    proto: &whatsapp_rust::prelude::wa::Message,
+) -> Option<crate::StickerRef> {
+    let sticker = unwrap_media_proto(proto).sticker_message.as_option()?;
+    let direct_path = sticker.direct_path.clone().filter(|p| !p.is_empty())?;
+    let media_key = sticker.media_key.clone().filter(|k| k.len() == 32)?;
+    let file_sha256 = sticker.file_sha256.clone().filter(|h| h.len() == 32)?;
+    let file_enc_sha256 = sticker.file_enc_sha256.clone().filter(|h| h.len() == 32)?;
+    let file_length = sticker.file_length?;
+    Some(crate::StickerRef { direct_path, media_key, file_sha256, file_enc_sha256, file_length })
+}
+
+/// Rebuilds the library's validated download parameters from an
+/// archived sticker reference (see [`photo_download_params`]).
+pub(super) fn sticker_download_params(
+    reference: &crate::StickerRef,
+) -> Result<whatsapp_rust::download::DownloadParams, String> {
+    whatsapp_rust::download::DownloadParams::encrypted(
+        reference.direct_path.clone(),
+        &reference.media_key,
+        &reference.file_sha256,
+        &reference.file_enc_sha256,
+        reference.file_length,
+        whatsapp_rust::download::MediaType::Sticker,
+    )
+    .map_err(|_| "That sticker's stored download reference is not usable.".to_owned())
+}
+
+/// Downloads a sticker message's bytes into memory for display.
+/// Same in-memory discipline as [`fetch_photo_bytes`].
+pub(super) async fn fetch_sticker_bytes(
+    client: &whatsapp_rust::Client,
+    proto: &whatsapp_rust::prelude::wa::Message,
+) -> Result<Vec<u8>, String> {
+    let proto = unwrap_media_proto(proto);
+    let Some(sticker) = proto.sticker_message.as_option() else {
+        return Err("That message is not a sticker.".to_owned());
+    };
+    check_declared_length(sticker.file_length)?;
+    client.download(sticker, download_limits()).await.map_err(download_error_message)
+}
+
+/// Downloads a sticker's bytes into memory from its archived
+/// reference, for messages the session's protocol cache no
+/// longer holds. Same in-memory discipline as
+/// [`fetch_sticker_bytes`].
+pub(super) async fn fetch_sticker_by_ref(
+    client: &whatsapp_rust::Client,
+    reference: &crate::StickerRef,
+) -> Result<Vec<u8>, String> {
+    check_declared_length(Some(reference.file_length))?;
+    let params = sticker_download_params(reference)?;
+    client.download(&params, download_limits()).await.map_err(download_error_message)
+}
+
+/// The largest wire thumbnail a photo reference will archive.
+/// Same bound as the video thumbnail: a preview frame is a few
+/// kilobytes, anything larger is not a thumbnail worth carrying.
+const MAX_PHOTO_THUMBNAIL_BYTES: usize = 256 * 1024;
+
+/// Extracts the JPEG thumbnail a photo message's payload
+/// carries: the photo itself at preview fidelity, produced by
+/// the sender's client. `None` when the message is not a photo,
+/// carries no thumbnail, or carries one too large to be a
+/// thumbnail.
+pub(super) fn photo_thumbnail_of(proto: &whatsapp_rust::prelude::wa::Message) -> Option<Vec<u8>> {
+    let image = unwrap_media_proto(proto).image_message.as_option()?;
+    image.jpeg_thumbnail.clone().filter(|t| !t.is_empty() && t.len() <= MAX_PHOTO_THUMBNAIL_BYTES)
+}
+
+/// The JIDs a message mentions, from the context info of
+/// whichever sub-message carries the body (text, photo, video,
+/// document, audio, sticker). The wire lists them as full JID
+/// strings; the body text carries them as `@<user>` spans. Order
+/// is wire order, duplicates removed.
+pub(super) fn mentioned_jids_of(proto: &whatsapp_rust::prelude::wa::Message) -> Vec<String> {
+    let base = unwrap_media_proto(proto);
+    let mut out: Vec<String> = Vec::new();
+    let mut push = |context: Option<&whatsapp_rust::prelude::wa::ContextInfo>| {
+        if let Some(context) = context {
+            for jid in &context.mentioned_jid {
+                if !jid.is_empty() && !out.contains(jid) {
+                    out.push(jid.clone());
+                }
+            }
+        }
+    };
+    if let Some(m) = base.extended_text_message.as_option() {
+        push(m.context_info.as_option());
+    }
+    if let Some(m) = base.image_message.as_option() {
+        push(m.context_info.as_option());
+    }
+    if let Some(m) = base.video_message.as_option() {
+        push(m.context_info.as_option());
+    }
+    if let Some(m) = base.document_message.as_option() {
+        push(m.context_info.as_option());
+    }
+    if let Some(m) = base.audio_message.as_option() {
+        push(m.context_info.as_option());
+    }
+    if let Some(m) = base.sticker_message.as_option() {
+        push(m.context_info.as_option());
+    }
+    out
+}
+
+/// Where a media message can be re-addressed for the media
+/// retry flow: who authored it, in which chat. The flow asks
+/// the author's device to re-upload the media, so it needs the
+/// same addressing a receipt for the message would carry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct RetryMark {
+    /// True when this device sent the message.
+    pub from_me: bool,
+    /// Author JID (the participant, for a group message).
+    pub sender_jid: Option<String>,
+}
+
+/// Session-scoped retry addressing, keyed by (chat JID,
+/// message ID) like the proto cache. Filled for every message
+/// the session translates (live and history), consulted only
+/// when a media download fails.
+pub(super) type RetryTargets = std::sync::Arc<
+    std::sync::Mutex<(
+        std::collections::HashMap<(String, String), RetryMark>,
+        std::collections::VecDeque<(String, String)>,
+    )>,
+>;
+
+/// Records one message's retry addressing, with the proto
+/// cache's FIFO eviction discipline.
+pub(super) fn record_retry_target(
+    targets: &RetryTargets,
+    chat_jid: &str,
+    message_id: &str,
+    mark: RetryMark,
+) {
+    let key = (chat_jid.to_owned(), message_id.to_owned());
+    let mut guard = lock_cache(targets);
+    if guard.0.len() > 4000 {
+        for _ in 0..200 {
+            if let Some(old) = guard.1.pop_front() {
+                guard.0.remove(&old);
+            }
+        }
+    }
+    if !guard.0.contains_key(&key) {
+        guard.1.push_back(key.clone());
+    }
+    guard.0.insert(key, mark);
+}
+
+/// The CDN-independent fields of one media reference, uniform
+/// across media kinds so the media-retry flow and its retried
+/// download can be written once. The kind decides the
+/// decryption context the download validates against.
+#[derive(Debug, Clone)]
+pub(super) struct MediaRefFields {
+    /// CDN path of the encrypted media.
+    pub direct_path: String,
+    /// Media decryption key (32 bytes).
+    pub media_key: Vec<u8>,
+    /// SHA-256 of the decrypted bytes (32 bytes).
+    pub file_sha256: Vec<u8>,
+    /// SHA-256 of the encrypted bytes (32 bytes).
+    pub file_enc_sha256: Vec<u8>,
+    /// Announced plaintext size in bytes.
+    pub file_length: u64,
+    /// The media kind, for the download parameters.
+    pub media_type: whatsapp_rust::download::MediaType,
+}
+
+impl MediaRefFields {
+    /// The fields with a different CDN path (the media-retry
+    /// flow's answer replaces the path, nothing else).
+    pub(super) fn with_direct_path(&self, direct_path: String) -> Self {
+        Self { direct_path, ..self.clone() }
+    }
+
+    /// The validated download parameters for these fields.
+    pub(super) fn download_params(
+        &self,
+    ) -> Result<whatsapp_rust::download::DownloadParams, String> {
+        whatsapp_rust::download::DownloadParams::encrypted(
+            self.direct_path.clone(),
+            &self.media_key,
+            &self.file_sha256,
+            &self.file_enc_sha256,
+            self.file_length,
+            self.media_type,
+        )
+        .map_err(|_| "That media's stored download reference is not usable.".to_owned())
+    }
+}
+
+/// The retry fields of an archived photo reference.
+pub(super) fn photo_fields(reference: &crate::PhotoRef) -> MediaRefFields {
+    MediaRefFields {
+        direct_path: reference.direct_path.clone(),
+        media_key: reference.media_key.clone(),
+        file_sha256: reference.file_sha256.clone(),
+        file_enc_sha256: reference.file_enc_sha256.clone(),
+        file_length: reference.file_length,
+        media_type: whatsapp_rust::download::MediaType::Image,
+    }
+}
+
+/// The retry fields of an archived voice reference.
+pub(super) fn voice_fields(reference: &crate::VoiceRef) -> MediaRefFields {
+    MediaRefFields {
+        direct_path: reference.direct_path.clone(),
+        media_key: reference.media_key.clone(),
+        file_sha256: reference.file_sha256.clone(),
+        file_enc_sha256: reference.file_enc_sha256.clone(),
+        file_length: reference.file_length,
+        media_type: whatsapp_rust::download::MediaType::Audio,
+    }
+}
+
+/// The retry fields of an archived video reference.
+pub(super) fn video_fields(reference: &crate::VideoRef) -> MediaRefFields {
+    MediaRefFields {
+        direct_path: reference.direct_path.clone(),
+        media_key: reference.media_key.clone(),
+        file_sha256: reference.file_sha256.clone(),
+        file_enc_sha256: reference.file_enc_sha256.clone(),
+        file_length: reference.file_length,
+        media_type: whatsapp_rust::download::MediaType::Video,
+    }
+}
+
+/// The retry fields of an archived sticker reference.
+pub(super) fn sticker_fields(reference: &crate::StickerRef) -> MediaRefFields {
+    MediaRefFields {
+        direct_path: reference.direct_path.clone(),
+        media_key: reference.media_key.clone(),
+        file_sha256: reference.file_sha256.clone(),
+        file_enc_sha256: reference.file_enc_sha256.clone(),
+        file_length: reference.file_length,
+        media_type: whatsapp_rust::download::MediaType::Sticker,
+    }
+}
+
+/// The retry fields of the media inside a protocol message,
+/// whichever kind it is (documents included: their bytes are
+/// only ever fetched through the save path, which retries the
+/// same way). `None` when the message carries no media or its
+/// reference is incomplete.
+pub(super) fn media_fields_of(
+    proto: &whatsapp_rust::prelude::wa::Message,
+) -> Option<MediaRefFields> {
+    if let Some(reference) = photo_ref_of(proto) {
+        return Some(photo_fields(&reference));
+    }
+    if let Some(reference) = voice_ref_of(proto) {
+        return Some(voice_fields(&reference));
+    }
+    if let Some(reference) = video_ref_of(proto) {
+        return Some(video_fields(&reference));
+    }
+    if let Some(reference) = sticker_ref_of(proto) {
+        return Some(sticker_fields(&reference));
+    }
+    let document = unwrap_media_proto(proto).document_message.as_option()?;
+    let direct_path = document.direct_path.clone().filter(|p| !p.is_empty())?;
+    let media_key = document.media_key.clone().filter(|k| k.len() == 32)?;
+    let file_sha256 = document.file_sha256.clone().filter(|h| h.len() == 32)?;
+    let file_enc_sha256 = document.file_enc_sha256.clone().filter(|h| h.len() == 32)?;
+    let file_length = document.file_length?;
+    Some(MediaRefFields {
+        direct_path,
+        media_key,
+        file_sha256,
+        file_enc_sha256,
+        file_length,
+        media_type: whatsapp_rust::download::MediaType::Document,
+    })
+}
+
+/// Asks the media author's device to re-upload one message's
+/// media (the protocol's media-retry flow) and returns the
+/// fresh CDN path, or `None` when the recovery is unavailable:
+/// unknown addressing, an unparseable target, or the flow
+/// answering anything but success. This is a recovery attempt
+/// layered under a download that already failed, so every
+/// failure here is silent and the original error stands.
+pub(super) async fn request_media_reupload(
+    client: &whatsapp_rust::Client,
+    chat_jid: &str,
+    message_id: &str,
+    mark: &RetryMark,
+    media_key: &[u8],
+) -> Option<String> {
+    use whatsapp_rust::features::{MediaRetryResult, MediaReuploadRequest};
+    use whatsapp_rust::{MessageId, MessageRef};
+    let key: &[u8; 32] = media_key.try_into().ok()?;
+    let chat: Jid = chat_jid.parse().ok()?;
+    let sender: Option<Jid> = match &mark.sender_jid {
+        Some(jid) => Some(jid.parse().ok()?),
+        None => None,
+    };
+    let id = MessageId::new(message_id).ok()?;
+    let target = MessageRef::new(&chat, id, sender.as_ref(), mark.from_me).ok()?;
+    let request = MediaReuploadRequest { target, media_key: key };
+    match client.media_reupload().request(&request).await {
+        Ok(MediaRetryResult::Success { direct_path }) if !direct_path.is_empty() => {
+            Some(direct_path)
+        }
+        _ => None,
+    }
+}
+
+/// Downloads media into memory from uniform reference fields.
+/// Used for the media-retry flow's second attempt, where the
+/// reference is the archived (or proto-extracted) one with its
+/// CDN path replaced by the re-upload's fresh path.
+pub(super) async fn fetch_media_by_fields(
+    client: &whatsapp_rust::Client,
+    fields: &MediaRefFields,
+) -> Result<Vec<u8>, String> {
+    check_declared_length(Some(fields.file_length))?;
+    let params = fields.download_params()?;
+    client.download(&params, download_limits()).await.map_err(download_error_message)
+}
+
+/// Streams media into a file from uniform reference fields,
+/// with [`download_proto`]'s discipline (owner-only file,
+/// partial-file guard). Used for the media-retry flow's second
+/// attempt on the save path and the video cache path.
+pub(super) async fn download_fields_to_file(
+    client: &whatsapp_rust::Client,
+    fields: &MediaRefFields,
+    dir: &std::path::Path,
+    stem: &str,
+    ext: &str,
+) -> Result<std::path::PathBuf, String> {
+    check_declared_length(Some(fields.file_length))?;
+    let params = fields.download_params()?;
+    let path = dir.join(format!("{stem}.{ext}"));
+    std::fs::create_dir_all(dir)
+        .map_err(|e| format!("Could not create the downloads folder: {e}"))?;
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let file = opts.open(&path).map_err(|e| format!("Could not create the download file: {e}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = file.set_permissions(std::fs::Permissions::from_mode(0o600));
+    }
+    let mut guard = PartialFileGuard { path: path.clone(), armed: true };
+    match client.download_to_writer(&params, file, download_limits()).await {
+        Ok(_file) => {
+            guard.armed = false;
+            Ok(path)
+        }
+        Err(e) => Err(download_error_message(e)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1206,6 +1576,71 @@ mod tests {
         let mut msg = wa::Message::default();
         msg.poll_update_message = MessageField::some(update);
         assert!(poll_vote_payload(&msg).is_none(), "a vote without ciphertext is nothing");
+    }
+
+    /// Mentions ride in the context info of whichever
+    /// sub-message carries the body; the extractor returns them
+    /// deduplicated, in wire order, across sub-message kinds.
+    #[test]
+    fn mentions_come_from_context_info_deduped_in_wire_order() {
+        let mut context = wa::ContextInfo::default();
+        context.mentioned_jid = vec![
+            "111@lid".to_owned(),
+            "222@s.whatsapp.net".to_owned(),
+            "111@lid".to_owned(),
+            String::new(),
+        ];
+        let mut text = wa::message::ExtendedTextMessage::default();
+        text.context_info = MessageField::some(context);
+        let mut msg = wa::Message::default();
+        msg.extended_text_message = MessageField::some(text);
+        assert_eq!(
+            mentioned_jids_of(&msg),
+            vec!["111@lid".to_owned(), "222@s.whatsapp.net".to_owned()]
+        );
+        // A plain conversation message carries no context info.
+        let mut plain = wa::Message::default();
+        plain.conversation = Some("hello".to_owned());
+        assert!(mentioned_jids_of(&plain).is_empty());
+    }
+
+    /// A sticker reference is usable only complete: every field
+    /// the download validation needs must be present and sized.
+    #[test]
+    fn sticker_ref_needs_the_complete_reference() {
+        let mut sticker = wa::message::StickerMessage::default();
+        sticker.direct_path = Some("/v/t62.15575-24/sticker.enc".to_owned());
+        sticker.media_key = Some(vec![1u8; 32]);
+        sticker.file_sha256 = Some(vec![2u8; 32]);
+        sticker.file_enc_sha256 = Some(vec![3u8; 32]);
+        sticker.file_length = Some(4321);
+        let mut msg = wa::Message::default();
+        msg.sticker_message = MessageField::some(sticker.clone());
+        let found = sticker_ref_of(&msg).expect("a complete sticker reference");
+        assert_eq!(found.file_length, 4321);
+        assert!(sticker_download_params(&found).is_ok());
+
+        sticker.media_key = Some(vec![1u8; 4]);
+        let mut broken = wa::Message::default();
+        broken.sticker_message = MessageField::some(sticker);
+        assert!(sticker_ref_of(&broken).is_none(), "a short media key is no reference");
+    }
+
+    /// The photo thumbnail is the image message's embedded JPEG,
+    /// bounded like the video thumbnail: an oversized blob is
+    /// not a thumbnail.
+    #[test]
+    fn photo_thumbnail_comes_from_the_image_message_bounded() {
+        let mut image = wa::message::ImageMessage::default();
+        image.jpeg_thumbnail = Some(vec![0xFF, 0xD8, 0xFF, 0xD9]);
+        let mut msg = wa::Message::default();
+        msg.image_message = MessageField::some(image.clone());
+        assert_eq!(photo_thumbnail_of(&msg).map(|t| t.len()), Some(4));
+
+        image.jpeg_thumbnail = Some(vec![0u8; MAX_PHOTO_THUMBNAIL_BYTES + 1]);
+        let mut big = wa::Message::default();
+        big.image_message = MessageField::some(image);
+        assert!(photo_thumbnail_of(&big).is_none());
     }
 
     /// An archived video reference rebuilds validated download

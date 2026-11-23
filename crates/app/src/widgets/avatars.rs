@@ -90,9 +90,11 @@ pub(crate) fn paint_chat_avatar(
     paint_chat_avatar_photo(painter, center, radius, chat, None);
 }
 
-/// The same dispatch with an optional profile photo: a one-to-one
-/// chat with a photo wears the photo, clipped to the disc; every
-/// other case falls through to the painted forms.
+/// The same dispatch with an optional profile photo: a chat
+/// with a photo wears the photo, clipped to the disc, groups
+/// included (a group's own picture outranks the generic group
+/// glyph, as in WhatsApp); every other case falls through to
+/// the painted forms.
 pub(crate) fn paint_chat_avatar_photo(
     painter: &egui::Painter,
     center: Pos2,
@@ -102,10 +104,10 @@ pub(crate) fn paint_chat_avatar_photo(
 ) {
     if chat.meta_ai {
         paint_ai_avatar(painter, center, radius, avatar_color(2));
-    } else if chat.kind == core::model::ChatKind::Group {
-        paint_avatar(painter, center, radius, true, chat.avatar_seed);
     } else if let Some(tex) = photo {
         paint_photo_avatar(painter, center, radius, tex);
+    } else if chat.kind == core::model::ChatKind::Group {
+        paint_avatar(painter, center, radius, true, chat.avatar_seed);
     } else {
         paint_initials_avatar(painter, center, radius, &chat.title, chat.avatar_seed);
     }

@@ -107,6 +107,34 @@ pub(crate) struct VoiceSnap {
     pub(crate) elapsed_secs: f32,
 }
 
+/// Height of a photo tile of width `w` for an image of aspect
+/// `aspect` (width over height): the photo's own proportions,
+/// clamped so a sliver or a tower never breaks the stream.
+/// Without a known aspect the tile keeps the long-standing
+/// 300 by 200 card proportion.
+pub(crate) fn photo_tile_h(aspect: Option<f32>, w: f32) -> f32 {
+    match aspect {
+        Some(a) if a > 0.05 && a < 20.0 => (w / a).clamp(90.0, 340.0),
+        _ => 200.0,
+    }
+}
+
+/// A sticker's paint size: its longest side capped at 160 px
+/// with its own aspect kept; a square 140 px until the sticker
+/// is decoded and its aspect is known.
+pub(crate) fn sticker_dims(aspect: Option<f32>) -> (f32, f32) {
+    match aspect {
+        Some(a) if a > 0.05 && a < 20.0 => {
+            if a >= 1.0 {
+                (160.0, 160.0 / a)
+            } else {
+                (160.0 * a, 160.0)
+            }
+        }
+        _ => (140.0, 140.0),
+    }
+}
+
 /// Media state a bubble needs from the app: the demo photo texture and
 /// this message's voice playback snapshot.
 #[derive(Clone, Copy, Default)]
@@ -122,6 +150,18 @@ pub(crate) struct MediaCtx {
     /// app, identical for the bubble, the album grid and the
     /// viewer.
     pub(crate) photo_tile: crate::media::PhotoTile,
+    /// The photo's wire thumbnail, decoded: the photo itself at
+    /// preview fidelity, painted while the full bytes load.
+    pub(crate) photo_thumb: Option<egui::TextureId>,
+    /// Aspect ratio (width over height) of the best image this
+    /// tile can show: the decoded photo when present, else its
+    /// thumbnail. The tile sizes itself from it instead of a
+    /// fixed card geometry. For a sticker, the sticker's own
+    /// aspect once decoded.
+    pub(crate) photo_aspect: Option<f32>,
+    /// What this message's sticker tile may honestly show,
+    /// decided by the app like `photo_tile`.
+    pub(crate) sticker_tile: crate::media::PhotoTile,
     /// What this message's video tile may honestly show (its own
     /// thumbnail or the neutral tile), decided by the app.
     pub(crate) video_tile: crate::media::VideoTile,
@@ -720,8 +760,16 @@ pub(crate) fn message_bubble(
                 inner_max,
                 Some(14.5 * BODY_LEADING),
             );
-            content_w = content_w.max(300.0_f32.min(inner_max));
-            kind_h = 200.0 + if caption.is_empty() { 0.0 } else { body_galley.size().y + 4.0 };
+            let tile_w = 300.0_f32.min(inner_max);
+            content_w = content_w.max(tile_w);
+            kind_h = photo_tile_h(media.photo_aspect, tile_w)
+                + if caption.is_empty() { 0.0 } else { body_galley.size().y + 4.0 };
+        }
+        MessageKind::Sticker => {
+            body_galley = layout_text(ui, "", body_font.clone(), text_color, inner_max);
+            let (w, h) = sticker_dims(media.photo_aspect);
+            content_w = content_w.max(w);
+            kind_h = h;
         }
         MessageKind::Video { caption, view_once, .. } => {
             if *view_once {
@@ -1074,18 +1122,21 @@ pub(crate) fn message_bubble(
                 }
             }
             MessageKind::Image { caption, view_once: false } => {
-                let img_rect = Rect::from_min_size(Pos2::new(x, y), Vec2::new(inner_w, 200.0));
+                let tile_h = photo_tile_h(media.photo_aspect, inner_w);
+                let img_rect = Rect::from_min_size(Pos2::new(x, y), Vec2::new(inner_w, tile_h));
                 // The tile paints the photo itself when its bytes
                 // are here (or the demo fixture, where that is the
-                // disclosed content). While the bytes are missing
-                // it paints a neutral placeholder that is plainly
-                // not a photo: a real live session never
-                // substitutes another image for a received photo.
+                // disclosed content). Until then it paints the
+                // wire thumbnail the sender's client embedded:
+                // the same photo at preview fidelity, never a
+                // substitute image. With neither, it paints a
+                // neutral placeholder that is plainly not a photo.
                 let tex = match media.photo_tile {
                     crate::media::PhotoTile::Real => media.own_photo,
                     crate::media::PhotoTile::Demo => media.own_photo.or(media.photo),
                     _ => None,
-                };
+                }
+                .or(media.photo_thumb);
                 if let Some(tex) = tex {
                     painter.image(
                         tex,
@@ -1147,7 +1198,46 @@ pub(crate) fn message_bubble(
                         mention_color,
                         inner_w,
                     );
-                    painter.galley(Pos2::new(x, y + 204.0), g, text_color);
+                    painter.galley(Pos2::new(x, y + tile_h + 4.0), g, text_color);
+                }
+            }
+            MessageKind::Sticker => {
+                // A sticker paints at sticker size (its longest
+                // side capped, its own aspect kept), never as a
+                // photo card: no frame, no caption, no label.
+                let (w, h) = sticker_dims(media.photo_aspect);
+                let rect = Rect::from_min_size(Pos2::new(x, y), Vec2::new(w, h));
+                if media.sticker_tile == crate::media::PhotoTile::Real {
+                    if let Some(tex) = media.own_photo {
+                        painter.image(
+                            tex,
+                            rect,
+                            Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(1.0, 1.0)),
+                            Color32::WHITE,
+                        );
+                    }
+                } else if media.sticker_tile == crate::media::PhotoTile::Loading {
+                    let spinner_rect = Rect::from_center_size(rect.center(), Vec2::splat(20.0));
+                    let mut slot = ui.new_child(
+                        egui::UiBuilder::new()
+                            .max_rect(spinner_rect)
+                            .layout(Layout::centered_and_justified(egui::Direction::TopDown)),
+                    );
+                    crate::widgets::spinner(&mut slot, 20.0);
+                } else {
+                    painter.rect_filled(
+                        rect,
+                        CornerRadius::same(INNER_CARD_RADIUS),
+                        rgb(t.bg_panel_alt),
+                    );
+                    crate::icons::draw(
+                        painter,
+                        crate::icons::Icon::Image,
+                        rect.center(),
+                        crate::icons::SIZE_LARGE,
+                        rgb(t.text_faint),
+                        rgb(t.bg_panel_alt),
+                    );
                 }
             }
             MessageKind::Video { caption, view_once, secs } => {

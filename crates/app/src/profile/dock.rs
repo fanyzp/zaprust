@@ -380,6 +380,7 @@ pub(super) fn dock_member_row(
     address: Option<&str>,
     admin: bool,
     kebab: bool,
+    photo: Option<egui::TextureId>,
 ) -> Option<egui::Response> {
     let seed = (name.bytes().map(u32::from).sum::<u32>() % 8) as u8;
     let mut kebab_resp = None;
@@ -389,13 +390,11 @@ pub(super) fn dock_member_row(
         |ui| {
             let (r, _) =
                 ui.allocate_exact_size(egui::vec2(DOCK_LABEL_X, 32.0), egui::Sense::hover());
-            crate::widgets::paint_avatar(
-                ui.painter(),
-                egui::pos2(r.left() + DOCK_ICON_X, r.center().y),
-                15.0,
-                false,
-                seed,
-            );
+            let center = egui::pos2(r.left() + DOCK_ICON_X, r.center().y);
+            match photo {
+                Some(tex) => crate::widgets::paint_photo_avatar(ui.painter(), center, 15.0, tex),
+                None => crate::widgets::paint_avatar(ui.painter(), center, 15.0, false, seed),
+            }
             ui.vertical(|ui| {
                 ui.label(RichText::new(name).size(12.5).color(rgb(t.text_primary)));
                 if let Some(address) = address {

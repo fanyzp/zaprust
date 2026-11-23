@@ -34,8 +34,7 @@ impl App {
         let t = self.tokens();
         let kind = profile_kind(&chat);
         let ctx = ui.ctx().clone();
-        let header_photo =
-            if chat.kind == ChatKind::Dm { self.demo_avatar(&ctx, &chat.title) } else { None };
+        let header_photo = self.chat_avatar_photo(&ctx, &chat);
         // Live group: fetch the real member list once per opening.
         if chat.kind == ChatKind::Group
             && self.live.is_some()
@@ -706,6 +705,12 @@ impl App {
                     // action lives in the row's kebab menu.
                     if chat.kind == ChatKind::Group {
                         if let Some(live_list) = &live_members {
+                            // Member photos resolve before the
+                            // section closure borrows the panel.
+                            let member_photos: Vec<Option<egui::TextureId>> = live_list
+                                .iter()
+                                .map(|row| self.member_avatar_photo(&ctx, &row.address, &row.label))
+                                .collect();
                             let mut member_action: Option<MemberAction> = None;
                             dock_card_section(
                                 ui,
@@ -717,7 +722,9 @@ impl App {
                                 ),
                                 None,
                                 |ui| {
-                                    for row in live_list.iter() {
+                                    for (row, photo) in
+                                        live_list.iter().zip(member_photos.iter())
+                                    {
                                         let Some(kebab) = dock_member_row(
                                             ui,
                                             t,
@@ -725,6 +732,7 @@ impl App {
                                             row.detail.as_deref(),
                                             row.admin,
                                             true,
+                                            *photo,
                                         ) else {
                                             continue;
                                         };
@@ -923,7 +931,8 @@ impl App {
                             if i > 0 {
                                 dock_separator(ui, t);
                             }
-                            dock_member_row(ui, t, name, None, i == 0, false);
+                            let photo = self.demo_avatar(&ctx, name);
+                            dock_member_row(ui, t, name, None, i == 0, false, photo);
                             ui.add_space(SP_1);
                         }
                         if extra_members > 0 {

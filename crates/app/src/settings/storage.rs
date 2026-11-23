@@ -130,6 +130,9 @@ impl App {
     pub(crate) fn clear_in_memory_caches(&mut self) {
         self.media.textures.clear();
         self.media.avatar_textures.clear();
+        self.media.live_avatar_textures.clear();
+        self.media.sticker_fetch.clear();
+        self.media.photo_thumb_textures.clear();
         self.picker.giphy_textures.clear();
         self.picker.sticker_textures.clear();
         self.cache_cleared = true;

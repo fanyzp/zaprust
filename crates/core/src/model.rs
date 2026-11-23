@@ -108,6 +108,11 @@ pub enum MessageKind {
         /// The cards, in order.
         cards: Vec<CarouselCard>,
     },
+    /// A sticker: a small square image rendered at sticker
+    /// size inside the bubble, never as a photo card. Its bytes
+    /// are fetched on demand like a photo's, through the sticker
+    /// fetch path.
+    Sticker,
     /// A centred system notice (encryption notice, member joined, …).
     System,
 }
@@ -393,6 +398,7 @@ pub fn conversation_counts(messages: &[Message]) -> ConversationCounts {
         match &message.kind {
             MessageKind::Image { .. }
             | MessageKind::Video { .. }
+            | MessageKind::Sticker
             | MessageKind::Carousel { .. } => {
                 counts.media += 1;
             }
@@ -421,6 +427,8 @@ pub enum PreviewMedia {
     Document,
     /// A poll.
     Poll,
+    /// A sticker.
+    Sticker,
 }
 
 impl PreviewMedia {
@@ -434,6 +442,7 @@ impl PreviewMedia {
             Self::Voice(secs) => format!("Voice message · {}:{:02}", secs / 60, secs % 60),
             Self::Document => "Document".to_owned(),
             Self::Poll => "Poll".to_owned(),
+            Self::Sticker => "Sticker".to_owned(),
         }
     }
 
@@ -447,6 +456,7 @@ impl PreviewMedia {
             MessageKind::Voice { secs, .. } => Some(Self::Voice(*secs)),
             MessageKind::Document { .. } => Some(Self::Document),
             MessageKind::Poll { .. } => Some(Self::Poll),
+            MessageKind::Sticker => Some(Self::Sticker),
             _ => None,
         }
     }

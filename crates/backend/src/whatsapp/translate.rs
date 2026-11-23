@@ -127,6 +127,16 @@ pub(super) fn translate_special(ctx: &MessageContext, sink: &EventSink) -> bool 
     false
 }
 
+/// Chats whose titles translation could not resolve, reported
+/// so the session can heal them from the client's own stores:
+/// (chat JID, chat kind) pairs.
+pub(super) type TitleHeals = Vec<(String, LiveChatKind)>;
+
+/// Media messages translation saw, reported so the session can
+/// record where each can be re-addressed for the media-retry
+/// flow: (chat JID, message ID, mark) triples.
+pub(super) type RetryMarks = Vec<(String, String, super::util::RetryMark)>;
+
 /// Maps a library event the typed handlers do not cover.
 /// `own_jids` are this account's own JIDs (phone number and
 /// LID, non-AD spellings): the disappearing-mode notification
@@ -137,8 +147,9 @@ pub(super) fn translate_event(
     event: &Event,
     sink: &EventSink,
     own_jids: &[String],
-) -> Vec<(String, LiveChatKind)> {
-    let mut unresolved_titles: Vec<(String, LiveChatKind)> = Vec::new();
+) -> (TitleHeals, RetryMarks) {
+    let mut unresolved_titles: TitleHeals = Vec::new();
+    let mut retry_marks: RetryMarks = Vec::new();
     match event {
         Event::Receipt(receipt) => {
             use whatsapp_rust::wacore::types::presence::ReceiptType;
@@ -344,7 +355,7 @@ pub(super) fn translate_event(
             // happens to create. Progress rides the same event.
             sink.emit(BackendEvent::SyncProgress { percent: lazy.progress() });
             if let Some(sync) = lazy.get() {
-                unresolved_titles = translate_history_sync(sync, sink);
+                (unresolved_titles, retry_marks) = translate_history_sync(sync, sink);
             }
         }
         Event::ContactUpdate(update) => {
@@ -389,9 +400,153 @@ pub(super) fn translate_event(
         Event::OfflineSyncCompleted(_) => {
             sink.emit(BackendEvent::SyncCompleted);
         }
+        Event::OfflineSyncInterrupted(_) => {
+            // The drain ended early (the connection dropped
+            // mid-sync): the sync row clears now instead of
+            // waiting out the app's quiet-window fallback.
+            sink.emit(BackendEvent::SyncCompleted);
+        }
+        Event::PictureUpdate(update) => {
+            // A picture was set, changed, or removed: any cached
+            // copy for this identity is stale.
+            sink.emit(BackendEvent::AvatarChanged { jid: update.jid.to_string() });
+        }
+        Event::ContactUpdated(update) => {
+            // The signal WA Web refreshes the profile picture
+            // on (the library's own docs say so).
+            sink.emit(BackendEvent::AvatarChanged { jid: update.jid.to_string() });
+        }
+        Event::GroupUpdate(update) => {
+            use whatsapp_rust::wacore::stanza::groups::GroupNotificationAction;
+            let chat_jid = update.group_jid.to_string();
+            if let GroupNotificationAction::Subject { subject, .. } = &*update.action {
+                if !subject.trim().is_empty() {
+                    sink.emit(BackendEvent::ChatRenamed {
+                        chat_jid: chat_jid.clone(),
+                        title: subject.clone(),
+                    });
+                }
+            }
+            // Whatever changed (members, modes, subject), the
+            // app's cached member list for this group is stale.
+            sink.emit(BackendEvent::GroupChanged { chat_jid });
+        }
+        Event::CallLogSync(sync) => {
+            if let Some(record) = call_record_of(
+                &sync.record,
+                Some(sync.call_id.clone()),
+                Some(sync.from_me),
+                Some(sync.call_creator_jid.to_string()),
+                sync.record.start_time.filter(|t| *t > 0).or(Some(sync.timestamp.timestamp())),
+            ) {
+                sink.emit(BackendEvent::CallHistoryRecord { record });
+            }
+        }
+        Event::CallLogHistory(history) => {
+            if let Some(record) = call_record_of(
+                &history.record,
+                None,
+                history.from_me,
+                history.call_creator_jid.as_ref().map(ToString::to_string),
+                history.timestamp.map(|t| t.timestamp()),
+            ) {
+                sink.emit(BackendEvent::CallHistoryRecord { record });
+            }
+        }
+        Event::FavoritesUpdate(update) => {
+            // The phone's favorite chats, complete: the app's
+            // favorite set is replaced, not merged.
+            let chat_jids = update
+                .action
+                .favorites
+                .iter()
+                .filter_map(|entry| entry.id.clone())
+                .filter(|id| !id.is_empty())
+                .collect();
+            sink.emit(BackendEvent::FavoritesSync { chat_jids });
+        }
+        Event::AppStateSyncFailed(failed) => {
+            // A fatal collection refusal is the case WA Web
+            // treats as grounds to tell the user (the library
+            // deliberately keeps the session alive); retryable
+            // and skipped collections stay silent.
+            if !failed.fatal.is_empty() {
+                sink.emit(BackendEvent::Error {
+                    message: "Some account data could not sync from your phone. If chats or \
+                         settings look out of date, check the WhatsApp app on your phone."
+                        .to_owned(),
+                });
+            }
+        }
+        Event::UndecryptableMessage(failed) => {
+            use whatsapp_rust::wacore::types::wire_enums::DecryptFailMode;
+            // Only the wire's show mode renders a placeholder;
+            // hide mode means the sender's client expects the
+            // gap to stay invisible.
+            if failed.decrypt_fail_mode == DecryptFailMode::Show {
+                let info = &failed.info;
+                sink.emit(BackendEvent::MessageUnavailable {
+                    chat_jid: info.source.chat.to_string(),
+                    message_id: info.id.to_string(),
+                    sender_jid: Some(info.source.sender.to_string()),
+                    from_me: info.source.is_from_me,
+                    timestamp: info.timestamp.timestamp(),
+                });
+            }
+        }
         _ => {}
     }
-    unresolved_titles
+    (unresolved_titles, retry_marks)
+}
+
+/// Builds the app's call record from one wire call-log record
+/// (the pairing-time history and app-state mutations share the
+/// record shape). Direction comes from the event's own creator
+/// comparison (`from_me`), never from the record's `is_incoming`
+/// flag, which the library documents as unreliable in both
+/// directions. Records without a call ID are skipped: history
+/// chunks replay, and an ID-less record could not be told apart
+/// from its own replay.
+fn call_record_of(
+    record: &whatsapp_rust::prelude::wa::CallLogRecord,
+    call_id_override: Option<String>,
+    from_me: Option<bool>,
+    creator_jid: Option<String>,
+    fallback_started_at: Option<i64>,
+) -> Option<crate::CallRecord> {
+    use whatsapp_rust::prelude::wa::call_log_record::CallResult;
+    let call_id = call_id_override
+        .filter(|id| !id.is_empty())
+        .or_else(|| record.call_id.clone().filter(|id| !id.is_empty()))?;
+    let creator = creator_jid
+        .filter(|j| !j.is_empty())
+        .or_else(|| record.call_creator_jid.clone().filter(|j| !j.is_empty()));
+    let outgoing = from_me.unwrap_or(false);
+    let chat_jid = record.group_jid.clone().filter(|j| !j.is_empty()).or_else(|| {
+        if outgoing {
+            // The chat is the other party: the first
+            // participant who is not the creator.
+            record
+                .participants
+                .iter()
+                .filter_map(|p| p.user_jid.clone())
+                .find(|jid| Some(jid) != creator.as_ref())
+                .or_else(|| creator.clone())
+        } else {
+            creator.clone()
+        }
+    })?;
+    let missed = !outgoing && record.call_result == Some(CallResult::Missed);
+    Some(crate::CallRecord {
+        id: 0,
+        call_id,
+        chat_jid,
+        video: record.is_video.unwrap_or(false),
+        outgoing,
+        missed,
+        duration_secs: u32::try_from(record.duration.unwrap_or(0).max(0)).unwrap_or(0),
+        started_at: record.start_time.filter(|t| *t > 0).or(fallback_started_at).unwrap_or(0),
+    })
 }
 
 /// Translates one decoded history sync payload into chat and
@@ -411,13 +566,19 @@ pub(super) fn translate_event(
 pub(super) fn translate_history_sync(
     sync: &whatsapp_rust::prelude::wa::HistorySync,
     sink: &EventSink,
-) -> Vec<(String, LiveChatKind)> {
+) -> (TitleHeals, RetryMarks) {
     let book = IdentityBook::from_sync(sync);
     let mut resolved_senders: Vec<(String, String)> = Vec::new();
-    let mut unresolved: Vec<(String, LiveChatKind)> = Vec::new();
+    let mut unresolved: TitleHeals = Vec::new();
+    let mut retry_marks: RetryMarks = Vec::new();
     for conv in &sync.conversations {
-        if let Some(item) = translate_history_conversation(conv, &book, &mut resolved_senders, sink)
-        {
+        if let Some(item) = translate_history_conversation(
+            conv,
+            &book,
+            &mut resolved_senders,
+            &mut retry_marks,
+            sink,
+        ) {
             unresolved.push(item);
         }
     }
@@ -436,7 +597,7 @@ pub(super) fn translate_history_sync(
             });
         }
     }
-    unresolved
+    (unresolved, retry_marks)
 }
 
 /// The identity sources one history payload carries, indexed for
@@ -548,6 +709,7 @@ fn translate_history_conversation(
     conv: &whatsapp_rust::prelude::wa::Conversation,
     book: &IdentityBook,
     resolved_senders: &mut Vec<(String, String)>,
+    retry_marks: &mut RetryMarks,
     sink: &EventSink,
 ) -> Option<(String, LiveChatKind)> {
     let chat_jid = conv.id.clone();
@@ -562,6 +724,17 @@ fn translate_history_conversation(
                 messages.push(msg);
             }
         }
+    }
+    // Every history message's media-retry addressing is recorded
+    // by the session: history media is exactly the media whose
+    // CDN copies expire, and the retry flow needs the author's
+    // identity, which only this payload knows.
+    for msg in &messages {
+        retry_marks.push((
+            chat_jid.clone(),
+            msg.id.clone(),
+            super::util::RetryMark { from_me: msg.from_me, sender_jid: msg.sender_jid.clone() },
+        ));
     }
     messages.sort_by_key(|m| m.timestamp);
     let last = messages.last();
@@ -676,6 +849,9 @@ fn history_message(
     msg.voice_ref = super::util::voice_ref_of(proto);
     msg.video_ref = super::util::video_ref_of(proto);
     msg.video_thumbnail = super::util::video_thumbnail_of(proto);
+    msg.photo_thumbnail = super::util::photo_thumbnail_of(proto);
+    msg.sticker_ref = super::util::sticker_ref_of(proto);
+    msg.mentions = super::util::mentioned_jids_of(proto);
     msg.sender_jid = sender_jid;
     if matches!(msg.kind, LiveMessageKind::Poll { .. }) {
         if let Some((secret, _names)) = super::util::received_poll_secret(proto) {
@@ -808,6 +984,13 @@ pub(super) fn translate_message(ctx: &MessageContext) -> Option<(LiveChat, LiveM
     // video's visual identity until its bytes are played.
     msg.video_ref = super::util::video_ref_of(&ctx.message);
     msg.video_thumbnail = super::util::video_thumbnail_of(&ctx.message);
+    // A photo's embedded thumbnail and a sticker's reference
+    // travel the same way, and so do the message's mentions: the
+    // app resolves each mentioned JID to a display name at
+    // render time.
+    msg.photo_thumbnail = super::util::photo_thumbnail_of(&ctx.message);
+    msg.sticker_ref = super::util::sticker_ref_of(&ctx.message);
+    msg.mentions = super::util::mentioned_jids_of(&ctx.message);
     // Quote context, when the message carries one.
     if let Some(quoted) = quoted_context(ctx) {
         msg.quoted_sender = quoted.0;
@@ -1491,7 +1674,7 @@ mod presence_translate_tests {
 
 #[cfg(test)]
 mod live_pairing_fix_tests {
-    use super::{body_for, classify_message, translate_history_sync};
+    use super::{body_for, call_record_of, classify_message, translate_history_sync};
     use crate::{BackendEvent, EventSink, LiveChatKind, LiveMessageKind, MediaKind};
     use whatsapp_rust::prelude::wa;
     use whatsapp_rust::prelude::MessageField;
@@ -1691,7 +1874,7 @@ mod live_pairing_fix_tests {
 
         let (tx, rx) = std::sync::mpsc::sync_channel(32);
         let sink = EventSink { tx, wake: std::sync::Arc::new(|| {}) };
-        let unresolved = translate_history_sync(&sync, &sink);
+        let (unresolved, _retry_marks) = translate_history_sync(&sync, &sink);
         let events: Vec<BackendEvent> = rx.try_iter().collect();
 
         let title_of = |jid: &str| {
@@ -1726,5 +1909,69 @@ mod live_pairing_fix_tests {
             vec![("120363430176830545@g.us".to_owned(), LiveChatKind::Group)],
             "only the subjectless group is reported unresolved"
         );
+    }
+
+    fn call_log_record() -> whatsapp_rust::prelude::wa::CallLogRecord {
+        use whatsapp_rust::prelude::wa::call_log_record::CallResult;
+        let mut record = whatsapp_rust::prelude::wa::CallLogRecord::default();
+        record.call_id = Some("call-1".to_owned());
+        record.call_creator_jid = Some("628111@s.whatsapp.net".to_owned());
+        record.call_result = Some(CallResult::Connected);
+        record.is_video = Some(true);
+        record.duration = Some(125);
+        record.start_time = Some(1_700_000_000);
+        record
+    }
+
+    /// A synced call record files under the other party for an
+    /// incoming call, under the first non-creator participant for
+    /// an outgoing one, and under the group for a group call.
+    /// Direction comes from the event's own from_me, never from
+    /// the record's unreliable is_incoming flag.
+    #[test]
+    fn call_record_files_under_the_right_chat() {
+        let record = call_log_record();
+        let incoming = call_record_of(&record, None, Some(false), None, None).unwrap();
+        assert_eq!(incoming.chat_jid, "628111@s.whatsapp.net");
+        assert!(!incoming.outgoing && !incoming.missed);
+        assert!(incoming.video);
+        assert_eq!(incoming.duration_secs, 125);
+        assert_eq!(incoming.started_at, 1_700_000_000);
+
+        let mut outgoing_record = call_log_record();
+        let mut participant =
+            whatsapp_rust::prelude::wa::call_log_record::ParticipantInfo::default();
+        participant.user_jid = Some("628222@s.whatsapp.net".to_owned());
+        outgoing_record.participants = vec![participant];
+        let outgoing = call_record_of(&outgoing_record, None, Some(true), None, None).unwrap();
+        assert_eq!(outgoing.chat_jid, "628222@s.whatsapp.net");
+        assert!(outgoing.outgoing && !outgoing.missed);
+
+        let mut group_record = call_log_record();
+        group_record.group_jid = Some("120363@g.us".to_owned());
+        let group = call_record_of(&group_record, None, Some(false), None, None).unwrap();
+        assert_eq!(group.chat_jid, "120363@g.us");
+    }
+
+    /// Missed is an incoming-only outcome, and a record with no
+    /// call id anywhere is dropped rather than filed under a
+    /// guess.
+    #[test]
+    fn call_record_missed_and_identity_rules() {
+        use whatsapp_rust::prelude::wa::call_log_record::CallResult;
+        let mut record = call_log_record();
+        record.call_result = Some(CallResult::Missed);
+        let missed = call_record_of(&record, None, Some(false), None, None).unwrap();
+        assert!(missed.missed);
+        let outgoing = call_record_of(&record, None, Some(true), None, None).unwrap();
+        assert!(!outgoing.missed, "an outgoing call is never missed");
+
+        let mut anonymous = call_log_record();
+        anonymous.call_id = None;
+        assert!(call_record_of(&anonymous, None, Some(false), None, None).is_none());
+        let rescued =
+            call_record_of(&anonymous, Some("sync-id".to_owned()), Some(false), None, None)
+                .unwrap();
+        assert_eq!(rescued.call_id, "sync-id");
     }
 }

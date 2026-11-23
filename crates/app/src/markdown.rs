@@ -161,6 +161,11 @@ pub(crate) fn galley_leading(
 ) -> Arc<Galley> {
     let mut layout = job(text, size, color, code_bg, mention_color, leading);
     layout.wrap.max_width = wrap;
+    // A single unbroken token (a long link, a pasted hash, a
+    // run of digits) must wrap inside the bubble instead of
+    // overflowing it: WhatsApp breaks such runs, and a bubble
+    // that clips its own text reads as a bug.
+    layout.wrap.break_anywhere = true;
     ui.ctx().fonts_mut(|f| f.layout_job(layout))
 }
 

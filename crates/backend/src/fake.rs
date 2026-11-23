@@ -98,6 +98,94 @@ impl Default for FakeBackend {
     }
 }
 
+/// A deterministic fixture picture (a valid PNG) for the
+/// demo world's avatar and sticker fetches: a light disc on a
+/// two-tone field, hue derived from the seed so different
+/// identities get visibly different pictures. Demo and test
+/// fixtures only; the real backend serves real bytes.
+fn fixture_png(seed: &str) -> Vec<u8> {
+    const SIZE: usize = 96;
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in seed.bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    let hue = (hash % 360) as f32;
+    let (br, bg, bb) = hsv_to_rgb(hue, 0.45, 0.55);
+    let (fr, fg, fb) = hsv_to_rgb(hue, 0.30, 0.85);
+    // Raw scanlines, one filter byte per row.
+    let mut raw = Vec::with_capacity(SIZE * (1 + SIZE * 3));
+    for y in 0..SIZE {
+        raw.push(0u8);
+        for x in 0..SIZE {
+            let dx = x as i32 - 48;
+            let dy = y as i32 - 42;
+            let in_disc = dx * dx + dy * dy <= 26 * 26;
+            let shade = 1.0 - (y as f32 / SIZE as f32) * 0.25;
+            let (r, g, b) =
+                if in_disc { (fr, fg, fb) } else { (br * shade, bg * shade, bb * shade) };
+            raw.push((r * 255.0) as u8);
+            raw.push((g * 255.0) as u8);
+            raw.push((b * 255.0) as u8);
+        }
+    }
+    // zlib stream of stored (uncompressed) blocks.
+    let mut idat = vec![0x78, 0x01];
+    let chunks = raw.chunks(65_535);
+    let total = chunks.len();
+    for (i, block) in chunks.enumerate() {
+        let last = i + 1 == total;
+        idat.push(u8::from(last));
+        let len = block.len() as u16;
+        idat.extend_from_slice(&len.to_le_bytes());
+        idat.extend_from_slice(&(!len).to_le_bytes());
+        idat.extend_from_slice(block);
+    }
+    let (mut a, mut b) = (1u32, 0u32);
+    for byte in &raw {
+        a = (a + u32::from(*byte)) % 65_521;
+        b = (b + a) % 65_521;
+    }
+    idat.extend_from_slice(&((b << 16) | a).to_be_bytes());
+    let mut png = vec![0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+    let mut ihdr = Vec::with_capacity(13);
+    ihdr.extend_from_slice(&(SIZE as u32).to_be_bytes());
+    ihdr.extend_from_slice(&(SIZE as u32).to_be_bytes());
+    ihdr.extend_from_slice(&[8, 2, 0, 0, 0]);
+    png_chunk(&mut png, b"IHDR", &ihdr);
+    png_chunk(&mut png, b"IDAT", &idat);
+    png_chunk(&mut png, b"IEND", &[]);
+    png
+}
+
+fn hsv_to_rgb(h: f32, s: f32, v: f32) -> (f32, f32, f32) {
+    let c = v * s;
+    let x = c * (1.0 - ((h / 60.0) % 2.0 - 1.0).abs());
+    let (r, g, b) = match (h / 60.0) as u32 {
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    (r + v - c, g + v - c, b + v - c)
+}
+
+fn png_chunk(out: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]) {
+    out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+    out.extend_from_slice(kind);
+    out.extend_from_slice(data);
+    let mut crc: u32 = 0xffff_ffff;
+    for byte in kind.iter().chain(data.iter()) {
+        crc ^= u32::from(*byte);
+        for _ in 0..8 {
+            crc = if crc & 1 != 0 { (crc >> 1) ^ 0xedb8_8320 } else { crc >> 1 };
+        }
+    }
+    out.extend_from_slice(&(crc ^ 0xffff_ffff).to_be_bytes());
+}
+
 /// A deterministic fake invite code for a group, changing with
 /// each reset generation so a reset visibly mints a new link.
 fn fake_invite_code(chat_jid: &str, generation: u32) -> String {
@@ -1581,6 +1669,50 @@ impl Backend for FakeBackend {
                             .to_owned(),
                     });
                 }
+                BackendCommand::FetchSticker { chat_jid, message_id, .. } => {
+                    if self.demo_script {
+                        let bytes = fixture_png(&message_id);
+                        events.emit(BackendEvent::StickerBytes { chat_jid, message_id, bytes });
+                    } else {
+                        events.emit(BackendEvent::StickerFetchFailed { chat_jid, message_id });
+                    }
+                }
+                BackendCommand::FetchAvatar { jid } => {
+                    // The demo world has pictures for everyone;
+                    // the deterministic test world has none, so
+                    // tests see the honest negative path.
+                    if self.demo_script {
+                        let bytes = fixture_png(&jid);
+                        events.emit(BackendEvent::AvatarBytes {
+                            jid,
+                            picture_id: Some("fake-picture".to_owned()),
+                            bytes,
+                        });
+                    } else {
+                        events.emit(BackendEvent::AvatarMissing { jid });
+                    }
+                }
+                BackendCommand::ResolveTitles { jids } => {
+                    if let Some(log) = &command_log {
+                        log.lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .push(format!("resolve_titles:{}", jids.len()));
+                    }
+                    // The fake heals from its own scripted
+                    // roster: a reported chat whose scripted
+                    // title is a real name gets its rename.
+                    for jid in jids {
+                        if let Some(chat) = chat_state.get(&jid) {
+                            let raw = chat.jid.split('@').next().unwrap_or("");
+                            if !chat.title.is_empty() && chat.title != raw {
+                                events.emit(BackendEvent::ChatRenamed {
+                                    chat_jid: jid,
+                                    title: chat.title.clone(),
+                                });
+                            }
+                        }
+                    }
+                }
                 BackendCommand::Disconnect => {
                     events.emit(BackendEvent::LoggedOut);
                 }
@@ -1815,6 +1947,20 @@ mod tests {
     use crate::{spawn_backend, BackendChannels, WakeFn};
     use std::sync::Arc;
     use std::time::Duration;
+
+    /// The generated fixture is a real PNG (the app's decoder
+    /// must accept what the fake serves as avatar and sticker
+    /// bytes): signature, IHDR dimensions, and per-seed variety.
+    #[test]
+    fn fixture_png_is_a_valid_deterministic_png() {
+        let bytes = fixture_png("628123@s.whatsapp.net");
+        assert_eq!(&bytes[..8], &[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
+        // IHDR width and height sit at fixed offsets in the file.
+        assert_eq!(u32::from_be_bytes(bytes[16..20].try_into().unwrap()), 96);
+        assert_eq!(u32::from_be_bytes(bytes[20..24].try_into().unwrap()), 96);
+        assert_eq!(bytes, fixture_png("628123@s.whatsapp.net"), "same seed, same picture");
+        assert_ne!(bytes, fixture_png("628999@s.whatsapp.net"), "another seed, another hue");
+    }
 
     fn start(fake: FakeBackend) -> BackendChannels {
         let wake: WakeFn = Arc::new(|| {});

@@ -366,13 +366,17 @@ impl App {
                             // back to the shared silhouette avatar.
                             let (rect, _) =
                                 ui.allocate_exact_size(Vec2::splat(64.0), Sense::hover());
-                            match self.chats.iter().find(|c| c.id == call.chat_id) {
-                                Some(chat) => crate::widgets::paint_chat_avatar(
-                                    ui.painter(),
-                                    rect.center(),
-                                    32.0,
-                                    chat,
-                                ),
+                            match self.chats.iter().find(|c| c.id == call.chat_id).cloned() {
+                                Some(chat) => {
+                                    let photo = self.chat_avatar_photo(ui.ctx(), &chat);
+                                    crate::widgets::paint_chat_avatar_photo(
+                                        ui.painter(),
+                                        rect.center(),
+                                        32.0,
+                                        &chat,
+                                        photo,
+                                    );
+                                }
                                 None => crate::widgets::paint_avatar(
                                     ui.painter(),
                                     rect.center(),

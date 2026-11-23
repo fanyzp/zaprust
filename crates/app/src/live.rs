@@ -241,6 +241,42 @@ pub(crate) struct LiveSession {
     /// its own frame in later sessions without fetching its
     /// bytes.
     pub(crate) video_thumbs: HashMap<u64, Vec<u8>>,
+    /// Sticker re-download references per numeric message ID,
+    /// seeded and extended exactly like `photo_refs`.
+    pub(crate) sticker_refs: HashMap<u64, backend::StickerRef>,
+    /// Photo thumbnails (the wire JPEG bytes) per numeric
+    /// message ID, seeded and extended exactly like
+    /// `video_thumbs`, so a photo's tile can paint the photo
+    /// itself at preview fidelity before its full bytes are
+    /// fetched, and size itself from the real aspect ratio.
+    pub(crate) photo_thumbs: HashMap<u64, Vec<u8>>,
+    /// Mentioned JIDs per numeric message ID, seeded from the
+    /// archive and extended by every upsert. The bubble
+    /// substitutes display names for the body's `@<number>`
+    /// spans at render time, resolving through `names`.
+    pub(crate) message_mentions: HashMap<u64, Vec<String>>,
+    /// The session's name directory: JID (either form) to the
+    /// best known display name, fed by sender-name events,
+    /// group member lists, and chat titles. Mention rendering
+    /// resolves through it; entries only ever improve (a raw
+    /// identifier never overwrites a name), the same monotonic
+    /// rule the store enforces.
+    pub(crate) names: HashMap<String, String>,
+    /// Profile picture bytes per JID, staged from the store's
+    /// avatar rows at start. Decoded into
+    /// `media.live_avatar_textures` on first display (decoding
+    /// needs a graphics context the session does not own).
+    pub(crate) avatar_bytes: HashMap<String, Vec<u8>>,
+    /// JIDs whose picture lookup answered definitively (no
+    /// picture, or privacy refused), with the unix second of
+    /// the answer. A negative younger than a day is not
+    /// re-asked; an older one is, because people set pictures.
+    pub(crate) avatar_missing: HashMap<String, i64>,
+    /// JIDs with a picture fetch in flight, plus JIDs whose
+    /// fetch failed this session (transport failures stay
+    /// retryable across sessions, not within one frame loop).
+    /// Cleared per JID when the wire reports a picture change.
+    pub(crate) avatar_requested: std::collections::HashSet<String>,
     /// Per-voter poll ballots per numeric message ID, seeded
     /// from the archive at start and extended by every vote
     /// event. A vote replaces the voter's whole previous ballot
@@ -576,9 +612,7 @@ pub(crate) fn to_kind(kind: &backend::LiveMessageKind) -> MessageKind {
                     name: if caption.is_empty() { "Document".to_owned() } else { caption.clone() },
                     size_kib: u32::try_from(size_bytes / 1024).unwrap_or(0),
                 },
-                MediaKind::Sticker => {
-                    MessageKind::Image { caption: "Sticker".to_owned(), view_once: false }
-                }
+                MediaKind::Sticker => MessageKind::Sticker,
             }
         }
         backend::LiveMessageKind::Other(_) => MessageKind::Text,
@@ -900,6 +934,13 @@ impl crate::state::App {
             voice_refs: HashMap::new(),
             video_refs: HashMap::new(),
             video_thumbs: HashMap::new(),
+            sticker_refs: HashMap::new(),
+            photo_thumbs: HashMap::new(),
+            message_mentions: HashMap::new(),
+            names: HashMap::new(),
+            avatar_bytes: HashMap::new(),
+            avatar_missing: HashMap::new(),
+            avatar_requested: std::collections::HashSet::new(),
             poll_ballots: HashMap::new(),
         };
         // Load the archive into the rendered data. Live mode never
@@ -911,10 +952,34 @@ impl crate::state::App {
         // in this session too.
         let mut archived_poll_secrets: Vec<BackendCommand> = Vec::new();
         if let Some(store) = &session.store {
+            // Stored profile pictures seed the avatar cache:
+            // positives stage their bytes for first display,
+            // negatives remember when they were answered.
+            if let Ok(rows) = store.avatars() {
+                for (jid, _picture_id, bytes, fetched_at) in rows {
+                    match bytes {
+                        Some(bytes) => {
+                            session.avatar_bytes.insert(jid, bytes);
+                        }
+                        None => {
+                            session.avatar_missing.insert(jid, fetched_at);
+                        }
+                    }
+                }
+            }
             if let Ok(chats) = store.chats() {
                 for chat in &chats {
                     session.jids.insert(jid_id(&chat.jid), chat.jid.clone());
                     session.times.insert(jid_id(&chat.jid), chat.timestamp);
+                    // A direct chat's resolved title is the
+                    // contact's display name: it seeds the name
+                    // directory under the chat's JID.
+                    if chat.kind == backend::LiveChatKind::Dm
+                        && !chat.title.is_empty()
+                        && !is_raw_identifier(&chat.title)
+                    {
+                        session.names.insert(chat.jid.clone(), chat.title.clone());
+                    }
                     if let Ok(msgs) = store.messages(&chat.jid) {
                         for (m, flags) in &msgs {
                             if *flags != 0 {
@@ -971,6 +1036,33 @@ impl crate::state::App {
                                 session
                                     .video_thumbs
                                     .insert(message_id(&m.chat_jid, &m.id), thumb.clone());
+                            }
+                            // A sticker's reference and a
+                            // photo's thumbnail are seeded the
+                            // same way.
+                            if let Some(reference) = &m.sticker_ref {
+                                session
+                                    .sticker_refs
+                                    .insert(message_id(&m.chat_jid, &m.id), reference.clone());
+                            }
+                            if let Some(thumb) = &m.photo_thumbnail {
+                                session
+                                    .photo_thumbs
+                                    .insert(message_id(&m.chat_jid, &m.id), thumb.clone());
+                            }
+                            if !m.mentions.is_empty() {
+                                session
+                                    .message_mentions
+                                    .insert(message_id(&m.chat_jid, &m.id), m.mentions.clone());
+                            }
+                            // A stored sender label seeds the
+                            // name directory under its JID, so
+                            // mentions in archived messages
+                            // resolve on the first frame too.
+                            if let (Some(jid), Some(name)) = (&m.sender_jid, &m.sender) {
+                                if !name.is_empty() && !is_raw_identifier(name) {
+                                    session.names.insert(jid.clone(), name.clone());
+                                }
                             }
                             // A poll's per-voter ballots are seeded
                             // the same way, so the next vote event
@@ -1752,6 +1844,18 @@ impl crate::state::App {
                 }
             }
             BackendEvent::Connected { account } => {
+                // Chats whose titles are still raw identifiers,
+                // collected before the mutable session borrow:
+                // they are reported for resolution below.
+                let raw_titles: Vec<String> = match &self.live {
+                    Some(session) => self
+                        .chats
+                        .iter()
+                        .filter(|chat| is_raw_identifier(&chat.title))
+                        .filter_map(|chat| session.jids.get(&chat.id).cloned())
+                        .collect(),
+                    None => Vec::new(),
+                };
                 if let Some(session) = &mut self.live {
                     session.status = LinkStatus::Linked;
                     session.account = account;
@@ -1773,6 +1877,18 @@ impl crate::state::App {
                     // connect screen (logic review F13).
                     session.pair_code = None;
                     session.pair_code_at = None;
+                    // The raw-titled chats collected above are
+                    // reported for resolution: a later launch
+                    // gets no fresh history sync to heal from,
+                    // so the connect itself is the trigger (the
+                    // backend retries each fetch a bounded
+                    // number of times).
+                    if !raw_titles.is_empty() {
+                        let _ = session
+                            .channels
+                            .commands
+                            .send(BackendCommand::ResolveTitles { jids: raw_titles });
+                    }
                 }
                 if self.screen == crate::state::Screen::Connect {
                     self.screen = crate::state::Screen::Chats;
@@ -2125,6 +2241,125 @@ impl crate::state::App {
                     self.media.photo_fetch.insert(mid, crate::state::PhotoFetchState::Failed);
                 }
             }
+            BackendEvent::StickerBytes { chat_jid, message_id: pid, bytes } => {
+                // A sticker's fetched bytes become its texture,
+                // the same landing as a photo's.
+                let mid = message_id(&chat_jid, &pid);
+                match crate::media::decode_photo(ctx, &bytes) {
+                    Some(tex) => {
+                        self.media.textures.insert(mid, tex);
+                        self.media.sticker_fetch.remove(&mid);
+                    }
+                    None => {
+                        self.media.sticker_fetch.insert(mid, crate::state::PhotoFetchState::Failed);
+                    }
+                }
+            }
+            BackendEvent::StickerFetchFailed { chat_jid, message_id: pid } => {
+                let mid = message_id(&chat_jid, &pid);
+                if self.media.sticker_fetch.get(&mid)
+                    == Some(&crate::state::PhotoFetchState::Loading)
+                {
+                    self.media.sticker_fetch.insert(mid, crate::state::PhotoFetchState::Failed);
+                }
+            }
+            BackendEvent::AvatarBytes { jid, picture_id, bytes } => {
+                // Persist first (the store is the launch seed),
+                // then decode into the live texture cache. Bytes
+                // that do not decode are dropped, never painted
+                // and never stored as a picture.
+                let now = i64::try_from(crate::state::now_unix()).unwrap_or(0);
+                if let Some(tex) = crate::media::decode_photo(ctx, &bytes) {
+                    if let Some(session) = &mut self.live {
+                        if let Some(store) = &session.store {
+                            let _ =
+                                store.put_avatar(&jid, picture_id.as_deref(), Some(&bytes), now);
+                        }
+                        session.avatar_missing.remove(&jid);
+                        session.avatar_bytes.insert(jid.clone(), bytes);
+                    }
+                    self.media.live_avatar_textures.insert(jid, tex);
+                }
+            }
+            BackendEvent::AvatarMissing { jid } => {
+                let now = i64::try_from(crate::state::now_unix()).unwrap_or(0);
+                if let Some(session) = &mut self.live {
+                    if let Some(store) = &session.store {
+                        let _ = store.put_avatar(&jid, None, None, now);
+                    }
+                    session.avatar_missing.insert(jid, now);
+                }
+            }
+            BackendEvent::AvatarChanged { jid } => {
+                // The wire says this identity's picture changed:
+                // every cached form is stale. The next display
+                // refetches through `ensure_avatar`.
+                self.media.live_avatar_textures.remove(&jid);
+                if let Some(session) = &mut self.live {
+                    if let Some(store) = &session.store {
+                        let _ = store.delete_avatar(&jid);
+                    }
+                    session.avatar_bytes.remove(&jid);
+                    session.avatar_missing.remove(&jid);
+                    session.avatar_requested.remove(&jid);
+                }
+            }
+            BackendEvent::MediaRefreshed { chat_jid, message_id: pid, direct_path } => {
+                // The media-retry flow re-uploaded this message's
+                // media under a fresh CDN path: update the
+                // session's references and the archive, so later
+                // fetches and later sessions go straight to it.
+                let mid = message_id(&chat_jid, &pid);
+                if let Some(session) = &mut self.live {
+                    if let Some(reference) = session.photo_refs.get_mut(&mid) {
+                        reference.direct_path = direct_path.clone();
+                    }
+                    if let Some(reference) = session.voice_refs.get_mut(&mid) {
+                        reference.direct_path = direct_path.clone();
+                    }
+                    if let Some(reference) = session.video_refs.get_mut(&mid) {
+                        reference.direct_path = direct_path.clone();
+                    }
+                    if let Some(reference) = session.sticker_refs.get_mut(&mid) {
+                        reference.direct_path = direct_path.clone();
+                    }
+                    if let Some(store) = &session.store {
+                        let _ = store.update_media_direct_path(&chat_jid, &pid, &direct_path);
+                    }
+                }
+            }
+            BackendEvent::FavoritesSync { chat_jids } => {
+                self.apply_favorites_sync(&chat_jids);
+            }
+            BackendEvent::CallHistoryRecord { record } => {
+                // The phone's own call history: the store keeps
+                // the first record per call ID, so replays of a
+                // history chunk are harmless. The panel list is
+                // then reloaded from the archive, the same load
+                // a session start performs.
+                if let Some(session) = &self.live {
+                    if let Some(store) = &session.store {
+                        let _ = store.record_call(&record);
+                    }
+                }
+                self.load_call_history();
+            }
+            BackendEvent::GroupChanged { chat_jid } => {
+                // The cached member list for this group is
+                // stale: forget that it was fetched. The frame
+                // loop's member sync refetches it while the
+                // group is open.
+                self.groups.members_requested.remove(&jid_id(&chat_jid));
+            }
+            BackendEvent::MessageUnavailable {
+                chat_jid,
+                message_id: pid,
+                sender_jid,
+                from_me,
+                timestamp,
+            } => {
+                self.apply_message_unavailable(&chat_jid, &pid, sender_jid, from_me, timestamp);
+            }
             BackendEvent::VoiceBytes { chat_jid, message_id: pid, bytes } => {
                 let mid = message_id(&chat_jid, &pid);
                 // Bytes that land for a note the user has already
@@ -2225,6 +2460,16 @@ impl crate::state::App {
                 }
             }
             BackendEvent::GroupMembers { chat_jid, members } => {
+                // Member names join the name directory before
+                // row resolution masks any of them: mentions of
+                // this group's members resolve from here.
+                if let Some(session) = &mut self.live {
+                    for (jid, name, _admin) in &members {
+                        if !name.is_empty() && !is_raw_identifier(name) {
+                            session.names.insert(jid.clone(), name.clone());
+                        }
+                    }
+                }
                 let rows = self.resolve_member_rows(members);
                 self.groups.live_members.insert(jid_id(&chat_jid), rows);
             }
@@ -2422,6 +2667,11 @@ impl crate::state::App {
             if let Some(store) = &session.store {
                 let _ = store.rename_chat(chat_jid, title);
             }
+            // A direct chat's title is the contact's name: it
+            // joins the name directory under the chat's JID.
+            if !chat_jid.ends_with("@g.us") && !title.is_empty() && !is_raw_identifier(title) {
+                session.names.insert(chat_jid.to_owned(), title.to_owned());
+            }
         }
         let id = jid_id(chat_jid);
         if let Some(chat) = self.chats.iter_mut().find(|c| c.id == id) {
@@ -2436,6 +2686,14 @@ impl crate::state::App {
     /// raw identifier are rewritten in the archive and in memory.
     /// Labels that already hold a name are never touched.
     fn apply_sender_named(&mut self, sender_jid: &str, name: &str) {
+        // Every learned name joins the name directory first
+        // (mention resolution reads it), whether or not any
+        // stored label still needs the rewrite below.
+        if let Some(session) = &mut self.live {
+            if !name.is_empty() && !is_raw_identifier(name) {
+                session.names.insert(sender_jid.to_owned(), name.to_owned());
+            }
+        }
         let raw = sender_jid.split('@').next().unwrap_or(sender_jid);
         if !is_raw_identifier(raw) {
             return;
@@ -2519,6 +2777,24 @@ impl crate::state::App {
         if merged.unread == 0 {
             if let Some(known) = self.chats.iter().find(|c| c.id == id) {
                 merged.unread = known.unread;
+            }
+        }
+        // Same protection for the title, in the identifier
+        // direction: a message-arrival upsert titles its chat
+        // with the raw identifier (the wire carries no subject
+        // or contact name on that path), so a raw incoming title
+        // must never stamp over a title this client has already
+        // resolved, in the mirror or in the archive. A resolved
+        // incoming title always lands: it is how renames and
+        // healing arrive. Without this, the most active group
+        // reverted to its raw JID on every new message, because
+        // live traffic re-stamped it faster than healing could
+        // land (the v1.6.6 live retest defect).
+        if is_raw_identifier(&merged.title) {
+            if let Some(known) = self.chats.iter().find(|c| c.id == id) {
+                if !known.title.is_empty() && !is_raw_identifier(&known.title) {
+                    merged.title = known.title.clone();
+                }
             }
         }
         if let Some(session) = &mut self.live {
@@ -3144,6 +3420,24 @@ impl crate::state::App {
             if let Some(thumb) = &live.video_thumbnail {
                 session.video_thumbs.insert(msg_id, thumb.clone());
             }
+            if let Some(reference) = &live.sticker_ref {
+                session.sticker_refs.insert(msg_id, reference.clone());
+            }
+            if let Some(thumb) = &live.photo_thumbnail {
+                session.photo_thumbs.insert(msg_id, thumb.clone());
+            }
+            if !live.mentions.is_empty() {
+                session.message_mentions.insert(msg_id, live.mentions.clone());
+            }
+            // The sender's resolved name joins the name
+            // directory under both of the sender's JID forms
+            // when the session knows them, so mentions of this
+            // sender resolve wherever they appear.
+            if let (Some(jid), Some(name)) = (&live.sender_jid, &live.sender) {
+                if !name.is_empty() && !is_raw_identifier(name) {
+                    session.names.insert(jid.clone(), name.clone());
+                }
+            }
             let mut flags = session.flags.get(&msg_id).copied().unwrap_or(0);
             if live.starred {
                 flags |= store::FLAG_STARRED;
@@ -3591,6 +3885,22 @@ impl crate::state::App {
         }
     }
 
+    /// What one sticker message's tile may honestly show,
+    /// decided exactly like [`App::photo_tile`]: the sticker's
+    /// own decoded bytes, a fetch in flight, a failed fetch, or
+    /// not yet requested. There is no demo variant: a sticker is
+    /// never substituted with another image.
+    pub(crate) fn sticker_tile(&self, msg_id: u64) -> crate::media::PhotoTile {
+        if self.media.textures.contains_key(&msg_id) {
+            return crate::media::PhotoTile::Real;
+        }
+        match self.media.sticker_fetch.get(&msg_id) {
+            Some(crate::state::PhotoFetchState::Loading) => crate::media::PhotoTile::Loading,
+            Some(crate::state::PhotoFetchState::Failed) => crate::media::PhotoTile::Failed,
+            None => crate::media::PhotoTile::Idle,
+        }
+    }
+
     /// Starts the display fetch for one photo message of the open
     /// chat, unless its bytes are already here or a fetch is
     /// already running. The fetch passes the message's archived
@@ -3623,6 +3933,123 @@ impl crate::state::App {
             chat_jid,
             message_id: protocol_id,
             photo_ref,
+        });
+    }
+
+    /// Ensures one identity's profile picture is on its way or
+    /// already here, called by every surface that paints an
+    /// avatar. Resolution order: the decoded texture cache, the
+    /// store-staged bytes (decoded here, where a graphics
+    /// context exists), a fresh-enough negative, and finally a
+    /// backend fetch, deduplicated per JID. In demo mode the
+    /// demo portraits answer instead and no fetch is sent.
+    pub(crate) fn ensure_avatar(&mut self, ctx: &egui::Context, jid: &str) {
+        if self.live.is_none() {
+            return;
+        }
+        if self.media.live_avatar_textures.contains_key(jid) {
+            return;
+        }
+        let staged = self.live.as_ref().and_then(|s| s.avatar_bytes.get(jid).cloned());
+        if let Some(bytes) = staged {
+            if let Some(tex) = crate::media::decode_photo(ctx, &bytes) {
+                self.media.live_avatar_textures.insert(jid.to_owned(), tex);
+                return;
+            }
+        }
+        let Some(session) = &mut self.live else { return };
+        if session.avatar_requested.contains(jid) {
+            return;
+        }
+        let now = i64::try_from(crate::state::now_unix()).unwrap_or(0);
+        if let Some(answered_at) = session.avatar_missing.get(jid) {
+            // A negative younger than a day stands; an older
+            // one is re-asked, because people set pictures.
+            if now - answered_at < 86_400 {
+                return;
+            }
+        }
+        session.avatar_requested.insert(jid.to_owned());
+        let _ = session.channels.commands.send(BackendCommand::FetchAvatar { jid: jid.to_owned() });
+    }
+
+    /// The decoded live profile picture for one identity, when
+    /// the avatar pipeline has produced one. Surfaces call
+    /// `ensure_avatar` first and paint this through the shared
+    /// avatar dispatch; `None` paints the initial disc.
+    pub(crate) fn live_avatar(&self, jid: &str) -> Option<&egui::TextureHandle> {
+        self.media.live_avatar_textures.get(jid)
+    }
+
+    /// The profile photo for one identity addressed by JID (a
+    /// group member, a message sender): the real picture through
+    /// the avatar pipeline in a live session, the bundled
+    /// portrait for the name in demo mode.
+    pub(crate) fn member_avatar_photo(
+        &mut self,
+        ctx: &egui::Context,
+        jid: &str,
+        label: &str,
+    ) -> Option<egui::TextureId> {
+        if self.live.is_some() {
+            self.ensure_avatar(ctx, jid);
+            self.live_avatar(jid).map(|tex| tex.id())
+        } else {
+            self.demo_avatar(ctx, label)
+        }
+    }
+
+    /// The avatar photo for one chat, for every surface that
+    /// paints a chat's avatar (list row, conversation header,
+    /// call card): in a live session, the chat JID's real
+    /// profile picture through the avatar pipeline; otherwise
+    /// the demo portrait for a DM persona. `None` paints the
+    /// initial disc or group glyph.
+    pub(crate) fn chat_avatar_photo(
+        &mut self,
+        ctx: &egui::Context,
+        chat: &core::model::Chat,
+    ) -> Option<egui::TextureId> {
+        if self.live.is_some() {
+            let jid = self.live.as_ref().and_then(|s| s.jids.get(&chat.id)).cloned();
+            if let Some(jid) = jid {
+                self.ensure_avatar(ctx, &jid);
+                return self.live_avatar(&jid).map(|tex| tex.id());
+            }
+            return None;
+        }
+        if chat.kind == core::model::ChatKind::Dm {
+            return self.demo_avatar(ctx, &chat.title);
+        }
+        None
+    }
+
+    /// Ensures one sticker's bytes are on their way, mirroring
+    /// [`App::ensure_photo_fetch`] through the sticker fetch
+    /// path.
+    pub(crate) fn ensure_sticker_fetch(&mut self, msg_id: u64) {
+        if self.media.textures.contains_key(&msg_id) {
+            return;
+        }
+        if self.media.sticker_fetch.contains_key(&msg_id) {
+            return;
+        }
+        let (chat_jid, sticker_ref) = {
+            let Some(session) = &self.live else { return };
+            let Some(chat_jid) = session.jids.get(&self.selected_chat).cloned() else {
+                return;
+            };
+            (chat_jid, session.sticker_refs.get(&msg_id).cloned())
+        };
+        let Some(protocol_id) = self.protocol_ids.get(&msg_id).cloned() else {
+            self.media.sticker_fetch.insert(msg_id, crate::state::PhotoFetchState::Failed);
+            return;
+        };
+        self.media.sticker_fetch.insert(msg_id, crate::state::PhotoFetchState::Loading);
+        self.send_backend(BackendCommand::FetchSticker {
+            chat_jid,
+            message_id: protocol_id,
+            sticker_ref,
         });
     }
 
@@ -3865,6 +4292,28 @@ impl crate::state::App {
         let id = handle.id();
         media.video_textures.insert(msg_id, handle);
         Some(id)
+    }
+
+    /// The decoded texture of one photo's wire thumbnail, with
+    /// its aspect ratio (width over height): the photo itself
+    /// at preview fidelity, decoded once into the thumbnail
+    /// cache. Mirrors [`App::video_thumb_texture`].
+    pub(crate) fn photo_thumb_texture(
+        media: &mut crate::state::MediaState,
+        live: Option<&LiveSession>,
+        ctx: &egui::Context,
+        msg_id: u64,
+    ) -> Option<(egui::TextureId, f32)> {
+        if let Some(handle) = media.photo_thumb_textures.get(&msg_id) {
+            let size = handle.size_vec2();
+            return Some((handle.id(), size.x / size.y.max(1.0)));
+        }
+        let bytes = live?.photo_thumbs.get(&msg_id)?.clone();
+        let handle = crate::media::decode_photo(ctx, &bytes)?;
+        let size = handle.size_vec2();
+        let id = handle.id();
+        media.photo_thumb_textures.insert(msg_id, handle);
+        Some((id, size.x / size.y.max(1.0)))
     }
 
     /// Where pressing play on one video message stands (see
@@ -4630,14 +5079,17 @@ pub(crate) fn should_send_typing(typing_indicators: bool, live_mode: bool) -> bo
 impl crate::state::App {
     /// Applies a favorite toggle for one chat: the mirror flips
     /// at once, and in live mode the flag is written through to
-    /// the archive, so it survives restarts. Unlike archive, pin
-    /// and mute, a favorite is a purely local concept (WhatsApp
-    /// has no such property), so no backend command is ever sent
-    /// for it; the archive column the write lands in is one the
-    /// chat sync paths never touch, so a later re-sync of the
-    /// chat list cannot wipe the flag either. In demo mode there
-    /// is no session and no archive: the toggle is the in-memory
-    /// fixture flip only, like every other demo interaction.
+    /// the archive, so it survives restarts. Favorites are an
+    /// account property (the phone syncs the set through app
+    /// state, and `apply_favorites_sync` adopts it), but the
+    /// pinned library exposes no outbound setter for it, so a
+    /// toggle made here stays local until the phone's next sync
+    /// replaces the set; the archive column the write lands in
+    /// is one the chat sync paths never touch, so a later
+    /// re-sync of the chat list cannot wipe the flag either. In
+    /// demo mode there is no session and no archive: the toggle
+    /// is the in-memory fixture flip only, like every other demo
+    /// interaction.
     pub(crate) fn apply_favorite(&mut self, chat_id: u64, favorite: bool) {
         if let Some(c) = self.chats.iter_mut().find(|c| c.id == chat_id) {
             c.favorite = favorite;
@@ -4673,6 +5125,76 @@ impl crate::state::App {
         if let Some(c) = self.detached_chat.as_mut() {
             c.favorite = favorites.contains(&c.id);
         }
+    }
+
+    /// Adopts the phone's synced favorite set: the list the
+    /// backend reports is complete, so every chat not in it is
+    /// unfavorited. The mirror and the archive are both updated
+    /// (the archive through the same per-chat accessor the local
+    /// toggle uses).
+    pub(crate) fn apply_favorites_sync(&mut self, chat_jids: &[String]) {
+        let favorites: std::collections::HashSet<u64> =
+            chat_jids.iter().map(|j| jid_id(j)).collect();
+        for chat in &mut self.chats {
+            chat.favorite = favorites.contains(&chat.id);
+        }
+        if let Some(c) = self.detached_chat.as_mut() {
+            c.favorite = favorites.contains(&c.id);
+        }
+        if let Some(session) = &self.live {
+            if let Some(store) = &session.store {
+                for (id, jid) in &session.jids {
+                    let _ = store.set_chat_favorite(jid, favorites.contains(id));
+                }
+            }
+        }
+    }
+
+    /// Inserts the placeholder for a message the wire could not
+    /// decrypt (its failure mode said to show one), but only
+    /// when the message is genuinely absent: a stored or
+    /// in-memory copy always wins, and a later successful
+    /// decryption upserts the real message over the placeholder
+    /// through the normal path.
+    pub(crate) fn apply_message_unavailable(
+        &mut self,
+        chat_jid: &str,
+        proto_id: &str,
+        sender_jid: Option<String>,
+        from_me: bool,
+        timestamp: i64,
+    ) {
+        let chat_id = jid_id(chat_jid);
+        let mid = message_id(chat_jid, proto_id);
+        if let Some(session) = &self.live {
+            if session
+                .messages
+                .get(&chat_id)
+                .is_some_and(|rows| rows.iter().any(|(_, m)| m.id == mid))
+            {
+                return;
+            }
+            if let Some(store) = &session.store {
+                if store.has_message(chat_jid, proto_id).unwrap_or(false) {
+                    return;
+                }
+            }
+        } else {
+            return;
+        }
+        let sender_name = sender_jid
+            .as_deref()
+            .and_then(|jid| self.live.as_ref().and_then(|s| s.names.get(jid).cloned()));
+        let placeholder = backend::LiveMessage::text(
+            proto_id.to_owned(),
+            chat_jid.to_owned(),
+            sender_name,
+            "This message could not be decrypted. It may arrive again when your phone reconnects."
+                .to_owned(),
+            timestamp,
+            from_me,
+        );
+        self.apply_message_upsert(&placeholder);
     }
 
     /// Applies archive/pin/mute state to one chat: locally at once,
@@ -4861,6 +5383,13 @@ mod burst_drain_tests {
             voice_refs: HashMap::new(),
             video_refs: HashMap::new(),
             video_thumbs: HashMap::new(),
+            sticker_refs: HashMap::new(),
+            photo_thumbs: HashMap::new(),
+            message_mentions: HashMap::new(),
+            names: HashMap::new(),
+            avatar_bytes: HashMap::new(),
+            avatar_missing: HashMap::new(),
+            avatar_requested: std::collections::HashSet::new(),
             poll_ballots: HashMap::new(),
         });
         app.live_mode = true;
@@ -4909,6 +5438,152 @@ mod burst_drain_tests {
 
     fn archived_calls(app: &App) -> Vec<backend::CallRecord> {
         app.live.as_ref().unwrap().store.as_ref().unwrap().call_history().unwrap()
+    }
+
+    /// v1.6.7: a call record synced from the phone's history
+    /// lands in the archive and in the Calls panel data, filed
+    /// under its chat, without any live call taking place.
+    #[test]
+    fn synced_call_history_lands_in_the_archive_and_panel() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        tx.send(BackendEvent::CallHistoryRecord {
+            record: backend::CallRecord {
+                id: 0,
+                call_id: "synced-1".to_owned(),
+                chat_jid: CHAT_JID.to_owned(),
+                video: true,
+                outgoing: false,
+                missed: true,
+                duration_secs: 0,
+                started_at: BASE_TS - 86_400,
+            },
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        let history = archived_calls(&app);
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].call_id, "synced-1");
+        assert!(history[0].missed && history[0].video);
+        assert_eq!(app.calls.live_entries.len(), 1);
+        assert_eq!(app.calls.live_entries[0].chat_id, jid_id(CHAT_JID));
+        assert!(app.calls.live_entries[0].missed);
+    }
+
+    /// v1.6.7: the phone's favorites list is adopted as the
+    /// complete set: listed chats become favorites in the mirror
+    /// and the archive, and a later sync that omits a chat
+    /// un-favorites it.
+    #[test]
+    fn favorites_sync_adopts_the_complete_phone_set() {
+        const OTHER: &str = "6289999999999@s.whatsapp.net";
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        tx.send(dm_upsert(CHAT_JID)).unwrap();
+        tx.send(dm_upsert(OTHER)).unwrap();
+        tx.send(BackendEvent::FavoritesSync { chat_jids: vec![CHAT_JID.to_owned()] }).unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(chat_of(&app, jid_id(CHAT_JID)).favorite);
+        assert!(!chat_of(&app, jid_id(OTHER)).favorite);
+        let stored = app.live.as_ref().unwrap().store.as_ref().unwrap().chat_favorites().unwrap();
+        assert_eq!(stored, vec![CHAT_JID.to_owned()]);
+        tx.send(BackendEvent::FavoritesSync { chat_jids: vec![OTHER.to_owned()] }).unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(!chat_of(&app, jid_id(CHAT_JID)).favorite, "omission un-favorites");
+        assert!(chat_of(&app, jid_id(OTHER)).favorite);
+    }
+
+    /// v1.6.7: avatar events drive the cache lifecycle: bytes
+    /// are staged and archived, a change event drops both, and a
+    /// missing answer records the negative in both places.
+    #[test]
+    fn avatar_events_cache_invalidate_and_negative() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        tx.send(BackendEvent::AvatarBytes {
+            jid: CHAT_JID.to_owned(),
+            picture_id: Some("pic-1".to_owned()),
+            bytes: png_bytes(),
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        {
+            let session = app.live.as_ref().unwrap();
+            assert!(session.avatar_bytes.contains_key(CHAT_JID), "bytes staged for painting");
+            let store = session.store.as_ref().unwrap();
+            let (_, bytes, _) = store.avatar(CHAT_JID).unwrap().unwrap();
+            assert!(bytes.is_some(), "bytes archived for the next launch");
+        }
+        tx.send(BackendEvent::AvatarChanged { jid: CHAT_JID.to_owned() }).unwrap();
+        drain_all(&mut app, &ctx);
+        {
+            let session = app.live.as_ref().unwrap();
+            assert!(!session.avatar_bytes.contains_key(CHAT_JID), "a change drops the photo");
+            let store = session.store.as_ref().unwrap();
+            assert!(store.avatar(CHAT_JID).unwrap().is_none(), "and its archive row");
+        }
+        tx.send(BackendEvent::AvatarMissing { jid: CHAT_JID.to_owned() }).unwrap();
+        drain_all(&mut app, &ctx);
+        let session = app.live.as_ref().unwrap();
+        assert!(session.avatar_missing.contains_key(CHAT_JID), "the negative is remembered");
+        let store = session.store.as_ref().unwrap();
+        let (_, bytes, _) = store.avatar(CHAT_JID).unwrap().unwrap();
+        assert!(bytes.is_none(), "the negative is archived without bytes");
+    }
+
+    /// v1.6.7: the defect behind the owner's largest group
+    /// showing its raw JID: a live upsert titled with the raw
+    /// identifier must not re-stamp a healed group title, in the
+    /// mirror or the archive, while a resolved rename still
+    /// lands.
+    #[test]
+    fn healed_group_title_survives_a_raw_live_upsert() {
+        const GROUP: &str = "120363412811529147@g.us";
+        let group_upsert = |title: &str| {
+            BackendEvent::ChatUpsert(LiveChat {
+                jid: GROUP.to_owned(),
+                title: title.to_owned(),
+                kind: LiveChatKind::Group,
+                preview: String::new(),
+                preview_sender: None,
+                timestamp: BASE_TS,
+                unread: 0,
+                archived: false,
+                pinned: false,
+                ephemeral_secs: 0,
+                muted: false,
+            })
+        };
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        tx.send(group_upsert("Grup Kebesaran")).unwrap();
+        drain_all(&mut app, &ctx);
+        tx.send(group_upsert("120363412811529147")).unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(chat_of(&app, jid_id(GROUP)).title, "Grup Kebesaran");
+        let stored = app.live.as_ref().unwrap().store.as_ref().unwrap().chats().unwrap();
+        assert_eq!(stored.iter().find(|c| c.jid == GROUP).unwrap().title, "Grup Kebesaran");
+        tx.send(group_upsert("Grup Kebesaran Baru")).unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(chat_of(&app, jid_id(GROUP)).title, "Grup Kebesaran Baru");
+    }
+
+    /// v1.6.7: an undecryptable message the wire says to show
+    /// becomes a placeholder in the conversation, exactly once:
+    /// a copy the archive already holds is never duplicated.
+    #[test]
+    fn undecryptable_placeholder_is_inserted_once() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        tx.send(dm_upsert(CHAT_JID)).unwrap();
+        let unavailable = BackendEvent::MessageUnavailable {
+            chat_jid: CHAT_JID.to_owned(),
+            message_id: "lost-1".to_owned(),
+            sender_jid: Some(CHAT_JID.to_owned()),
+            from_me: false,
+            timestamp: BASE_TS,
+        };
+        tx.send(unavailable.clone()).unwrap();
+        tx.send(unavailable).unwrap();
+        drain_all(&mut app, &ctx);
+        let messages = stored_messages(&app);
+        assert_eq!(messages.len(), 1, "one placeholder, not two");
+        assert!(messages[0].1.body.contains("could not be decrypted"));
     }
 
     /// Item 113: an outgoing call that connects and ends is
@@ -6870,6 +7545,13 @@ mod chat_state_routing_tests {
             voice_refs: HashMap::new(),
             video_refs: HashMap::new(),
             video_thumbs: HashMap::new(),
+            sticker_refs: HashMap::new(),
+            photo_thumbs: HashMap::new(),
+            message_mentions: HashMap::new(),
+            names: HashMap::new(),
+            avatar_bytes: HashMap::new(),
+            avatar_missing: HashMap::new(),
+            avatar_requested: std::collections::HashSet::new(),
             poll_ballots: HashMap::new(),
         });
         app.live_mode = true;
@@ -8425,6 +9107,13 @@ mod mirror_pruning_tests {
             voice_refs: HashMap::new(),
             video_refs: HashMap::new(),
             video_thumbs: HashMap::new(),
+            sticker_refs: HashMap::new(),
+            photo_thumbs: HashMap::new(),
+            message_mentions: HashMap::new(),
+            names: HashMap::new(),
+            avatar_bytes: HashMap::new(),
+            avatar_missing: HashMap::new(),
+            avatar_requested: std::collections::HashSet::new(),
             poll_ballots: HashMap::new(),
         });
         app.live_mode = true;
@@ -8969,6 +9658,13 @@ mod qr_gate_tests {
             voice_refs: HashMap::new(),
             video_refs: HashMap::new(),
             video_thumbs: HashMap::new(),
+            sticker_refs: HashMap::new(),
+            photo_thumbs: HashMap::new(),
+            message_mentions: HashMap::new(),
+            names: HashMap::new(),
+            avatar_bytes: HashMap::new(),
+            avatar_missing: HashMap::new(),
+            avatar_requested: std::collections::HashSet::new(),
             poll_ballots: HashMap::new(),
         };
         if with_payload {
@@ -9180,6 +9876,13 @@ mod logout_tests {
             voice_refs: HashMap::new(),
             video_refs: HashMap::new(),
             video_thumbs: HashMap::new(),
+            sticker_refs: HashMap::new(),
+            photo_thumbs: HashMap::new(),
+            message_mentions: HashMap::new(),
+            names: HashMap::new(),
+            avatar_bytes: HashMap::new(),
+            avatar_missing: HashMap::new(),
+            avatar_requested: std::collections::HashSet::new(),
             poll_ballots: HashMap::new(),
         });
         app.live_mode = true;
@@ -9401,6 +10104,13 @@ mod reaction_tests {
             voice_refs: HashMap::new(),
             video_refs: HashMap::new(),
             video_thumbs: HashMap::new(),
+            sticker_refs: HashMap::new(),
+            photo_thumbs: HashMap::new(),
+            message_mentions: HashMap::new(),
+            names: HashMap::new(),
+            avatar_bytes: HashMap::new(),
+            avatar_missing: HashMap::new(),
+            avatar_requested: std::collections::HashSet::new(),
         });
         app.live_mode = true;
         (app, evt_tx, ctx, cmd_rx)
@@ -9724,6 +10434,13 @@ mod star_pin_tests {
             voice_refs: HashMap::new(),
             video_refs: HashMap::new(),
             video_thumbs: HashMap::new(),
+            sticker_refs: HashMap::new(),
+            photo_thumbs: HashMap::new(),
+            message_mentions: HashMap::new(),
+            names: HashMap::new(),
+            avatar_bytes: HashMap::new(),
+            avatar_missing: HashMap::new(),
+            avatar_requested: std::collections::HashSet::new(),
         });
         app.live_mode = true;
         (app, evt_tx, ctx, cmd_rx)

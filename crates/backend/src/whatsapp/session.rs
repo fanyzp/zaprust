@@ -171,58 +171,179 @@ fn heal_unresolved_titles(
     }
     tokio::spawn(async move {
         for (jid, kind) in fresh {
-            match kind {
-                crate::LiveChatKind::Group => {
-                    if let Ok(parsed) = jid.parse::<Jid>() {
-                        if let Ok(meta) = client.groups().fetch_metadata(&parsed).await {
-                            if let Some(subject) =
-                                meta.subject.clone().filter(|s| !s.trim().is_empty())
-                            {
-                                sink.emit(BackendEvent::ChatRenamed {
-                                    chat_jid: jid.clone(),
-                                    title: subject,
-                                });
-                            }
-                            for participant in &meta.participants {
-                                let name = participant_name(participant);
-                                if !name.is_empty() {
-                                    sink.emit(BackendEvent::SenderNamed {
-                                        sender_jid: participant.jid.to_string(),
-                                        name,
-                                    });
-                                }
-                            }
-                        }
-                    }
+            heal_one(&client, &sink, &jid, kind).await;
+        }
+    });
+}
+
+/// Heals one chat's title from the client's stores, returning
+/// true when the chat is settled (a rename was emitted, or the
+/// lookup succeeded and had nothing better to offer) and false
+/// when the lookup itself failed and a retry could succeed.
+async fn heal_one(
+    client: &whatsapp_rust::Client,
+    sink: &crate::EventSink,
+    jid: &str,
+    kind: crate::LiveChatKind,
+) -> bool {
+    match kind {
+        crate::LiveChatKind::Group => {
+            let Ok(parsed) = jid.parse::<Jid>() else { return true };
+            let Ok(meta) = client.groups().fetch_metadata(&parsed).await else { return false };
+            if let Some(subject) = meta.subject.clone().filter(|s| !s.trim().is_empty()) {
+                sink.emit(BackendEvent::ChatRenamed { chat_jid: jid.to_owned(), title: subject });
+            }
+            for participant in &meta.participants {
+                let name = participant_name(participant);
+                if !name.is_empty() {
+                    sink.emit(BackendEvent::SenderNamed {
+                        sender_jid: participant.jid.to_string(),
+                        name,
+                    });
                 }
-                crate::LiveChatKind::Dm => {
-                    if jid.ends_with("@s.whatsapp.net") {
-                        // The title is the phone number itself;
-                        // the formatted form is the improvement
-                        // the precedence order asks for, and it
-                        // needs no lookup.
+            }
+            true
+        }
+        crate::LiveChatKind::Dm => {
+            if jid.ends_with("@s.whatsapp.net") {
+                // The title is the phone number itself; the
+                // formatted form is the improvement the
+                // precedence order asks for, and it needs no
+                // lookup.
+                sink.emit(BackendEvent::ChatRenamed {
+                    chat_jid: jid.to_owned(),
+                    title: format!("+{}", super::translate::user_part(jid)),
+                });
+                true
+            } else if let Ok(parsed) = jid.parse::<Jid>() {
+                match client.get_lid_pn_entry(&parsed).await {
+                    Ok(Some(entry)) => {
+                        let phone = format!("+{}", entry.phone_number);
                         sink.emit(BackendEvent::ChatRenamed {
-                            chat_jid: jid.clone(),
-                            title: format!("+{}", super::translate::user_part(&jid)),
+                            chat_jid: jid.to_owned(),
+                            title: phone.clone(),
                         });
-                    } else if let Ok(parsed) = jid.parse::<Jid>() {
-                        if let Ok(Some(entry)) = client.get_lid_pn_entry(&parsed).await {
-                            let phone = format!("+{}", entry.phone_number);
-                            sink.emit(BackendEvent::ChatRenamed {
-                                chat_jid: jid.clone(),
-                                title: phone.clone(),
-                            });
-                            sink.emit(BackendEvent::SenderNamed {
-                                sender_jid: jid.clone(),
-                                name: phone,
-                            });
-                        }
+                        sink.emit(BackendEvent::SenderNamed {
+                            sender_jid: jid.to_owned(),
+                            name: phone,
+                        });
+                        true
                     }
+                    Ok(None) => true,
+                    Err(_) => false,
                 }
-                _ => {}
+            } else {
+                true
+            }
+        }
+        _ => true,
+    }
+}
+
+/// Heals titles the app explicitly reported as raw (the
+/// `ResolveTitles` command, sent when a session connects with
+/// every chat whose stored title is still a raw identifier).
+/// Unlike the history-driven pass this one retries: a metadata
+/// fetch that fails during the pairing sync storm is exactly
+/// the failure this command exists to outlast, so each chat
+/// gets up to three attempts with growing pauses. The kind is
+/// derived from the JID form, the only thing the app needs to
+/// send.
+fn heal_titles_with_retry(
+    client: std::sync::Arc<whatsapp_rust::Client>,
+    sink: crate::EventSink,
+    jids: Vec<String>,
+) {
+    if jids.is_empty() {
+        return;
+    }
+    tokio::spawn(async move {
+        for jid in jids {
+            let kind = if jid.ends_with("@g.us") {
+                crate::LiveChatKind::Group
+            } else {
+                crate::LiveChatKind::Dm
+            };
+            for attempt in 0..3 {
+                if attempt > 0 {
+                    let pause = if attempt == 1 { 3 } else { 8 };
+                    tokio::time::sleep(std::time::Duration::from_secs(pause)).await;
+                }
+                if heal_one(&client, &sink, &jid, kind).await {
+                    break;
+                }
             }
         }
     });
+}
+
+/// One media-retry recovery for a media fetch or download
+/// that already failed: asks the message author's device to
+/// re-upload the media (the protocol's media-retry flow),
+/// reports the fresh CDN path so the app can persist it with
+/// the archived reference, and returns it for the caller's
+/// second attempt. `None` when the recovery is unavailable
+/// (the message's addressing is unknown this session, or the
+/// flow did not answer with a fresh path): the original
+/// failure stands either way.
+async fn media_retry_path(
+    client: &whatsapp_rust::Client,
+    events: &crate::EventSink,
+    targets: &super::util::RetryTargets,
+    chat_jid: &str,
+    message_id: &str,
+    fields: &super::util::MediaRefFields,
+) -> Option<String> {
+    let mark = lock_cache(targets).0.get(&(chat_jid.to_owned(), message_id.to_owned())).cloned()?;
+    let direct_path =
+        super::util::request_media_reupload(client, chat_jid, message_id, &mark, &fields.media_key)
+            .await?;
+    events.emit(BackendEvent::MediaRefreshed {
+        chat_jid: chat_jid.to_owned(),
+        message_id: message_id.to_owned(),
+        direct_path: direct_path.clone(),
+    });
+    Some(direct_path)
+}
+
+/// The in-memory second attempt after [`media_retry_path`].
+async fn retry_fetch_bytes(
+    client: &whatsapp_rust::Client,
+    events: &crate::EventSink,
+    targets: &super::util::RetryTargets,
+    chat_jid: &str,
+    message_id: &str,
+    fields: &super::util::MediaRefFields,
+) -> Option<Vec<u8>> {
+    let direct_path =
+        media_retry_path(client, events, targets, chat_jid, message_id, fields).await?;
+    super::util::fetch_media_by_fields(client, &fields.with_direct_path(direct_path)).await.ok()
+}
+
+/// The to-file second attempt after [`media_retry_path`].
+#[allow(clippy::too_many_arguments)]
+async fn retry_download_file(
+    client: &whatsapp_rust::Client,
+    events: &crate::EventSink,
+    targets: &super::util::RetryTargets,
+    chat_jid: &str,
+    message_id: &str,
+    fields: &super::util::MediaRefFields,
+    dir: &std::path::Path,
+    stem: &str,
+    ext: &str,
+) -> Option<std::path::PathBuf> {
+    let direct_path =
+        media_retry_path(client, events, targets, chat_jid, message_id, fields).await?;
+    super::util::download_fields_to_file(
+        client,
+        &fields.with_direct_path(direct_path),
+        dir,
+        stem,
+        ext,
+    )
+    .await
+    .ok()
 }
 
 pub(super) async fn run_async(
@@ -302,6 +423,18 @@ pub(super) async fn run_async(
         std::collections::VecDeque::new(),
     )));
     let cache_for_messages = proto_cache.clone();
+    // Media-retry addressing for every message this session
+    // translates (live and history): when a media download
+    // fails, the retry flow asks the author's device to
+    // re-upload, and it needs the author's identity, which the
+    // archive does not store.
+    let retry_targets: super::util::RetryTargets = std::sync::Arc::new(std::sync::Mutex::new((
+        std::collections::HashMap::new(),
+        std::collections::VecDeque::new(),
+    )));
+    let retry_for_messages = retry_targets.clone();
+    let retry_for_events = retry_targets.clone();
+    let retry_for_commands = retry_targets.clone();
     let poll_secrets: PollSecrets =
         std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
     let secrets_for_messages = poll_secrets.clone();
@@ -343,6 +476,7 @@ pub(super) async fn run_async(
     let heal_attempts: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>> =
         std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
     let heal_attempts_events = heal_attempts.clone();
+    let heal_attempts_msg = heal_attempts.clone();
     // The logout flag the caller wipes the account directory on:
     // set by the library's logged-out callback (this device was
     // unlinked, here or from the phone) and by the Disconnect
@@ -439,7 +573,18 @@ pub(super) async fn run_async(
             let sink = sink_msg.clone();
             let cache = cache_for_messages.clone();
             let secrets = secrets_for_messages.clone();
+            let retry = retry_for_messages.clone();
+            let heal_attempts = heal_attempts_msg.clone();
             async move {
+                super::util::record_retry_target(
+                    &retry,
+                    &ctx.info.source.chat.to_string(),
+                    ctx.info.id.as_ref(),
+                    super::util::RetryMark {
+                        from_me: ctx.info.source.is_from_me,
+                        sender_jid: Some(ctx.info.source.sender.to_string()),
+                    },
+                );
                 // A received poll creation carries its secret in
                 // the message context info; caching it here is what
                 // makes voting on other people's polls possible
@@ -521,14 +666,29 @@ pub(super) async fn run_async(
                     return;
                 }
                 if let Some((chat, msg)) = translate_message(&ctx) {
-                    sink.emit(BackendEvent::ChatUpsert(chat));
+                    sink.emit(BackendEvent::ChatUpsert(chat.clone()));
                     sink.emit(BackendEvent::MessageUpsert(msg));
+                    // A chat whose live upsert still carries its
+                    // raw identifier as the title is reported to
+                    // the healer: live traffic creates chats
+                    // outside the history path the healer used to
+                    // depend on, and the attempts set keeps the
+                    // report to once per run per chat.
+                    if chat.title == super::translate::user_part(&chat.jid) {
+                        heal_unresolved_titles(
+                            ctx.client.clone(),
+                            sink.clone(),
+                            vec![(chat.jid.clone(), chat.kind)],
+                            heal_attempts.clone(),
+                        );
+                    }
                 }
             }
         })
         .on_event(move |event: Arc<Event>, client| {
             let sink = sink_all.clone();
             let heal_attempts = heal_attempts_events.clone();
+            let retry = retry_for_events.clone();
             #[cfg(feature = "calls")]
             let incoming_slot = call_incoming_events.clone();
             async move {
@@ -543,7 +703,10 @@ pub(super) async fn run_async(
                     .flatten()
                     .map(|jid| jid.to_non_ad().to_string())
                     .collect();
-                let unresolved = translate_event(&event, &sink, &own_jids);
+                let (unresolved, marks) = translate_event(&event, &sink, &own_jids);
+                for (chat_jid, message_id, mark) in marks {
+                    super::util::record_retry_target(&retry, &chat_jid, &message_id, mark);
+                }
                 if !unresolved.is_empty() {
                     heal_unresolved_titles(
                         client.clone(),
@@ -1713,13 +1876,60 @@ pub(super) async fn run_async(
                             // / Error events as before.
                             let client = client.clone();
                             let events = events.clone();
+                            let targets = retry_for_commands.clone();
                             let dir = config.data_dir.join("downloads");
                             // The stem is the naming contract the
                             // app's deletion paths match downloads
                             // by (see `downloaded_media_stem`).
                             let stem = crate::downloaded_media_stem(&chat_jid, &message_id);
                             tokio::spawn(async move {
-                                match download_proto(&client, &proto, &dir, &stem).await {
+                                let saved = download_proto(&client, &proto, &dir, &stem).await;
+                                // One media-retry recovery on
+                                // failure, same as the display
+                                // fetches: an expired CDN object
+                                // is re-uploaded by the author's
+                                // device and saved under the same
+                                // file name.
+                                let saved = match saved {
+                                    Ok(path) => Ok(path),
+                                    Err(message) => {
+                                        let fields = super::util::media_fields_of(&proto);
+                                        match fields {
+                                            Some(fields) => {
+                                                let ext = match fields.media_type {
+                                                    whatsapp_rust::download::MediaType::Image => {
+                                                        "jpg"
+                                                    }
+                                                    whatsapp_rust::download::MediaType::Video => {
+                                                        "mp4"
+                                                    }
+                                                    whatsapp_rust::download::MediaType::Audio => {
+                                                        "ogg"
+                                                    }
+                                                    whatsapp_rust::download::MediaType::Sticker => {
+                                                        "webp"
+                                                    }
+                                                    _ => "bin",
+                                                };
+                                                retry_download_file(
+                                                    &client,
+                                                    &events,
+                                                    &targets,
+                                                    &chat_jid,
+                                                    &message_id,
+                                                    &fields,
+                                                    &dir,
+                                                    &stem,
+                                                    ext,
+                                                )
+                                                .await
+                                                .ok_or(message)
+                                            }
+                                            None => Err(message),
+                                        }
+                                    }
+                                };
+                                match saved {
                                     Ok(path) => events.emit(BackendEvent::MediaSaved {
                                         chat_jid,
                                         message_id,
@@ -1753,6 +1963,7 @@ pub(super) async fn run_async(
                         .cloned();
                     let client = client.clone();
                     let events = events.clone();
+                    let targets = retry_for_commands.clone();
                     tokio::spawn(async move {
                         let fetched = match (&proto, &photo_ref) {
                             (Some(proto), _) => fetch_photo_bytes(&client, proto).await,
@@ -1761,6 +1972,32 @@ pub(super) async fn run_async(
                                                  before this session and has no stored \
                                                  download reference."
                                 .to_owned()),
+                        };
+                        // A failed download gets one media-retry
+                        // recovery: WhatsApp media objects expire
+                        // from the CDN, history photos above all,
+                        // and the author's device can re-upload.
+                        let fetched = match fetched {
+                            Ok(bytes) => Ok(bytes),
+                            Err(message) => {
+                                let fields = proto
+                                    .as_ref()
+                                    .and_then(|p| super::util::media_fields_of(p))
+                                    .or_else(|| photo_ref.as_ref().map(super::util::photo_fields));
+                                match fields {
+                                    Some(fields) => retry_fetch_bytes(
+                                        &client,
+                                        &events,
+                                        &targets,
+                                        &chat_jid,
+                                        &message_id,
+                                        &fields,
+                                    )
+                                    .await
+                                    .ok_or(message),
+                                    None => Err(message),
+                                }
+                            }
                         };
                         match fetched {
                             Ok(bytes) => events.emit(BackendEvent::PhotoBytes {
@@ -1789,6 +2026,7 @@ pub(super) async fn run_async(
                         .cloned();
                     let client = client.clone();
                     let events = events.clone();
+                    let targets = retry_for_commands.clone();
                     tokio::spawn(async move {
                         let fetched = match (&proto, &voice_ref) {
                             (Some(proto), _) => fetch_voice_bytes(&client, proto).await,
@@ -1798,6 +2036,30 @@ pub(super) async fn run_async(
                                                  before this session and has no stored \
                                                  download reference."
                                     .to_owned())
+                            }
+                        };
+                        // One media-retry recovery on failure,
+                        // same as FetchPhoto.
+                        let fetched = match fetched {
+                            Ok(bytes) => Ok(bytes),
+                            Err(message) => {
+                                let fields = proto
+                                    .as_ref()
+                                    .and_then(|p| super::util::media_fields_of(p))
+                                    .or_else(|| voice_ref.as_ref().map(super::util::voice_fields));
+                                match fields {
+                                    Some(fields) => retry_fetch_bytes(
+                                        &client,
+                                        &events,
+                                        &targets,
+                                        &chat_jid,
+                                        &message_id,
+                                        &fields,
+                                    )
+                                    .await
+                                    .ok_or(message),
+                                    None => Err(message),
+                                }
                             }
                         };
                         match fetched {
@@ -1830,6 +2092,7 @@ pub(super) async fn run_async(
                         .cloned();
                     let client = client.clone();
                     let events = events.clone();
+                    let targets = retry_for_commands.clone();
                     let dir = config.data_dir.join("video-cache");
                     // The stem follows the same naming contract
                     // as media downloads (see FetchPhoto's sibling
@@ -1849,6 +2112,32 @@ pub(super) async fn run_async(
                                                      before this session and has no stored \
                                                      download reference."
                                         .to_owned())
+                                }
+                            };
+                            // One media-retry recovery on failure,
+                            // same as FetchPhoto.
+                            let fetched = match fetched {
+                                Ok(bytes) => Ok(bytes),
+                                Err(message) => {
+                                    let fields = proto
+                                        .as_ref()
+                                        .and_then(|p| super::util::media_fields_of(p))
+                                        .or_else(|| {
+                                            video_ref.as_ref().map(super::util::video_fields)
+                                        });
+                                    match fields {
+                                        Some(fields) => retry_fetch_bytes(
+                                            &client,
+                                            &events,
+                                            &targets,
+                                            &chat_jid,
+                                            &message_id,
+                                            &fields,
+                                        )
+                                        .await
+                                        .ok_or(message),
+                                        None => Err(message),
+                                    }
                                 }
                             };
                             match fetched {
@@ -1878,6 +2167,36 @@ pub(super) async fn run_async(
                                         .to_owned())
                                 }
                             };
+                            // One media-retry recovery on failure,
+                            // same as FetchPhoto, streaming into
+                            // the same cache file name.
+                            let fetched = match fetched {
+                                Ok(path) => Ok(path),
+                                Err(message) => {
+                                    let fields = proto
+                                        .as_ref()
+                                        .and_then(|p| super::util::media_fields_of(p))
+                                        .or_else(|| {
+                                            video_ref.as_ref().map(super::util::video_fields)
+                                        });
+                                    match fields {
+                                        Some(fields) => retry_download_file(
+                                            &client,
+                                            &events,
+                                            &targets,
+                                            &chat_jid,
+                                            &message_id,
+                                            &fields,
+                                            &dir,
+                                            &stem,
+                                            "mp4",
+                                        )
+                                        .await
+                                        .ok_or(message),
+                                        None => Err(message),
+                                    }
+                                }
+                            };
                             match fetched {
                                 Ok(path) => events.emit(BackendEvent::VideoReady {
                                     chat_jid,
@@ -1892,6 +2211,89 @@ pub(super) async fn run_async(
                             }
                         }
                     });
+                }
+                BackendCommand::FetchSticker { chat_jid, message_id, sticker_ref } => {
+                    // Display fetch, in memory only, mirroring
+                    // FetchPhoto: the session's protocol payload
+                    // first, then the archived reference, with
+                    // one media-retry recovery on failure.
+                    let proto = lock_cache(&proto_cache)
+                        .0
+                        .get(&(chat_jid.clone(), message_id.clone()))
+                        .cloned();
+                    let client = client.clone();
+                    let events = events.clone();
+                    let targets = retry_for_commands.clone();
+                    tokio::spawn(async move {
+                        let fetched = match (&proto, &sticker_ref) {
+                            (Some(proto), _) => {
+                                super::util::fetch_sticker_bytes(&client, proto).await
+                            }
+                            (None, Some(reference)) => {
+                                super::util::fetch_sticker_by_ref(&client, reference).await
+                            }
+                            (None, None) => Err("That sticker is not available: it was received \
+                                                 before this session and has no stored \
+                                                 download reference."
+                                .to_owned()),
+                        };
+                        let fetched = match fetched {
+                            Ok(bytes) => Ok(bytes),
+                            Err(message) => {
+                                let fields = proto
+                                    .as_ref()
+                                    .and_then(|p| super::util::media_fields_of(p))
+                                    .or_else(|| {
+                                        sticker_ref.as_ref().map(super::util::sticker_fields)
+                                    });
+                                match fields {
+                                    Some(fields) => retry_fetch_bytes(
+                                        &client,
+                                        &events,
+                                        &targets,
+                                        &chat_jid,
+                                        &message_id,
+                                        &fields,
+                                    )
+                                    .await
+                                    .ok_or(message),
+                                    None => Err(message),
+                                }
+                            }
+                        };
+                        match fetched {
+                            Ok(bytes) => events.emit(BackendEvent::StickerBytes {
+                                chat_jid,
+                                message_id,
+                                bytes,
+                            }),
+                            Err(_) => events
+                                .emit(BackendEvent::StickerFetchFailed { chat_jid, message_id }),
+                        }
+                    });
+                }
+                BackendCommand::FetchAvatar { jid } => {
+                    // Profile picture lookup (see the command's
+                    // docs). Runs as its own task: the lookup and
+                    // the CDN download take network time, and the
+                    // dispatch loop must not wait behind them.
+                    let client = client.clone();
+                    let events = events.clone();
+                    tokio::spawn(async move {
+                        use super::profile::AvatarOutcome;
+                        match super::profile::fetch_avatar(&client, &jid).await {
+                            AvatarOutcome::Bytes { picture_id, bytes } => {
+                                events.emit(BackendEvent::AvatarBytes { jid, picture_id, bytes });
+                            }
+                            AvatarOutcome::Missing => {
+                                events.emit(BackendEvent::AvatarMissing { jid });
+                            }
+                            AvatarOutcome::Unavailable => {}
+                        }
+                    });
+                }
+                BackendCommand::ResolveTitles { jids } => {
+                    heal_titles_with_retry(client.clone(), events.clone(), jids);
                 }
                 BackendCommand::SetPrivacy { category, value } => {
                     use whatsapp_rust::privacy_settings::{PrivacyCategory, PrivacyValue};

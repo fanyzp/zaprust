@@ -149,7 +149,7 @@ impl From<std::io::Error> for StoreError {
 }
 
 /// The newest schema version this build migrates to.
-pub const SCHEMA_VERSION: i64 = 10;
+pub const SCHEMA_VERSION: i64 = 11;
 
 /// `store_meta` key recording that the one-time freelist purge
 /// (see [`Store::open`]) has run for this archive. The purge
@@ -254,6 +254,20 @@ struct MessageData {
     /// has been spent.
     #[serde(default)]
     video_thumbnail: Option<Vec<u8>>,
+    /// The JIDs the message mentions, archived so the app can
+    /// keep resolving them to display names after a restart.
+    #[serde(default)]
+    mentions: Vec<String>,
+    /// A photo's embedded JPEG thumbnail (the photo itself at
+    /// preview fidelity), archived like the video thumbnail so
+    /// the tile can paint the message's own image in later
+    /// sessions without fetching its bytes.
+    #[serde(default)]
+    photo_thumbnail: Option<Vec<u8>>,
+    /// A sticker's re-download reference, archived with the
+    /// message so its bytes stay fetchable in later sessions.
+    #[serde(default)]
+    sticker_ref: Option<backend::StickerRef>,
     /// A poll's creation secret, archived with the poll so the
     /// app can hand it back to the backend in later sessions
     /// (votes are encrypted under it; without it the poll could
@@ -272,6 +286,15 @@ struct MessageData {
     #[serde(default)]
     poll_ballots: Vec<(String, Vec<usize>)>,
 }
+
+/// One stored profile picture row: (picture_id, bytes,
+/// fetched_at). Bytes are `None` on a negative row (the identity
+/// has no picture, or privacy refused it).
+pub type AvatarRow = (Option<String>, Option<Vec<u8>>, i64);
+
+/// One row of the full avatar listing: the identity's JID plus
+/// its [`AvatarRow`].
+pub type AvatarListing = (String, Option<String>, Option<Vec<u8>>, i64);
 
 /// The archive store: one SQLite file, versioned schema.
 pub struct Store {
@@ -704,16 +727,16 @@ impl Store {
                     tx.execute_batch("PRAGMA user_version = 9;")?;
                 }
                 9 => {
-                    // v10: per-chat favorites. A favorite is a
-                    // purely local app concept (WhatsApp has no
-                    // such property), so the flag gets its own
-                    // column with dedicated accessors
+                    // v10: per-chat favorites. The flag gets its
+                    // own column with dedicated accessors
                     // (`set_chat_favorite` / `chat_favorites`)
                     // and deliberately stays out of the column
                     // lists `upsert_chat` and `chats` use: no
                     // chat-list sync write can ever carry, and
-                    // therefore can never wipe, a favorite the
-                    // user set on this device.
+                    // therefore can never wipe, a favorite flag.
+                    // (The set itself is the account's, synced
+                    // from the phone's app state since v1.6.7;
+                    // this column is its local persistence.)
                     add_column_if_missing(
                         &tx,
                         "chats",
@@ -721,6 +744,26 @@ impl Store {
                         "ALTER TABLE chats ADD COLUMN favorite INTEGER NOT NULL DEFAULT 0",
                     )?;
                     tx.execute_batch("PRAGMA user_version = 10;")?;
+                }
+                10 => {
+                    // v11: profile pictures. One row per identity
+                    // (contact, group, community): the picture
+                    // bytes when the identity has one, or a
+                    // negative row (bytes NULL) when it has none
+                    // or privacy refused, so a launch does not
+                    // re-ask the server for every initial disc.
+                    // fetched_at (unix seconds) ages negatives
+                    // out; positives are refreshed by the wire's
+                    // picture-change events, not by age.
+                    tx.execute_batch(
+                        "CREATE TABLE IF NOT EXISTS avatars (
+                            jid TEXT PRIMARY KEY,
+                            picture_id TEXT,
+                            bytes BLOB,
+                            fetched_at INTEGER NOT NULL DEFAULT 0
+                        );",
+                    )?;
+                    tx.execute_batch("PRAGMA user_version = 11;")?;
                 }
                 _ => return Err(StoreError::BadSchemaVersion(version)),
             }
@@ -938,6 +981,9 @@ impl Store {
             voice_ref: msg.voice_ref.clone(),
             video_ref: msg.video_ref.clone(),
             video_thumbnail: msg.video_thumbnail.clone(),
+            mentions: msg.mentions.clone(),
+            photo_thumbnail: msg.photo_thumbnail.clone(),
+            sticker_ref: msg.sticker_ref.clone(),
             poll_secret: msg
                 .poll_secret
                 .clone()
@@ -1138,10 +1184,13 @@ impl Store {
             .flatten();
         let Some(data_text) = data_text else { return Ok(()) };
         let mut data: MessageData = serde_json::from_str(&data_text).unwrap_or_default();
-        if data.photo_ref.is_none() {
+        if data.photo_ref.is_none() && data.photo_thumbnail.is_none() {
             return Ok(());
         }
         data.photo_ref = None;
+        // The thumbnail is part of the same sealed payload as
+        // the reference: a spent view-once photo keeps neither.
+        data.photo_thumbnail = None;
         let data_json = serde_json::to_string(&data).map_err(|e| {
             StoreError::Sqlite(rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
         })?;
@@ -1233,6 +1282,160 @@ impl Store {
             "UPDATE messages SET data = ?3 WHERE chat_jid = ?1 AND id = ?2",
             params![chat_jid, id, data_json],
         )?;
+        Ok(())
+    }
+
+    /// Replaces the CDN path of a message's archived media
+    /// reference (photo, voice, video, or sticker, whichever it
+    /// carries) with a fresh one. The media-retry flow returns a
+    /// new path when the author's device re-uploads expired
+    /// media; persisting it means later sessions download
+    /// directly instead of recovering again. A message without
+    /// a reference, or one that is not archived, is a no-op.
+    ///
+    /// # Errors
+    /// [`StoreError`] on SQLite failures.
+    pub fn update_media_direct_path(
+        &self,
+        chat_jid: &str,
+        id: &str,
+        direct_path: &str,
+    ) -> Result<(), StoreError> {
+        use rusqlite::OptionalExtension;
+        let data_text: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT data FROM messages WHERE chat_jid = ?1 AND id = ?2",
+                params![chat_jid, id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()?
+            .flatten();
+        let Some(data_text) = data_text else { return Ok(()) };
+        let mut data: MessageData = serde_json::from_str(&data_text).unwrap_or_default();
+        let mut changed = false;
+        if let Some(reference) = &mut data.photo_ref {
+            reference.direct_path = direct_path.to_owned();
+            changed = true;
+        }
+        if let Some(reference) = &mut data.voice_ref {
+            reference.direct_path = direct_path.to_owned();
+            changed = true;
+        }
+        if let Some(reference) = &mut data.video_ref {
+            reference.direct_path = direct_path.to_owned();
+            changed = true;
+        }
+        if let Some(reference) = &mut data.sticker_ref {
+            reference.direct_path = direct_path.to_owned();
+            changed = true;
+        }
+        if !changed {
+            return Ok(());
+        }
+        let data_json = serde_json::to_string(&data).map_err(|e| {
+            StoreError::Sqlite(rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
+        })?;
+        self.conn.execute(
+            "UPDATE messages SET data = ?3 WHERE chat_jid = ?1 AND id = ?2",
+            params![chat_jid, id, data_json],
+        )?;
+        Ok(())
+    }
+
+    /// Whether a message is archived under this chat and ID.
+    ///
+    /// # Errors
+    /// [`StoreError`] on SQLite failures.
+    pub fn has_message(&self, chat_jid: &str, id: &str) -> Result<bool, StoreError> {
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM messages WHERE chat_jid = ?1 AND id = ?2",
+            params![chat_jid, id],
+            |row| row.get(0),
+        )?;
+        Ok(count > 0)
+    }
+
+    /// Stores one identity's profile picture row: the bytes
+    /// when the identity has a picture, or `None` bytes for the
+    /// negative (no picture, or privacy refused). `fetched_at`
+    /// is unix seconds; the app ages negatives out and refetches
+    /// them, while positives live until a picture-change event
+    /// drops the row.
+    ///
+    /// # Errors
+    /// [`StoreError`] on SQLite failures.
+    pub fn put_avatar(
+        &self,
+        jid: &str,
+        picture_id: Option<&str>,
+        bytes: Option<&[u8]>,
+        fetched_at: i64,
+    ) -> Result<(), StoreError> {
+        self.conn.execute(
+            "INSERT INTO avatars (jid, picture_id, bytes, fetched_at) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(jid) DO UPDATE SET picture_id = excluded.picture_id,
+                bytes = excluded.bytes, fetched_at = excluded.fetched_at",
+            params![jid, picture_id, bytes, fetched_at],
+        )?;
+        Ok(())
+    }
+
+    /// One identity's stored profile picture row, if any:
+    /// `(picture_id, bytes, fetched_at)`. Bytes are `None` on a
+    /// negative row.
+    ///
+    /// # Errors
+    /// [`StoreError`] on SQLite failures.
+    pub fn avatar(&self, jid: &str) -> Result<Option<AvatarRow>, StoreError> {
+        use rusqlite::OptionalExtension;
+        let row = self
+            .conn
+            .query_row(
+                "SELECT picture_id, bytes, fetched_at FROM avatars WHERE jid = ?1",
+                params![jid],
+                |row| {
+                    Ok((
+                        row.get::<_, Option<String>>(0)?,
+                        row.get::<_, Option<Vec<u8>>>(1)?,
+                        row.get::<_, i64>(2)?,
+                    ))
+                },
+            )
+            .optional()?;
+        Ok(row)
+    }
+
+    /// Every stored profile picture row, for the app's launch
+    /// seeding of its avatar cache.
+    ///
+    /// # Errors
+    /// [`StoreError`] on SQLite failures.
+    pub fn avatars(&self) -> Result<Vec<AvatarListing>, StoreError> {
+        let mut stmt =
+            self.conn.prepare("SELECT jid, picture_id, bytes, fetched_at FROM avatars")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, Option<Vec<u8>>>(2)?,
+                row.get::<_, i64>(3)?,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
+    /// Drops one identity's stored profile picture (a
+    /// picture-change event made it stale).
+    ///
+    /// # Errors
+    /// [`StoreError`] on SQLite failures.
+    pub fn delete_avatar(&self, jid: &str) -> Result<(), StoreError> {
+        self.conn.execute("DELETE FROM avatars WHERE jid = ?1", params![jid])?;
         Ok(())
     }
 
@@ -1397,6 +1600,9 @@ impl Store {
             msg.voice_ref = data.voice_ref;
             msg.video_ref = data.video_ref;
             msg.video_thumbnail = data.video_thumbnail;
+            msg.mentions = data.mentions;
+            msg.photo_thumbnail = data.photo_thumbnail;
+            msg.sticker_ref = data.sticker_ref;
             msg.poll_secret = data.poll_secret;
             msg.poll_creator = data.poll_creator;
             msg.poll_ballots = data.poll_ballots;
@@ -1949,6 +2155,77 @@ mod tests {
         assert_eq!(loaded.body, msg.body);
         // Missing rows report false instead of fabricating one.
         assert!(!store.set_message_flags(&msg.chat_jid, "nope", 0).unwrap());
+    }
+
+    /// Avatars round-trip: bytes with their picture id, the
+    /// negative row (no bytes) that keeps a photo-less contact
+    /// from being re-asked for a day, the full listing the app
+    /// seeds its session from, and deletion on invalidation.
+    #[test]
+    fn avatars_round_trip_with_negatives_and_delete() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .put_avatar("111@s.whatsapp.net", Some("pic-1"), Some(&[1, 2, 3]), 1_700_000_000)
+            .unwrap();
+        store.put_avatar("222@s.whatsapp.net", None, None, 1_700_000_100).unwrap();
+        let (picture_id, bytes, fetched_at) = store.avatar("111@s.whatsapp.net").unwrap().unwrap();
+        assert_eq!(picture_id.as_deref(), Some("pic-1"));
+        assert_eq!(bytes, Some(vec![1, 2, 3]));
+        assert_eq!(fetched_at, 1_700_000_000);
+        let (picture_id, bytes, _) = store.avatar("222@s.whatsapp.net").unwrap().unwrap();
+        assert!(picture_id.is_none() && bytes.is_none(), "the negative row carries no picture");
+        assert!(store.avatar("333@s.whatsapp.net").unwrap().is_none());
+        assert_eq!(store.avatars().unwrap().len(), 2);
+        store.delete_avatar("111@s.whatsapp.net").unwrap();
+        assert!(store.avatar("111@s.whatsapp.net").unwrap().is_none());
+        // A fresh answer replaces the negative.
+        store.put_avatar("222@s.whatsapp.net", Some("pic-2"), Some(&[9]), 1_700_000_200).unwrap();
+        let (_, bytes, _) = store.avatar("222@s.whatsapp.net").unwrap().unwrap();
+        assert_eq!(bytes, Some(vec![9]));
+    }
+
+    /// The media-retry recovery persists its refreshed direct
+    /// path into the archived reference, so the next session
+    /// downloads from the live location directly.
+    #[test]
+    fn media_direct_path_refresh_rewrites_the_archived_reference() {
+        let store = Store::open_in_memory().unwrap();
+        let mut msg = scripted_messages()[0].clone();
+        msg.photo_ref = Some(photo_reference());
+        store.upsert_message(&msg, 0).unwrap();
+        store.update_media_direct_path(&msg.chat_jid, &msg.id, "/v/t62.7118-24/fresh.enc").unwrap();
+        let rows = store.messages(&msg.chat_jid).unwrap();
+        assert_eq!(
+            rows[0].0.photo_ref.as_ref().map(|r| r.direct_path.as_str()),
+            Some("/v/t62.7118-24/fresh.enc")
+        );
+        assert!(store.has_message(&msg.chat_jid, &msg.id).unwrap());
+        assert!(!store.has_message(&msg.chat_jid, "nope").unwrap());
+    }
+
+    /// Mentions, the photo thumbnail and the sticker reference
+    /// ride the message's data blob and come back on reload:
+    /// that round-trip is what lets a restarted app render a
+    /// history sticker as a sticker and a mention by name.
+    #[test]
+    fn mentions_thumbnail_and_sticker_ref_round_trip() {
+        let store = Store::open_in_memory().unwrap();
+        let mut msg = scripted_messages()[0].clone();
+        msg.mentions = vec!["111@lid".to_owned(), "222@s.whatsapp.net".to_owned()];
+        msg.photo_thumbnail = Some(vec![0xFF, 0xD8, 0xFF, 0xD9]);
+        msg.sticker_ref = Some(backend::StickerRef {
+            direct_path: "/v/t62.15575-24/sticker.enc".to_owned(),
+            media_key: vec![1u8; 32],
+            file_sha256: vec![2u8; 32],
+            file_enc_sha256: vec![3u8; 32],
+            file_length: 4321,
+        });
+        store.upsert_message(&msg, 0).unwrap();
+        let rows = store.messages(&msg.chat_jid).unwrap();
+        let loaded = &rows[0].0;
+        assert_eq!(loaded.mentions, msg.mentions);
+        assert_eq!(loaded.photo_thumbnail, msg.photo_thumbnail);
+        assert_eq!(loaded.sticker_ref, msg.sticker_ref);
     }
 
     fn photo_reference() -> backend::PhotoRef {

@@ -163,6 +163,13 @@ mod tests {
             voice_refs: HashMap::new(),
             video_refs: HashMap::new(),
             video_thumbs: HashMap::new(),
+            sticker_refs: HashMap::new(),
+            photo_thumbs: HashMap::new(),
+            message_mentions: HashMap::new(),
+            names: HashMap::new(),
+            avatar_bytes: HashMap::new(),
+            avatar_missing: HashMap::new(),
+            avatar_requested: std::collections::HashSet::new(),
             poll_ballots: HashMap::new(),
         }
     }

@@ -1411,6 +1411,13 @@ mod tests {
             voice_refs: std::collections::HashMap::new(),
             video_refs: std::collections::HashMap::new(),
             video_thumbs: std::collections::HashMap::new(),
+            sticker_refs: std::collections::HashMap::new(),
+            photo_thumbs: std::collections::HashMap::new(),
+            message_mentions: std::collections::HashMap::new(),
+            names: std::collections::HashMap::new(),
+            avatar_bytes: std::collections::HashMap::new(),
+            avatar_missing: std::collections::HashMap::new(),
+            avatar_requested: std::collections::HashSet::new(),
             poll_ballots: std::collections::HashMap::new(),
         });
         app.live_mode = true;

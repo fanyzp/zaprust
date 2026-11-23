@@ -374,11 +374,7 @@ impl App {
                                     self.community_origin = None;
                                 }
                             }
-                            let header_photo = if chat.kind == core::model::ChatKind::Dm {
-                                self.demo_avatar(ui.ctx(), &chat.title)
-                            } else {
-                                None
-                            };
+                            let header_photo = self.chat_avatar_photo(ui.ctx(), &chat);
                             if header_avatar(ui, &chat, header_photo) {
                                 self.profile_open = true;
                             }

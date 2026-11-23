@@ -193,7 +193,12 @@ fn main() -> eframe::Result {
     }
     let args = Args::parse();
     let mut viewport = eframe::egui::ViewportBuilder::default()
-        .with_inner_size([1180.0, 760.0])
+        // The default window is one of the standard capture
+        // ratios (design standard section 12) and wide enough
+        // that the two-pane shell opens with a conversation
+        // column at full bubble width: 1440 minus the rail and
+        // the list panel leaves about 1000 points for it.
+        .with_inner_size([1440.0, 900.0])
         // Phone-like windows are supported (the shell goes
         // single-pane below its breakpoint), so the minimum
         // sits under the narrowest of those sizes instead of

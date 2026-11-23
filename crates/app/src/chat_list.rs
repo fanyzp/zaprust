@@ -376,7 +376,20 @@ impl App {
                         }
                     }
                 }
-                let photos = self.demo_photos(ui.ctx());
+                let mut photos = self.demo_photos(ui.ctx());
+                if self.live.is_some() {
+                    // Live rows wear their real profile
+                    // pictures: the avatar pipeline is ensured
+                    // for every roster chat (it dedups and
+                    // caches), and whatever has landed overlays
+                    // the demo map.
+                    let roster = self.chats.clone();
+                    for chat in &roster {
+                        if let Some(tex) = self.chat_avatar_photo(ui.ctx(), chat) {
+                            photos.insert(chat.id, tex);
+                        }
+                    }
+                }
                 let visible = filter_chats(&self.chats, self.filter, &self.search);
                 let mut clicked: Option<u64> = None;
                 // A row context-menu pick (chat id, what it asks

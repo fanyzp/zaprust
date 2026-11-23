@@ -42,6 +42,7 @@ impl App {
         // conversation, so requests are collected here and
         // dispatched after the scroll pass, before the return.
         let mut pending_photo_fetches: Vec<u64> = Vec::new();
+        let mut pending_sticker_fetches: Vec<u64> = Vec::new();
         let scroll_out = egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .stick_to_bottom(!self.qa_scroll_top && self.scroll_to_message.is_none())
@@ -88,6 +89,28 @@ impl App {
                             map.insert(name, tex);
                         }
                     }
+                    // Live senders wear their real pictures:
+                    // each message's author JID (kept by the
+                    // session beside the message) goes through
+                    // the avatar pipeline, keyed back to the
+                    // sender name the bubble paints.
+                    if self.live.is_some() {
+                        let pairs: Vec<(String, String)> = self
+                            .conversation
+                            .iter()
+                            .filter_map(|m| {
+                                let name = m.sender.clone()?;
+                                let jid = self.sender_jids.get(&m.id).cloned()?;
+                                Some((name, jid))
+                            })
+                            .collect();
+                        for (name, jid) in pairs {
+                            self.ensure_avatar(ui.ctx(), &jid);
+                            if let Some(tex) = self.live_avatar(&jid) {
+                                map.insert(name, tex.id());
+                            }
+                        }
+                    }
                     map
                 };
                 // Sender-name colors for this conversation,
@@ -102,6 +125,27 @@ impl App {
                 );
                 let divider_before = |i: usize| {
                     divider.is_some_and(|d| d.first_unread_id == self.conversation[i].id)
+                };
+                // Mention display bodies, resolved up front
+                // for the same borrow reason: a message whose
+                // wire mentions are known gets a body whose
+                // `@<number>` spans carry the person's display
+                // name (the session's name directory), so a
+                // mention never renders as a raw LID or number
+                // the roster can name.
+                let display_bodies: std::collections::HashMap<u64, String> = {
+                    let mut map = std::collections::HashMap::new();
+                    if let Some(session) = &self.live {
+                        for m in &self.conversation {
+                            if let Some(mentions) = session.message_mentions.get(&m.id) {
+                                let body = substitute_mentions(&m.body, mentions, &session.names);
+                                if body != m.body {
+                                    map.insert(m.id, body);
+                                }
+                            }
+                        }
+                    }
+                    map
                 };
                 // Sender grouping (WhatsApp's rhythm):
                 // consecutive messages from the same sender
@@ -264,6 +308,33 @@ impl App {
                     {
                         pending_photo_fetches.push(msg.id);
                     }
+                    let sticker_tile = self.sticker_tile(msg.id);
+                    if msg.kind == core::model::MessageKind::Sticker
+                        && sticker_tile == crate::media::PhotoTile::Idle
+                    {
+                        pending_sticker_fetches.push(msg.id);
+                    }
+                    // The photo's wire thumbnail and the best
+                    // known aspect for its tile: the decoded
+                    // photo's own proportions when its bytes are
+                    // here, else the thumbnail's.
+                    let photo_thumb_pair = if matches!(
+                        msg.kind,
+                        core::model::MessageKind::Image { view_once: false, .. }
+                    ) {
+                        Self::photo_thumb_texture(
+                            &mut self.media,
+                            self.live.as_ref(),
+                            ui.ctx(),
+                            msg.id,
+                        )
+                    } else {
+                        None
+                    };
+                    let own_aspect = self.media.textures.get(&msg.id).map(|handle| {
+                        let size = handle.size_vec2();
+                        size.x / size.y.max(1.0)
+                    });
                     let media = MediaCtx {
                         photo: if photo_tile == crate::media::PhotoTile::Demo {
                             self.media.photo_texture.as_ref().map(egui::TextureHandle::id)
@@ -272,6 +343,9 @@ impl App {
                         },
                         own_photo: self.media.textures.get(&msg.id).map(egui::TextureHandle::id),
                         photo_tile,
+                        photo_thumb: photo_thumb_pair.map(|(id, _)| id),
+                        photo_aspect: own_aspect.or_else(|| photo_thumb_pair.map(|(_, a)| a)),
+                        sticker_tile,
                         video_tile: self.video_tile(msg.id),
                         video_thumb: if matches!(msg.kind, core::model::MessageKind::Video { .. }) {
                             Self::video_thumb_texture(
@@ -331,13 +405,22 @@ impl App {
                     if rise > 0.01 {
                         ui.add_space(rise);
                     }
+                    // The bubble paints the mention-resolved
+                    // body when this message has one.
+                    let owned_msg: Option<core::model::Message> =
+                        display_bodies.get(&msg.id).map(|body| {
+                            let mut cloned = msg.clone();
+                            cloned.body = body.clone();
+                            cloned
+                        });
+                    let bubble_msg: &core::model::Message = owned_msg.as_ref().unwrap_or(msg);
                     let bubble_scope = ui.scope(|ui| {
                         if alpha < 0.999 {
                             ui.set_opacity(alpha);
                         }
                         message_bubble(
                             ui,
-                            msg,
+                            bubble_msg,
                             chat,
                             t,
                             media,
@@ -518,6 +601,9 @@ impl App {
         for id in pending_photo_fetches {
             self.ensure_photo_fetch(id);
         }
+        for id in pending_sticker_fetches {
+            self.ensure_sticker_fetch(id);
+        }
 
         (scroll_out, full_rect)
     }
@@ -633,6 +719,36 @@ const REACTED_SPACE: f32 = 13.0;
 /// senders on the same palette entry whenever their name byte
 /// sums collided). Past the palette's end the standalone
 /// per-name color is the fallback.
+/// Substitutes display names for a message's `@<number>`
+/// mention spans. Each mentioned JID's user part is what the
+/// body carries; the replacement is the name directory's name
+/// for that JID, else (for a phone-number JID) the formatted
+/// number, else the span is left as the wire wrote it. Longer
+/// user parts are replaced first, so one mention's number can
+/// never partially rewrite another's.
+pub(crate) fn substitute_mentions(
+    body: &str,
+    mentions: &[String],
+    names: &std::collections::HashMap<String, String>,
+) -> String {
+    let mut order: Vec<&String> = mentions.iter().collect();
+    order.sort_by_key(|jid| std::cmp::Reverse(jid.len()));
+    let mut out = body.to_owned();
+    for jid in order {
+        let user = jid.split('@').next().unwrap_or(jid);
+        if user.is_empty() {
+            continue;
+        }
+        let replacement = match names.get(jid) {
+            Some(name) if !name.is_empty() => format!("@{name}"),
+            _ if jid.ends_with("@s.whatsapp.net") => format!("@+{user}"),
+            _ => continue,
+        };
+        out = out.replace(&format!("@{user}"), &replacement);
+    }
+    out
+}
+
 fn assign_sender_colors<'a>(
     names: impl Iterator<Item = &'a str>,
     t: Tokens,
@@ -917,7 +1033,7 @@ fn unread_divider_row(ui: &mut egui::Ui, t: Tokens, count: u32) {
 
 #[cfg(test)]
 mod tests {
-    use super::{assign_sender_colors, clock_minutes, time_chip_between};
+    use super::{assign_sender_colors, clock_minutes, substitute_mentions, time_chip_between};
     use core::model::Message;
     use core::theme::Tokens;
 
@@ -933,6 +1049,33 @@ mod tests {
         assert_ne!(map["Mike"], map["Emma"]);
         assert_ne!(map["Emma"], map["Sarah"]);
         assert_ne!(map["Mike"], map["Sarah"]);
+    }
+
+    /// Mentions render the person's name when the directory
+    /// knows it, the formatted number for a phone-form mention
+    /// without a name, and stay raw only for an identity nothing
+    /// can name. A shorter mention never rewrites a longer one.
+    #[test]
+    fn mentions_substitute_names_then_numbers() {
+        let mut names = std::collections::HashMap::new();
+        names.insert("31525865312407@lid".to_owned(), "Bima Prasetyo".to_owned());
+        let body = "halo @31525865312407 dan @6281234567890 cc @999";
+        let mentions = vec![
+            "31525865312407@lid".to_owned(),
+            "6281234567890@s.whatsapp.net".to_owned(),
+            "999@lid".to_owned(),
+        ];
+        assert_eq!(
+            substitute_mentions(body, &mentions, &names),
+            "halo @Bima Prasetyo dan @+6281234567890 cc @999"
+        );
+        // Prefix safety: 6281 is a prefix of 6281234567890; the
+        // longer span is replaced first and stays intact.
+        let mentions = vec!["6281@lid".to_owned(), "6281234567890@s.whatsapp.net".to_owned()];
+        assert_eq!(
+            substitute_mentions("ping @6281234567890", &mentions, &names),
+            "ping @+6281234567890"
+        );
     }
 
     #[test]

@@ -234,6 +234,14 @@ impl App {
                 format!("CallEndedElsewhere {call_id} from {chat_jid} answered={answered} at {at}"),
                 None,
             ),
+            // Media, avatar, sync and call-history events: the
+            // trace names them without payloads (bytes and JIDs
+            // stay out of the exported log).
+            other => (
+                "backend",
+                format!("Event {:?}", std::mem::discriminant(other)),
+                None,
+            ),
         };
         self.trace_push(stage, &summary, body);
     }

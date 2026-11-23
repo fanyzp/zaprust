@@ -82,6 +82,77 @@ pub(super) fn about_from_usync(response: &UsyncResponse) -> String {
     result.status.as_ref().map(|s| s.to_string()).unwrap_or_default()
 }
 
+/// The outcome of one [`fetch_avatar`] lookup, in the terms
+/// the app caches: bytes, a definitive negative (no picture, or
+/// privacy refuses), or a transport failure that must stay
+/// retryable and never be cached as a negative.
+pub(super) enum AvatarOutcome {
+    /// The picture's bytes and its server-side ID.
+    Bytes {
+        /// Server-side picture ID, for change detection.
+        picture_id: Option<String>,
+        /// The picture bytes (JPEG as served).
+        bytes: Vec<u8>,
+    },
+    /// No picture exists for this identity, or its privacy
+    /// settings refuse the lookup.
+    Missing,
+    /// The lookup or the download failed; nothing is known.
+    Unavailable,
+}
+
+/// Fetches one identity's profile picture for display (a
+/// contact, a group, or a community). The picture must belong
+/// to the identity it labels, so the address form is resolved
+/// before the lookup: a group is queried under its group JID,
+/// and a contact known under a LID is queried under its
+/// phone-number form whenever the session's LID-to-phone cache
+/// knows the mapping (the same cache the title healer reads),
+/// falling back to the LID itself when it does not.
+pub(super) async fn fetch_avatar(client: &Client, jid_str: &str) -> AvatarOutcome {
+    use whatsapp_rust::ProfilePictureLookup;
+    let Ok(jid) = jid_str.parse::<Jid>() else { return AvatarOutcome::Unavailable };
+    let (target_jid, is_group) = if jid_str.ends_with("@g.us") {
+        (jid.clone(), true)
+    } else if jid_str.ends_with("@lid") {
+        match client.get_lid_pn_entry(&jid).await {
+            Ok(Some(entry)) => (
+                format!("{}@s.whatsapp.net", entry.phone_number)
+                    .parse::<Jid>()
+                    .unwrap_or_else(|_| jid.clone()),
+                false,
+            ),
+            _ => (jid.clone(), false),
+        }
+    } else {
+        (jid.clone(), false)
+    };
+    let target = if is_group {
+        ProfilePictureTarget::Group(&target_jid)
+    } else {
+        ProfilePictureTarget::Contact(&target_jid)
+    };
+    let request = ProfilePictureRequest::new(target, ProfilePictureType::Preview);
+    match client.pictures().lookup(request).await {
+        Ok(ProfilePictureLookup::Found(picture)) => {
+            let picture_id = Some(picture.id.clone());
+            let url = picture.url.clone();
+            match tokio::task::spawn_blocking(move || download_picture(&url)).await {
+                Ok(Some(bytes)) => AvatarOutcome::Bytes { picture_id, bytes },
+                _ => AvatarOutcome::Unavailable,
+            }
+        }
+        Ok(ProfilePictureLookup::NotFound | ProfilePictureLookup::NotAuthorized) => {
+            AvatarOutcome::Missing
+        }
+        // Unchanged cannot occur (no conditional ID is sent),
+        // and a lookup error says nothing about the picture:
+        // both stay retryable. The lookup enum is non-exhaustive,
+        // so any future outcome lands in the same retryable arm.
+        _ => AvatarOutcome::Unavailable,
+    }
+}
+
 /// The account's profile picture bytes: the protocol picture
 /// lookup (preview size) for the account's own JID, then a plain
 /// download of the URL it returns. `None` when the account has

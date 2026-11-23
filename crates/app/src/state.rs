@@ -344,12 +344,12 @@ pub(crate) enum LayoutMode {
 
 /// The window width where the two-pane shell stops working,
 /// built from the layout's own constants: the rail (60) plus
-/// the list panel's default width (350) plus the narrowest
+/// the list panel's default width (380) plus the narrowest
 /// conversation column that still holds the composer pill and
 /// readable bubbles (550). Below it, keeping both panes only
 /// crushes them (the graded small-width failure), so the shell
 /// switches to single-pane instead.
-pub(crate) const SINGLE_PANE_BREAKPOINT: f32 = 60.0 + 350.0 + 550.0;
+pub(crate) const SINGLE_PANE_BREAKPOINT: f32 = 60.0 + 380.0 + 550.0;
 
 /// The layout mode for a window of `width` by `height`: the
 /// pure decision the shell re-evaluates every frame. Portrait
@@ -591,6 +591,22 @@ pub(crate) struct MediaState {
     /// Decoded demo persona portraits, keyed by display name (see
     /// demo_avatars.rs). Bounded like `textures`.
     pub(crate) avatar_textures: crate::extras::TextureCache<String>,
+    /// Decoded live profile pictures, keyed by JID (see
+    /// `live::LiveSession`'s avatar bookkeeping: the store's
+    /// avatar rows and the backend's picture lookups feed this
+    /// cache, and only this cache paints a real photo). Bounded
+    /// like `textures`.
+    pub(crate) live_avatar_textures: crate::extras::TextureCache<String>,
+    /// Live sticker fetches in flight or failed, per app
+    /// message ID, mirroring `photo_fetch`. A successful fetch
+    /// removes the entry and lands the decoded texture in
+    /// `textures` instead.
+    pub(crate) sticker_fetch: std::collections::HashMap<u64, PhotoFetchState>,
+    /// Decoded photo wire thumbnails per app message ID: the
+    /// photo itself at preview fidelity, painted by its tile
+    /// before (and while) the full bytes are fetched. Bounded
+    /// like `textures`.
+    pub(crate) photo_thumb_textures: crate::extras::TextureCache<u64>,
     /// View-once photos the user has already opened.
     pub(crate) opened_view_once: std::collections::HashSet<u64>,
     /// The view-once photo currently open in the viewer, if any.
@@ -1683,6 +1699,13 @@ impl App {
                 textures: crate::extras::TextureCache::new(crate::extras::MAX_MEDIA_TEXTURES),
                 avatar_textures: crate::extras::TextureCache::new(
                     crate::extras::MAX_AVATAR_TEXTURES,
+                ),
+                live_avatar_textures: crate::extras::TextureCache::new(
+                    crate::extras::MAX_AVATAR_TEXTURES,
+                ),
+                sticker_fetch: std::collections::HashMap::new(),
+                photo_thumb_textures: crate::extras::TextureCache::new(
+                    crate::extras::MAX_MEDIA_TEXTURES,
                 ),
                 opened_view_once: std::collections::HashSet::new(),
                 viewing_photo: if args.open_viewonce { Some(112) } else { None },
@@ -3071,7 +3094,7 @@ mod tests {
     #[test]
     fn layout_mode_switches_at_the_breakpoint() {
         use super::{layout_mode_for_size, LayoutMode, SINGLE_PANE_BREAKPOINT};
-        assert_eq!(SINGLE_PANE_BREAKPOINT, 60.0 + 350.0 + 550.0);
+        assert_eq!(SINGLE_PANE_BREAKPOINT, 60.0 + 380.0 + 550.0);
         // The graded set, as (width, height) pairs.
         for (w, h) in [(360.0, 800.0), (390.0, 844.0)] {
             assert_eq!(layout_mode_for_size(w, h), LayoutMode::Portrait, "{w}x{h}");

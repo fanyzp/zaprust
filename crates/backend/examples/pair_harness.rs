@@ -114,6 +114,9 @@ fn summarize(event: &BackendEvent) -> String {
         BackendEvent::OwnProfileSaveFailed { message } => {
             format!("OwnProfileSaveFailed {message}")
         }
+        // Media, avatar, sync and call-history events carry no
+        // pairing signal; the harness names them generically.
+        other => format!("{:?}", std::mem::discriminant(other)),
     }
 }
 

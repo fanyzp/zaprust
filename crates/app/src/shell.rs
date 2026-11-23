@@ -172,7 +172,7 @@ impl App {
     }
 
     /// The left list panel in the shape the layout mode needs:
-    /// the resizable 350-wide panel of the two-pane shell, or,
+    /// the resizable 380-wide panel of the two-pane shell, or,
     /// in single-pane mode, a panel spanning the full available
     /// width (everything right of the rail, or the whole window
     /// in portrait mode), since the list is then the only pane.
@@ -182,8 +182,8 @@ impl App {
         } else {
             egui::Panel::left("chat_list")
                 .resizable(true)
-                .default_size(350.0)
-                .size_range(280.0..=460.0)
+                .default_size(380.0)
+                .size_range(300.0..=480.0)
         }
     }
 

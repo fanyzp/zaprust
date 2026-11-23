@@ -199,21 +199,6 @@ pub(crate) fn glass_wash(_t: Tokens, base: Rgb, alpha: u8) -> Color32 {
     Color32::from_rgba_unmultiplied(base.0, base.1, base.2, alpha)
 }
 
-/// The stacked-panel glass alpha: surfaces that float over the
-/// scrolling message stream (the media picker, the attach menu,
-/// the other conversation popups) run near-opaque. At the base glass alpha the bubbles
-/// behind a panel stayed legible through it, and two translucent
-/// layers over live text read as visual noise; at this tier the
-/// content behind is a faint tint at most, while the specular
-/// edge and shadow keep the surface reading as glass.
-pub(crate) fn glass_panel_alpha(t: Tokens) -> u8 {
-    if t.is_light() {
-        244
-    } else {
-        236
-    }
-}
-
 /// The stacked-panel glass fill (near-opaque). Its solid base
 /// is the elevated-card step rather than the panel itself:
 /// floating surfaces sit one value step above the panels they

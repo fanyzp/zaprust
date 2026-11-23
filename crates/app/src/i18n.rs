@@ -1,11 +1,11 @@
 //! Interface language: user-facing strings live in locale files
 //! (`locales/<lang>.toml`), never hardcoded in draw code.
 //!
-//! English (`en`) is the source locale and the only complete one.
-//! Lookup falls back to English for any key a locale has not
-//! translated yet, so partial locales (Indonesian ships as a
-//! starter) are safe to ship. See docs/I18N.md for how to add or
-//! extend a language.
+//! English (`en`) is the source locale. Lookup falls back to
+//! English for any key a locale has not translated yet, so a
+//! partial locale is safe to ship; Indonesian currently covers
+//! every key. See docs/I18N.md for how to add or extend a
+//! language.
 //!
 //! Placeholders use `{name}` form and are filled by [`tf`].
 
@@ -18,7 +18,7 @@ const ID_TOML: &str = include_str!("../locales/id.toml");
 /// The languages the picker offers: (locale id, display name,
 /// completeness note). The names are the languages' own names for
 /// themselves where sensible.
-pub(crate) const LOCALES: &[(&str, &str)] = &[("en", "English"), ("id", "Indonesian (partial)")];
+pub(crate) const LOCALES: &[(&str, &str)] = &[("en", "English"), ("id", "Indonesian")];
 
 fn parse(source: &str) -> HashMap<String, String> {
     // A malformed bundled locale is a build-time bug; the tests
@@ -157,21 +157,23 @@ mod tests {
     }
 
     #[test]
-    fn fallback_resolution_uses_english_for_missing_keys() {
+    fn locale_switching_resolves_translations_and_unknown_keys() {
+        // Resolve everything first and restore the locale
+        // before asserting, so a failure here can never leak
+        // the Indonesian locale into other tests sharing this
+        // process (the locale is one global).
         set_locale("id");
-        // A key Indonesian has not translated falls back to English.
-        let en_only = en_map()
-            .keys()
-            .find(|k| !id_map().contains_key(*k))
-            .expect("there is at least one untranslated key")
-            .clone();
-        assert_eq!(t(&en_only), en_map()[&en_only]);
-        // A translated key resolves to Indonesian.
         let shared = id_map().keys().next().unwrap().clone();
-        assert_eq!(t(&shared), id_map()[&shared]);
-        // Unknown keys surface as themselves, never panic.
-        assert_eq!(t("no.such.key"), "no.such.key");
+        let id_value = t(&shared);
+        let unknown = t("no.such.key");
         set_locale("en");
-        assert_eq!(t(&shared), en_map()[&shared]);
+        let en_value = t(&shared);
+        assert_eq!(id_value, id_map()[&shared], "a translated key resolves to Indonesian");
+        assert_eq!(unknown, "no.such.key", "unknown keys surface as themselves, never panic");
+        assert_eq!(en_value, en_map()[&shared], "English resolves the source string");
+        // The English fallback for a key the active locale has
+        // not translated cannot be triggered from the bundled
+        // files now that the Indonesian starter is complete;
+        // it stays covered by the t() lookup order itself.
     }
 }

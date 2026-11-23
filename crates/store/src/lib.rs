@@ -376,6 +376,10 @@ struct MessageData {
 /// One stored profile picture row: (picture_id, bytes,
 /// fetched_at). Bytes are `None` on a negative row (the identity
 /// has no picture, or privacy refused it).
+/// [`Store::messages_reporting`] result: the decoded rows plus
+/// the IDs of rows skipped because their payload was corrupt.
+pub type MessagesReport = (Vec<(LiveMessage, i64)>, Vec<String>);
+
 pub type AvatarRow = (Option<String>, Option<Vec<u8>>, i64);
 
 /// One row of the full avatar listing: the identity's JID plus
@@ -1929,10 +1933,7 @@ impl Store {
     /// skipped (the rest of the chat loads), and the caller
     /// surfaces the loss instead of the archive silently
     /// coming back short.
-    pub fn messages_reporting(
-        &self,
-        chat_jid: &str,
-    ) -> Result<(Vec<(LiveMessage, i64)>, Vec<String>), StoreError> {
+    pub fn messages_reporting(&self, chat_jid: &str) -> Result<MessagesReport, StoreError> {
         let mut stmt = self.conn.prepare(
             "SELECT chat_jid, id, sender, body, timestamp, from_me, data, flags, expires_at
              FROM messages WHERE chat_jid = ?1 ORDER BY timestamp ASC, id ASC",
@@ -1948,9 +1949,10 @@ impl Store {
                         // Marked by a sentinel the caller
                         // filters below: the row is skipped,
                         // its ID reported.
-                        let mut data = MessageData::default();
-                        data.sender_jid = Some("\u{1}corrupt".to_owned());
-                        data
+                        MessageData {
+                            sender_jid: Some("\u{1}corrupt".to_owned()),
+                            ..MessageData::default()
+                        }
                     }
                 },
                 None => MessageData::default(),

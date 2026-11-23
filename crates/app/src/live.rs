@@ -8984,10 +8984,16 @@ mod burst_drain_tests {
         app.selected_chat = jid_id(CHAT_JID);
         let mid = message_id(CHAT_JID, "stk-1");
         app.ensure_sticker_fetch(mid);
-        assert!(matches!(
-            cmd_rx.try_recv(),
-            Ok(BackendCommand::FetchSticker { message_id, .. }) if message_id == "stk-1"
-        ));
+        // Other commands may already be queued; scan for the
+        // fetch instead of assuming it is next.
+        let mut sent_fetch = false;
+        while let Ok(cmd) = cmd_rx.try_recv() {
+            if matches!(cmd, BackendCommand::FetchSticker { ref message_id, .. } if message_id.as_str() == "stk-1") {
+                sent_fetch = true;
+                break;
+            }
+        }
+        assert!(sent_fetch, "the first fetch command is sent");
         tx.send(BackendEvent::StickerFetchFailed {
             chat_jid: CHAT_JID.to_owned(),
             message_id: "stk-1".to_owned(),
@@ -8997,13 +9003,19 @@ mod burst_drain_tests {
         assert_eq!(app.sticker_tile(mid), crate::media::PhotoTile::Failed);
         app.retry_sticker_fetch(mid);
         assert_eq!(app.sticker_tile(mid), crate::media::PhotoTile::Loading);
-        match cmd_rx.try_recv() {
-            Ok(BackendCommand::FetchSticker { sticker_ref, .. }) => {
-                let reference = sticker_ref.expect("the archived reference rides along");
-                assert_eq!(reference.direct_path, "/v/t62.7118-24/sticker.enc");
+        // A presence subscription for the open chat may be
+        // queued ahead of the retry; scan for it.
+        let mut retry_ref = None;
+        while let Ok(cmd) = cmd_rx.try_recv() {
+            if let BackendCommand::FetchSticker { sticker_ref, .. } = cmd {
+                retry_ref = Some(sticker_ref);
+                break;
             }
-            other => panic!("expected a FetchSticker retry, got {other:?}"),
         }
+        let reference = retry_ref
+            .flatten()
+            .expect("the retry sends a FetchSticker with the archived reference");
+        assert_eq!(reference.direct_path, "/v/t62.7118-24/sticker.enc");
     }
 
     /// A view-once sticker's view is spent when its bytes land

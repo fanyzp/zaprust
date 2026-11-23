@@ -886,7 +886,7 @@ fn history_message(
         let resolved = sender_jid
             .as_deref()
             .and_then(|jid| book.name_for(jid))
-            .or_else(|| own_push_name)
+            .or(own_push_name)
             .or_else(|| sender_jid.as_deref().and_then(|jid| book.phone_for(jid)));
         if let (Some(jid), Some(name)) = (&sender_jid, &resolved) {
             if !is_raw_identifier(name) {

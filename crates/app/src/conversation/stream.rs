@@ -1160,8 +1160,6 @@ fn paint_system_pill(ui: &egui::Ui, t: Tokens, rect: egui::Rect, kind: SystemPil
         Stroke::NONE,
         egui::StrokeKind::Inside,
     );
-    if kind == SystemPillKind::Date {
-    }
     fill
 }
 

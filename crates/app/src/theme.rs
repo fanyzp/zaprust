@@ -147,7 +147,6 @@ pub(crate) const GLASS_ALPHA: u8 = 200;
 /// neutral base, not a wash of color (the neutral-surfaces
 /// color pass stepped this down from 0.14; bright seeds still
 /// read tinted at 0.08, so it sits at 0.05).
-const GLASS_TINT: f32 = 0.05;
 
 /// The text-bearing glass alpha: the dark theme can run slightly
 /// lower (light text on dark), the light theme needs more body
@@ -221,7 +220,7 @@ pub(crate) fn glass_panel_alpha(t: Tokens) -> u8 {
 /// float over, so a menu or popup reads as a layer in its own
 /// right instead of a translucent patch of the panel behind it.
 pub(crate) fn glass_panel_fill(t: Tokens) -> Color32 {
-    glass_tint_alpha(t, core::theme::elevated_step(t.bg_panel), glass_panel_alpha(t))
+    popup_fill(t)
 }
 
 /// The portrait pill bar's fill: a full ladder rung above the
@@ -230,7 +229,7 @@ pub(crate) fn glass_panel_fill(t: Tokens) -> Color32 {
 /// capsule hovering over the screen instead of a wide slab of
 /// the panel itself. Same near-opaque alpha as the panels.
 pub(crate) fn glass_bar_fill(t: Tokens) -> Color32 {
-    glass_tint_alpha(t, t.bg_panel_alt, glass_panel_alpha(t))
+    card_fill(t)
 }
 
 /// The one horizontal inset for left list panels (Chats and its

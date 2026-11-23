@@ -122,6 +122,7 @@ impl eframe::App for App {
         self.draw_my_profile(&ctx);
         self.draw_status_composer(&ctx);
         self.draw_photo_viewer(ui);
+        self.draw_photo_editor(&ctx);
         self.draw_call_overlay(&ctx);
         self.draw_banners(ui);
     }
@@ -724,7 +725,8 @@ impl App {
             }
         }
         // The poster: the video's own thumbnail.
-        let thumb = Self::video_thumb_texture(&mut self.media, self.live.as_ref(), ui.ctx(), id);
+        let thumb = Self::video_thumb_texture(&mut self.media, self.live.as_ref(), ui.ctx(), id)
+            .map(|(id, _aspect)| id);
         let thumb_aspect = self
             .media
             .video_textures

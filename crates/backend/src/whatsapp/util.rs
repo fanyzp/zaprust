@@ -213,6 +213,23 @@ fn unwrap_media_proto(
         }
         current = next;
     }
+    // An album child arrives inside an associated-child
+    // envelope: the media payload lives in the envelope's inner
+    // message, so the walk descends into it (and re-runs the
+    // base walk there) before any extractor reads a slot.
+    if let Some(inner) =
+        current.associated_child_message.as_option().and_then(|e| e.message.as_option())
+    {
+        let mut inner_current = inner.get_base_message();
+        for _ in 0..8 {
+            let next = inner_current.get_base_message();
+            if std::ptr::eq(next, inner_current) {
+                break;
+            }
+            inner_current = next;
+        }
+        return inner_current;
+    }
     current
 }
 
@@ -297,7 +314,7 @@ fn media_part<'p>(
     if let Some(m) = proto.image_message.as_option() {
         return Some((m, "jpg"));
     }
-    if let Some(m) = proto.video_message.as_option() {
+    if let Some(m) = proto.video_message.as_option().or_else(|| proto.ptv_message.as_option()) {
         return Some((m, "mp4"));
     }
     if let Some(m) = proto.audio_message.as_option() {
@@ -543,7 +560,8 @@ pub(super) async fn fetch_voice_by_ref(
 /// field the CDN download validates must be present and
 /// well-formed, because a partial reference can only fail later.
 pub(super) fn video_ref_of(proto: &whatsapp_rust::prelude::wa::Message) -> Option<crate::VideoRef> {
-    let video = unwrap_media_proto(proto).video_message.as_option()?;
+    let proto = unwrap_media_proto(proto);
+    let video = proto.video_message.as_option().or_else(|| proto.ptv_message.as_option())?;
     let direct_path = video.direct_path.clone().filter(|p| !p.is_empty())?;
     let media_key = video.media_key.clone().filter(|k| k.len() == 32)?;
     let file_sha256 = video.file_sha256.clone().filter(|h| h.len() == 32)?;
@@ -563,7 +581,8 @@ const MAX_VIDEO_THUMBNAIL_BYTES: usize = 256 * 1024;
 /// client. `None` when the message is not a video, carries no
 /// thumbnail, or carries one too large to be a thumbnail.
 pub(super) fn video_thumbnail_of(proto: &whatsapp_rust::prelude::wa::Message) -> Option<Vec<u8>> {
-    let video = unwrap_media_proto(proto).video_message.as_option()?;
+    let proto = unwrap_media_proto(proto);
+    let video = proto.video_message.as_option().or_else(|| proto.ptv_message.as_option())?;
     video.jpeg_thumbnail.clone().filter(|t| !t.is_empty() && t.len() <= MAX_VIDEO_THUMBNAIL_BYTES)
 }
 
@@ -595,7 +614,8 @@ pub(super) async fn fetch_video_bytes(
     proto: &whatsapp_rust::prelude::wa::Message,
 ) -> Result<Vec<u8>, String> {
     let proto = unwrap_media_proto(proto);
-    let Some(video) = proto.video_message.as_option() else {
+    let Some(video) = proto.video_message.as_option().or_else(|| proto.ptv_message.as_option())
+    else {
         return Err("That message is not a video.".to_owned());
     };
     check_declared_length(video.file_length)?;
@@ -652,7 +672,8 @@ pub(super) async fn fetch_video_to_file(
     stem: &str,
 ) -> Result<std::path::PathBuf, String> {
     let proto = unwrap_media_proto(proto);
-    let Some(video) = proto.video_message.as_option() else {
+    let Some(video) = proto.video_message.as_option().or_else(|| proto.ptv_message.as_option())
+    else {
         return Err("That message is not a video.".to_owned());
     };
     check_declared_length(video.file_length)?;
@@ -789,7 +810,7 @@ pub(super) fn mentioned_jids_of(proto: &whatsapp_rust::prelude::wa::Message) -> 
     if let Some(m) = base.image_message.as_option() {
         push(m.context_info.as_option());
     }
-    if let Some(m) = base.video_message.as_option() {
+    if let Some(m) = base.video_message.as_option().or_else(|| base.ptv_message.as_option()) {
         push(m.context_info.as_option());
     }
     if let Some(m) = base.document_message.as_option() {
@@ -1657,5 +1678,46 @@ mod tests {
         assert!(video_download_params(&reference).is_ok());
         let malformed = crate::VideoRef { media_key: vec![1u8; 4], ..reference.clone() };
         assert!(video_download_params(&malformed).is_err());
+    }
+
+    fn complete_image_proto() -> wa::Message {
+        let mut image = wa::message::ImageMessage::default();
+        image.direct_path = Some("/v/t62/photo".to_owned());
+        image.media_key = Some(vec![7u8; 32]);
+        image.file_sha256 = Some(vec![8u8; 32]);
+        image.file_enc_sha256 = Some(vec![9u8; 32]);
+        image.file_length = Some(1234);
+        let mut msg = wa::Message::default();
+        msg.image_message = MessageField::some(image);
+        msg
+    }
+
+    /// Album children arrive wrapped in an associated-child
+    /// envelope: the media extractors must descend into it, or
+    /// every album photo is archived without a download path.
+    #[test]
+    fn associated_child_media_refs_descend() {
+        let mut envelope = wa::message::FutureProofMessage::default();
+        envelope.message = MessageField::some(complete_image_proto());
+        let mut msg = wa::Message::default();
+        msg.associated_child_message = MessageField::some(envelope);
+        let reference = photo_ref_of(&msg).expect("the child photo's ref must be found");
+        assert_eq!(reference.file_length, 1234);
+    }
+
+    /// A PTV (round video note) carries its ref in its own
+    /// slot: the video ref extractor reads it there.
+    #[test]
+    fn ptv_video_ref_reads_the_ptv_slot() {
+        let mut video = wa::message::VideoMessage::default();
+        video.direct_path = Some("/v/t62/ptv".to_owned());
+        video.media_key = Some(vec![7u8; 32]);
+        video.file_sha256 = Some(vec![8u8; 32]);
+        video.file_enc_sha256 = Some(vec![9u8; 32]);
+        video.file_length = Some(4321);
+        let mut msg = wa::Message::default();
+        msg.ptv_message = MessageField::some(video);
+        let reference = video_ref_of(&msg).expect("the PTV ref must be found");
+        assert_eq!(reference.file_length, 4321);
     }
 }

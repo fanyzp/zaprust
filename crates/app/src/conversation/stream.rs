@@ -348,6 +348,17 @@ impl App {
                         let size = handle.size_vec2();
                         size.x / size.y.max(1.0)
                     });
+                    let video_thumb_pair =
+                        if matches!(msg.kind, core::model::MessageKind::Video { .. }) {
+                            Self::video_thumb_texture(
+                                &mut self.media,
+                                self.live.as_ref(),
+                                ui.ctx(),
+                                msg.id,
+                            )
+                        } else {
+                            None
+                        };
                     let media = MediaCtx {
                         photo: if photo_tile == crate::media::PhotoTile::Demo {
                             self.media.photo_texture.as_ref().map(egui::TextureHandle::id)
@@ -360,16 +371,8 @@ impl App {
                         photo_aspect: own_aspect.or_else(|| photo_thumb_pair.map(|(_, a)| a)),
                         sticker_tile,
                         video_tile: self.video_tile(msg.id),
-                        video_thumb: if matches!(msg.kind, core::model::MessageKind::Video { .. }) {
-                            Self::video_thumb_texture(
-                                &mut self.media,
-                                self.live.as_ref(),
-                                ui.ctx(),
-                                msg.id,
-                            )
-                        } else {
-                            None
-                        },
+                        video_thumb: video_thumb_pair.map(|(id, _)| id),
+                        video_aspect: video_thumb_pair.map(|(_, a)| a),
                         voice: match &self.media.voice_player {
                             Some(player) if player.id == msg.id => {
                                 Some(crate::bubble::VoiceSnap {
@@ -491,6 +494,20 @@ impl App {
                             self.highlight_message = None;
                             self.highlight_started = None;
                         }
+                    }
+                    // In-chat search (section 25): the current
+                    // match wears a steady accent wash for as
+                    // long as the search strip is open, distinct
+                    // from the fading locate highlight above.
+                    if self.chat_search.open && self.chat_search.current == Some(msg.id) {
+                        let mut wash = rgb(t.accent);
+                        wash =
+                            egui::Color32::from_rgba_unmultiplied(wash.r(), wash.g(), wash.b(), 55);
+                        ui.painter().rect_filled(
+                            bubble_rect.expand(3.0),
+                            CornerRadius::same(crate::bubble::BUBBLE_RADIUS + 2),
+                            wash,
+                        );
                     }
                     self.draw_message_strip(ui, msg);
                     // Grouped spacing: tight inside a

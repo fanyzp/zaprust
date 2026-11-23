@@ -17,6 +17,22 @@ use core::model::ChatKind;
 use eframe::egui::{self, RichText};
 
 impl App {
+    /// The messages the profile dock's counts and gallery
+    /// describe: the loaded conversation, falling back to the
+    /// chat's archived messages when nothing is loaded, so a
+    /// count can never contradict the conversation it
+    /// describes.
+    pub(crate) fn profile_count_source<'a>(
+        &'a self,
+        chat: &'a core::model::Chat,
+    ) -> &'a [core::model::Message] {
+        if self.conversation.is_empty() {
+            &chat.messages
+        } else {
+            &self.conversation
+        }
+    }
+
     /// The chat info surface, drawn into the docked right panel
     /// the conversation reserves for it (see `draw_conversation`,
     /// which owns the panel and its width animation). The dock
@@ -46,6 +62,14 @@ impl App {
             }
         }
         if self.profile_form_for != Some(chat.id) {
+            // The gallery belongs to the chat it was opened
+            // from; switching chats starts back at the profile.
+            // The first open of a chat (no previous form) keeps
+            // a section seeded for it, which is how the QA
+            // flags stage the gallery.
+            if matches!(self.profile_form_for, Some(prev) if prev != chat.id) {
+                self.gallery_section = None;
+            }
             self.profile_form_for = Some(chat.id);
             self.group_subject_edit = chat.title.clone();
             self.group_desc_edit = String::new();
@@ -63,6 +87,13 @@ impl App {
         // the intent).
         let mut group_photo_pick = false;
         let mut intents = ProfileIntents::default();
+        // Gallery clicks (section 25), applied after the draw
+        // like the intents.
+        let mut gallery_actions = super::gallery::GalleryActions::default();
+        // Whether demo fixtures may stand in as content in the
+        // gallery's tiles (the one predicate every fixture
+        // lookup gates on).
+        let demo_allowed = self.demo_fixtures_allowed();
 
         // Member names for groups: the subtitle lists participants
         // in demo data; in live mode fall back to recent senders.
@@ -100,8 +131,7 @@ impl App {
         // the loaded conversation, falling back to the chat's
         // archived messages when nothing is loaded, so a count
         // can never contradict the conversation it describes.
-        let count_source =
-            if self.conversation.is_empty() { &chat.messages } else { &self.conversation };
+        let count_source = self.profile_count_source(&chat);
         let counts = core::model::conversation_counts(count_source);
         let (media_count, link_count, doc_count) = (counts.media, counts.links, counts.docs);
         let siblings: Vec<(u64, String)> = chat
@@ -229,7 +259,14 @@ impl App {
         // dock stays where it was).
         if !exiting && self.ui_confirm.is_none() && ctx.input(|i| i.key_pressed(egui::Key::Escape))
         {
-            close = true;
+            // With the gallery open, Escape steps back to the
+            // profile first; only the profile's Escape closes
+            // the dock.
+            if self.gallery_section.is_some() {
+                self.gallery_section = None;
+            } else {
+                close = true;
+            }
         }
         // The body scrolls inside the dock: the ScrollArea takes
         // the height the panel leaves under the header, so the
@@ -237,6 +274,23 @@ impl App {
         // member rows stay reachable (the old centered window
         // needed an explicit height clamp for the same reason).
         egui::ScrollArea::vertical().id_salt("profile_dock_scroll").show(ui, |ui| {
+            if let Some(section) = self.gallery_section {
+                // The gallery (section 25) takes the dock body
+                // over from the counts rows that opened it; the
+                // back row inside it returns to the profile.
+                let source = self.profile_count_source(&chat).to_vec();
+                super::gallery::profile_gallery_body(
+                    ui,
+                    t,
+                    &mut self.media,
+                    self.live.as_ref(),
+                    demo_allowed,
+                    &source,
+                    section,
+                    &mut gallery_actions,
+                );
+                return;
+            }
             profile_header(ui, t, &chat, &subtitle, header_photo);
             // Mute as a body row, in the same place for every
             // variant: the bell icon shows the action, the label
@@ -1016,7 +1070,7 @@ impl App {
                         }
                     }
 
-                    profile_counts_section(ui, t, media_count, link_count, doc_count);
+                    profile_counts_section(ui, t, media_count, link_count, doc_count, &mut intents);
                 }
             }
         });
@@ -1026,6 +1080,26 @@ impl App {
             // gathered during it is discarded.
             return;
         }
+        if gallery_actions.back {
+            self.gallery_section = None;
+        }
+        if let Some(section) = gallery_actions.section {
+            self.gallery_section = Some(section);
+        }
+        if let Some(id) = gallery_actions.view_photo {
+            self.media.viewing_photo = Some(id);
+        }
+        if let Some(id) = gallery_actions.locate {
+            self.scroll_to_message = Some(id);
+            self.highlight_message = Some(id);
+            self.highlight_started = None;
+        }
+        for id in gallery_actions.fetch_photos {
+            self.ensure_photo_fetch(id);
+        }
+        for id in gallery_actions.fetch_stickers {
+            self.ensure_sticker_fetch(id);
+        }
         if intents.toggle_block {
             self.toggle_block_contact(chat.id);
         }
@@ -1034,6 +1108,9 @@ impl App {
         }
         if intents.export {
             export = true;
+        }
+        if let Some(section) = intents.gallery {
+            self.gallery_section = Some(section);
         }
         if toggle_mute {
             // Same routing as the header menu: apply_chat_action
@@ -1086,6 +1163,7 @@ impl App {
         }
         if close || intents.close {
             self.profile_open = false;
+            self.gallery_section = None;
             self.profile_form_for = None;
             self.groups.members_requested.remove(&chat.id);
         }

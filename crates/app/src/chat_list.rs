@@ -70,6 +70,35 @@ pub(crate) fn chat_preview_line(chat: &Chat) -> String {
     }
 }
 
+/// Whether a chat's preview text says anything beyond the
+/// media label that stands beside it: a captioned photo's
+/// preview is its caption (it adds), an uncaptioned photo's
+/// preview is the bare word "Photo" (it adds nothing, and
+/// painting both produced the duplicated "Photo Photo").
+fn preview_adds_beyond_label(preview: &str, label: &str) -> bool {
+    !(preview.is_empty() || preview == label || label.starts_with(preview))
+}
+
+/// The full preview segment a chat row paints, media label
+/// included: the media word appears exactly once. When the
+/// preview adds a caption, the label leads it as before; when
+/// it does not, the composed line is the sender prefix (for
+/// groups) plus the label, whose form also carries what the
+/// bare preview lacks (a voice note's duration).
+pub(crate) fn chat_preview_display(chat: &Chat) -> String {
+    let line = chat_preview_line(chat);
+    let Some(media) = chat.preview_media else { return line };
+    let label = media.label();
+    if preview_adds_beyond_label(&chat.preview, &label) {
+        format!("{label} {line}")
+    } else {
+        match (&chat.preview_sender, chat.kind) {
+            (Some(s), ChatKind::Group) => format!("{s}: {label}"),
+            _ => label.to_owned(),
+        }
+    }
+}
+
 impl App {
     pub(crate) fn draw_chat_list(&mut self, root: &mut egui::Ui) {
         // Channels, Groups and Archived are modes of this list,
@@ -408,6 +437,22 @@ impl App {
                         }
                     }
                 }
+                // Global message search (section 25): while a
+                // query is typed, the panel also carries the
+                // message matches across every chat, in a
+                // Messages section below the chat rows. The
+                // results refresh once per query change, and
+                // the chat rows' scroll area shrinks to make
+                // room: matched sets are bounded (the roster,
+                // and the 100-result cap), so the section split
+                // stays stable while searching. The unsearched
+                // list keeps its full-height area untouched.
+                // The refresh runs before the row filter: the
+                // filter borrows the roster for its result list.
+                let searching = !self.search.trim().is_empty();
+                if searching {
+                    self.refresh_global_search();
+                }
                 let visible = filter_chats(&self.chats, self.filter, &self.search);
                 let mut clicked: Option<u64> = None;
                 // A row context-menu pick (chat id, what it asks
@@ -418,107 +463,115 @@ impl App {
                 // separate Archived entry row in this panel (the
                 // rail and the filter chip are the entries).
                 let row_action = std::cell::Cell::new(None::<(u64, RowPick)>);
-                egui::ScrollArea::vertical()
+                let mut scroll = egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .content_margin(egui::Margin {
                         bottom: self.nav_scroll_inset() as i8,
                         ..Default::default()
-                    })
-                    .show_rows(ui, 64.0, visible.len(), |ui, range| {
-                        for idx in range {
-                            let chat = visible[idx];
-                            let state = self.row_state_for(chat);
-                            let resp = chat_row(
-                                ui,
-                                chat,
-                                chat.id == self.selected_chat,
-                                chat.kind == ChatKind::Dm && self.blocked_chats.contains(&chat.id),
-                                t,
-                                state,
-                                None,
-                                photos.get(&chat.id).copied(),
-                            );
-                            if resp.clicked() {
-                                clicked = Some(chat.id);
-                            }
-                            resp.context_menu(|ui| {
-                                ui.set_min_width(170.0);
-                                let label = if chat.archived {
-                                    crate::i18n::t("conversation.unarchive")
-                                } else {
-                                    crate::i18n::t("conversation.archive")
-                                };
-                                if crate::widgets::menu_item_icon(
-                                    ui,
-                                    t,
-                                    Some(crate::icons::Icon::Archive),
-                                    &label,
-                                    None,
-                                )
-                                .clicked()
-                                {
-                                    row_action
-                                        .set(Some((chat.id, RowPick::SetArchived(!chat.archived))));
-                                    ui.close();
-                                }
-                                let fav_label = if chat.favorite {
-                                    crate::i18n::t("conversation.remove_favorite")
-                                } else {
-                                    crate::i18n::t("conversation.add_favorite")
-                                };
-                                if crate::widgets::menu_item_icon(
-                                    ui,
-                                    t,
-                                    Some(crate::icons::Icon::Star),
-                                    &fav_label,
-                                    None,
-                                )
-                                .clicked()
-                                {
-                                    row_action
-                                        .set(Some((chat.id, RowPick::SetFavorite(!chat.favorite))));
-                                    ui.close();
-                                }
-                                if chat.unread == 0
-                                    && crate::widgets::menu_item_icon(
-                                        ui,
-                                        t,
-                                        Some(crate::icons::Icon::Chat),
-                                        &crate::i18n::t("conversation.mark_unread"),
-                                        None,
-                                    )
-                                    .clicked()
-                                {
-                                    row_action.set(Some((chat.id, RowPick::MarkUnread)));
-                                    ui.close();
-                                }
-                                if crate::widgets::menu_item_icon(
-                                    ui,
-                                    t,
-                                    Some(crate::icons::Icon::Delete),
-                                    &crate::i18n::t("chat.clear_title"),
-                                    None,
-                                )
-                                .clicked()
-                                {
-                                    row_action.set(Some((chat.id, RowPick::ClearChat)));
-                                    ui.close();
-                                }
-                                if crate::widgets::menu_item_icon(
-                                    ui,
-                                    t,
-                                    Some(crate::icons::Icon::Delete),
-                                    &crate::i18n::t("chat.delete_title"),
-                                    None,
-                                )
-                                .clicked()
-                                {
-                                    row_action.set(Some((chat.id, RowPick::DeleteChat)));
-                                    ui.close();
-                                }
-                            });
-                        }
                     });
+                if searching {
+                    // Shrink to the matched rows (bounded by the
+                    // space the Messages section needs), so both
+                    // sections share the panel while searching.
+                    let rows_h = visible.len() as f32 * 64.0 + 8.0;
+                    let cap = (ui.available_height() - 190.0).max(70.0);
+                    scroll = scroll.auto_shrink([false, true]).max_height(rows_h.min(cap));
+                }
+                scroll.show_rows(ui, 64.0, visible.len(), |ui, range| {
+                    for idx in range {
+                        let chat = visible[idx];
+                        let state = self.row_state_for(chat);
+                        let resp = chat_row(
+                            ui,
+                            chat,
+                            chat.id == self.selected_chat,
+                            chat.kind == ChatKind::Dm && self.blocked_chats.contains(&chat.id),
+                            t,
+                            state,
+                            None,
+                            photos.get(&chat.id).copied(),
+                        );
+                        if resp.clicked() {
+                            clicked = Some(chat.id);
+                        }
+                        resp.context_menu(|ui| {
+                            ui.set_min_width(170.0);
+                            let label = if chat.archived {
+                                crate::i18n::t("conversation.unarchive")
+                            } else {
+                                crate::i18n::t("conversation.archive")
+                            };
+                            if crate::widgets::menu_item_icon(
+                                ui,
+                                t,
+                                Some(crate::icons::Icon::Archive),
+                                &label,
+                                None,
+                            )
+                            .clicked()
+                            {
+                                row_action
+                                    .set(Some((chat.id, RowPick::SetArchived(!chat.archived))));
+                                ui.close();
+                            }
+                            let fav_label = if chat.favorite {
+                                crate::i18n::t("conversation.remove_favorite")
+                            } else {
+                                crate::i18n::t("conversation.add_favorite")
+                            };
+                            if crate::widgets::menu_item_icon(
+                                ui,
+                                t,
+                                Some(crate::icons::Icon::Star),
+                                &fav_label,
+                                None,
+                            )
+                            .clicked()
+                            {
+                                row_action
+                                    .set(Some((chat.id, RowPick::SetFavorite(!chat.favorite))));
+                                ui.close();
+                            }
+                            if chat.unread == 0
+                                && crate::widgets::menu_item_icon(
+                                    ui,
+                                    t,
+                                    Some(crate::icons::Icon::Chat),
+                                    &crate::i18n::t("conversation.mark_unread"),
+                                    None,
+                                )
+                                .clicked()
+                            {
+                                row_action.set(Some((chat.id, RowPick::MarkUnread)));
+                                ui.close();
+                            }
+                            if crate::widgets::menu_item_icon(
+                                ui,
+                                t,
+                                Some(crate::icons::Icon::Delete),
+                                &crate::i18n::t("chat.clear_title"),
+                                None,
+                            )
+                            .clicked()
+                            {
+                                row_action.set(Some((chat.id, RowPick::ClearChat)));
+                                ui.close();
+                            }
+                            if crate::widgets::menu_item_icon(
+                                ui,
+                                t,
+                                Some(crate::icons::Icon::Delete),
+                                &crate::i18n::t("chat.delete_title"),
+                                None,
+                            )
+                            .clicked()
+                            {
+                                row_action.set(Some((chat.id, RowPick::DeleteChat)));
+                                ui.close();
+                            }
+                        });
+                    }
+                });
                 let no_visible = visible.is_empty();
                 // End the immutable borrow of `self.chats` held by
                 // `visible` before mutating selection state below.
@@ -621,6 +674,9 @@ impl App {
                         RichText::new(crate::i18n::t("chats.no_match"))
                             .color(rgb(t.text_secondary)),
                     );
+                }
+                if searching {
+                    self.draw_global_search_results(ui, t);
                 }
             });
         crate::widgets::soft_right_edge(root, panel.response.rect, t);
@@ -1063,20 +1119,9 @@ pub(crate) fn chat_row(
             None => {}
         }
     }
-    if row_state.is_none() {
-        if let Some(media) = chat.preview_media {
-            let label = media.label();
-            let label_rect = painter.text(
-                Pos2::new(x, line_y),
-                egui::Align2::LEFT_CENTER,
-                label,
-                snippet_font.clone(),
-                rgb(t.text_secondary),
-            );
-            x = label_rect.right() + 6.0;
-        }
-    }
-    let preview = chat_preview_line(chat);
+    // The preview segment is composed whole (label included,
+    // the media word exactly once) and painted in one run.
+    let preview = chat_preview_display(chat);
     let preview = crate::widgets::ellipsize(ui, &preview, snippet_font.clone(), right_limit - x);
     if row_state.is_none() && !preview.is_empty() {
         painter.text(
@@ -1129,4 +1174,296 @@ pub(crate) fn chat_row(
         );
     }
     response.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// The snippet a global search result shows: the matched text
+/// windowed around the first match (about 24 characters of
+/// lead-in and 56 of follow-through), ellipsized at the cuts,
+/// on one line. Without a match (a caller error), the head of
+/// the text stands in.
+pub(crate) fn search_snippet(body: &str, query: &str) -> String {
+    let flat: String = body.chars().map(|c| if c == '\n' { ' ' } else { c }).collect();
+    let needle = query.trim().to_lowercase();
+    let lower = flat.to_lowercase();
+    let Some(byte_pos) = lower.find(&needle) else {
+        return flat.chars().take(90).collect();
+    };
+    let chars: Vec<char> = flat.chars().collect();
+    let match_at = lower[..byte_pos].chars().count();
+    let match_len = needle.chars().count();
+    let start = match_at.saturating_sub(24);
+    let end = (match_at + match_len + 56).min(chars.len());
+    let mut out = String::new();
+    if start > 0 {
+        out.push('\u{2026}');
+    }
+    out.extend(&chars[start..end]);
+    if end < chars.len() {
+        out.push('\u{2026}');
+    }
+    out
+}
+
+/// A global search hit's date line, in the chat list's date
+/// language (the Starred panel's compact form): today's hits
+/// show their clock, yesterday's its word, older ones a short
+/// calendar date.
+fn hit_date(timestamp: i64) -> String {
+    match crate::live::fmt_day(timestamp).as_str() {
+        "Today" => crate::live::fmt_time(timestamp),
+        "Yesterday" => "Yesterday".to_owned(),
+        label => {
+            let mut parts = label.split_whitespace();
+            match (parts.next(), parts.next(), parts.next()) {
+                (Some(d), Some(m), Some(y)) => {
+                    format!("{d} {} {y}", &m[..3.min(m.len())])
+                }
+                _ => label.to_owned(),
+            }
+        }
+    }
+}
+
+impl App {
+    /// Recomputes the global message search when the chat
+    /// list's query changed since the last computation
+    /// (section 25). Live mode asks the archive store (the one
+    /// honest query path over every chat); demo mode scans the
+    /// in-memory chats with the same visible-text matcher, the
+    /// open chat read from its working copy.
+    pub(crate) fn refresh_global_search(&mut self) {
+        let query = self.search.trim().to_owned();
+        if self.global_search.query == query {
+            return;
+        }
+        self.global_search.query = query.clone();
+        self.global_search.hits.clear();
+        self.global_search.capped = false;
+        if query.is_empty() {
+            return;
+        }
+        const CAP: usize = 100;
+        if self.live_mode {
+            let Some(session) = &self.live else { return };
+            let Some(store) = &session.store else { return };
+            let Ok(found) = store.search_messages(&query, CAP + 1) else { return };
+            self.global_search.capped = found.len() > CAP;
+            for hit in found.into_iter().take(CAP) {
+                let chat_id = crate::live::jid_id(&hit.chat_jid);
+                let Some(chat) = self.chats.iter().find(|c| c.id == chat_id) else {
+                    continue;
+                };
+                self.global_search.hits.push(crate::state::GlobalHit {
+                    chat_id,
+                    msg_id: crate::live::message_id(&hit.chat_jid, &hit.message_id),
+                    chat_title: chat.title.clone(),
+                    sender: if hit.from_me { None } else { Some(hit.sender.clone()) },
+                    snippet: search_snippet(&hit.body, &query),
+                    when: hit_date(hit.timestamp),
+                });
+            }
+            return;
+        }
+        let mut hits: Vec<crate::state::GlobalHit> = Vec::new();
+        for chat in &self.chats {
+            let messages: &[core::model::Message] =
+                if chat.id == self.selected_chat { &self.conversation } else { &chat.messages };
+            for msg in messages.iter().rev() {
+                if core::filter::message_text_matches(msg, &query) {
+                    hits.push(crate::state::GlobalHit {
+                        chat_id: chat.id,
+                        msg_id: msg.id,
+                        chat_title: chat.title.clone(),
+                        sender: msg.sender.clone(),
+                        snippet: search_snippet(core::filter::visible_text(msg), &query),
+                        when: crate::starred::compact_date(msg),
+                    });
+                    if hits.len() > CAP {
+                        break;
+                    }
+                }
+            }
+            if hits.len() > CAP {
+                break;
+            }
+        }
+        self.global_search.capped = hits.len() > CAP;
+        hits.truncate(CAP);
+        self.global_search.hits = hits;
+    }
+
+    /// The Messages section under the chat rows while the list
+    /// search carries a query (section 25): one row per match
+    /// on the shared chat-row geometry (the Starred panel's
+    /// anatomy), opening the hit's chat at the hit's message
+    /// through the one stream locate path.
+    pub(crate) fn draw_global_search_results(&mut self, ui: &mut egui::Ui, t: Tokens) {
+        ui.add_space(10.0);
+        ui.label(
+            RichText::new(crate::i18n::t("search.messages"))
+                .font(crate::theme::semibold(13.0))
+                .color(rgb(t.text_secondary)),
+        );
+        ui.add_space(4.0);
+        if self.global_search.hits.is_empty() {
+            ui.label(
+                RichText::new(crate::i18n::t("search.no_messages")).color(rgb(t.text_secondary)),
+            );
+            return;
+        }
+        let hits = std::mem::take(&mut self.global_search.hits);
+        let mut open: Option<(u64, u64)> = None;
+        egui::ScrollArea::vertical()
+            .id_salt("global_search_results")
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                for hit in &hits {
+                    let (rect, resp) = ui.allocate_exact_size(
+                        Vec2::new(ui.available_width(), ROW_H),
+                        Sense::click(),
+                    );
+                    let hov =
+                        crate::anim::hover_factor(ui, ("search_hit", hit.msg_id), resp.hovered());
+                    if hov > 0.001 {
+                        ui.painter().rect_filled(
+                            rect,
+                            CornerRadius::same(10),
+                            crate::theme::glass_wash(t, t.bg_panel_alt, (hov * 115.0) as u8),
+                        );
+                    }
+                    let painter = ui.painter();
+                    if let Some(chat) = self.chats.iter().find(|c| c.id == hit.chat_id) {
+                        crate::widgets::paint_chat_avatar(
+                            painter,
+                            Pos2::new(rect.left() + AVATAR_CX, rect.center().y),
+                            AVATAR_R,
+                            chat,
+                        );
+                    }
+                    let text_left = rect.left() + TEXT_X;
+                    let date_font = FontId::proportional(11.5);
+                    let date_w = ui.ctx().fonts_mut(|f| {
+                        f.layout_no_wrap(hit.when.clone(), date_font.clone(), rgb(t.text_faint))
+                            .size()
+                            .x
+                    });
+                    painter.text(
+                        Pos2::new(rect.right() - 6.0, rect.top() + TITLE_DY),
+                        egui::Align2::RIGHT_CENTER,
+                        &hit.when,
+                        date_font,
+                        rgb(t.text_faint),
+                    );
+                    let title_budget = (rect.right() - 14.0 - date_w - text_left).max(0.0);
+                    let title_text = crate::widgets::ellipsize(
+                        ui,
+                        &hit.chat_title,
+                        crate::theme::medium(15.5),
+                        title_budget,
+                    );
+                    painter.text(
+                        Pos2::new(text_left, rect.top() + TITLE_DY),
+                        egui::Align2::LEFT_CENTER,
+                        title_text,
+                        crate::theme::medium(15.5),
+                        rgb(t.text_primary),
+                    );
+                    let line = match &hit.sender {
+                        Some(sender) => format!("{sender}: {}", hit.snippet),
+                        None => hit.snippet.clone(),
+                    };
+                    let budget = (rect.right() - 14.0 - text_left).max(0.0);
+                    let line =
+                        crate::widgets::ellipsize(ui, &line, FontId::proportional(13.0), budget);
+                    painter.text(
+                        Pos2::new(text_left, rect.top() + SNIPPET_DY),
+                        egui::Align2::LEFT_CENTER,
+                        line,
+                        FontId::proportional(13.0),
+                        rgb(t.text_secondary),
+                    );
+                    if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                        open = Some((hit.chat_id, hit.msg_id));
+                    }
+                }
+            });
+        self.global_search.hits = hits;
+        if self.global_search.capped {
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new(crate::i18n::tf("search.more", "count", "100"))
+                    .size(12.0)
+                    .color(rgb(t.text_faint)),
+            );
+        }
+        if let Some((chat_id, msg_id)) = open {
+            // Opening a result follows the Starred panel's path:
+            // switch chats when needed (the demo working copy
+            // goes back first), then locate the message in the
+            // stream with the scroll and the highlight wash.
+            if chat_id != self.selected_chat {
+                if !self.live_mode {
+                    let previous = self.selected_chat;
+                    self.write_back_conversation(previous);
+                }
+                self.open_community = None;
+                self.community_home_from_overview = false;
+                self.community_origin = None;
+                self.select_chat_now(chat_id);
+            }
+            self.scroll_to_message = Some(msg_id);
+            self.highlight_message = Some(msg_id);
+            self.highlight_started = None;
+        }
+    }
+}
+
+#[cfg(test)]
+mod search_tests {
+    use super::{chat_preview_display, preview_adds_beyond_label, search_snippet};
+    use core::model::{Chat, PreviewMedia};
+
+    fn chat(preview: &str, sender: Option<&str>, media: Option<PreviewMedia>) -> Chat {
+        let mut chat = core::model::demo_announcement_chat();
+        chat.preview = preview.to_owned();
+        chat.preview_sender = sender.map(ToOwned::to_owned);
+        chat.preview_media = media;
+        chat
+    }
+
+    /// The owner's live capture: an uncaptioned photo preview
+    /// read "Photo Photo" because the body already was the
+    /// media word and the row painted the label beside it. The
+    /// composed line carries the word exactly once, in every
+    /// shape: bare, group-prefixed, captioned, and voiced.
+    #[test]
+    fn preview_line_names_media_once() {
+        let dm_photo = chat("Photo", None, Some(PreviewMedia::Photo));
+        assert_eq!(chat_preview_display(&dm_photo), "Photo");
+        let group_photo = chat("Photo", Some("Ana"), Some(PreviewMedia::Photo));
+        assert_eq!(chat_preview_display(&group_photo), "Ana: Photo");
+        let captioned = chat("sunset at the lake", Some("Ana"), Some(PreviewMedia::Photo));
+        assert_eq!(chat_preview_display(&captioned), "Photo Ana: sunset at the lake");
+        let voice = chat("Voice message", None, Some(PreviewMedia::Voice(9)));
+        assert_eq!(chat_preview_display(&voice), "Voice message · 0:09");
+        let text = chat("see you at 7", Some("Ana"), None);
+        assert_eq!(chat_preview_display(&text), "Ana: see you at 7");
+        assert!(!preview_adds_beyond_label("Photo", "Photo"));
+        assert!(!preview_adds_beyond_label("Voice message", "Voice message · 0:09"));
+        assert!(preview_adds_beyond_label("a caption", "Photo"));
+    }
+
+    #[test]
+    fn snippet_windows_around_the_match() {
+        let body = "the quick brown fox jumps over the lazy dog near the river bank at dawn";
+        let out = search_snippet(body, "lazy");
+        assert!(out.contains("lazy dog"), "{out}");
+        assert!(out.starts_with('\u{2026}'), "long lead-in is ellipsized: {out}");
+        // A short body passes through whole.
+        assert_eq!(search_snippet("lazy day", "lazy"), "lazy day");
+        // Newlines flatten: a snippet is one line.
+        assert_eq!(search_snippet("one\nlazy\ntwo", "lazy"), "one lazy two");
+        // No match: the head stands in.
+        assert_eq!(search_snippet("nothing here", "zzz"), "nothing here");
+    }
 }

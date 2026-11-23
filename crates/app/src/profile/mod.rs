@@ -18,6 +18,7 @@
 use core::model::{Chat, ChatKind};
 
 mod dock;
+mod gallery;
 mod my_profile;
 mod panel;
 
@@ -78,6 +79,9 @@ pub(crate) struct ProfileIntents {
     /// The export action cell was clicked (user variant, when the
     /// export feature is on).
     pub export: bool,
+    /// A "Media, links and docs" row was clicked: open the
+    /// gallery on this section (section 25).
+    pub gallery: Option<crate::state::GallerySection>,
     /// A disappearing-messages duration was picked (user and
     /// group variants): seconds, `0` for off.
     pub ephemeral_pick: Option<u32>,

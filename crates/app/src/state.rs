@@ -41,6 +41,21 @@ pub(crate) struct Args {
     /// (screenshots).
     pair_form: bool,
     account_menu: bool,
+    /// QA hook (--search <text>): seed the chat list's search
+    /// field (screenshots of the global search results).
+    search: Option<String>,
+    /// QA hook (--chat-search <text>): open the in-chat search
+    /// strip with this query (screenshots).
+    chat_search: Option<String>,
+    /// QA hook (--gallery media|links|docs): open the profile
+    /// dock on a gallery section (screenshots).
+    gallery: Option<String>,
+    /// QA hook (--stage <path>): stage this file in the
+    /// selected chat's composer (screenshots).
+    stage: Option<String>,
+    /// QA hook (--editor): open the photo editor on the staged
+    /// photo (screenshots; pairs with --stage).
+    editor: bool,
     live: bool,
     screen_explicit: bool,
     fake_backend: bool,
@@ -80,6 +95,11 @@ impl Args {
             country_picker: false,
             pair_form: false,
             account_menu: false,
+            search: None,
+            chat_search: None,
+            gallery: None,
+            stage: None,
+            editor: false,
             // Live is the default: an installed copy opens as the
             // real client (link screen or the stored session).
             // Demo data is opt-in via --demo only.
@@ -160,6 +180,41 @@ impl Args {
                         args.settings_search = Some(v.clone());
                         i += 1;
                     }
+                }
+                "--search" => {
+                    // Seed the chat list's search field
+                    // (screenshots of the global search results).
+                    if let Some(v) = argv.get(i + 1) {
+                        args.search = Some(v.clone());
+                        i += 1;
+                    }
+                }
+                "--chat-search" => {
+                    // Open the in-chat search strip with a query
+                    // (screenshots).
+                    if let Some(v) = argv.get(i + 1) {
+                        args.chat_search = Some(v.clone());
+                        i += 1;
+                    }
+                }
+                "--gallery" => {
+                    // Open the profile dock on a gallery section
+                    // (screenshots).
+                    if let Some(v) = argv.get(i + 1) {
+                        args.gallery = Some(v.clone());
+                        i += 1;
+                    }
+                }
+                "--stage" => {
+                    // Stage a file in the selected chat's
+                    // composer (screenshots).
+                    if let Some(v) = argv.get(i + 1) {
+                        args.stage = Some(v.clone());
+                        i += 1;
+                    }
+                }
+                "--editor" => {
+                    args.editor = true;
                 }
                 "--open-viewonce" => {
                     args.open_viewonce = true;
@@ -1013,6 +1068,141 @@ impl App {
     }
 }
 
+/// One global message-search result (design standard section
+/// 25): a message in some chat whose visible text matched the
+/// chat list's search query.
+pub(crate) struct GlobalHit {
+    /// The chat the message belongs to (app chat id).
+    pub(crate) chat_id: u64,
+    /// The message's app id, for the stream locate.
+    pub(crate) msg_id: u64,
+    /// The chat's display title.
+    pub(crate) chat_title: String,
+    /// The sender's display name (`None` for own messages).
+    pub(crate) sender: Option<String>,
+    /// The matched text, windowed around the match.
+    pub(crate) snippet: String,
+    /// The result's date line (chat-list date language).
+    pub(crate) when: String,
+}
+
+/// The chat list's global message search: results are cached
+/// against the exact query string and recomputed only when it
+/// changes, never per frame.
+#[derive(Default)]
+pub(crate) struct GlobalSearch {
+    /// The query the cached hits belong to.
+    pub(crate) query: String,
+    /// The cached hits, newest first.
+    pub(crate) hits: Vec<GlobalHit>,
+    /// Whether more hits exist beyond the shown cap.
+    pub(crate) capped: bool,
+}
+
+/// The in-chat search session (section 25): one strip under
+/// the conversation header, stepping through the open chat's
+/// matches.
+#[derive(Default)]
+pub(crate) struct ChatSearch {
+    /// Whether the strip is open.
+    pub(crate) open: bool,
+    /// The query as typed.
+    pub(crate) query: String,
+    /// The current match's message id (the steady wash target).
+    pub(crate) current: Option<u64>,
+    /// The date-jump popup is open inside the strip.
+    pub(crate) date_open: bool,
+    /// The date popup's text field (YYYY-MM-DD).
+    pub(crate) date_text: String,
+    /// The date popup shows its inline error line.
+    pub(crate) date_error: bool,
+    /// The cache key the match list was computed for: (query,
+    /// conversation length, first id, last id). A changed key
+    /// recomputes the matches; an unchanged one reuses them.
+    pub(crate) cache_key: (String, usize, u64, u64),
+    /// Matching message ids in conversation order.
+    pub(crate) matches: Vec<u64>,
+    /// The query field takes focus on the next draw (armed
+    /// wherever the strip opens).
+    pub(crate) focus_armed: bool,
+    /// The chat the session belongs to: the strip resets
+    /// itself when the open chat changes (a search is a
+    /// per-chat session, never carried across chats).
+    pub(crate) chat_id: u64,
+}
+
+/// Which gallery section the profile dock is showing
+/// (section 25).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GallerySection {
+    /// Photos and videos grid.
+    Media,
+    /// Links list.
+    Links,
+    /// Documents list.
+    Docs,
+}
+
+/// The photo editor's aspect presets (section 25). `Free`
+/// leaves the crop rectangle's corners independent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum CropAspect {
+    /// No constraint.
+    #[default]
+    Free,
+    /// The frame's own aspect.
+    Original,
+    /// 1:1.
+    Square,
+    /// 4:3 landscape.
+    FourThree,
+    /// 3:4 portrait.
+    ThreeFour,
+    /// 16:9 landscape.
+    SixteenNine,
+    /// 9:16 portrait.
+    NineSixteen,
+}
+
+impl CropAspect {
+    /// The preset's width-over-height ratio, or `None` for
+    /// Free. Original resolves against the working image.
+    pub(crate) fn ratio(self, image_aspect: f32) -> Option<f32> {
+        match self {
+            Self::Free => None,
+            Self::Original => Some(image_aspect),
+            Self::Square => Some(1.0),
+            Self::FourThree => Some(4.0 / 3.0),
+            Self::ThreeFour => Some(3.0 / 4.0),
+            Self::SixteenNine => Some(16.0 / 9.0),
+            Self::NineSixteen => Some(9.0 / 16.0),
+        }
+    }
+}
+
+/// The photo editor session (section 25): one staged photo
+/// being cropped and rotated before it is sent. The working
+/// image is the decoded source with rotations already
+/// applied; the crop rectangle lives in normalized
+/// coordinates over it.
+pub(crate) struct PhotoEditor {
+    /// Index of the staged item being edited (composer staged
+    /// list of the chat the editor was opened from).
+    pub(crate) staged_index: usize,
+    /// The chat the staged item belongs to.
+    pub(crate) chat_id: u64,
+    /// The working image (rotations applied).
+    pub(crate) image: image::DynamicImage,
+    /// The working image's preview texture, rebuilt whenever
+    /// the image changes (a rotation).
+    pub(crate) texture: Option<egui::TextureHandle>,
+    /// The crop rectangle: normalized (x0, y0, x1, y1) over
+    /// the working image.
+    pub(crate) crop: [f32; 4],
+    /// The active aspect preset.
+    pub(crate) aspect: CropAspect,
+}
+
 pub(crate) struct App {
     pub(crate) screen: Screen,
     pub(crate) theme_choice: ThemeId,
@@ -1375,6 +1565,21 @@ pub(crate) struct App {
     /// egui time the locate highlight started, stamped by the
     /// stream on its first highlighted frame.
     pub(crate) highlight_started: Option<f64>,
+    /// The chat list's global message search (section 25):
+    /// cached results for the list search's current query.
+    pub(crate) global_search: GlobalSearch,
+    /// The in-chat search session (section 25).
+    pub(crate) chat_search: ChatSearch,
+    /// The profile dock's gallery section, when the dock is
+    /// showing the gallery instead of the profile (section 25).
+    pub(crate) gallery_section: Option<GallerySection>,
+    /// The photo editor session (section 25), when open.
+    pub(crate) photo_editor: Option<PhotoEditor>,
+    /// The ZIP export's attachment collection in flight
+    /// (section 25), when one is gathering.
+    pub(crate) zip_gather: Option<crate::live::ZipGather>,
+    /// The ZIP export worker's result channel.
+    pub(crate) zip_export_rx: Option<std::sync::mpsc::Receiver<Result<std::path::PathBuf, String>>>,
     /// A chat that can be open in the conversation view without
     /// belonging to the chat list: the community announcement
     /// chat. It lives in this slot instead of `chats` precisely so
@@ -1913,6 +2118,12 @@ impl App {
             scroll_to_message: None,
             highlight_message: None,
             highlight_started: None,
+            global_search: GlobalSearch::default(),
+            chat_search: ChatSearch::default(),
+            gallery_section: None,
+            photo_editor: None,
+            zip_gather: None,
+            zip_export_rx: None,
             detached_chat: None,
             community_origin: None,
             community_create_open: false,
@@ -2006,6 +2217,39 @@ impl App {
             if app.communities().iter().any(|c| c.id == id) {
                 app.open_community = Some(id);
             }
+        }
+        if let Some(query) = &args.search {
+            // QA hook: seed the chat list's search field.
+            app.search = query.clone();
+        }
+        if let Some(query) = &args.chat_search {
+            // QA hook: open the in-chat search strip with a
+            // query already typed. The session is bound to the
+            // selected chat here, or the strip's own per-chat
+            // reset would clear the seeded query on first draw.
+            app.chat_search.open = true;
+            app.chat_search.chat_id = app.selected_chat;
+            app.chat_search.query = query.clone();
+        }
+        if let Some(section) = &args.gallery {
+            // QA hook: open the profile dock on a gallery
+            // section.
+            app.gallery_section = Some(match section.as_str() {
+                "links" => GallerySection::Links,
+                "docs" => GallerySection::Docs,
+                _ => GallerySection::Media,
+            });
+            app.profile_open = true;
+        }
+        if let Some(path) = &args.stage {
+            // QA hook: stage a file in the selected chat's
+            // composer.
+            app.stage_files(egui_ctx, vec![std::path::PathBuf::from(path)]);
+        }
+        if args.editor {
+            // QA hook: open the photo editor on the first
+            // staged photo.
+            app.open_photo_editor(0);
         }
         app
     }

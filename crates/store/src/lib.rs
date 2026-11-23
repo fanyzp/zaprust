@@ -302,6 +302,27 @@ pub type AvatarRow = (Option<String>, Option<Vec<u8>>, i64);
 /// its [`AvatarRow`].
 pub type AvatarListing = (String, Option<String>, Option<Vec<u8>>, i64);
 
+/// One hit of the global message search (design standard
+/// section 25): an archived message whose visible text matched
+/// the query, with the context the result list renders. The
+/// body is the message's own text or its media caption, never
+/// a kind label.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SearchHit {
+    /// JID of the chat the message belongs to.
+    pub chat_jid: String,
+    /// The message's id inside its chat.
+    pub message_id: String,
+    /// The sender's display name as archived.
+    pub sender: String,
+    /// The matched text (message body or media caption).
+    pub body: String,
+    /// Unix seconds.
+    pub timestamp: i64,
+    /// Whether the account owner sent the message.
+    pub from_me: bool,
+}
+
 /// The archive store: one SQLite file, versioned schema.
 pub struct Store {
     conn: Connection,
@@ -1637,6 +1658,97 @@ impl Store {
             out.push(row?);
         }
         Ok(out)
+    }
+
+    /// Global message search over the archive (design standard
+    /// section 25): every message, in any chat, whose visible
+    /// text contains `query` as a case-insensitive substring,
+    /// newest first, at most `limit` hits.
+    ///
+    /// Only text a reader of the conversation can see counts:
+    /// plain text messages, and media messages with a real
+    /// caption (a document's file name is its caption). A
+    /// captionless media row's stored body is a kind label
+    /// written by the backend, not content, so it never
+    /// matches; deleted rows and view-once rows (stored with
+    /// an empty body by construction) never match either.
+    ///
+    /// The query runs as a LIKE scan with the query's LIKE
+    /// metacharacters escaped, so the match is literal. The
+    /// scan reads newest-first and over-reads past excluded
+    /// rows up to a bounded multiple of `limit`, so a query
+    /// that mostly hits excluded rows still terminates
+    /// quickly; the recorded trade-off is that hits older
+    /// than that bound can be missed when the newest matches
+    /// are overwhelmingly excluded rows. An index-backed
+    /// query can replace the scan behind this same signature
+    /// if archives outgrow it.
+    ///
+    /// # Errors
+    /// [`StoreError`] on SQLite failures.
+    pub fn search_messages(&self, query: &str, limit: usize) -> Result<Vec<SearchHit>, StoreError> {
+        let needle = query.trim();
+        if needle.is_empty() || limit == 0 {
+            return Ok(Vec::new());
+        }
+        let mut pattern = String::with_capacity(needle.len() + 2);
+        pattern.push('%');
+        for c in needle.chars() {
+            if matches!(c, '%' | '_' | '\\') {
+                pattern.push('\\');
+            }
+            pattern.push(c);
+        }
+        pattern.push('%');
+        let scan = i64::try_from(limit.saturating_mul(8).max(64)).unwrap_or(i64::MAX);
+        let mut stmt = self.conn.prepare(
+            "SELECT chat_jid, id, sender, body, timestamp, from_me, flags, data
+             FROM messages WHERE body LIKE ?1 ESCAPE '\\'
+             ORDER BY timestamp DESC, id DESC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![pattern, scan], |row| {
+            let data_text: Option<String> = row.get(7)?;
+            let sender: Option<String> = row.get(2)?;
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                sender.unwrap_or_default(),
+                row.get::<_, String>(3)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, i64>(5)? != 0,
+                row.get::<_, i64>(6)?,
+                data_text,
+            ))
+        })?;
+        let mut hits = Vec::new();
+        for row in rows {
+            let (chat_jid, message_id, sender, body, timestamp, from_me, flags, data_text) = row?;
+            if flags & FLAG_DELETED != 0 {
+                continue;
+            }
+            let data: MessageData =
+                data_text.and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+            if data.view_once {
+                continue;
+            }
+            // A message matches on the text its reader sees:
+            // a plain text body, or a media caption. Any other
+            // kind's stored body is a label or a summary, not
+            // searchable content.
+            let searchable = match &data.kind {
+                None => true,
+                Some(backend::LiveMessageKind::Media { caption, .. }) => !caption.is_empty(),
+                Some(_) => false,
+            };
+            if !searchable {
+                continue;
+            }
+            hits.push(SearchHit { chat_jid, message_id, sender, body, timestamp, from_me });
+            if hits.len() >= limit {
+                break;
+            }
+        }
+        Ok(hits)
     }
 
     /// A portable JSON export of the whole archive (used by
@@ -3108,5 +3220,88 @@ mod tests {
             "another sender's raw label is untouched by this rename"
         );
         assert_eq!(store.rename_sender("57243458396358@lid", "57243458396358").unwrap(), 0);
+    }
+
+    fn search_text(id: &str, chat: &str, body: &str, ts: i64) -> LiveMessage {
+        LiveMessage::text(id, chat, Some("Ana".to_owned()), body, ts, false)
+    }
+
+    /// Global search finds text across chats, newest first,
+    /// case-insensitively, and reports the chat each hit lives
+    /// in (design standard section 25).
+    #[test]
+    fn search_messages_matches_text_across_chats_newest_first() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .upsert_message(&search_text("a1", "111@s.whatsapp.net", "the Report is ready", 100), 0)
+            .unwrap();
+        store
+            .upsert_message(&search_text("b1", "222@s.whatsapp.net", "no match here", 300), 0)
+            .unwrap();
+        store
+            .upsert_message(
+                &search_text("b2", "222@s.whatsapp.net", "another report draft", 200),
+                0,
+            )
+            .unwrap();
+        let hits = store.search_messages("report", 10).unwrap();
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].message_id, "b2", "newest first");
+        assert_eq!(hits[0].chat_jid, "222@s.whatsapp.net");
+        assert_eq!(hits[1].message_id, "a1");
+        assert_eq!(hits[1].sender, "Ana");
+        // The limit is a hard cap.
+        assert_eq!(store.search_messages("report", 1).unwrap().len(), 1);
+        // An empty query searches nothing.
+        assert!(store.search_messages("  ", 10).unwrap().is_empty());
+    }
+
+    /// Only visible text matches: a media caption counts (a
+    /// document's file name is its caption), a captionless
+    /// media row's kind label does not, and deleted or
+    /// view-once rows never surface.
+    #[test]
+    fn search_messages_matches_only_visible_text() {
+        let store = Store::open_in_memory().unwrap();
+        let mut photo = search_text("p1", "111@s.whatsapp.net", "Photo", 100);
+        photo.kind = backend::LiveMessageKind::Media {
+            media: backend::MediaKind::Photo,
+            caption: String::new(),
+            seconds: 0,
+            size_bytes: 10,
+        };
+        store.upsert_message(&photo, 0).unwrap();
+        let mut doc = search_text("d1", "111@s.whatsapp.net", "photo-notes.pdf", 200);
+        doc.kind = backend::LiveMessageKind::Media {
+            media: backend::MediaKind::Document,
+            caption: "photo-notes.pdf".to_owned(),
+            seconds: 0,
+            size_bytes: 10,
+        };
+        store.upsert_message(&doc, 0).unwrap();
+        let gone = search_text("g1", "111@s.whatsapp.net", "photo of the keys", 300);
+        store.upsert_message(&gone, FLAG_DELETED).unwrap();
+        let mut sealed = search_text("v1", "111@s.whatsapp.net", "photo secret", 400);
+        sealed.view_once = true;
+        store.upsert_message(&sealed, 0).unwrap();
+        let hits = store.search_messages("photo", 10).unwrap();
+        assert_eq!(hits.len(), 1, "only the captioned document matches: {hits:?}");
+        assert_eq!(hits[0].message_id, "d1");
+    }
+
+    /// LIKE metacharacters in the query are literal text, not
+    /// pattern syntax.
+    #[test]
+    fn search_messages_escapes_like_metacharacters() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .upsert_message(&search_text("a1", "111@s.whatsapp.net", "100% done_ deal", 100), 0)
+            .unwrap();
+        store
+            .upsert_message(&search_text("a2", "111@s.whatsapp.net", "1000 doneX deal", 200), 0)
+            .unwrap();
+        let hits = store.search_messages("100% done_", 10).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].message_id, "a1");
     }
 }

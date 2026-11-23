@@ -419,6 +419,110 @@ pub fn conversation_counts(messages: &[Message]) -> ConversationCounts {
     counts
 }
 
+/// The media messages of one conversation, in conversation
+/// order, for the profile dock's gallery (design standard
+/// section 25). The set matches the media arm of
+/// [`conversation_counts`] exactly, minus deleted messages,
+/// whose media no longer exists to show. View-once messages
+/// are included as rows: the gallery renders them as
+/// placeholders that locate the message, never as content.
+#[must_use]
+/// Flattens a message body into a one-line preview snippet:
+/// every run of whitespace (newlines included) collapses to a
+/// single space and the ends are trimmed. Chat previews are
+/// one line by construction; a multi-line body (a bridge bot's
+/// structured post, a pasted log) must never reach a fixed-
+/// height row with its line breaks intact. The stored body
+/// itself is never changed; only the snippet is flattened.
+pub fn flatten_preview(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// The media messages of one conversation, in conversation
+/// order, for the gallery's Media section: the media arm of
+/// [`conversation_counts`] (photos, videos, stickers, and
+/// carousels), minus deleted messages.
+#[must_use]
+pub fn gallery_media(messages: &[Message]) -> Vec<&Message> {
+    messages
+        .iter()
+        .filter(|m| {
+            !m.deleted
+                && matches!(
+                    m.kind,
+                    MessageKind::Image { .. }
+                        | MessageKind::Video { .. }
+                        | MessageKind::Sticker
+                        | MessageKind::Carousel { .. }
+                )
+        })
+        .collect()
+}
+
+/// The document messages of one conversation, in conversation
+/// order, for the gallery's Docs section: the document arm of
+/// [`conversation_counts`], minus deleted messages.
+#[must_use]
+pub fn gallery_docs(messages: &[Message]) -> Vec<&Message> {
+    messages
+        .iter()
+        .filter(|m| !m.deleted && matches!(m.kind, MessageKind::Document { .. }))
+        .collect()
+}
+
+/// One link collected from a conversation for the gallery's
+/// Links section: the message that carried it and the URL
+/// itself.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GalleryLink<'a> {
+    /// The message the link arrived in.
+    pub message: &'a Message,
+    /// The link's URL (the attached preview's URL when the
+    /// message carries one, else the first URL in its text).
+    pub url: String,
+}
+
+/// The first http(s) URL span in a text, or `None`. A URL runs
+/// to the next whitespace character.
+fn first_url_in(text: &str) -> Option<String> {
+    let start = text.find("http://").or_else(|| text.find("https://"))?;
+    let rest = &text[start..];
+    let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+    Some(rest[..end].to_owned())
+}
+
+/// The links of one conversation, in conversation order, one
+/// per message that carries one (the link arm of
+/// [`conversation_counts`], minus deleted messages): the
+/// attached preview's URL wins, else the first URL found in
+/// the message's body, caption, or carousel text.
+#[must_use]
+pub fn gallery_links<'a>(messages: &'a [Message]) -> Vec<GalleryLink<'a>> {
+    let mut out = Vec::new();
+    for message in messages {
+        if message.deleted || !message_has_link(message) {
+            continue;
+        }
+        let url = message.link_preview.as_ref().map(|p| p.url.clone()).or_else(|| {
+            first_url_in(&message.body).or_else(|| match &message.kind {
+                MessageKind::Image { caption, .. } | MessageKind::Video { caption, .. } => {
+                    first_url_in(caption)
+                }
+                MessageKind::Carousel { body, cards } => first_url_in(body).or_else(|| {
+                    cards
+                        .iter()
+                        .find_map(|c| first_url_in(&c.title).or_else(|| first_url_in(&c.body)))
+                }),
+                _ => None,
+            })
+        });
+        if let Some(url) = url {
+            out.push(GalleryLink { message, url });
+        }
+    }
+    out
+}
+
 /// A one-line summary of a chat's latest message when it is not
 /// plain text, carried on [`Chat`] so the chat row can label its
 /// snippet without loading the whole conversation.
@@ -1640,5 +1744,55 @@ mod tests {
         assert!(msgs.iter().any(super::Message::is_mine));
         assert!(msgs.iter().any(|m| !m.reactions.is_empty()));
         assert!(msgs.iter().any(|m| m.quoted_sender.is_some()));
+    }
+
+    #[test]
+    fn flatten_preview_collapses_a_multiline_body_to_one_line() {
+        // The owner's live capture (23 Nov 2026): a bot post
+        // with newlines painted as overlapping lines in the
+        // one-line chat row. The preview form is one line; the
+        // stored body is never the preview form.
+        assert_eq!(
+            flatten_preview("GmbDownloader\nAuthor: Bot\n\nCode:  42\t"),
+            "GmbDownloader Author: Bot Code: 42"
+        );
+        assert_eq!(flatten_preview("  spaced   out "), "spaced out");
+        assert_eq!(flatten_preview(""), "");
+    }
+
+    #[test]
+    fn gallery_collects_media_docs_and_links_in_order() {
+        // The gallery derivations (section 25) classify the same
+        // conversation the dock counts describe.
+        let mut photo = Message::theirs(1, "Ana", "", "10:00");
+        photo.kind = MessageKind::Image { caption: "cover".to_owned(), view_once: false };
+        let mut doc = Message::theirs(2, "Ana", "", "10:01");
+        doc.kind = MessageKind::Document { name: "notes.pdf".to_owned(), size_kib: 9 };
+        let linked = Message::theirs(3, "Ana", "see https://example.com/spec now", "10:02");
+        let mut gone = Message::theirs(4, "Ana", "", "10:03");
+        gone.kind = MessageKind::Image { caption: String::new(), view_once: false };
+        gone.deleted = true;
+        let msgs = vec![photo, doc, linked, gone];
+        let media = gallery_media(&msgs);
+        assert_eq!(media.len(), 1, "the deleted photo is not gallery media");
+        assert_eq!(media[0].id, 1);
+        let docs = gallery_docs(&msgs);
+        assert_eq!(docs.len(), 1);
+        assert_eq!(docs[0].id, 2);
+        let links = gallery_links(&msgs);
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].url, "https://example.com/spec");
+        assert_eq!(links[0].message.id, 3);
+        // The attached preview's URL wins over the body text.
+        let mut previewed = Message::theirs(5, "Ana", "look https://a.example/x", "10:04");
+        previewed.link_preview = Some(LinkPreview {
+            title: "T".to_owned(),
+            description: String::new(),
+            url: "https://b.example/y".to_owned(),
+            image: PreviewImage::None,
+        });
+        let binding = [previewed];
+        let links = gallery_links(&binding);
+        assert_eq!(links[0].url, "https://b.example/y");
     }
 }

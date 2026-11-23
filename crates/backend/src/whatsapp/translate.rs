@@ -794,9 +794,9 @@ fn translate_history_conversation(
         jid: chat_jid.clone(),
         title,
         kind,
-        preview: last.map(|m| m.body.clone()).unwrap_or_default(),
+        preview: last.map(|m| core::model::flatten_preview(&m.body)).unwrap_or_default(),
         preview_sender: if kind == LiveChatKind::Group {
-            last.and_then(|m| m.sender.clone())
+            last.and_then(|m| m.sender.clone()).map(|s| core::model::flatten_preview(&s))
         } else {
             None
         },
@@ -816,7 +816,9 @@ fn translate_history_conversation(
     for msg in messages {
         sink.emit(BackendEvent::MessageUpsert(msg));
     }
-    if title_unresolved && matches!(kind, LiveChatKind::Dm | LiveChatKind::Group) {
+    if title_unresolved
+        && matches!(kind, LiveChatKind::Dm | LiveChatKind::Group | LiveChatKind::Channel)
+    {
         Some((chat_jid, kind))
     } else {
         None
@@ -845,10 +847,10 @@ fn history_message(
     let id = key.id.clone()?;
     let from_me = key.from_me.unwrap_or(false);
     let timestamp = i64::try_from(info.message_timestamp.unwrap_or(0)).unwrap_or(0);
-    let text = proto.text_content().map(ToOwned::to_owned);
+    let text = proto.text_content().map(ToOwned::to_owned).or_else(|| structured_text(proto));
     let (mut kind, view_once) = classify_message(proto);
     if matches!(kind, LiveMessageKind::Text) && text.is_none() {
-        kind = LiveMessageKind::Other("Message".to_owned());
+        kind = LiveMessageKind::Other(unhandled_label(proto));
     }
     let body = body_for(&kind, view_once, text.as_deref());
     let sender_jid = key.participant.clone().or_else(|| info.participant.clone());
@@ -941,19 +943,125 @@ pub(super) fn body_for(kind: &LiveMessageKind, view_once: bool, text: Option<&st
     }
 }
 
+/// The body text a structured payload carries in its own
+/// fields: template, buttons, list, product, order, and
+/// non-carousel interactive messages are text messages wearing
+/// structure, and their words live outside the two slots
+/// `text_content` reads. Recovering them here means previews,
+/// bubbles, search, and exports show the sender's words
+/// instead of a placeholder. A template whose hydrated text
+/// still carries an unsubstituted parameter marker is not
+/// recovered: showing raw markers would be worse than the
+/// typed label the fallthrough gives it.
+pub(super) fn structured_text(msg: &whatsapp_rust::prelude::wa::Message) -> Option<String> {
+    let base = msg.get_base_message();
+    let clean = |s: Option<String>| s.filter(|t| !t.trim().is_empty());
+    if let Some(template) = base.template_message.as_option() {
+        if let Some(text) = clean(
+            template.hydrated_template.as_option().and_then(|t| t.hydrated_content_text.clone()),
+        ) {
+            if !text.contains("{{") {
+                return Some(text);
+            }
+        }
+    }
+    if let Some(buttons) = base.buttons_message.as_option() {
+        if let Some(text) = clean(buttons.content_text.clone()) {
+            return Some(text);
+        }
+    }
+    if let Some(list) = base.list_message.as_option() {
+        if let Some(text) = clean(list.title.clone()).or_else(|| clean(list.description.clone())) {
+            return Some(text);
+        }
+    }
+    if let Some(product) = base.product_message.as_option() {
+        let snapshot = product.product.as_option();
+        if let Some(text) = clean(product.body.clone())
+            .or_else(|| clean(snapshot.and_then(|p| p.title.clone())))
+            .or_else(|| clean(snapshot.and_then(|p| p.description.clone())))
+        {
+            return Some(text);
+        }
+    }
+    if let Some(order) = base.order_message.as_option() {
+        if let Some(text) =
+            clean(order.message.clone()).or_else(|| clean(order.order_title.clone()))
+        {
+            return Some(text);
+        }
+    }
+    if let Some(interactive) = base.interactive_message.as_option() {
+        if let Some(text) = clean(interactive.body.as_option().and_then(|b| b.text.clone())) {
+            return Some(text);
+        }
+    }
+    None
+}
+
+/// The truthful label for a payload no classifier arm claims:
+/// each remaining kind names itself, so an untranslated message
+/// is summarized as what it is and never impersonates a text
+/// message with the single word "Message". Only a payload with
+/// nothing recognizable at all keeps the neutral word.
+pub(super) fn unhandled_label(msg: &whatsapp_rust::prelude::wa::Message) -> String {
+    let base = msg.get_base_message();
+    let label = if base.comment_message.as_option().is_some()
+        || base.enc_comment_message.as_option().is_some()
+    {
+        "Channel comment"
+    } else if base.newsletter_follower_invite_message_v2.as_option().is_some() {
+        "Channel invite"
+    } else if base.newsletter_admin_profile_message.as_option().is_some()
+        || base.newsletter_admin_profile_status_message.as_option().is_some()
+    {
+        "Channel update"
+    } else if base.sticker_pack_message.as_option().is_some() {
+        "Sticker pack"
+    } else if base.poll_result_snapshot_message.as_option().is_some()
+        || base.poll_result_snapshot_message_v3.as_option().is_some()
+    {
+        "Poll results"
+    } else if base.secret_encrypted_message.as_option().is_some() {
+        "Encrypted message"
+    } else if base.template_message.as_option().is_some() {
+        "Template message"
+    } else if base.scheduled_call_creation_message.as_option().is_some() {
+        "Scheduled call"
+    } else if base.request_phone_number_message.as_option().is_some() {
+        "Phone number request"
+    } else if base.request_location_message.as_option().is_some() {
+        "Location request"
+    } else if base.split_payment_message.as_option().is_some() {
+        "Payment"
+    } else if base.payment_reminder_message.as_option().is_some() {
+        "Payment reminder"
+    } else if base.music_message.as_option().is_some() {
+        "Music"
+    } else if base.rich_response_message.as_option().is_some() {
+        "AI response"
+    } else if base.bcall_message.as_option().is_some() {
+        "Call"
+    } else {
+        "Message"
+    };
+    label.to_owned()
+}
+
 /// Translates one incoming message context into a chat + message
 /// upsert, in Zaprust terms.
 pub(super) fn translate_message(ctx: &MessageContext) -> Option<(LiveChat, LiveMessage)> {
     let source = &ctx.info.source;
     let chat_jid = source.chat.to_string();
     let kind = kind_of(&chat_jid);
-    let text = ctx.message.text_content().map(ToOwned::to_owned);
+    let text =
+        ctx.message.text_content().map(ToOwned::to_owned).or_else(|| structured_text(&ctx.message));
     let (mut msg_kind, view_once) = classify_kind(ctx);
     if matches!(msg_kind, LiveMessageKind::Text) && text.is_none() {
-        // A payload with no text and no classifier arm (an
-        // interactive reply, a template, an album): it is not a
-        // text message and must not wear a text body.
-        msg_kind = LiveMessageKind::Other("Message".to_owned());
+        // A payload with no text and no classifier arm: it is
+        // not a text message and must not wear a text body. The
+        // label names the kind it actually is.
+        msg_kind = LiveMessageKind::Other(unhandled_label(&ctx.message));
     }
     let body = body_for(&msg_kind, view_once, text.as_deref());
     let push_name = ctx.info.push_name.trim();
@@ -973,8 +1081,12 @@ pub(super) fn translate_message(ctx: &MessageContext) -> Option<(LiveChat, LiveM
         jid: chat_jid.clone(),
         title,
         kind,
-        preview: body.clone(),
-        preview_sender: if kind == LiveChatKind::Group { sender_name.clone() } else { None },
+        preview: core::model::flatten_preview(&body),
+        preview_sender: if kind == LiveChatKind::Group {
+            sender_name.clone().map(|s| core::model::flatten_preview(&s))
+        } else {
+            None
+        },
         timestamp,
         unread: 0,
         archived: false,
@@ -1079,8 +1191,50 @@ pub(super) fn classify_message(
 
 /// Classifies one already-unwrapped protocol message.
 fn classify_unwrapped(msg: &whatsapp_rust::prelude::wa::Message) -> (LiveMessageKind, bool) {
-    if let Some(poll) =
-        msg.poll_creation_message.as_option().or_else(|| msg.poll_creation_message_v3.as_option())
+    classify_unwrapped_deep(msg, 0)
+}
+
+/// The recursive worker for [`classify_unwrapped`]: payloads
+/// wrapped in a future-proof envelope (bot invocations, lottie
+/// stickers, album children, questions, the v4 poll creation,
+/// mention and spoiler wrappers) carry the real message inside
+/// the envelope, so the classifier descends and classifies what
+/// is actually there instead of labeling the envelope. The
+/// depth bound keeps a pathological envelope-within-envelope
+/// payload from recursing without limit.
+fn classify_unwrapped_deep(
+    msg: &whatsapp_rust::prelude::wa::Message,
+    depth: u32,
+) -> (LiveMessageKind, bool) {
+    if depth < 4 {
+        let envelope = msg
+            .bot_invoke_message
+            .as_option()
+            .or_else(|| msg.bot_task_message.as_option())
+            .or_else(|| msg.bot_forwarded_message.as_option())
+            .or_else(|| msg.lottie_sticker_message.as_option())
+            .or_else(|| msg.associated_child_message.as_option())
+            .or_else(|| msg.question_message.as_option())
+            .or_else(|| msg.question_reply_message.as_option())
+            .or_else(|| msg.poll_creation_message_v4.as_option())
+            .or_else(|| msg.group_mentioned_message.as_option())
+            .or_else(|| msg.status_mention_message.as_option())
+            .or_else(|| msg.group_status_mention_message.as_option())
+            .or_else(|| msg.spoiler_message.as_option())
+            .or_else(|| msg.limit_sharing_message.as_option())
+            .or_else(|| msg.audio_sticker_message.as_option())
+            .or_else(|| msg.newsletter_scheduled_message.as_option());
+        if let Some(inner) = envelope.and_then(|e| e.message.as_option()) {
+            return classify_unwrapped_deep(inner.get_base_message(), depth + 1);
+        }
+    }
+    if let Some(poll) = msg
+        .poll_creation_message
+        .as_option()
+        .or_else(|| msg.poll_creation_message_v3.as_option())
+        .or_else(|| msg.poll_creation_message_v2.as_option())
+        .or_else(|| msg.poll_creation_message_v5.as_option())
+        .or_else(|| msg.poll_creation_message_v6.as_option())
     {
         let options =
             poll.options.iter().map(|o| (o.option_name.clone().unwrap_or_default(), 0)).collect();
@@ -1176,7 +1330,10 @@ fn classify_unwrapped(msg: &whatsapp_rust::prelude::wa::Message) -> (LiveMessage
             false,
         );
     }
-    if let Some(video) = msg.video_message.as_option() {
+    if let Some(video) = msg.video_message.as_option().or_else(|| msg.ptv_message.as_option()) {
+        // A PTV (a round video note) is a VideoMessage in its
+        // own slot: same struct, same presentation, same fetch
+        // rails.
         return (
             LiveMessageKind::Media {
                 media: crate::MediaKind::Video,
@@ -1186,6 +1343,79 @@ fn classify_unwrapped(msg: &whatsapp_rust::prelude::wa::Message) -> (LiveMessage
             },
             false,
         );
+    }
+    if let Some(live_location) = msg.live_location_message.as_option() {
+        let name = live_location
+            .caption
+            .clone()
+            .filter(|c| !c.is_empty())
+            .unwrap_or_else(|| "Live location".to_owned());
+        return (
+            LiveMessageKind::Location {
+                name,
+                latitude: live_location.degrees_latitude.unwrap_or(0.0),
+                longitude: live_location.degrees_longitude.unwrap_or(0.0),
+            },
+            false,
+        );
+    }
+    if let Some(array) = msg.contacts_array_message.as_option() {
+        // A multi-contact share: the card shows the array's own
+        // display name and the first contact's phone; the count
+        // stands in the phone slot when the array carries
+        // several contacts, so the card never pretends to be a
+        // single person it is not.
+        let first = array.contacts.first();
+        let name = array
+            .display_name
+            .clone()
+            .filter(|n| !n.is_empty())
+            .or_else(|| first.and_then(|c| c.display_name.clone()))
+            .unwrap_or_default();
+        let phone = if array.contacts.len() > 1 {
+            format!("{} contacts", array.contacts.len())
+        } else {
+            first
+                .and_then(|c| c.vcard.as_deref())
+                .and_then(|card| {
+                    card.lines().find_map(|line| {
+                        let line = line.trim();
+                        let rest = line.strip_prefix("TEL")?;
+                        rest.split(':').nth(1).map(str::to_owned)
+                    })
+                })
+                .filter(|p| !p.is_empty())
+                .unwrap_or_else(|| "Contact card".to_owned())
+        };
+        return (LiveMessageKind::Contact { name, phone }, false);
+    }
+    if msg.album_message.as_option().is_some() {
+        // An album header: its photos and videos arrive as
+        // their own associated messages and group in the
+        // stream; the header itself is a typed summary, never
+        // a fake text.
+        return (LiveMessageKind::Other("Album".to_owned()), false);
+    }
+    if let Some(event) = msg.event_message.as_option() {
+        let label =
+            event.name.clone().filter(|n| !n.is_empty()).unwrap_or_else(|| "Event".to_owned());
+        return (LiveMessageKind::Other(label), false);
+    }
+    if let Some(invite) = msg.group_invite_message.as_option() {
+        let label = invite
+            .group_name
+            .clone()
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| "Group invite".to_owned());
+        return (LiveMessageKind::Other(label), false);
+    }
+    if let Some(invite) = msg.newsletter_admin_invite_message.as_option() {
+        let label = invite
+            .newsletter_name
+            .clone()
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| "Channel invite".to_owned());
+        return (LiveMessageKind::Other(label), false);
     }
     if let Some(audio) = msg.audio_message.as_option() {
         return (
@@ -1726,7 +1956,10 @@ mod presence_translate_tests {
 
 #[cfg(test)]
 mod live_pairing_fix_tests {
-    use super::{body_for, call_record_of, classify_message, translate_history_sync};
+    use super::{
+        body_for, call_record_of, classify_message, structured_text, translate_history_sync,
+        unhandled_label,
+    };
     use crate::{BackendEvent, EventSink, LiveChatKind, LiveMessageKind, MediaKind};
     use whatsapp_rust::prelude::wa;
     use whatsapp_rust::prelude::MessageField;
@@ -2070,6 +2303,228 @@ mod live_pairing_fix_tests {
             call_record_of(&anonymous, Some("sync-id".to_owned()), Some(false), None, None)
                 .unwrap();
         assert_eq!(rescued.call_id, "sync-id");
+    }
+
+    /// Defect round (23 Nov 2026): a PTV (round video note) is
+    /// a VideoMessage in its own slot; before the arm existed
+    /// it fell through to the fake text "Message".
+    #[test]
+    fn ptv_classifies_as_video() {
+        let mut video = wa::message::VideoMessage::default();
+        video.caption = Some("round note".to_owned());
+        video.seconds = Some(9);
+        let mut msg = wa::Message::default();
+        msg.ptv_message = MessageField::some(video);
+        let (kind, _) = classify_message(&msg);
+        assert!(matches!(kind, LiveMessageKind::Media { media: MediaKind::Video, seconds: 9, .. }));
+        assert_eq!(body_for(&kind, false, None), "round note");
+    }
+
+    /// The newer poll creation versions are the same struct in
+    /// later slots (and v4 inside a future-proof envelope):
+    /// all of them classify as polls.
+    #[test]
+    fn poll_versions_classify_as_polls() {
+        let build = || {
+            let mut poll = wa::message::PollCreationMessage::default();
+            poll.name = Some("Lunch?".to_owned());
+            let mut option = wa::message::poll_creation_message::Option::default();
+            option.option_name = Some("Pizza".to_owned());
+            poll.options = vec![option];
+            poll
+        };
+        let mut v2 = wa::Message::default();
+        v2.poll_creation_message_v2 = MessageField::some(build());
+        let mut v5 = wa::Message::default();
+        v5.poll_creation_message_v5 = MessageField::some(build());
+        let mut inner = wa::Message::default();
+        inner.poll_creation_message = MessageField::some(build());
+        let mut envelope = wa::message::FutureProofMessage::default();
+        envelope.message = MessageField::some(inner);
+        let mut v4 = wa::Message::default();
+        v4.poll_creation_message_v4 = MessageField::some(envelope);
+        for msg in [v2, v5, v4] {
+            let (kind, _) = classify_message(&msg);
+            assert!(
+                matches!(kind, LiveMessageKind::Poll { ref question, .. } if question == "Lunch?"),
+                "{kind:?}"
+            );
+        }
+    }
+
+    /// A future-proof envelope is classified by what it
+    /// carries: a bot invocation wrapping a photo is a photo,
+    /// a lottie envelope wrapping a sticker is a sticker.
+    #[test]
+    fn future_proof_envelopes_classify_their_contents() {
+        let wrap = |field: fn(&mut wa::Message, wa::message::FutureProofMessage),
+                    inner: wa::Message| {
+            let mut envelope = wa::message::FutureProofMessage::default();
+            envelope.message = MessageField::some(inner);
+            let mut msg = wa::Message::default();
+            field(&mut msg, envelope);
+            msg
+        };
+        let photo = wrap(|m, e| m.bot_invoke_message = MessageField::some(e), image_proto(None));
+        let (kind, _) = classify_message(&photo);
+        assert!(matches!(kind, LiveMessageKind::Media { media: MediaKind::Photo, .. }));
+        let mut sticker = wa::message::StickerMessage::default();
+        sticker.file_length = Some(10);
+        let mut inner = wa::Message::default();
+        inner.sticker_message = MessageField::some(sticker);
+        let lottie = wrap(|m, e| m.lottie_sticker_message = MessageField::some(e), inner);
+        let (kind, _) = classify_message(&lottie);
+        assert!(matches!(kind, LiveMessageKind::Media { media: MediaKind::Sticker, .. }));
+    }
+
+    /// Typed summaries: an album header, an event, a group
+    /// invite, and a channel invite each name themselves
+    /// instead of wearing the fake text "Message".
+    #[test]
+    fn unrepresented_kinds_get_typed_summaries() {
+        let mut album = wa::Message::default();
+        album.album_message = MessageField::some(wa::message::AlbumMessage::default());
+        let (kind, _) = classify_message(&album);
+        assert_eq!(body_for(&kind, false, None), "Album");
+
+        let mut event_proto = wa::message::EventMessage::default();
+        event_proto.name = Some("Launch dinner".to_owned());
+        let mut event = wa::Message::default();
+        event.event_message = MessageField::some(event_proto);
+        let (kind, _) = classify_message(&event);
+        assert_eq!(body_for(&kind, false, None), "Launch dinner");
+
+        let mut invite_proto = wa::message::GroupInviteMessage::default();
+        invite_proto.group_name = Some("Weekend Hikers".to_owned());
+        let mut invite = wa::Message::default();
+        invite.group_invite_message = MessageField::some(invite_proto);
+        let (kind, _) = classify_message(&invite);
+        assert_eq!(body_for(&kind, false, None), "Weekend Hikers");
+
+        let mut channel_proto = wa::message::NewsletterAdminInviteMessage::default();
+        channel_proto.newsletter_name = Some("City News".to_owned());
+        let mut channel = wa::Message::default();
+        channel.newsletter_admin_invite_message = MessageField::some(channel_proto);
+        let (kind, _) = classify_message(&channel);
+        assert_eq!(body_for(&kind, false, None), "City News");
+    }
+
+    /// A contacts array becomes one contact card: the array's
+    /// name, and the count standing in the phone slot when the
+    /// array carries several people.
+    #[test]
+    fn contacts_array_becomes_a_contact_card() {
+        let contact = |name: &str| {
+            let mut c = wa::message::ContactMessage::default();
+            c.display_name = Some(name.to_owned());
+            c.vcard = Some("BEGIN:VCARD\nTEL:+62001\nEND:VCARD".to_owned());
+            c
+        };
+        let mut array = wa::message::ContactsArrayMessage::default();
+        array.display_name = Some("Ana and Budi".to_owned());
+        array.contacts = vec![contact("Ana"), contact("Budi")];
+        let mut msg = wa::Message::default();
+        msg.contacts_array_message = MessageField::some(array);
+        let (kind, _) = classify_message(&msg);
+        match kind {
+            LiveMessageKind::Contact { name, phone } => {
+                assert_eq!(name, "Ana and Budi");
+                assert_eq!(phone, "2 contacts");
+            }
+            other => panic!("expected a contact card, got {other:?}"),
+        }
+    }
+
+    /// A live location share is a location with its caption.
+    #[test]
+    fn live_location_becomes_a_location() {
+        let mut location = wa::message::LiveLocationMessage::default();
+        location.degrees_latitude = Some(-0.5);
+        location.degrees_longitude = Some(117.1);
+        location.caption = Some("on my way".to_owned());
+        let mut msg = wa::Message::default();
+        msg.live_location_message = MessageField::some(location);
+        let (kind, _) = classify_message(&msg);
+        assert!(matches!(
+            kind,
+            LiveMessageKind::Location { ref name, .. } if name == "on my way"
+        ));
+    }
+
+    /// Structured kinds carry their words in their own fields:
+    /// the recovery reads them, and the composed outcome (a
+    /// Text classification plus the recovered body) is the
+    /// sender's text, searchable and exportable.
+    #[test]
+    fn structured_text_recovers_the_senders_words() {
+        let mut buttons = wa::message::ButtonsMessage::default();
+        buttons.content_text = Some("Pick a slot".to_owned());
+        let mut msg = wa::Message::default();
+        msg.buttons_message = MessageField::some(buttons);
+        assert_eq!(structured_text(&msg).as_deref(), Some("Pick a slot"));
+        let (kind, _) = classify_message(&msg);
+        assert!(matches!(kind, LiveMessageKind::Text));
+        assert_eq!(body_for(&kind, false, structured_text(&msg).as_deref()), "Pick a slot");
+
+        let mut template_inner = wa::message::template_message::HydratedFourRowTemplate::default();
+        template_inner.hydrated_content_text = Some("Your code is 1234".to_owned());
+        let mut template = wa::message::TemplateMessage::default();
+        template.hydrated_template = MessageField::some(template_inner);
+        let mut msg = wa::Message::default();
+        msg.template_message = MessageField::some(template);
+        assert_eq!(structured_text(&msg).as_deref(), Some("Your code is 1234"));
+
+        let mut list = wa::message::ListMessage::default();
+        list.title = Some("Menu".to_owned());
+        let mut msg = wa::Message::default();
+        msg.list_message = MessageField::some(list);
+        assert_eq!(structured_text(&msg).as_deref(), Some("Menu"));
+
+        let mut order = wa::message::OrderMessage::default();
+        order.order_title = Some("Order #42".to_owned());
+        let mut msg = wa::Message::default();
+        msg.order_message = MessageField::some(order);
+        assert_eq!(structured_text(&msg).as_deref(), Some("Order #42"));
+
+        let mut body = wa::message::interactive_message::Body::default();
+        body.text = Some("Track your package".to_owned());
+        let mut interactive = wa::message::InteractiveMessage::default();
+        interactive.body = MessageField::some(body);
+        let mut msg = wa::Message::default();
+        msg.interactive_message = MessageField::some(interactive);
+        assert_eq!(structured_text(&msg).as_deref(), Some("Track your package"));
+    }
+
+    /// The fallthrough audit: a table of payloads no arm
+    /// claims, each asserted to carry its own truthful label.
+    /// Only a payload with nothing recognizable at all keeps
+    /// the neutral word.
+    #[test]
+    fn unhandled_kinds_name_themselves() {
+        let mut comment = wa::Message::default();
+        comment.comment_message = MessageField::some(wa::message::CommentMessage::default());
+        assert_eq!(unhandled_label(&comment), "Channel comment");
+        let mut enc_comment = wa::Message::default();
+        enc_comment.enc_comment_message =
+            MessageField::some(wa::message::EncCommentMessage::default());
+        assert_eq!(unhandled_label(&enc_comment), "Channel comment");
+        let mut pack = wa::Message::default();
+        pack.sticker_pack_message = MessageField::some(wa::message::StickerPackMessage::default());
+        assert_eq!(unhandled_label(&pack), "Sticker pack");
+        let mut secret = wa::Message::default();
+        secret.secret_encrypted_message =
+            MessageField::some(wa::message::SecretEncryptedMessage::default());
+        assert_eq!(unhandled_label(&secret), "Encrypted message");
+        let mut snapshot = wa::Message::default();
+        snapshot.poll_result_snapshot_message =
+            MessageField::some(wa::message::PollResultSnapshotMessage::default());
+        assert_eq!(unhandled_label(&snapshot), "Poll results");
+        let mut bare_template = wa::Message::default();
+        bare_template.template_message =
+            MessageField::some(wa::message::TemplateMessage::default());
+        assert_eq!(structured_text(&bare_template), None);
+        assert_eq!(unhandled_label(&bare_template), "Template message");
+        assert_eq!(unhandled_label(&wa::Message::default()), "Message");
     }
 }
 

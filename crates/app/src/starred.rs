@@ -100,7 +100,7 @@ fn twelve_hour(time: &str) -> String {
 /// older ones a short calendar date ("22 Nov 2026"), never a
 /// full sentence with the clock spelled out. A day label that
 /// does not parse is shown as-is.
-fn compact_date(msg: &Message) -> String {
+pub(crate) fn compact_date(msg: &Message) -> String {
     match msg.day_label() {
         "Today" => msg.time.clone(),
         "Yesterday" => "Yesterday".to_owned(),

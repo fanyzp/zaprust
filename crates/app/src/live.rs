@@ -430,7 +430,7 @@ pub(crate) fn jid_id(jid: &str) -> u64 {
     h
 }
 
-fn message_id(chat_jid: &str, proto_id: &str) -> u64 {
+pub(crate) fn message_id(chat_jid: &str, proto_id: &str) -> u64 {
     jid_id(&format!("{chat_jid}/{proto_id}"))
 }
 
@@ -662,7 +662,11 @@ pub(crate) fn to_kind(kind: &backend::LiveMessageKind) -> MessageKind {
                 MediaKind::Sticker => MessageKind::Sticker,
             }
         }
-        backend::LiveMessageKind::Other(_) => MessageKind::Text,
+        // An untranslated kind is a typed summary (its label
+        // is the message body), never a text message: it
+        // renders as the neutral system line, so it cannot
+        // impersonate something the sender typed.
+        backend::LiveMessageKind::Other(_) => MessageKind::System,
     }
 }
 
@@ -733,7 +737,10 @@ fn glanceable_text(live: &LiveMessage) -> String {
     if live.view_once {
         core::model::VIEW_ONCE_PREVIEW.to_owned()
     } else {
-        live.body.clone()
+        // A preview is one line: a multi-line body is flattened
+        // here, at the one point every glanceable surface reads
+        // (the stored body keeps its line breaks).
+        core::model::flatten_preview(&live.body)
     }
 }
 
@@ -2300,7 +2307,15 @@ impl crate::state::App {
                 // The download is done: its chip stops spinning.
                 let mid = message_id(&chat_jid, &pid);
                 self.media.downloads.remove(&mid);
-                self.notice = Some(Notice::info(format!("Saved to {path}")));
+                // A ZIP export gathering this document settles
+                // its item with the saved file; its notice is
+                // the export's own, not a per-file Saved line.
+                let for_export = self.zip_gather.as_ref().is_some_and(|g| g.waiting == Some(mid));
+                if for_export {
+                    self.zip_collect_file(mid, ZipKind::Document, std::path::PathBuf::from(&path));
+                } else {
+                    self.notice = Some(Notice::info(format!("Saved to {path}")));
+                }
             }
             BackendEvent::PhotoBytes { chat_jid, message_id: pid, bytes } => {
                 // The fetched bytes become the message's texture:
@@ -2309,6 +2324,9 @@ impl crate::state::App {
                 // are a failed fetch, never a reason to substitute
                 // another image.
                 let mid = message_id(&chat_jid, &pid);
+                // A ZIP export waiting on this photo keeps its
+                // own copy of the bytes (section 25).
+                self.zip_collect_bytes(mid, ZipKind::Photo, bytes.clone());
                 match crate::media::decode_photo(ctx, &bytes) {
                     Some(tex) => {
                         self.media.textures.insert(mid, tex);
@@ -2319,8 +2337,9 @@ impl crate::state::App {
                     }
                 }
             }
-            BackendEvent::PhotoFetchFailed { chat_jid, message_id: pid, .. } => {
+            BackendEvent::PhotoFetchFailed { chat_jid, message_id: pid, message } => {
                 let mid = message_id(&chat_jid, &pid);
+                self.zip_collect_missing(mid, Some(ZipKind::Photo), message);
                 // Only a fetch still in flight can fail; a late
                 // failure must not clobber a photo that has since
                 // landed.
@@ -2333,6 +2352,7 @@ impl crate::state::App {
                 // A sticker's fetched bytes become its texture,
                 // the same landing as a photo's.
                 let mid = message_id(&chat_jid, &pid);
+                self.zip_collect_bytes(mid, ZipKind::Sticker, bytes.clone());
                 match crate::media::decode_photo(ctx, &bytes) {
                     Some(tex) => {
                         self.media.textures.insert(mid, tex);
@@ -2345,6 +2365,11 @@ impl crate::state::App {
             }
             BackendEvent::StickerFetchFailed { chat_jid, message_id: pid } => {
                 let mid = message_id(&chat_jid, &pid);
+                self.zip_collect_missing(
+                    mid,
+                    Some(ZipKind::Sticker),
+                    "the sticker could not be fetched".to_owned(),
+                );
                 if self.media.sticker_fetch.get(&mid)
                     == Some(&crate::state::PhotoFetchState::Loading)
                 {
@@ -2512,6 +2537,11 @@ impl crate::state::App {
             }
             BackendEvent::VoiceBytes { chat_jid, message_id: pid, bytes } => {
                 let mid = message_id(&chat_jid, &pid);
+                // A ZIP export waiting on this note keeps its
+                // own copy: the playback path below drops bytes
+                // for any note but the wanted one, and the
+                // export's claim on them is independent.
+                self.zip_collect_bytes(mid, ZipKind::Voice, bytes.clone());
                 // Bytes that land for a note the user has already
                 // moved past are dropped, never played over the
                 // current one; only the wanted note decodes.
@@ -2544,6 +2574,7 @@ impl crate::state::App {
             }
             BackendEvent::VoiceFetchFailed { chat_jid, message_id: pid, message } => {
                 let mid = message_id(&chat_jid, &pid);
+                self.zip_collect_missing(mid, Some(ZipKind::Voice), message.clone());
                 // Only a fetch still in flight can fail (see the
                 // photo arm); the failure is surfaced only for the
                 // note the user is actually trying to hear.
@@ -2572,6 +2603,10 @@ impl crate::state::App {
                 // A regular video's bytes are on disk in the
                 // video cache; the path is what the player opens.
                 let mid = message_id(&chat_jid, &pid);
+                // A ZIP export waiting on this video settles
+                // with the cache file, whatever the display
+                // fetch state says.
+                self.zip_collect_file(mid, ZipKind::Video, std::path::PathBuf::from(&path));
                 if self.media.video_fetch.get(&mid) == Some(&crate::state::PhotoFetchState::Loading)
                 {
                     self.media.video_fetch.remove(&mid);
@@ -2580,6 +2615,7 @@ impl crate::state::App {
             }
             BackendEvent::VideoFetchFailed { chat_jid, message_id: pid, message } => {
                 let mid = message_id(&chat_jid, &pid);
+                self.zip_collect_missing(mid, Some(ZipKind::Video), message.clone());
                 // Only a fetch still in flight can fail (see the
                 // photo arm). The viewer paints the failed state
                 // and offers a retry.
@@ -2644,10 +2680,31 @@ impl crate::state::App {
                 }
             }
             BackendEvent::SyncCompleted => {
+                // On a fresh pairing, Connected fired before
+                // the history sync delivered the roster, so the
+                // connect-time title resolution collected
+                // nothing. The first completed sync re-reports
+                // the raw titles now that the roster exists;
+                // later syncs do not repeat it.
+                let raw_titles: Vec<String> = match &self.live {
+                    Some(session) if !session.synced_once => self
+                        .chats
+                        .iter()
+                        .filter(|chat| is_raw_identifier(&chat.title))
+                        .filter_map(|chat| session.jids.get(&chat.id).cloned())
+                        .collect(),
+                    _ => Vec::new(),
+                };
                 if let Some(session) = &mut self.live {
                     session.syncing = false;
                     session.sync_last_activity = None;
                     session.synced_once = true;
+                    if !raw_titles.is_empty() {
+                        let _ = session
+                            .channels
+                            .commands
+                            .send(BackendCommand::ResolveTitles { jids: raw_titles });
+                    }
                 }
             }
             BackendEvent::ChatRenamed { chat_jid, title } => {
@@ -2698,12 +2755,28 @@ impl crate::state::App {
                 // secret or phone shapes and pass unchanged.
                 let message = core::crash::scrub_for_display(&message);
                 tracing::warn!("backend error: {message}");
+                // A ZIP export waiting on a document download
+                // claims this error as its item's answer: the
+                // manifest carries the reason, and the export's
+                // own Busy-to-result arc keeps the notice line.
+                let zip_doc_wait = self.zip_gather.as_ref().and_then(|g| {
+                    let waiting = g.waiting?;
+                    g.items
+                        .iter()
+                        .find(|i| i.msg_id == waiting && i.kind == ZipKind::Document)
+                        .map(|_| waiting)
+                });
+                if let Some(waiting) = zip_doc_wait {
+                    self.zip_collect_missing(waiting, Some(ZipKind::Document), message.clone());
+                }
                 // An error while a call action is unconfirmed almost
                 // always belongs to it; release the buttons (F18).
                 if let Some(call) = &mut self.calls.active {
                     call.action_pending = false;
                 }
-                self.notice = Some(Notice::error(human_error(&message)));
+                if zip_doc_wait.is_none() {
+                    self.notice = Some(Notice::error(human_error(&message)));
+                }
                 // A download that failed reports through this
                 // arm; its chip stops spinning either way.
                 self.media.downloads.clear();
@@ -4481,26 +4554,31 @@ impl crate::state::App {
         }
     }
 
-    /// The decoded texture for one video's thumbnail, decoding
-    /// and caching the wire bytes on first use. `None` when the
-    /// video carries no thumbnail bytes (or they do not decode):
-    /// the neutral tile paints instead. An associated function
-    /// over the two state fields it touches, so paint code that
-    /// already borrows other parts of the app can still call it.
+    /// The decoded texture for one video's thumbnail, with its
+    /// aspect ratio (width over height), decoding and caching
+    /// the wire bytes on first use. The poster's own dimensions
+    /// are the frame's, so the aspect sizes the tile exactly
+    /// like a photo's. `None` when the video carries no
+    /// thumbnail bytes (or they do not decode): the neutral
+    /// tile paints instead. An associated function over the two
+    /// state fields it touches, so paint code that already
+    /// borrows other parts of the app can still call it.
     pub(crate) fn video_thumb_texture(
         media: &mut crate::state::MediaState,
         live: Option<&LiveSession>,
         ctx: &egui::Context,
         msg_id: u64,
-    ) -> Option<egui::TextureId> {
+    ) -> Option<(egui::TextureId, f32)> {
         if let Some(handle) = media.video_textures.get(&msg_id) {
-            return Some(handle.id());
+            let size = handle.size_vec2();
+            return Some((handle.id(), size.x / size.y.max(1.0)));
         }
         let bytes = live?.video_thumbs.get(&msg_id)?.clone();
         let handle = crate::media::decode_photo(ctx, &bytes)?;
+        let size = handle.size_vec2();
         let id = handle.id();
         media.video_textures.insert(msg_id, handle);
-        Some(id)
+        Some((id, size.x / size.y.max(1.0)))
     }
 
     /// The decoded texture of one photo's wire thumbnail, with
@@ -5729,6 +5807,275 @@ pub(crate) fn chat_to_live(chat: &Chat, jid: &str, timestamp: i64) -> LiveChat {
         ephemeral_secs: chat.ephemeral_secs,
         muted: chat.muted,
         mute_until: i64::try_from(chat.mute_until).unwrap_or(0),
+    }
+}
+
+/// Which fetch rail one ZIP export attachment rides
+/// (section 25): the same fetch the message's own display or
+/// download uses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ZipKind {
+    /// FetchPhoto, answered with photo bytes.
+    Photo,
+    /// FetchVideo, answered with a cache file path.
+    Video,
+    /// FetchVoice, answered with voice bytes.
+    Voice,
+    /// DownloadMedia, answered with a saved file path.
+    Document,
+    /// FetchSticker, answered with sticker bytes.
+    Sticker,
+}
+
+impl ZipKind {
+    /// The kind word the manifest and the media file names use.
+    pub(crate) fn word(self) -> &'static str {
+        match self {
+            Self::Photo => "photo",
+            Self::Video => "video",
+            Self::Voice => "voice",
+            Self::Document => "document",
+            Self::Sticker => "sticker",
+        }
+    }
+}
+
+/// One attachment's gathered payload: bytes carried in memory,
+/// or a file already on disk (a video cache file, a saved
+/// download) whose bytes the ZIP writer streams in.
+pub(crate) enum ZipPayload {
+    /// Bytes in memory.
+    Bytes(Vec<u8>),
+    /// A file on disk.
+    File(std::path::PathBuf),
+}
+
+/// Where one ZIP attachment stands in the collection.
+pub(crate) enum ZipItemState {
+    /// Not fetched yet.
+    Pending,
+    /// Gathered, ready for the writer.
+    Included(ZipPayload),
+    /// Not included; the manifest carries the reason.
+    Missing(String),
+}
+
+/// One attachment of a ZIP export: a media message of the
+/// exported chat, in conversation order.
+pub(crate) struct ZipItem {
+    /// The message's app id.
+    pub msg_id: u64,
+    /// Its fetch rail.
+    pub kind: ZipKind,
+    /// Its name inside the ZIP's media folder.
+    pub file_name: String,
+    /// Its manifest line context: "22 November 2026 · 14:03".
+    pub stamp: String,
+    /// The sender's display name ("You" for own messages).
+    pub sender: String,
+    /// The caption or file name, when the message carries one.
+    pub caption: String,
+    /// The collection state.
+    pub state: ZipItemState,
+}
+
+/// A ZIP export's attachment collection in flight
+/// (section 25): the plan is captured whole at start (chat,
+/// transcript, items), then fetches are issued one at a time
+/// and the answering events settle their item, so an export
+/// belongs to the chat it started from even if the user moves
+/// on while it gathers.
+pub(crate) struct ZipGather {
+    /// The exported chat's app id.
+    pub chat_id: u64,
+    /// The exported chat's title (the manifest's heading and
+    /// the completion notice's subject).
+    pub chat_title: String,
+    /// The export file's base name, captured at start (the
+    /// gather belongs to its chat even if the user moves on).
+    pub file_base: String,
+    /// The rendered Markdown transcript (the ZIP's chat.md).
+    pub transcript: String,
+    /// How many messages the transcript covers.
+    pub message_count: usize,
+    /// The attachments, in conversation order.
+    pub items: Vec<ZipItem>,
+    /// The message whose fetch is currently in flight.
+    pub waiting: Option<u64>,
+    /// egui time the current wait began (the watchdog's base).
+    pub wait_started: f64,
+}
+
+impl crate::state::App {
+    /// Settles the ZIP gather's waiting item with gathered
+    /// bytes, when the event that landed is the answer the
+    /// gather is waiting for. Called from the media byte
+    /// events before their display handling, so bytes for a
+    /// note the user is not playing (which the playback path
+    /// would drop) are still the export's.
+    pub(crate) fn zip_collect_bytes(&mut self, msg_id: u64, kind: ZipKind, bytes: Vec<u8>) {
+        self.zip_settle(msg_id, Some(kind), ZipItemState::Included(ZipPayload::Bytes(bytes)));
+    }
+
+    /// Settles the waiting item with a file on disk (a video
+    /// cache file or a saved download).
+    pub(crate) fn zip_collect_file(
+        &mut self,
+        msg_id: u64,
+        kind: ZipKind,
+        path: std::path::PathBuf,
+    ) {
+        self.zip_settle(msg_id, Some(kind), ZipItemState::Included(ZipPayload::File(path)));
+    }
+
+    /// Settles the waiting item as not included, with the
+    /// reason the manifest will carry. `kind` `None` settles
+    /// whatever kind is waiting (the generic Error event
+    /// carries no kind; only a document wait may be settled
+    /// by it, which the caller enforces).
+    pub(crate) fn zip_collect_missing(
+        &mut self,
+        msg_id: u64,
+        kind: Option<ZipKind>,
+        reason: String,
+    ) {
+        self.zip_settle(msg_id, kind, ZipItemState::Missing(reason));
+    }
+
+    /// The one settle path: an event settles the gather only
+    /// when it answers the item actually being waited on, of
+    /// the kind expected. Late or foreign answers change
+    /// nothing.
+    fn zip_settle(&mut self, msg_id: u64, kind: Option<ZipKind>, state: ZipItemState) {
+        let Some(gather) = &mut self.zip_gather else { return };
+        if gather.waiting != Some(msg_id) {
+            return;
+        }
+        let Some(item) = gather.items.iter_mut().find(|i| i.msg_id == msg_id) else {
+            return;
+        };
+        if let Some(expected) = kind {
+            if item.kind != expected {
+                return;
+            }
+        }
+        item.state = state;
+        gather.waiting = None;
+    }
+
+    /// Drives the collection (section 25): issues the next
+    /// pending item's fetch, settles items whose fetch cannot
+    /// be issued, applies the wait watchdog, and finishes the
+    /// export when every item has settled. Called every frame
+    /// from the worker poll, so event handlers only settle and
+    /// this one place advances.
+    pub(crate) fn zip_gather_advance(&mut self, now: f64) {
+        // The watchdog: a fetch that never answers must not
+        // stall the export forever. Twenty seconds is far
+        // beyond any of these rails' honest latency.
+        if let Some(gather) = &mut self.zip_gather {
+            if gather.waiting.is_some() && now - gather.wait_started > 20.0 {
+                let stuck = gather.waiting.take().unwrap_or(0);
+                if let Some(item) = gather.items.iter_mut().find(|i| i.msg_id == stuck) {
+                    item.state = ZipItemState::Missing("the phone did not answer".to_owned());
+                }
+            }
+        }
+        loop {
+            let Some(gather) = &self.zip_gather else { return };
+            if gather.waiting.is_some() {
+                return;
+            }
+            let Some(item) = gather.items.iter().find(|i| matches!(i.state, ZipItemState::Pending))
+            else {
+                // Every item has settled: the collection is
+                // complete and the writer takes over.
+                let gather = self.zip_gather.take().unwrap();
+                self.finish_zip_export(gather);
+                return;
+            };
+            let (chat_id, msg_id, kind) = (gather.chat_id, item.msg_id, item.kind);
+            if self.zip_issue_fetch(chat_id, msg_id, kind) {
+                if let Some(gather) = &mut self.zip_gather {
+                    gather.waiting = Some(msg_id);
+                    gather.wait_started = now;
+                }
+                return;
+            }
+            // The fetch cannot even be addressed (no session,
+            // no protocol id): the item settles as missing and
+            // the loop moves to the next one.
+            if let Some(gather) = &mut self.zip_gather {
+                if let Some(item) = gather.items.iter_mut().find(|i| i.msg_id == msg_id) {
+                    item.state = ZipItemState::Missing("not available in this session".to_owned());
+                }
+            }
+        }
+    }
+
+    /// Issues one item's fetch on its rail, mirroring the
+    /// display paths' commands exactly (archived references
+    /// included, so media from before this session is as
+    /// fetchable for the export as it is for the screen).
+    /// Returns whether the command was sent.
+    fn zip_issue_fetch(&mut self, chat_id: u64, msg_id: u64, kind: ZipKind) -> bool {
+        let Some(protocol_id) = self.protocol_ids.get(&msg_id).cloned() else {
+            return false;
+        };
+        let Some(session) = &self.live else { return false };
+        let Some(chat_jid) = session.jids.get(&chat_id).cloned() else {
+            return false;
+        };
+        let command = match kind {
+            ZipKind::Photo => BackendCommand::FetchPhoto {
+                chat_jid,
+                message_id: protocol_id,
+                photo_ref: session.photo_refs.get(&msg_id).cloned(),
+            },
+            ZipKind::Voice => BackendCommand::FetchVoice {
+                chat_jid,
+                message_id: protocol_id,
+                voice_ref: session.voice_refs.get(&msg_id).cloned(),
+            },
+            ZipKind::Video => BackendCommand::FetchVideo {
+                chat_jid,
+                message_id: protocol_id,
+                video_ref: session.video_refs.get(&msg_id).cloned(),
+                view_once: false,
+            },
+            ZipKind::Sticker => BackendCommand::FetchSticker {
+                chat_jid,
+                message_id: protocol_id,
+                sticker_ref: session.sticker_refs.get(&msg_id).cloned(),
+            },
+            ZipKind::Document => {
+                BackendCommand::DownloadMedia { chat_jid, message_id: protocol_id }
+            }
+        };
+        self.send_backend(command);
+        true
+    }
+
+    /// Hands a completed collection to the ZIP writer worker
+    /// (the same thread, channel and Busy discipline as the
+    /// Markdown export) and arms its result channel.
+    pub(crate) fn finish_zip_export(&mut self, gather: ZipGather) {
+        let dir = backend::data_dir().join("exports");
+        let base = gather.file_base.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let spawned =
+            std::thread::Builder::new().name("zaprust-export-zip".to_owned()).spawn(move || {
+                let result = crate::conversation::write_zip_export(&dir, &base, &gather);
+                let _ = tx.send(result);
+            });
+        match spawned {
+            Ok(_) => {
+                self.zip_export_rx = Some(rx);
+            }
+            Err(e) => {
+                self.notice = Some(crate::state::Notice::error(format!("Export failed: {e}")));
+            }
+        }
     }
 }
 
@@ -6961,9 +7308,12 @@ mod burst_drain_tests {
         let without = message_id(CHAT_JID, "vid-2");
         assert_eq!(app.video_tile(with), crate::media::VideoTile::Thumb);
         assert_eq!(app.video_tile(without), crate::media::VideoTile::Neutral);
-        // The thumbnail decodes into a real texture.
+        // The thumbnail decodes into a real texture, and the
+        // tile learns the frame's aspect from the poster (the
+        // fixture JPEG is 4:3).
         let tex = App::video_thumb_texture(&mut app.media, app.live.as_ref(), &ctx, with);
-        assert!(tex.is_some(), "the wire thumbnail decodes");
+        let (_tex_id, aspect) = tex.expect("the wire thumbnail decodes");
+        assert!((aspect - 4.0 / 3.0).abs() < 0.01, "poster aspect was {aspect}");
         assert!(app.media.video_textures.contains_key(&with));
         // The archived copy round-trips too (later sessions).
         let stored = app.live.as_ref().unwrap().store.as_ref().unwrap().messages(CHAT_JID).unwrap();
@@ -8223,6 +8573,127 @@ mod chat_state_routing_tests {
             }
         }
         panic!("the event queue did not drain");
+    }
+
+    /// Section 25: the ZIP gather issues one fetch at a time
+    /// on the item's own rail, settles the item when the
+    /// answering event lands, and hands the completed
+    /// collection to the writer, whose ZIP holds the
+    /// transcript, the gathered media, and a manifest that
+    /// accounts for the item that failed.
+    #[test]
+    fn zip_gather_fetches_settles_and_writes() {
+        let (mut app, tx, ctx, cmd_rx) = live_app();
+        let chat_id = jid_id(CHAT_JID);
+        let photo_mid = message_id(CHAT_JID, "ph-1");
+        let doc_mid = message_id(CHAT_JID, "dc-1");
+        app.live.as_mut().unwrap().jids.insert(chat_id, CHAT_JID.to_owned());
+        app.protocol_ids.insert(photo_mid, "ph-1".to_owned());
+        app.protocol_ids.insert(doc_mid, "dc-1".to_owned());
+        let item = |msg_id: u64, kind: ZipKind, file_name: &str| ZipItem {
+            msg_id,
+            kind,
+            file_name: file_name.to_owned(),
+            stamp: "14 November 2026 · 10:00".to_owned(),
+            sender: "Ana".to_owned(),
+            caption: String::new(),
+            state: ZipItemState::Pending,
+        };
+        app.zip_gather = Some(ZipGather {
+            chat_id,
+            chat_title: "Ana".to_owned(),
+            file_base: "zaprust-chat-ana.md".to_owned(),
+            transcript: "# Ana\n".to_owned(),
+            message_count: 2,
+            items: vec![
+                item(photo_mid, ZipKind::Photo, "001-photo.jpg"),
+                item(doc_mid, ZipKind::Document, "002-document.pdf"),
+            ],
+            waiting: None,
+            wait_started: 0.0,
+        });
+        // One fetch at a time: the photo goes first.
+        app.zip_gather_advance(0.0);
+        assert!(matches!(cmd_rx.try_recv(), Ok(BackendCommand::FetchPhoto { .. })));
+        assert_eq!(app.zip_gather.as_ref().unwrap().waiting, Some(photo_mid));
+        // Its bytes settle it; the document's download follows.
+        tx.send(BackendEvent::PhotoBytes {
+            chat_jid: CHAT_JID.to_owned(),
+            message_id: "ph-1".to_owned(),
+            bytes: vec![1, 2, 3],
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        app.zip_gather_advance(1.0);
+        assert!(matches!(cmd_rx.try_recv(), Ok(BackendCommand::DownloadMedia { .. })));
+        // The document's download fails as a generic error: the
+        // item settles as missing, the export still completes,
+        // and no error notice hijacks the export's own arc.
+        tx.send(BackendEvent::Error { message: "media not found".to_owned() }).unwrap();
+        drain_all(&mut app, &ctx);
+        app.zip_gather_advance(2.0);
+        assert!(app.zip_gather.is_none(), "every item settled, the gather finished");
+        let rx = app.zip_export_rx.take().expect("the writer was armed");
+        let path = rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the writer answered")
+            .expect("the write succeeded");
+        let file = std::fs::File::open(&path).unwrap();
+        let mut archive = zip::ZipArchive::new(file).unwrap();
+        let names: Vec<String> = archive.file_names().map(str::to_owned).collect();
+        assert!(names.contains(&"chat.md".to_owned()), "{names:?}");
+        assert!(names.contains(&"media/001-photo.jpg".to_owned()), "{names:?}");
+        assert!(names.contains(&"manifest.txt".to_owned()), "{names:?}");
+        let mut manifest = String::new();
+        {
+            use std::io::Read as _;
+            archive.by_name("manifest.txt").unwrap().read_to_string(&mut manifest).unwrap();
+        }
+        assert!(manifest.contains("media/001-photo.jpg"), "{manifest}");
+        assert!(manifest.contains("Not included:"), "{manifest}");
+        assert!(manifest.contains("media not found"), "{manifest}");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Section 25: a fetch that never answers is settled by
+    /// the watchdog instead of stalling the export forever.
+    #[test]
+    fn zip_gather_watchdog_settles_a_silent_fetch() {
+        let (mut app, _tx, _ctx, cmd_rx) = live_app();
+        let chat_id = jid_id(CHAT_JID);
+        let mid = message_id(CHAT_JID, "ph-9");
+        app.live.as_mut().unwrap().jids.insert(chat_id, CHAT_JID.to_owned());
+        app.protocol_ids.insert(mid, "ph-9".to_owned());
+        app.zip_gather = Some(ZipGather {
+            chat_id,
+            chat_title: "Ana".to_owned(),
+            file_base: "zaprust-chat-ana.md".to_owned(),
+            transcript: "# Ana\n".to_owned(),
+            message_count: 1,
+            items: vec![ZipItem {
+                msg_id: mid,
+                kind: ZipKind::Photo,
+                file_name: "001-photo.jpg".to_owned(),
+                stamp: "14 November 2026 · 10:00".to_owned(),
+                sender: "Ana".to_owned(),
+                caption: String::new(),
+                state: ZipItemState::Pending,
+            }],
+            waiting: None,
+            wait_started: 0.0,
+        });
+        app.zip_gather_advance(0.0);
+        assert!(matches!(cmd_rx.try_recv(), Ok(BackendCommand::FetchPhoto { .. })));
+        // Twenty-one seconds of silence: the item settles as
+        // missing and the export completes without the photo.
+        app.zip_gather_advance(21.0);
+        assert!(app.zip_gather.is_none());
+        let rx = app.zip_export_rx.take().expect("the writer was armed");
+        let path = rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the writer answered")
+            .expect("the write succeeded");
+        let _ = std::fs::remove_file(&path);
     }
 
     /// An arrival-style chat upsert: it carries no chat-action

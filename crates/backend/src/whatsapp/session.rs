@@ -235,8 +235,10 @@ async fn heal_one(
         crate::LiveChatKind::Group => {
             let Ok(parsed) = jid.parse::<Jid>() else { return true };
             let Ok(meta) = client.groups().fetch_metadata(&parsed).await else { return false };
+            let mut renamed = false;
             if let Some(subject) = meta.subject.clone().filter(|s| !s.trim().is_empty()) {
                 sink.emit(BackendEvent::ChatRenamed { chat_jid: jid.to_owned(), title: subject });
+                renamed = true;
             }
             for participant in &meta.participants {
                 let name = participant_name(participant);
@@ -247,7 +249,11 @@ async fn heal_one(
                     });
                 }
             }
-            true
+            // A fetch that succeeds without a subject has not
+            // settled the title: the retrying pass must get its
+            // attempts instead of recording a success that
+            // leaves the raw JID in place forever.
+            renamed
         }
         crate::LiveChatKind::Dm => {
             if jid.ends_with("@s.whatsapp.net") {
@@ -274,14 +280,36 @@ async fn heal_one(
                         });
                         true
                     }
-                    Ok(None) => true,
+                    // No mapping learned yet is not a settled
+                    // outcome: the library learns LID-to-phone
+                    // mappings from traffic over time, so the
+                    // retrying pass re-asks instead of giving up
+                    // for the whole session.
+                    Ok(None) => false,
                     Err(_) => false,
                 }
             } else {
                 true
             }
         }
-        _ => true,
+        crate::LiveChatKind::Channel => {
+            // A channel's name lives in its newsletter
+            // metadata; without this arm a channel that no
+            // payload named keeps its raw JID forever, because
+            // no other path ever looks the name up.
+            let Ok(parsed) = jid.parse::<Jid>() else { return true };
+            match client.newsletter().get_metadata(&parsed).await {
+                Ok(meta) if !meta.name.trim().is_empty() => {
+                    sink.emit(BackendEvent::ChatRenamed {
+                        chat_jid: jid.to_owned(),
+                        title: meta.name.clone(),
+                    });
+                    true
+                }
+                Ok(_) => false,
+                Err(_) => false,
+            }
+        }
     }
 }
 
@@ -304,11 +332,11 @@ fn heal_titles_with_retry(
     }
     tokio::spawn(async move {
         for jid in jids {
-            let kind = if jid.ends_with("@g.us") {
-                crate::LiveChatKind::Group
-            } else {
-                crate::LiveChatKind::Dm
-            };
+            // The kind comes from the JID's suffix, the same
+            // derivation the translation uses: a newsletter JID
+            // sent down the DM arm could never be named, which
+            // is how channels stayed raw through every retry.
+            let kind = super::translate::kind_of(&jid);
             for attempt in 0..3 {
                 if attempt > 0 {
                     let pause = if attempt == 1 { 3 } else { 8 };
@@ -598,6 +626,10 @@ pub(super) async fn run_async(
                     let profile = super::profile::fetch_own_profile(&client_profile).await;
                     sink_profile.emit(BackendEvent::OwnProfile(profile));
                 });
+                // The channel sweep below clones before the
+                // blocklist spawn, which moves the originals.
+                let sink_channels = sink.clone();
+                let client_channels = client.clone();
                 // The blocklist fetch rides the same pattern: the
                 // app seeds its blocked set from the server's list,
                 // so blocks made on the phone (or before a restart)
@@ -607,6 +639,26 @@ pub(super) async fn run_async(
                     if let Ok(entries) = client.blocking().get_blocklist().await {
                         let jids = entries.iter().map(|e| e.jid.to_string()).collect::<Vec<_>>();
                         sink.emit(BackendEvent::Blocklist(jids));
+                    }
+                });
+                // The channel sweep rides the same pattern: one
+                // list of every followed channel per connect,
+                // renaming each from its newsletter metadata.
+                // Channels have no other name source (no payload
+                // book carries them), so without this sweep a
+                // channel no history payload named keeps its raw
+                // JID as its title. Renames are monotonic on the
+                // receiving side, and a failed list stays silent.
+                tokio::spawn(async move {
+                    if let Ok(subscribed) = client_channels.newsletter().list_subscribed().await {
+                        for meta in subscribed {
+                            if !meta.name.trim().is_empty() {
+                                sink_channels.emit(BackendEvent::ChatRenamed {
+                                    chat_jid: meta.jid.to_string(),
+                                    title: meta.name.clone(),
+                                });
+                            }
+                        }
                     }
                 });
             }

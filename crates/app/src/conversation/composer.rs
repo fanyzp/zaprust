@@ -249,12 +249,44 @@ impl App {
                                 if !self.composer.staged.is_empty() {
                                     ui.horizontal(|ui| {
                                         let mut remove: Option<usize> = None;
+                                        let mut edit: Option<usize> = None;
                                         for (i, item) in self.composer.staged.iter().enumerate() {
-                                            let (tile, _) = ui.allocate_exact_size(
+                                            // A staged photo's tile is
+                                            // the photo editor's entry
+                                            // (section 25): the tile
+                                            // itself clicks open on it.
+                                            let editable =
+                                                crate::attach::staged_photo_editable(item);
+                                            let (tile, tile_resp) = ui.allocate_exact_size(
                                                 Vec2::splat(44.0),
-                                                Sense::hover(),
+                                                if editable {
+                                                    Sense::click()
+                                                } else {
+                                                    Sense::hover()
+                                                },
                                             );
                                             let tile_rect = tile.intersect(ui.clip_rect());
+                                            // The remove badge sits on the
+                                            // tile's top-right corner: a
+                                            // click there is the badge's,
+                                            // never the editor's.
+                                            let badge_c = Pos2::new(
+                                                tile_rect.right() - 2.0,
+                                                tile_rect.top() + 2.0,
+                                            );
+                                            let tile_resp = tile_resp
+                                                .on_hover_text(crate::i18n::t(
+                                                    "composer.edit_photo",
+                                                ))
+                                                .on_hover_cursor(egui::CursorIcon::PointingHand);
+                                            if editable
+                                                && tile_resp.clicked()
+                                                && tile_resp
+                                                    .interact_pointer_pos()
+                                                    .is_some_and(|p| p.distance(badge_c) > 10.0)
+                                            {
+                                                edit = Some(i);
+                                            }
                                             if let Some(tex) = &item.thumb {
                                                 ui.painter().image(
                                                     tex.id(),
@@ -287,11 +319,9 @@ impl App {
                                                 egui::StrokeKind::Inside,
                                             );
                                             // Remove badge: a small disc
-                                            // at the tile's top-right.
-                                            let badge_c = Pos2::new(
-                                                tile_rect.right() - 2.0,
-                                                tile_rect.top() + 2.0,
-                                            );
+                                            // at the tile's top-right (its
+                                            // centre was computed with the
+                                            // tile above).
                                             let badge_resp = ui
                                                 .allocate_rect(
                                                     egui::Rect::from_center_size(
@@ -333,6 +363,9 @@ impl App {
                                             // pasted temp file backing it is
                                             // deleted (picked files are not).
                                             crate::attach::discard_pasted_temp(&item.path);
+                                        }
+                                        if let Some(i) = edit {
+                                            self.open_photo_editor(i);
                                         }
                                         if self.composer.staged.len() == 1
                                             && self.composer.staged[0].kind

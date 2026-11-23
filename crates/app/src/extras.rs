@@ -535,6 +535,32 @@ impl App {
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
             }
         }
+        // ZIP export (section 25): drive the attachment
+        // collection one step per frame (issue, watchdog,
+        // finish), and report the writer's result the same way
+        // the Markdown export reports its own.
+        if self.zip_gather.is_some() {
+            self.zip_gather_advance(ctx.input(|i| i.time));
+        }
+        if let Some(rx) = &self.zip_export_rx {
+            match rx.try_recv() {
+                Ok(Ok(path)) => {
+                    self.notice = Some(Notice::info(format!(
+                        "Chat exported with media to {}",
+                        path.display()
+                    )));
+                    self.zip_export_rx = None;
+                }
+                Ok(Err(e)) => {
+                    self.notice = Some(Notice::error(format!("Export failed: {e}")));
+                    self.zip_export_rx = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.zip_export_rx = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+        }
         // GIPHY results: drain the channel first (ending the
         // borrow), then apply.
         if self.picker.giphy_rx.is_some() {

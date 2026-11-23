@@ -270,18 +270,32 @@ pub(super) fn dock_row(
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
-/// One non-interactive dock stat row: the same geometry as
-/// [`dock_row`], with a right-aligned value and an optional
-/// hairline under it, inset to the label line.
+/// One dock stat row that navigates (section 25): the same
+/// geometry as [`dock_row`], with a right-aligned value and a
+/// chevron at the edge, and the shared row's hover and press
+/// fills. Returns the row's response.
 pub(super) fn dock_stat_row(
     ui: &mut egui::Ui,
     t: Tokens,
     label: &str,
     value: &str,
     separator: bool,
-) {
+) -> egui::Response {
     let width = ui.available_width();
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, DOCK_ROW_H), egui::Sense::hover());
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, DOCK_ROW_H), egui::Sense::click());
+    if resp.is_pointer_button_down_on() {
+        ui.painter().rect_filled(
+            rect,
+            CornerRadius::same(10),
+            rgb(core::theme::pressed_step(dock_card_fill(t))),
+        );
+    } else if resp.hovered() {
+        ui.painter().rect_filled(
+            rect,
+            CornerRadius::same(10),
+            rgb(core::theme::hover_step(dock_card_fill(t))),
+        );
+    }
     ui.painter().text(
         egui::pos2(rect.left() + DOCK_LABEL_X, rect.center().y),
         egui::Align2::LEFT_CENTER,
@@ -290,11 +304,19 @@ pub(super) fn dock_stat_row(
         rgb(t.text_primary),
     );
     ui.painter().text(
-        egui::pos2(rect.right(), rect.center().y),
+        egui::pos2(rect.right() - 26.0, rect.center().y),
         egui::Align2::RIGHT_CENTER,
         value,
         crate::theme::medium(13.0),
         rgb(t.text_secondary),
+    );
+    crate::icons::draw(
+        ui.painter(),
+        Icon::ChevronRight,
+        egui::pos2(rect.right() - 14.0, rect.center().y),
+        crate::icons::SIZE_ROW,
+        rgb(t.text_faint),
+        rgb(t.bg_panel),
     );
     if separator {
         let c = rgb(t.border);
@@ -304,6 +326,7 @@ pub(super) fn dock_stat_row(
             Stroke::new(1.0_f32, egui::Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), 100)),
         );
     }
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
 /// The identity action row: equal-width cells spanning the dock,
@@ -433,18 +456,27 @@ pub(super) fn dock_member_row(
 }
 
 /// The "Media, links and docs" section: counts computed by the
-/// caller from the loaded conversation.
+/// caller from the loaded conversation. Each row opens the
+/// gallery on its section (section 25): the counts were always
+/// the gallery's index, and now they lead where they promise.
 pub(super) fn profile_counts_section(
     ui: &mut egui::Ui,
     t: Tokens,
     media: usize,
     links: usize,
     docs: usize,
+    intents: &mut super::ProfileIntents,
 ) {
     dock_card_section(ui, t, &crate::i18n::t("profile.media"), None, |ui| {
-        let rows = [("Media", media), ("Links", links), ("Docs", docs)];
-        for (i, (label, count)) in rows.iter().enumerate() {
-            dock_stat_row(ui, t, label, &count.to_string(), i + 1 < rows.len());
+        let rows = [
+            ("Media", media, crate::state::GallerySection::Media),
+            ("Links", links, crate::state::GallerySection::Links),
+            ("Docs", docs, crate::state::GallerySection::Docs),
+        ];
+        for (i, (label, count, section)) in rows.iter().enumerate() {
+            if dock_stat_row(ui, t, label, &count.to_string(), i + 1 < rows.len()).clicked() {
+                intents.gallery = Some(*section);
+            }
         }
     });
 }
@@ -562,7 +594,7 @@ pub(crate) fn profile_user_body(
             });
         });
     }
-    profile_counts_section(ui, t, counts.0, counts.1, counts.2);
+    profile_counts_section(ui, t, counts.0, counts.1, counts.2, intents);
     disappearing_section(ui, t, ephemeral_secs, intents);
     ui.add_space(SP_SECTION);
     // Block / report rows in their own section: danger text on

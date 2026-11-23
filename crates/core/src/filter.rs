@@ -95,6 +95,44 @@ pub fn format_count(count: u64) -> String {
     }
 }
 
+/// The text of a message its reader can see, for search
+/// (design standard section 25): a text message's body, a
+/// photo or video's caption, a document's file name. Every
+/// other kind has no searchable text of its own (a poll's
+/// question, a location's name and a kind label are not
+/// message text), and a view-once message's caption is part
+/// of its sealed payload, so it reads as empty here.
+#[must_use]
+pub fn visible_text(message: &crate::model::Message) -> &str {
+    match &message.kind {
+        crate::model::MessageKind::Text => &message.body,
+        crate::model::MessageKind::Image { caption, view_once }
+        | crate::model::MessageKind::Video { caption, view_once, .. } => {
+            if *view_once {
+                ""
+            } else {
+                caption
+            }
+        }
+        crate::model::MessageKind::Document { name, .. } => name,
+        _ => "",
+    }
+}
+
+/// Whether a message matches a search query: its visible text
+/// contains the query as a case-insensitive substring. The
+/// query is trimmed first; an empty query matches nothing.
+/// Deleted messages never match (their media and text are
+/// gone; the placeholder is not content). This is the one
+/// matcher every search surface uses, so the in-chat search,
+/// the demo global search and the archive search can never
+/// disagree about what a match is.
+#[must_use]
+pub fn message_text_matches(message: &crate::model::Message, query: &str) -> bool {
+    let needle = query.trim().to_lowercase();
+    !needle.is_empty() && !message.deleted && visible_text(message).to_lowercase().contains(&needle)
+}
+
 /// Call history for the Calls panel: newest first, optionally
 /// only the missed calls. The input order does not matter; the
 /// sort is stable, so entries with equal timestamps keep their
@@ -154,6 +192,55 @@ fn starred_sort_key(msg: &crate::model::Message) -> (i64, i64) {
     (day, minute)
 }
 
+/// The days-from-civil ordinal of a calendar date, the same
+/// scale [`starred_sort_key`] orders by, exposed so a date
+/// jump can express its target on that scale.
+#[must_use]
+pub fn civil_day_ordinal(y: i64, m: u32, d: u32) -> i64 {
+    days_from_civil(y, m, d)
+}
+
+/// The day ordinal of one message's day label, on the
+/// days-from-civil scale, with the relative labels resolved
+/// against the caller's today: "Today" is `today_ordinal`,
+/// "Yesterday" one below it, a full-date label its civil
+/// ordinal. `None` when the label names no day at all.
+#[must_use]
+pub fn message_day_ordinal(message: &crate::model::Message, today_ordinal: i64) -> Option<i64> {
+    match message.day_label() {
+        "Today" => Some(today_ordinal),
+        "Yesterday" => Some(today_ordinal - 1),
+        label => parse_full_date(label).map(|(y, m, d)| days_from_civil(y, m, d)),
+    }
+}
+
+/// The index a jump to a day lands on (design standard
+/// section 25): the first message whose day is at or after
+/// the target day. A target past the newest message lands on
+/// the last message; a target before the archive lands on
+/// the first message at or after it, which is the oldest
+/// message of the earliest reachable day. Messages are
+/// assumed in conversation (chronological) order. `None`
+/// for an empty conversation.
+#[must_use]
+pub fn jump_to_date_index(
+    messages: &[crate::model::Message],
+    target_ordinal: i64,
+    today_ordinal: i64,
+) -> Option<usize> {
+    if messages.is_empty() {
+        return None;
+    }
+    for (i, message) in messages.iter().enumerate() {
+        if let Some(day) = message_day_ordinal(message, today_ordinal) {
+            if day >= target_ordinal {
+                return Some(i);
+            }
+        }
+    }
+    Some(messages.len() - 1)
+}
+
 /// Parses a "14 November 2026" day label into (year, month, day),
 /// with the full English month names the day formatter writes.
 fn parse_full_date(label: &str) -> Option<(i64, u32, u32)> {
@@ -202,6 +289,55 @@ fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
 mod tests {
     use super::*;
     use crate::model::demo_chats;
+
+    #[test]
+    fn search_matches_visible_text_only() {
+        use crate::model::{Message, MessageKind};
+        let mut text = Message::theirs(1, "Ana", "The report is ready", "10:00");
+        assert!(message_text_matches(&text, "REPORT"), "case-insensitive substring");
+        assert!(!message_text_matches(&text, "invoice"));
+        assert!(!message_text_matches(&text, "  "), "an empty query matches nothing");
+        // A photo's caption is its searchable text.
+        text.kind = MessageKind::Image { caption: "report cover".to_owned(), view_once: false };
+        text.body = "Photo".to_owned();
+        assert!(message_text_matches(&text, "report"));
+        assert!(!message_text_matches(&text, "photo"), "the kind label is not content");
+        // A view-once caption is sealed: never a match.
+        text.kind = MessageKind::Image { caption: "report cover".to_owned(), view_once: true };
+        assert!(!message_text_matches(&text, "report"));
+        // A document matches by file name.
+        text.kind = MessageKind::Document { name: "report.pdf".to_owned(), size_kib: 12 };
+        assert!(message_text_matches(&text, "report"));
+        // A deleted message never matches.
+        text.deleted = true;
+        assert!(!message_text_matches(&text, "report"));
+    }
+
+    #[test]
+    fn date_jump_lands_on_the_first_message_of_the_day_or_after() {
+        use crate::model::Message;
+        let today = civil_day_ordinal(2026, 11, 23);
+        let mut msgs: Vec<Message> = Vec::new();
+        for (i, day) in
+            ["20 November 2026", "20 November 2026", "22 November 2026", "Today"].iter().enumerate()
+        {
+            let mut m = Message::theirs(i as u64 + 1, "Ana", "x", "10:00");
+            m.day = (*day).to_owned();
+            msgs.push(m);
+        }
+        // Exact day: its first message.
+        assert_eq!(jump_to_date_index(&msgs, civil_day_ordinal(2026, 11, 20), today), Some(0));
+        // A day with no messages: the next day that has some.
+        assert_eq!(jump_to_date_index(&msgs, civil_day_ordinal(2026, 11, 21), today), Some(2));
+        // Before the archive: the oldest message.
+        assert_eq!(jump_to_date_index(&msgs, civil_day_ordinal(2026, 11, 1), today), Some(0));
+        // After the archive: the newest message.
+        assert_eq!(jump_to_date_index(&msgs, civil_day_ordinal(2027, 1, 1), today), Some(3));
+        // Today resolves through the relative label.
+        assert_eq!(jump_to_date_index(&msgs, today, today), Some(3));
+        // Empty conversation: no landing.
+        assert_eq!(jump_to_date_index(&[], today, today), None);
+    }
 
     #[test]
     fn counts_format_exact_below_a_thousand_and_compact_above() {

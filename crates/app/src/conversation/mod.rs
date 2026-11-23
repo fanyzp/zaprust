@@ -161,8 +161,14 @@ impl App {
                             row(
                                 ui,
                                 crate::icons::Icon::Download,
-                                &crate::i18n::t("common.export_chat"),
+                                &crate::i18n::t("export.as_markdown"),
                                 "export",
+                            );
+                            row(
+                                ui,
+                                crate::icons::Icon::Download,
+                                &crate::i18n::t("export.as_zip"),
+                                "exportzip",
                             );
                         }
                         let pin_label = if chat.pinned {
@@ -260,6 +266,10 @@ impl App {
                 self.export_current_chat();
                 close = true;
             }
+            Some("exportzip") => {
+                self.export_current_chat_zip();
+                close = true;
+            }
             Some("mute") => {
                 if chat.muted {
                     // Unmute: through apply_chat_action, like
@@ -317,8 +327,295 @@ impl App {
         }
     }
 
+    /// Steps the in-chat search to the next (`dir` 1) or
+    /// previous (`dir` -1) match, wrapping at both ends, and
+    /// lands the stream on it (section 25).
+    pub(crate) fn chat_search_step(&mut self, dir: i32) {
+        let count = self.chat_search.matches.len();
+        if count == 0 {
+            return;
+        }
+        let idx = self
+            .chat_search
+            .current
+            .and_then(|c| self.chat_search.matches.iter().position(|m| *m == c))
+            .unwrap_or(0);
+        let next = (idx as i32 + dir).rem_euclid(count as i32) as usize;
+        self.chat_search.current = Some(self.chat_search.matches[next]);
+        self.scroll_to_message = self.chat_search.current;
+    }
+
+    /// Closes the in-chat search session whole: strip, date
+    /// popup, current-match wash.
+    pub(crate) fn close_chat_search(&mut self) {
+        self.chat_search.open = false;
+        self.chat_search.current = None;
+        self.chat_search.date_open = false;
+        self.chat_search.date_error = false;
+    }
+
+    /// The in-chat search strip (section 25): query field,
+    /// position readout, previous / next, the date-jump entry,
+    /// and close, on one bar under the conversation header.
+    /// Matches are computed over the open conversation (the
+    /// chat's local archive) with the one visible-text
+    /// matcher; the current match wears the steady wash the
+    /// stream paints while the strip is open.
+    pub(crate) fn draw_chat_search_strip(&mut self, ui: &mut egui::Ui, t: Tokens) {
+        // A search belongs to one chat: a different open chat
+        // starts a fresh session.
+        if self.chat_search.chat_id != self.selected_chat {
+            self.chat_search.chat_id = self.selected_chat;
+            self.chat_search.query.clear();
+            self.chat_search.current = None;
+            self.chat_search.matches.clear();
+            self.chat_search.cache_key = (String::new(), 0, 0, 0);
+            self.chat_search.date_open = false;
+            self.chat_search.date_error = false;
+        }
+        // Recompute the matches when the query or the
+        // conversation moved since the last computation.
+        let key = (
+            self.chat_search.query.clone(),
+            self.conversation.len(),
+            self.conversation.first().map_or(0, |m| m.id),
+            self.conversation.last().map_or(0, |m| m.id),
+        );
+        if key != self.chat_search.cache_key {
+            let query_changed = key.0 != self.chat_search.cache_key.0;
+            self.chat_search.cache_key = key;
+            self.chat_search.matches = self
+                .conversation
+                .iter()
+                .filter(|m| core::filter::message_text_matches(m, &self.chat_search.query))
+                .map(|m| m.id)
+                .collect();
+            if self.chat_search.query.trim().is_empty() {
+                self.chat_search.current = None;
+            } else if query_changed || self.chat_search.current.is_none() {
+                self.chat_search.current = self.chat_search.matches.last().copied();
+                if query_changed {
+                    self.scroll_to_message = self.chat_search.current;
+                }
+            } else if !self.chat_search.matches.contains(&self.chat_search.current.unwrap_or(0)) {
+                self.chat_search.current = self.chat_search.matches.last().copied();
+            }
+        }
+        let escape = ui.input(|i| i.key_pressed(egui::Key::Escape));
+        let mut close = false;
+        let mut step: i32 = 0;
+        let mut toggle_date = false;
+        let frame = egui::Frame::new()
+            .fill(rgb(t.bg_panel))
+            .inner_margin(Margin::symmetric(12, 6))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    let resp = crate::widgets::text_field(
+                        ui,
+                        t,
+                        &mut self.chat_search.query,
+                        &crate::i18n::t("search.in_chat_hint"),
+                        200.0,
+                    );
+                    if self.chat_search.focus_armed {
+                        resp.request_focus();
+                        self.chat_search.focus_armed = false;
+                    }
+                    if resp.has_focus() {
+                        let (enter, shift) =
+                            ui.input(|i| (i.key_pressed(egui::Key::Enter), i.modifiers.shift));
+                        if enter {
+                            step = if shift { -1 } else { 1 };
+                        }
+                    }
+                    ui.add_space(8.0);
+                    if !self.chat_search.query.trim().is_empty() {
+                        if self.chat_search.matches.is_empty() {
+                            ui.label(
+                                RichText::new(crate::i18n::t("search.no_results"))
+                                    .size(12.5)
+                                    .color(rgb(t.text_secondary)),
+                            );
+                        } else if let Some(current) = self.chat_search.current {
+                            let pos = self
+                                .chat_search
+                                .matches
+                                .iter()
+                                .position(|m| *m == current)
+                                .map_or(0, |p| p + 1);
+                            let label =
+                                crate::i18n::tf("search.position", "current", &pos.to_string())
+                                    .replace(
+                                        "{total}",
+                                        &self.chat_search.matches.len().to_string(),
+                                    );
+                            ui.label(RichText::new(label).size(12.5).color(rgb(t.text_secondary)));
+                        }
+                    }
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if crate::widgets::icon_button(
+                            ui,
+                            t,
+                            crate::icons::Icon::X,
+                            26.0,
+                            &crate::i18n::t("common.close"),
+                            None,
+                        )
+                        .clicked()
+                        {
+                            close = true;
+                        }
+                        if crate::widgets::icon_button(
+                            ui,
+                            t,
+                            crate::icons::Icon::ChevronDown,
+                            26.0,
+                            &crate::i18n::t("search.next"),
+                            None,
+                        )
+                        .clicked()
+                        {
+                            step = 1;
+                        }
+                        if crate::widgets::icon_button(
+                            ui,
+                            t,
+                            crate::icons::Icon::ChevronUp,
+                            26.0,
+                            &crate::i18n::t("search.previous"),
+                            None,
+                        )
+                        .clicked()
+                        {
+                            step = -1;
+                        }
+                        if crate::widgets::icon_button(
+                            ui,
+                            t,
+                            crate::icons::Icon::CalendarMonth,
+                            26.0,
+                            &crate::i18n::t("search.jump_to_date"),
+                            None,
+                        )
+                        .clicked()
+                        {
+                            toggle_date = true;
+                        }
+                    });
+                });
+            });
+        ui.painter().hline(
+            frame.response.rect.x_range(),
+            frame.response.rect.bottom() - 0.5,
+            Stroke::new(1.0_f32, rgb(t.border)),
+        );
+        if step != 0 {
+            self.chat_search_step(step);
+        }
+        if toggle_date {
+            self.chat_search.date_open = !self.chat_search.date_open;
+            self.chat_search.date_error = false;
+        }
+        if self.chat_search.date_open {
+            self.draw_chat_search_date_popup(ui, t, frame.response.rect);
+        }
+        if escape {
+            if self.chat_search.date_open {
+                self.chat_search.date_open = false;
+            } else {
+                close = true;
+            }
+        }
+        if close {
+            self.close_chat_search();
+        }
+    }
+
+    /// The date-jump popup (section 25): one date field and a
+    /// Go button, anchored under the search strip's right end.
+    /// A valid date lands the stream on the first message of
+    /// the first day at or after it; an invalid one shows its
+    /// error inline and lands nowhere.
+    fn draw_chat_search_date_popup(
+        &mut self,
+        ui: &mut egui::Ui,
+        t: Tokens,
+        strip_rect: egui::Rect,
+    ) {
+        let mut go = false;
+        egui::Area::new(egui::Id::unique("chat_search_date"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(Pos2::new(strip_rect.right() - 252.0, strip_rect.bottom() + 6.0))
+            .show(ui.ctx(), |ui| {
+                crate::theme::glass_frame(t, 12).inner_margin(Margin::same(12)).show(ui, |ui| {
+                    ui.set_width(228.0);
+                    ui.label(
+                        RichText::new(crate::i18n::t("search.jump_to_date"))
+                            .font(crate::theme::semibold(13.0))
+                            .color(rgb(t.text_primary)),
+                    );
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        let resp = crate::widgets::text_field(
+                            ui,
+                            t,
+                            &mut self.chat_search.date_text,
+                            "YYYY-MM-DD",
+                            130.0,
+                        );
+                        if resp.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                            go = true;
+                        }
+                        if crate::widgets::button(
+                            ui,
+                            t,
+                            &crate::i18n::t("search.go"),
+                            crate::widgets::Btn::Primary,
+                        )
+                        .clicked()
+                        {
+                            go = true;
+                        }
+                    });
+                    if self.chat_search.date_error {
+                        ui.add_space(6.0);
+                        ui.label(
+                            RichText::new(crate::i18n::t("search.date_invalid"))
+                                .size(12.0)
+                                .color(rgb(t.danger)),
+                        );
+                    }
+                });
+            });
+        if go {
+            match parse_search_date(&self.chat_search.date_text) {
+                Some((y, m, d)) => {
+                    let target = core::filter::civil_day_ordinal(y, m, d);
+                    let today = (crate::state::now_unix() / 86_400) as i64;
+                    if let Some(idx) =
+                        core::filter::jump_to_date_index(&self.conversation, target, today)
+                    {
+                        self.scroll_to_message = Some(self.conversation[idx].id);
+                        self.chat_search.current = None;
+                    }
+                    self.chat_search.date_open = false;
+                    self.chat_search.date_error = false;
+                }
+                None => {
+                    self.chat_search.date_error = true;
+                }
+            }
+        }
+    }
+
     pub(crate) fn draw_conversation(&mut self, root: &mut egui::Ui) {
         let t = self.tokens();
+        // Ctrl+F (Command+F on macOS, the house shortcut
+        // modifier) opens the in-chat search strip (section 25).
+        if root.ctx().input(|i| i.modifiers.command && i.key_pressed(egui::Key::F)) {
+            self.chat_search.open = true;
+            self.chat_search.focus_armed = true;
+        }
         // The demo photo texture is built only when this view can
         // actually show it: when the open conversation contains a
         // photo or video message. It used to be built on the first
@@ -564,6 +861,19 @@ impl App {
                                 {
                                     self.start_call_from_header();
                                 }
+                                if crate::widgets::icon_button(
+                                    ui,
+                                    t,
+                                    crate::icons::Icon::Search,
+                                    28.0,
+                                    "Search in chat",
+                                    None,
+                                )
+                                .clicked()
+                                {
+                                    self.chat_search.open = true;
+                                    self.chat_search.focus_armed = true;
+                                }
                             });
                         });
                     });
@@ -572,6 +882,12 @@ impl App {
                     header_frame.response.rect.bottom() - 0.5,
                     Stroke::new(1.0_f32, rgb(t.border)),
                 );
+
+                // The in-chat search strip (section 25), under
+                // the header while a search session is open.
+                if self.chat_search.open {
+                    self.draw_chat_search_strip(ui, t);
+                }
 
                 // A blocked direct chat says so under its header,
                 // with the way back right there. The conversation
@@ -707,6 +1023,98 @@ impl App {
             Err(e) => self.notice = Some(Notice::error(format!("Export failed: {e}"))),
         }
     }
+
+    /// Exports the open chat as a ZIP with its media
+    /// (section 25): the same Markdown transcript, a media
+    /// folder, and a manifest that names every attachment the
+    /// export could not include and why. The plan is captured
+    /// whole here; the attachment collection then runs on the
+    /// live fetch rails (see live.rs `zip_gather_advance`), one
+    /// fetch at a time, and the writer worker finishes it.
+    /// View-once media is excluded entirely, transcript and
+    /// attachments alike, exactly as the Markdown export
+    /// excludes it.
+    pub(crate) fn export_current_chat_zip(&mut self) {
+        if !self.feature_active("export-chat") {
+            self.notice = Some(Notice::info(
+                "The Chat Export feature is off. Turn it on in Settings > Features.".to_owned(),
+            ));
+            return;
+        }
+        if self.export_rx.is_some() || self.zip_export_rx.is_some() || self.zip_gather.is_some() {
+            self.notice = Some(Notice::info("An export is already in progress.".to_owned()));
+            return;
+        }
+        let chat = self.selected().clone();
+        let conversation = self.conversation.clone();
+        let Some(markdown) = self.guard_feature("export-chat", |app| {
+            let _ = app;
+            export_chat::export_markdown(&chat, &conversation, &crate::state::today_string())
+        }) else {
+            return;
+        };
+        let mut items: Vec<crate::live::ZipItem> = Vec::new();
+        for msg in &conversation {
+            if msg.deleted || msg.is_view_once() {
+                continue;
+            }
+            let (kind, ext, caption) = match &msg.kind {
+                core::model::MessageKind::Image { caption, .. } => {
+                    (crate::live::ZipKind::Photo, "jpg".to_owned(), caption.clone())
+                }
+                core::model::MessageKind::Video { caption, .. } => {
+                    (crate::live::ZipKind::Video, "mp4".to_owned(), caption.clone())
+                }
+                core::model::MessageKind::Voice { .. } => {
+                    (crate::live::ZipKind::Voice, "ogg".to_owned(), String::new())
+                }
+                core::model::MessageKind::Document { name, .. } => {
+                    let ext = name
+                        .rsplit_once('.')
+                        .map(|(_, e)| e.to_ascii_lowercase())
+                        .filter(|e| !e.is_empty() && e.len() <= 8)
+                        .unwrap_or_else(|| "bin".to_owned());
+                    (crate::live::ZipKind::Document, ext, name.clone())
+                }
+                core::model::MessageKind::Sticker => {
+                    (crate::live::ZipKind::Sticker, "webp".to_owned(), String::new())
+                }
+                _ => continue,
+            };
+            let n = items.len() + 1;
+            items.push(crate::live::ZipItem {
+                msg_id: msg.id,
+                kind,
+                file_name: format!("{n:03}-{}.{ext}", kind.word()),
+                stamp: format!("{} · {}", msg.day_label(), msg.time),
+                sender: msg.sender.clone().unwrap_or_else(|| "You".to_owned()),
+                caption,
+                state: crate::live::ZipItemState::Pending,
+            });
+        }
+        let mut gather = crate::live::ZipGather {
+            chat_id: chat.id,
+            chat_title: chat.title.clone(),
+            file_base: export_chat::export_filename(&chat),
+            transcript: markdown,
+            message_count: conversation.len(),
+            items,
+            waiting: None,
+            wait_started: 0.0,
+        };
+        self.notice = Some(Notice::busy("Exporting chat with media…".to_owned()));
+        if self.live_mode {
+            self.zip_gather = Some(gather);
+        } else {
+            // Demo mode has no backend and no media bytes: the
+            // export completes at once with an honest manifest.
+            for item in &mut gather.items {
+                item.state =
+                    crate::live::ZipItemState::Missing("demo data has no media bytes".to_owned());
+            }
+            self.finish_zip_export(gather);
+        }
+    }
 }
 
 /// Picks a fresh export path for `base` (e.g.
@@ -748,6 +1156,141 @@ fn write_export_file(
     // An export is the full chat in plaintext: owner-only on
     // Unix, asserted on the temp so the renamed file inherits
     // it (privacy audit A5).
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))
+            .map_err(|e| e.to_string())?;
+    }
+    std::fs::rename(&tmp, &path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        e.to_string()
+    })?;
+    Ok(path)
+}
+
+/// Picks a fresh ZIP export path for `base` (the Markdown
+/// export's base name): the same unique-name discipline as
+/// [`unique_export_path`], with the `.zip` extension.
+fn unique_zip_path(dir: &std::path::Path, base: &str, now: u64) -> std::path::PathBuf {
+    let stem = base.strip_suffix(".md").unwrap_or(base);
+    let first = dir.join(format!("{stem}-{now}.zip"));
+    if !first.exists() {
+        return first;
+    }
+    let mut n = 2;
+    loop {
+        let candidate = dir.join(format!("{stem}-{now}-{n}.zip"));
+        if !candidate.exists() {
+            return candidate;
+        }
+        n += 1;
+    }
+}
+
+/// The ZIP export's manifest: the layout stated plainly, then
+/// one line per attachment, included ones by their file name
+/// and missing ones with the reason. An export that quietly
+/// dropped media would be a violation (section 25); this file
+/// is where the export accounts for every attachment.
+fn zip_manifest(gather: &crate::live::ZipGather) -> String {
+    use std::fmt::Write as _;
+    let now = i64::try_from(crate::state::now_unix()).unwrap_or(0);
+    let included = gather
+        .items
+        .iter()
+        .filter(|i| matches!(i.state, crate::live::ZipItemState::Included(_)))
+        .count();
+    let mut out = String::new();
+    let _ = writeln!(out, "Chat: {}", gather.chat_title);
+    let _ = writeln!(out, "Exported: {} {}", crate::live::fmt_day(now), crate::live::fmt_time(now));
+    let _ = writeln!(out, "Messages: {}", gather.message_count);
+    let _ = writeln!(out, "Attachments: {included} of {} included", gather.items.len());
+    let _ = writeln!(out);
+    let _ = writeln!(out, "Layout: chat.md is the transcript; media/ holds the attachments.");
+    let _ = writeln!(out);
+    let _ = writeln!(out, "Included:");
+    for item in &gather.items {
+        if matches!(item.state, crate::live::ZipItemState::Included(_)) {
+            let caption =
+                if item.caption.is_empty() { String::new() } else { format!(": {}", item.caption) };
+            let _ = writeln!(
+                out,
+                "media/{} - {}, {}{}",
+                item.file_name, item.stamp, item.sender, caption
+            );
+        }
+    }
+    let missing: Vec<&crate::live::ZipItem> = gather
+        .items
+        .iter()
+        .filter(|i| matches!(i.state, crate::live::ZipItemState::Missing(_)))
+        .collect();
+    if !missing.is_empty() {
+        let _ = writeln!(out);
+        let _ = writeln!(out, "Not included:");
+        for item in missing {
+            if let crate::live::ZipItemState::Missing(reason) = &item.state {
+                let _ = writeln!(
+                    out,
+                    "{}, {}, {}: {}",
+                    item.stamp,
+                    item.sender,
+                    item.kind.word(),
+                    reason
+                );
+            }
+        }
+    }
+    out
+}
+
+/// Writes one ZIP export (worker side): the transcript, the
+/// gathered attachments under `media/`, and the manifest,
+/// into a temp file in the exports dir that is renamed into
+/// place owner-only, the Markdown export's discipline.
+pub(crate) fn write_zip_export(
+    dir: &std::path::Path,
+    base: &str,
+    gather: &crate::live::ZipGather,
+) -> Result<std::path::PathBuf, String> {
+    use std::io::Write as _;
+    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    let path = unique_zip_path(dir, base, crate::state::now_unix());
+    let file_name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let tmp = dir.join(format!(".{file_name}.tmp"));
+    let result = (|| -> Result<(), String> {
+        let file = std::fs::File::create(&tmp).map_err(|e| e.to_string())?;
+        let mut zip = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        zip.start_file("chat.md", options).map_err(|e| e.to_string())?;
+        zip.write_all(gather.transcript.as_bytes()).map_err(|e| e.to_string())?;
+        for item in &gather.items {
+            let crate::live::ZipItemState::Included(payload) = &item.state else {
+                continue;
+            };
+            zip.start_file(format!("media/{}", item.file_name), options)
+                .map_err(|e| e.to_string())?;
+            match payload {
+                crate::live::ZipPayload::Bytes(bytes) => {
+                    zip.write_all(bytes).map_err(|e| e.to_string())?;
+                }
+                crate::live::ZipPayload::File(source) => {
+                    let mut src = std::fs::File::open(source).map_err(|e| e.to_string())?;
+                    std::io::copy(&mut src, &mut zip).map_err(|e| e.to_string())?;
+                }
+            }
+        }
+        zip.start_file("manifest.txt", options).map_err(|e| e.to_string())?;
+        zip.write_all(zip_manifest(gather).as_bytes()).map_err(|e| e.to_string())?;
+        zip.finish().map_err(|e| e.to_string())?;
+        Ok(())
+    })();
+    if let Err(e) = result {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -842,5 +1385,41 @@ mod tests {
             .collect();
         assert!(leftovers.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// Parses the date-jump field's text as a strict YYYY-MM-DD
+/// calendar date. The civil round-trip rejects real-looking
+/// impossibilities (February 30, month 13) instead of landing
+/// on a neighbouring day.
+pub(crate) fn parse_search_date(text: &str) -> Option<(i64, u32, u32)> {
+    let mut parts = text.trim().split('-');
+    let y: i64 = parts.next()?.parse().ok()?;
+    let m: u32 = parts.next()?.parse().ok()?;
+    let d: u32 = parts.next()?.parse().ok()?;
+    if parts.next().is_some()
+        || !(1..=9999).contains(&y)
+        || !(1..=12).contains(&m)
+        || !(1..=31).contains(&d)
+    {
+        return None;
+    }
+    let ordinal = core::filter::civil_day_ordinal(y, m, d);
+    (crate::live::civil_from_days(ordinal) == (y, m, d)).then_some((y, m, d))
+}
+
+#[cfg(test)]
+mod search_date_tests {
+    use super::parse_search_date;
+
+    #[test]
+    fn strict_dates_parse_and_impossible_ones_do_not() {
+        assert_eq!(parse_search_date("2026-11-22"), Some((2026, 11, 22)));
+        assert_eq!(parse_search_date(" 2026-01-05 "), Some((2026, 1, 5)));
+        assert_eq!(parse_search_date("2026-02-30"), None, "February has no 30th");
+        assert_eq!(parse_search_date("2026-13-01"), None);
+        assert_eq!(parse_search_date("22-11-2026"), None);
+        assert_eq!(parse_search_date("2026/11/22"), None);
+        assert_eq!(parse_search_date(""), None);
     }
 }

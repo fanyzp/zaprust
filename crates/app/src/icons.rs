@@ -39,6 +39,8 @@ pub(crate) enum Icon {
     Play,
     Pause,
     ChevronDown,
+    ChevronUp,
+    CalendarMonth,
     Reply,
     Copy,
     Edit,
@@ -109,66 +111,68 @@ pub(crate) fn snap_size(v: f32) -> f32 {
 /// The Material Symbols codepoint for `icon` in the bundled font.
 pub(crate) fn glyph(icon: Icon) -> char {
     match icon {
-        Icon::Chat => '\u{e0cb}',         // chat_bubble
-        Icon::Megaphone => '\u{ef49}',    // campaign
-        Icon::Users => '\u{ea21}',        // group
-        Icon::Blocks => '\u{e87b}',       // extension
-        Icon::Sliders => '\u{e429}',      // tune
-        Icon::Search => '\u{ef7a}',       // search
-        Icon::Plus => '\u{e145}',         // add
-        Icon::Smile => '\u{e813}',        // sentiment_satisfied
-        Icon::Mic => '\u{e31d}',          // mic
-        Icon::MicOff => '\u{e02b}',       // mic_off
-        Icon::Phone => '\u{f0d4}',        // call
-        Icon::Video => '\u{e04b}',        // videocam
-        Icon::X => '\u{e5cd}',            // close
-        Icon::Contrast => '\u{eb37}',     // contrast
-        Icon::Bell => '\u{e7f5}',         // notifications
-        Icon::Shield => '\u{e9e0}',       // shield
-        Icon::Database => '\u{f20e}',     // database
-        Icon::Info => '\u{e88e}',         // info
-        Icon::Check => '\u{e668}',        // check
-        Icon::ChevronLeft => '\u{e5cb}',  // chevron_left
-        Icon::ChevronRight => '\u{e5cc}', // chevron_right
-        Icon::Sparkles => '\u{e65f}',     // auto_awesome
-        Icon::Group => '\u{f233}',        // groups
-        Icon::Play => '\u{e037}',         // play_arrow
-        Icon::Pause => '\u{e034}',        // pause
-        Icon::ChevronDown => '\u{e5cf}',  // expand_more
-        Icon::Reply => '\u{e15e}',        // reply
-        Icon::Copy => '\u{e14d}',         // content_copy
-        Icon::Edit => '\u{f097}',         // edit
-        Icon::Delete => '\u{e92e}',       // delete
-        Icon::Forward => '\u{f57a}',      // forward
-        Icon::Star => '\u{f09a}',         // star
-        Icon::Pin => '\u{f10d}',          // push_pin
-        Icon::Bookmark => '\u{e8e7}',     // bookmark
-        Icon::Download => '\u{f090}',     // download
-        Icon::Poll => '\u{f0cc}',         // poll
-        Icon::React => '\u{e1d3}',        // add_reaction
-        Icon::Person => '\u{f0d3}',       // person
-        Icon::Archive => '\u{e149}',      // archive
-        Icon::MoreVert => '\u{e5d4}',     // more_vert
-        Icon::Menu => '\u{e5d2}',         // menu
-        Icon::Image => '\u{e3f4}',        // image
-        Icon::Document => '\u{e873}',     // description
-        Icon::LocationOn => '\u{f1db}',   // location_on
-        Icon::Stop => '\u{e047}',         // stop
-        Icon::LooksOne => '\u{e400}',     // looks_one
-        Icon::BellOff => '\u{e7f6}',      // notifications_off
-        Icon::Status => '\u{e917}',       // donut_large
-        Icon::AddCall => '\u{f0b7}',      // add_call
-        Icon::CallMade => '\u{e0b2}',     // call_made
-        Icon::CallReceived => '\u{e0b5}', // call_received
-        Icon::CallMissed => '\u{e0b4}',   // call_missed
-        Icon::CallEnd => '\u{f0bc}',      // call_end
-        Icon::VolumeUp => '\u{e050}',     // volume_up
-        Icon::LogOut => '\u{e9ba}',       // logout
-        Icon::Schedule => '\u{efd6}',     // schedule
-        Icon::Send => '\u{e163}',         // send
-        Icon::Lock => '\u{e899}',         // lock
-        Icon::Done => '\u{e876}',         // done
-        Icon::DoneAll => '\u{e877}',      // done_all
+        Icon::Chat => '\u{e0cb}',          // chat_bubble
+        Icon::Megaphone => '\u{ef49}',     // campaign
+        Icon::Users => '\u{ea21}',         // group
+        Icon::Blocks => '\u{e87b}',        // extension
+        Icon::Sliders => '\u{e429}',       // tune
+        Icon::Search => '\u{ef7a}',        // search
+        Icon::Plus => '\u{e145}',          // add
+        Icon::Smile => '\u{e813}',         // sentiment_satisfied
+        Icon::Mic => '\u{e31d}',           // mic
+        Icon::MicOff => '\u{e02b}',        // mic_off
+        Icon::Phone => '\u{f0d4}',         // call
+        Icon::Video => '\u{e04b}',         // videocam
+        Icon::X => '\u{e5cd}',             // close
+        Icon::Contrast => '\u{eb37}',      // contrast
+        Icon::Bell => '\u{e7f5}',          // notifications
+        Icon::Shield => '\u{e9e0}',        // shield
+        Icon::Database => '\u{f20e}',      // database
+        Icon::Info => '\u{e88e}',          // info
+        Icon::Check => '\u{e668}',         // check
+        Icon::ChevronLeft => '\u{e5cb}',   // chevron_left
+        Icon::ChevronRight => '\u{e5cc}',  // chevron_right
+        Icon::Sparkles => '\u{e65f}',      // auto_awesome
+        Icon::Group => '\u{f233}',         // groups
+        Icon::Play => '\u{e037}',          // play_arrow
+        Icon::Pause => '\u{e034}',         // pause
+        Icon::ChevronDown => '\u{e5cf}',   // expand_more
+        Icon::ChevronUp => '\u{e5ce}',     // expand_less
+        Icon::CalendarMonth => '\u{ebcc}', // calendar_month
+        Icon::Reply => '\u{e15e}',         // reply
+        Icon::Copy => '\u{e14d}',          // content_copy
+        Icon::Edit => '\u{f097}',          // edit
+        Icon::Delete => '\u{e92e}',        // delete
+        Icon::Forward => '\u{f57a}',       // forward
+        Icon::Star => '\u{f09a}',          // star
+        Icon::Pin => '\u{f10d}',           // push_pin
+        Icon::Bookmark => '\u{e8e7}',      // bookmark
+        Icon::Download => '\u{f090}',      // download
+        Icon::Poll => '\u{f0cc}',          // poll
+        Icon::React => '\u{e1d3}',         // add_reaction
+        Icon::Person => '\u{f0d3}',        // person
+        Icon::Archive => '\u{e149}',       // archive
+        Icon::MoreVert => '\u{e5d4}',      // more_vert
+        Icon::Menu => '\u{e5d2}',          // menu
+        Icon::Image => '\u{e3f4}',         // image
+        Icon::Document => '\u{e873}',      // description
+        Icon::LocationOn => '\u{f1db}',    // location_on
+        Icon::Stop => '\u{e047}',          // stop
+        Icon::LooksOne => '\u{e400}',      // looks_one
+        Icon::BellOff => '\u{e7f6}',       // notifications_off
+        Icon::Status => '\u{e917}',        // donut_large
+        Icon::AddCall => '\u{f0b7}',       // add_call
+        Icon::CallMade => '\u{e0b2}',      // call_made
+        Icon::CallReceived => '\u{e0b5}',  // call_received
+        Icon::CallMissed => '\u{e0b4}',    // call_missed
+        Icon::CallEnd => '\u{f0bc}',       // call_end
+        Icon::VolumeUp => '\u{e050}',      // volume_up
+        Icon::LogOut => '\u{e9ba}',        // logout
+        Icon::Schedule => '\u{efd6}',      // schedule
+        Icon::Send => '\u{e163}',          // send
+        Icon::Lock => '\u{e899}',          // lock
+        Icon::Done => '\u{e876}',          // done
+        Icon::DoneAll => '\u{e877}',       // done_all
     }
 }
 

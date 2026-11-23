@@ -64,6 +64,8 @@ WANTED = [
     ("Play", ["play_arrow"]),
     ("Pause", ["pause"]),
     ("ChevronDown", ["expand_more", "keyboard_arrow_down"]),
+    ("ChevronUp", ["expand_less", "keyboard_arrow_up"]),
+    ("CalendarMonth", ["calendar_month"]),
     ("Reply", ["reply"]),
     ("Copy", ["content_copy"]),
     ("Edit", ["edit"]),

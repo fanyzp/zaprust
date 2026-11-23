@@ -119,6 +119,24 @@ pub(crate) fn photo_tile_h(aspect: Option<f32>, w: f32) -> f32 {
     }
 }
 
+/// The cover-crop UV window for painting a texture of size
+/// `tex_size` into a cell of size `cell`: the texture fills
+/// the cell and its overflow is cropped symmetrically, so the
+/// image is never stretched out of its own proportions.
+fn cover_uv(cell: Vec2, tex_size: Vec2) -> Rect {
+    let tex_aspect = tex_size.x / tex_size.y.max(1.0);
+    let cell_aspect = cell.x / cell.y.max(1.0);
+    if tex_aspect > cell_aspect {
+        let w = cell_aspect / tex_aspect;
+        let x0 = (1.0 - w) / 2.0;
+        Rect::from_min_max(Pos2::new(x0, 0.0), Pos2::new(x0 + w, 1.0))
+    } else {
+        let h = tex_aspect / cell_aspect;
+        let y0 = (1.0 - h) / 2.0;
+        Rect::from_min_max(Pos2::new(0.0, y0), Pos2::new(1.0, y0 + h))
+    }
+}
+
 /// A sticker's paint size: its longest side capped at 160 px
 /// with its own aspect kept; a square 140 px until the sticker
 /// is decoded and its aspect is known.
@@ -168,6 +186,12 @@ pub(crate) struct MediaCtx {
     /// This video's decoded thumbnail texture, when its wire
     /// thumbnail bytes are here: a real frame of the video.
     pub(crate) video_thumb: Option<egui::TextureId>,
+    /// Aspect ratio (width over height) of this video's
+    /// thumbnail: the poster's own dimensions are the frame's,
+    /// so the tile sizes itself from it exactly like a photo's
+    /// (a fixed rectangle would stretch the poster into a
+    /// smear for any frame that is not the card's shape).
+    pub(crate) video_aspect: Option<f32>,
     /// Playback snapshot for this voice message, when a playback
     /// session is active for it (playing or paused).
     pub(crate) voice: Option<VoiceSnap>,
@@ -787,8 +811,14 @@ pub(crate) fn message_bubble(
                     inner_max,
                     Some(14.5 * BODY_LEADING),
                 );
-                content_w = content_w.max(300.0_f32.min(inner_max));
-                kind_h = 200.0 + if caption.is_empty() { 0.0 } else { body_galley.size().y + 4.0 };
+                let tile_w = 300.0_f32.min(inner_max);
+                content_w = content_w.max(tile_w);
+                // The tile's height follows the frame's own
+                // aspect (from its poster), exactly like a
+                // photo's: a fixed height stretched any frame
+                // that was not the card's shape into a smear.
+                kind_h = photo_tile_h(media.video_aspect, tile_w)
+                    + if caption.is_empty() { 0.0 } else { body_galley.size().y + 4.0 };
             }
         }
         MessageKind::Voice { .. } => {
@@ -1274,7 +1304,8 @@ pub(crate) fn message_bubble(
                         painter.galley(Pos2::new(x + 32.0, y + 21.0), g, rgb(t.text_faint));
                     }
                 } else {
-                    let img_rect = Rect::from_min_size(Pos2::new(x, y), Vec2::new(inner_w, 200.0));
+                    let tile_h = photo_tile_h(media.video_aspect, inner_w);
+                    let img_rect = Rect::from_min_size(Pos2::new(x, y), Vec2::new(inner_w, tile_h));
                     painter.rect_filled(
                         img_rect,
                         CornerRadius::same(INNER_CARD_RADIUS),
@@ -1307,7 +1338,7 @@ pub(crate) fn message_bubble(
                     );
                     let dur = format!("{}:{:02}", secs / 60, secs % 60);
                     let g = layout_text(ui, &dur, FontId::proportional(11.0), text_color, 60.0);
-                    painter.galley(Pos2::new(x + 8.0, y + 176.0), g, rgb(t.text_secondary));
+                    painter.galley(Pos2::new(x + 8.0, y + tile_h - 24.0), g, rgb(t.text_secondary));
                     if !caption.is_empty() {
                         let g = crate::markdown::galley(
                             ui,
@@ -1318,7 +1349,7 @@ pub(crate) fn message_bubble(
                             mention_color,
                             inner_w,
                         );
-                        painter.galley(Pos2::new(x, y + 204.0), g, text_color);
+                        painter.galley(Pos2::new(x, y + tile_h + 4.0), g, text_color);
                     }
                 }
             }
@@ -1877,18 +1908,23 @@ pub(crate) fn message_album(
         // A video cell paints its own thumbnail or the neutral
         // placeholder: the demo photo and the photo texture cache
         // belong to photos, and a video must never borrow them.
+        // A real texture paints cover-cropped from its own
+        // aspect, never stretched into the cell's shape.
         let tex = if matches!(item.kind, MessageKind::Video { .. }) {
-            video_textures.get(&item.id).map(egui::TextureHandle::id)
+            video_textures.get(&item.id).map(|h| (h.id(), h.size_vec2()))
         } else {
-            textures.get(&item.id).map(egui::TextureHandle::id).or(demo)
+            textures
+                .get(&item.id)
+                .map(|h| (h.id(), h.size_vec2()))
+                .or_else(|| demo.map(|id| (id, Vec2::splat(1.0))))
         };
-        if let Some(tex) = tex {
-            painter.image(
-                tex,
-                rect,
-                Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(1.0, 1.0)),
-                Color32::WHITE,
-            );
+        if let Some((tex, tex_size)) = tex {
+            let uv = if tex_size.x == tex_size.y {
+                Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(1.0, 1.0))
+            } else {
+                cover_uv(rect.size(), tex_size)
+            };
+            painter.image(tex, rect, uv, Color32::WHITE);
         } else {
             painter.rect_filled(rect, eframe::egui::CornerRadius::ZERO, rgb(t.bg_panel_alt));
         }

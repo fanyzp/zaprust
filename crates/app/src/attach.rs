@@ -5,7 +5,10 @@
 //! recorder wiring live here, since both are composer attachments.
 
 use super::*;
+use crate::theme::rgb;
 use core::model::{Message, MessageKind};
+use core::theme::Tokens;
+use eframe::egui::{Align, CornerRadius, Layout, Margin, Pos2, RichText, Sense, Stroke, Vec2};
 use state::{now_unix, Notice, StagedKind, StagedMedia, StagedSendState};
 use std::io::Read as _;
 
@@ -755,12 +758,471 @@ fn waveform_from_levels(levels: &[f32]) -> Vec<f32> {
     bars
 }
 
+/// Whether a staged item offers the photo editor (section
+/// 25): a staged photo that is not a GIF. A GIF's animation
+/// would be flattened by any edit (the image crate decodes
+/// its first frame), so it is never offered; a file that
+/// fails to decode is refused at open with an honest notice.
+pub(crate) fn staged_photo_editable(item: &StagedMedia) -> bool {
+    item.kind == StagedKind::Photo && item.mime != "image/gif"
+}
+
+/// Reframes a crop rectangle (normalized over an image of
+/// the given pixel size) to the largest centred rectangle of
+/// the target pixel aspect. Pure geometry, shared by the
+/// aspect presets.
+fn reframed_crop(image_w: u32, image_h: u32, aspect: f32) -> [f32; 4] {
+    let (w, h) = (image_w as f32, image_h as f32);
+    let (mut cw, mut ch) = (w, h);
+    if w / h > aspect {
+        cw = h * aspect;
+    } else {
+        ch = w / aspect;
+    }
+    let x0 = (w - cw) / 2.0 / w;
+    let y0 = (h - ch) / 2.0 / h;
+    [x0, y0, x0 + cw / w, y0 + ch / h]
+}
+
+/// Clamps a crop rectangle into the unit square with a sane
+/// minimum size on each axis.
+fn clamped_crop(mut crop: [f32; 4]) -> [f32; 4] {
+    const MIN: f32 = 0.05;
+    crop[0] = crop[0].clamp(0.0, 1.0 - MIN);
+    crop[1] = crop[1].clamp(0.0, 1.0 - MIN);
+    crop[2] = crop[2].clamp(crop[0] + MIN, 1.0);
+    crop[3] = crop[3].clamp(crop[1] + MIN, 1.0);
+    crop
+}
+
+impl App {
+    /// Opens the photo editor on the staged photo at `index`
+    /// (section 25). The decoded image becomes the working
+    /// image; nothing about the staged item changes until
+    /// Apply.
+    pub(crate) fn open_photo_editor(&mut self, index: usize) {
+        let Some(item) = self.composer.staged.get(index) else { return };
+        if !staged_photo_editable(item) {
+            return;
+        }
+        let path = item.path.clone();
+        let decoded = image::ImageReader::open(&path)
+            .map_err(|e| e.to_string())
+            .and_then(|r| r.with_guessed_format().map_err(|e| e.to_string()))
+            .and_then(|r| r.decode().map_err(|e| e.to_string()));
+        match decoded {
+            Ok(image) => {
+                self.photo_editor = Some(state::PhotoEditor {
+                    staged_index: index,
+                    chat_id: self.composer.staged_chat.unwrap_or(self.selected_chat),
+                    image,
+                    texture: None,
+                    crop: [0.0, 0.0, 1.0, 1.0],
+                    aspect: state::CropAspect::Free,
+                });
+            }
+            Err(_) => {
+                self.notice =
+                    Some(Notice::error("That photo could not be opened for editing.".to_owned()));
+            }
+        }
+    }
+
+    /// Applies the editor's working state to the staged item:
+    /// crop in pixel space, encode as JPEG, write into the
+    /// pasted scratch dir (so the temp lifecycle disposes of
+    /// it like any app-made file), and point the staged item
+    /// at the new file. The send reads the staged path, so
+    /// the edited bytes are by construction what gets sent.
+    fn apply_photo_editor(&mut self, ctx: &egui::Context) {
+        let Some(editor) = self.photo_editor.take() else { return };
+        let valid = self.composer.staged_chat == Some(editor.chat_id)
+            && self.composer.staged.get(editor.staged_index).is_some();
+        if !valid {
+            self.notice = Some(Notice::error(
+                "That photo is no longer staged, so the edit was dropped.".to_owned(),
+            ));
+            return;
+        }
+        let (w, h) = (editor.image.width(), editor.image.height());
+        let crop = clamped_crop(editor.crop);
+        let x = (crop[0] * w as f32).round() as u32;
+        let y = (crop[1] * h as f32).round() as u32;
+        let cw = (((crop[2] - crop[0]) * w as f32).round() as u32).max(1).min(w - x);
+        let ch = (((crop[3] - crop[1]) * h as f32).round() as u32).max(1).min(h - y);
+        let cropped = editor.image.crop_imm(x, y, cw, ch);
+        let mut bytes: Vec<u8> = Vec::new();
+        let encoded =
+            cropped.write_to(&mut std::io::Cursor::new(&mut bytes), image::ImageFormat::Jpeg);
+        if encoded.is_err() {
+            self.notice = Some(Notice::error("The edited photo could not be written.".to_owned()));
+            return;
+        }
+        let dir = pasted_dir();
+        if std::fs::create_dir_all(&dir).is_err() {
+            self.notice = Some(Notice::error("The edited photo could not be written.".to_owned()));
+            return;
+        }
+        let mut path = pasted_image_path_in(&dir);
+        path.set_extension("jpg");
+        if std::fs::write(&path, &bytes).is_err() {
+            self.notice = Some(Notice::error("The edited photo could not be written.".to_owned()));
+            return;
+        }
+        let item = &mut self.composer.staged[editor.staged_index];
+        let old_path = std::mem::replace(&mut item.path, path.clone());
+        item.mime = "image/jpeg".to_owned();
+        item.thumb = crate::media::load_thumb(ctx, &path);
+        // The replaced file's life ends here when it was one
+        // of ours (a pasted photo or an earlier edit); a picked
+        // file on the user's disk is never touched.
+        discard_pasted_temp(&old_path);
+    }
+
+    /// The photo editor modal (section 25): the working image
+    /// with its crop rectangle, rotate and aspect controls,
+    /// and Cancel / Apply. One modal over the conversation,
+    /// drawn from the shell's overlay pass.
+    pub(crate) fn draw_photo_editor(&mut self, ctx: &egui::Context) {
+        if self.photo_editor.is_none() {
+            return;
+        }
+        let t = self.tokens();
+        let mut cancel = false;
+        let mut apply = false;
+        let mut rotate = false;
+        let screen = ctx.content_rect();
+        // Scrim: the modal owns the pointer while it is up.
+        egui::Area::new(egui::Id::unique("photo_editor_scrim"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(Pos2::ZERO)
+            .show(ctx, |ui| {
+                let (rect, _) = ui.allocate_exact_size(screen.size(), Sense::click());
+                ui.painter().rect_filled(
+                    rect,
+                    CornerRadius::ZERO,
+                    egui::Color32::from_rgba_unmultiplied(0, 0, 0, 150),
+                );
+            });
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            cancel = true;
+        }
+        let panel_w = (screen.width() - 32.0).min(560.0);
+        egui::Area::new(egui::Id::unique("photo_editor"))
+            .order(egui::Order::Foreground)
+            .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
+            .show(ctx, |ui| {
+                crate::theme::glass_frame(t, 16).inner_margin(Margin::same(16)).show(ui, |ui| {
+                    ui.set_width(panel_w - 32.0);
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new(crate::i18n::t("editor.title"))
+                                .font(crate::theme::semibold(15.0))
+                                .color(rgb(t.text_primary)),
+                        );
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if crate::widgets::icon_button(
+                                ui,
+                                t,
+                                crate::icons::Icon::X,
+                                26.0,
+                                &crate::i18n::t("common.close"),
+                                None,
+                            )
+                            .clicked()
+                            {
+                                cancel = true;
+                            }
+                        });
+                    });
+                    ui.add_space(10.0);
+                    self.editor_preview(ui, t);
+                    ui.add_space(10.0);
+                    // Controls: rotate, then the aspect
+                    // presets as chips.
+                    ui.horizontal(|ui| {
+                        if crate::widgets::button(
+                            ui,
+                            t,
+                            &crate::i18n::t("editor.rotate"),
+                            crate::widgets::Btn::Secondary,
+                        )
+                        .clicked()
+                        {
+                            rotate = true;
+                        }
+                        ui.add_space(8.0);
+                        let aspects = [
+                            (crate::i18n::t("editor.aspect_free"), state::CropAspect::Free),
+                            (crate::i18n::t("editor.aspect_original"), state::CropAspect::Original),
+                            ("1:1".to_owned(), state::CropAspect::Square),
+                            ("4:3".to_owned(), state::CropAspect::FourThree),
+                            ("3:4".to_owned(), state::CropAspect::ThreeFour),
+                            ("16:9".to_owned(), state::CropAspect::SixteenNine),
+                            ("9:16".to_owned(), state::CropAspect::NineSixteen),
+                        ];
+                        let current =
+                            self.photo_editor.as_ref().map(|e| e.aspect).unwrap_or_default();
+                        for (label, aspect) in aspects {
+                            if crate::widgets::chip(ui, &label, current == aspect, t).clicked() {
+                                if let Some(editor) = &mut self.photo_editor {
+                                    editor.aspect = aspect;
+                                    if let Some(ratio) = aspect.ratio(
+                                        editor.image.width() as f32
+                                            / editor.image.height().max(1) as f32,
+                                    ) {
+                                        editor.crop = reframed_crop(
+                                            editor.image.width(),
+                                            editor.image.height(),
+                                            ratio,
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    });
+                    ui.add_space(12.0);
+                    ui.horizontal(|ui| {
+                        if crate::widgets::button(
+                            ui,
+                            t,
+                            &crate::i18n::t("common.cancel"),
+                            crate::widgets::Btn::Secondary,
+                        )
+                        .clicked()
+                        {
+                            cancel = true;
+                        }
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if crate::widgets::button(
+                                ui,
+                                t,
+                                &crate::i18n::t("editor.apply"),
+                                crate::widgets::Btn::Primary,
+                            )
+                            .clicked()
+                            {
+                                apply = true;
+                            }
+                        });
+                    });
+                });
+            });
+        if rotate {
+            if let Some(editor) = &mut self.photo_editor {
+                editor.image = editor.image.rotate90();
+                editor.texture = None;
+                // The crop restarts from the full frame in the
+                // rotated space: carrying a rectangle across a
+                // rotation invites off-by-transpose mistakes,
+                // and the full frame is the honest default.
+                editor.crop = [0.0, 0.0, 1.0, 1.0];
+            }
+        }
+        if cancel {
+            self.photo_editor = None;
+        } else if apply {
+            self.apply_photo_editor(ctx);
+        }
+    }
+
+    /// The editor's preview: the working image fitted into
+    /// the panel, the crop rectangle over it (dimmed outside,
+    /// accent border), dragged to move, corner-dragged to
+    /// resize, and a press outside starts a new rectangle.
+    fn editor_preview(&mut self, ui: &mut egui::Ui, t: Tokens) {
+        let Some(editor) = &mut self.photo_editor else { return };
+        if editor.texture.is_none() {
+            let preview = editor.image.thumbnail(1024, 1024);
+            let rgba = preview.to_rgba8();
+            let size = [rgba.width() as usize, rgba.height() as usize];
+            let color = egui::ColorImage::from_rgba_unmultiplied(size, rgba.as_raw());
+            editor.texture = Some(ui.ctx().load_texture(
+                "photo_editor_preview",
+                color,
+                egui::TextureOptions::LINEAR,
+            ));
+        }
+        let Some(tex) = &editor.texture else { return };
+        let tex_size = tex.size_vec2();
+        let avail_w = ui.available_width();
+        let max_h = 360.0_f32;
+        let scale = (avail_w / tex_size.x).min(max_h / tex_size.y).min(1.0);
+        let disp = tex_size * scale;
+        let (rect, resp) = ui.allocate_exact_size(disp, Sense::drag());
+        let painter = ui.painter();
+        painter.image(
+            tex.id(),
+            rect,
+            egui::Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+            egui::Color32::WHITE,
+        );
+        // The crop rectangle in display space.
+        let crop = editor.crop;
+        let crect = egui::Rect::from_min_max(
+            Pos2::new(rect.left() + crop[0] * rect.width(), rect.top() + crop[1] * rect.height()),
+            Pos2::new(rect.left() + crop[2] * rect.width(), rect.top() + crop[3] * rect.height()),
+        );
+        // Dim everything outside the crop.
+        let dim = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 110);
+        painter.rect_filled(
+            egui::Rect::from_min_max(rect.min, Pos2::new(rect.right(), crect.top())),
+            CornerRadius::ZERO,
+            dim,
+        );
+        painter.rect_filled(
+            egui::Rect::from_min_max(Pos2::new(rect.left(), crect.bottom()), rect.max),
+            CornerRadius::ZERO,
+            dim,
+        );
+        painter.rect_filled(
+            egui::Rect::from_min_max(
+                Pos2::new(rect.left(), crect.top()),
+                Pos2::new(crect.left(), crect.bottom()),
+            ),
+            CornerRadius::ZERO,
+            dim,
+        );
+        painter.rect_filled(
+            egui::Rect::from_min_max(
+                Pos2::new(crect.right(), crect.top()),
+                Pos2::new(rect.right(), crect.bottom()),
+            ),
+            CornerRadius::ZERO,
+            dim,
+        );
+        painter.rect_stroke(
+            crect,
+            CornerRadius::ZERO,
+            Stroke::new(1.5_f32, rgb(t.accent)),
+            egui::StrokeKind::Outside,
+        );
+        // Corner handles.
+        for corner in
+            [crect.left_top(), crect.right_top(), crect.left_bottom(), crect.right_bottom()]
+        {
+            painter.rect_filled(
+                egui::Rect::from_center_size(corner, Vec2::splat(11.0)),
+                CornerRadius::same(2),
+                rgb(t.accent),
+            );
+        }
+        // Dragging: the mode is decided at press by where the
+        // pointer landed (a corner resizes from the opposite
+        // corner, inside moves, outside starts a new rect),
+        // then the delta drives the rectangle in normalized
+        // space, with the aspect preset locking the shape.
+        let drag_id = egui::Id::unique("photo_editor_drag");
+        if resp.drag_started() {
+            if let Some(pos) = resp.interact_pointer_pos() {
+                let n = Pos2::new(
+                    (pos.x - rect.left()) / rect.width(),
+                    (pos.y - rect.top()) / rect.height(),
+                );
+                let near = 0.07_f32;
+                let mode = if (n.x - crop[0]).abs() < near && (n.y - crop[1]).abs() < near {
+                    "br" // fix bottom-right, move top-left: anchor is crop[2],crop[3]
+                } else if (n.x - crop[2]).abs() < near && (n.y - crop[1]).abs() < near {
+                    "bl"
+                } else if (n.x - crop[0]).abs() < near && (n.y - crop[3]).abs() < near {
+                    "tr"
+                } else if (n.x - crop[2]).abs() < near && (n.y - crop[3]).abs() < near {
+                    "tl"
+                } else if crect.contains(pos) {
+                    "move"
+                } else {
+                    "new"
+                };
+                ui.data_mut(|d| {
+                    d.insert_temp(drag_id, mode);
+                    d.insert_temp(drag_id.with("anchor"), n);
+                    d.insert_temp(drag_id.with("start"), crop);
+                });
+            }
+        }
+        if resp.dragged() {
+            let mode: &str = ui.data(|d| d.get_temp(drag_id)).unwrap_or("move");
+            let start: [f32; 4] = ui.data(|d| d.get_temp(drag_id.with("start"))).unwrap_or(crop);
+            let anchor: Pos2 = ui.data(|d| d.get_temp(drag_id.with("anchor"))).unwrap_or_default();
+            let delta = resp.drag_delta();
+            let dn = Vec2::new(delta.x / rect.width(), delta.y / rect.height());
+            let mut next = start;
+            match mode {
+                "move" => {
+                    let w = start[2] - start[0];
+                    let h = start[3] - start[1];
+                    next[0] = (start[0] + dn.x).clamp(0.0, 1.0 - w);
+                    next[1] = (start[1] + dn.y).clamp(0.0, 1.0 - h);
+                    next[2] = next[0] + w;
+                    next[3] = next[1] + h;
+                }
+                "new" => {
+                    next = [
+                        anchor.x.min(anchor.x + dn.x),
+                        anchor.y.min(anchor.y + dn.y),
+                        anchor.x.max(anchor.x + dn.x),
+                        anchor.y.max(anchor.y + dn.y),
+                    ];
+                }
+                // Corner modes name the FIXED corner.
+                "tl" => {
+                    next[2] = start[2] + dn.x;
+                    next[3] = start[3] + dn.y;
+                }
+                "tr" => {
+                    next[0] = start[0] + dn.x;
+                    next[3] = start[3] + dn.y;
+                }
+                "bl" => {
+                    next[2] = start[2] + dn.x;
+                    next[1] = start[1] + dn.y;
+                }
+                _ => {
+                    // "br": the top-left corner moves.
+                    next[0] = start[0] + dn.x;
+                    next[1] = start[1] + dn.y;
+                }
+            }
+            // Aspect lock: reshape around the fixed corner (or
+            // the centre for a move, which keeps its size and
+            // is therefore already locked).
+            if mode != "move" {
+                if let Some(ratio) = editor
+                    .aspect
+                    .ratio(editor.image.width() as f32 / editor.image.height().max(1) as f32)
+                {
+                    let (iw, ih) = (editor.image.width() as f32, editor.image.height() as f32);
+                    let w_px = (next[2] - next[0]) * iw;
+                    let h_px = w_px / ratio;
+                    let hn = h_px / ih;
+                    match mode {
+                        "tl" => next[1] = next[3] - hn,
+                        "tr" => next[3] = next[1] + hn,
+                        "bl" => next[1] = next[3] - hn,
+                        "new" => {
+                            // Grow from the anchor point.
+                            if dn.y < 0.0 {
+                                next[1] = next[3] - hn;
+                            } else {
+                                next[3] = next[1] + hn;
+                            }
+                        }
+                        _ => next[3] = next[1] + hn,
+                    }
+                }
+            }
+            editor.crop = clamped_crop(next);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        discard_pasted_temp_in, ext_png_jpeg, pasted_image_path_in, read_staged_file,
-        run_staged_reads, staged_from_path, staged_send_summary, staged_size_problem,
-        sweep_stale_pasted_images_in, StagedReadJob, MAX_SEND_BYTES,
+        clamped_crop, discard_pasted_temp_in, ext_png_jpeg, pasted_image_path_in, read_staged_file,
+        reframed_crop, run_staged_reads, staged_from_path, staged_photo_editable,
+        staged_send_summary, staged_size_problem, sweep_stale_pasted_images_in, StagedReadJob,
+        MAX_SEND_BYTES,
     };
 
     /// Writes a small temp file for the read tests and returns
@@ -995,5 +1457,41 @@ mod tests {
         assert_eq!(staged.kind, crate::state::StagedKind::Document);
         assert_eq!(staged.mime, "application/octet-stream");
         assert!(staged.thumb.is_none(), "documents have no preview");
+    }
+
+    /// Section 25: the editor is offered for staged photos
+    /// only, and never for a GIF (an edit would flatten its
+    /// animation) or a document.
+    #[test]
+    fn editor_is_offered_for_photos_but_never_gifs() {
+        let ctx = egui::Context::default();
+        let photo = staged_from_path(&ctx, std::path::Path::new("/tmp/shot.png"));
+        assert!(staged_photo_editable(&photo));
+        let gif = staged_from_path(&ctx, std::path::Path::new("/tmp/dance.gif"));
+        assert_eq!(gif.mime, "image/gif");
+        assert!(!staged_photo_editable(&gif), "a GIF is never offered the editor");
+        let doc = staged_from_path(&ctx, std::path::Path::new("/tmp/report.pdf"));
+        assert!(!staged_photo_editable(&doc));
+    }
+
+    /// Section 25: aspect reframes are the largest centred
+    /// rectangle of the target aspect, and crop clamping keeps
+    /// a rectangle inside the frame with a minimum size.
+    #[test]
+    fn crop_geometry_reframes_and_clamps() {
+        // A 2000x1000 frame squared: full height, centred width.
+        let crop = reframed_crop(2000, 1000, 1.0);
+        assert_eq!(crop, [0.25, 0.0, 0.75, 1.0]);
+        // A portrait frame at 16:9: full width, centred height.
+        let crop = reframed_crop(1000, 2000, 16.0 / 9.0);
+        assert!((crop[0]).abs() < 1e-6 && (crop[2] - 1.0).abs() < 1e-6);
+        assert!((crop[3] - crop[1] - 0.28125).abs() < 1e-4, "{crop:?}");
+        // Clamping pulls an out-of-frame rectangle back in.
+        let crop = clamped_crop([-0.5, 0.2, 1.4, 0.9]);
+        assert_eq!(crop[0], 0.0);
+        assert_eq!(crop[2], 1.0);
+        // And enforces the minimum size.
+        let crop = clamped_crop([0.5, 0.5, 0.51, 0.9]);
+        assert!(crop[2] - crop[0] >= 0.05 - 1e-6, "{crop:?}");
     }
 }

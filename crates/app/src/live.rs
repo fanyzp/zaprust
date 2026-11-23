@@ -73,17 +73,19 @@ impl LinkStatus {
     /// Short status line for the connect screen.
     pub(crate) fn label(&self) -> String {
         match self {
-            Self::Starting => "Connecting…".to_owned(),
-            Self::WaitingQr => "Waiting for scan, point your phone at the code.".to_owned(),
-            Self::CodeReady => "Code ready, enter it on your phone.".to_owned(),
-            Self::Linked => "Linked, this computer is connected.".to_owned(),
-            Self::LoggingOut => "Logging out…".to_owned(),
-            Self::LoggedOut => "Logged out, link again to continue.".to_owned(),
+            Self::Starting => crate::i18n::t("connect.status_connecting"),
+            Self::WaitingQr => crate::i18n::t("connect.status_waiting_scan"),
+            Self::CodeReady => crate::i18n::t("connect.status_code_ready"),
+            Self::Linked => crate::i18n::t("connect.status_linked"),
+            Self::LoggingOut => crate::i18n::t("connect.status_logging_out"),
+            Self::LoggedOut => crate::i18n::t("connect.status_logged_out"),
             Self::Banned(code) => {
-                format!("This account is temporarily banned (reason {code}).")
+                crate::i18n::tf("connect.status_banned", "code", &code.to_string())
             }
             Self::Lost(reason) => reason.clone(),
-            Self::Crashed(summary) => format!("The connection stopped: {summary}"),
+            Self::Crashed(summary) => {
+                crate::i18n::tf("connect.status_crashed", "summary", summary)
+            }
             Self::Failed(message) => message.clone(),
         }
     }

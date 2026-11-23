@@ -179,6 +179,43 @@ pub(super) type RetryMarks = Vec<(String, String, super::util::RetryMark)>;
 /// uses the same event for per-chat timers and for the
 /// account-wide default, told apart only by whose JID the
 /// change came from.
+/// The user-facing wording for a pairing-code failure, by
+/// category: the library's structured rejection decides what
+/// the user should do next (wait out a throttle, fall back to
+/// the QR code, fix the connection), and the raw error text
+/// never reaches the banner.
+pub(super) fn pairing_error_message(
+    err: &whatsapp_rust::prelude::PairingCodeError,
+) -> String {
+    use whatsapp_rust::prelude::PairCodeRejection;
+    match &err.rejection {
+        Some(PairCodeRejection::FeatureNotAvailable) => {
+            "Pairing by code is not available for this account. Use the QR code instead."
+                .to_owned()
+        }
+        Some(rejection) if rejection.is_throttled() => {
+            let wait = err
+                .backoff
+                .map(|d| format!(" Wait about {} seconds before trying again.", d.as_secs()))
+                .unwrap_or_default();
+            format!(
+                "WhatsApp is limiting pairing attempts for this number right now.{wait}"
+            )
+        }
+        Some(PairCodeRejection::InternalServerError) => {
+            "WhatsApp's server could not complete the pairing. Try again in a little while."
+                .to_owned()
+        }
+        Some(_) => {
+            "WhatsApp refused the pairing code. Request a new code and try again.".to_owned()
+        }
+        None => {
+            "The pairing code request did not complete. Check your connection and try again."
+                .to_owned()
+        }
+    }
+}
+
 pub(super) fn translate_event(
     event: &Event,
     sink: &EventSink,
@@ -375,9 +412,7 @@ pub(super) fn translate_event(
             });
         }
         Event::PairingCodeError(err) => {
-            sink.emit(BackendEvent::Error {
-                message: format!("Pairing code error: {err:?}").chars().take(160).collect(),
-            });
+            sink.emit(BackendEvent::Error { message: pairing_error_message(err) });
         }
         Event::PairingQrCodesExhausted(_) => {
             // The library issues no further codes for this session
@@ -2960,6 +2995,30 @@ mod live_pairing_fix_tests {
         }
     }
 
+    /// Pairing failures reach the user as human categories,
+    /// never as a Debug dump: no rejection (a local or timeout
+    /// failure) reads as a connection problem, the
+    /// feature-not-available rejection points at the QR code,
+    /// and a throttle says to wait.
+    #[test]
+    fn pairing_errors_map_to_human_categories() {
+        use whatsapp_rust::prelude::{PairCodeRejection, PairingCodeError};
+        let local = PairingCodeError::builder().error("boom".to_owned()).build();
+        let text = pairing_error_message(&local);
+        assert!(text.contains("did not complete"), "{text}");
+        assert!(!text.contains("boom"), "the raw error never reaches the user: {text}");
+        let unavailable = PairingCodeError::builder()
+            .error("boom".to_owned())
+            .rejection(PairCodeRejection::FeatureNotAvailable)
+            .build();
+        assert!(pairing_error_message(&unavailable).contains("QR code"));
+        let throttled = PairingCodeError::builder()
+            .error("boom".to_owned())
+            .rejection(PairCodeRejection::RateOverlimit)
+            .build();
+        assert!(pairing_error_message(&throttled).contains("limiting pairing attempts"));
+    }
+
     /// A document's caption slot holds only the sender's
     /// caption; its file name is not stuffed into it (the name
     /// travels in the message's document fields).
@@ -2989,18 +3048,13 @@ mod live_pairing_fix_tests {
     fn poll_snapshot_and_added_option_are_consumed() {
         let mut snapshot = wa::message::PollResultSnapshotMessage::default();
         snapshot.name = Some("Lunch?".to_owned());
-        snapshot.poll_votes = vec![
-            wa::message::poll_result_snapshot_message::PollVote {
-                option_name: Some("Nasi Padang".to_owned()),
-                option_vote_count: Some(3),
-                ..Default::default()
-            },
-            wa::message::poll_result_snapshot_message::PollVote {
-                option_name: Some("Soto".to_owned()),
-                option_vote_count: Some(1),
-                ..Default::default()
-            },
-        ];
+        let mut vote_a = wa::message::poll_result_snapshot_message::PollVote::default();
+        vote_a.option_name = Some("Nasi Padang".to_owned());
+        vote_a.option_vote_count = Some(3);
+        let mut vote_b = wa::message::poll_result_snapshot_message::PollVote::default();
+        vote_b.option_name = Some("Soto".to_owned());
+        vote_b.option_vote_count = Some(1);
+        snapshot.poll_votes = vec![vote_a, vote_b];
         let mut msg = wa::Message::default();
         msg.poll_result_snapshot_message = MessageField::some(snapshot);
         let (kind, _) = classify_message(&msg);
@@ -3011,10 +3065,9 @@ mod live_pairing_fix_tests {
         );
 
         let mut added = wa::message::PollAddOptionMessage::default();
-        added.add_option = MessageField::some(wa::message::poll_creation_message::Option {
-            option_name: Some("Bakso".to_owned()),
-            ..Default::default()
-        });
+        let mut option = wa::message::poll_creation_message::Option::default();
+        option.option_name = Some("Bakso".to_owned());
+        added.add_option = MessageField::some(option);
         let mut msg = wa::Message::default();
         msg.poll_add_option_message = MessageField::some(added);
         let (kind, _) = classify_message(&msg);

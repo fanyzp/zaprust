@@ -161,9 +161,17 @@ impl App {
                 }
                 // The steps both arrangements show, named by the
                 // pairing path the user is on.
-                let steps: &[&str] = match self.pair_mode {
-                    PairMode::Qr => &["Open WhatsApp", "Linked devices", "Scan the code"],
-                    PairMode::Code => &["Open WhatsApp", "Linked devices", "Enter the code"],
+                let steps: &[String] = &match self.pair_mode {
+                    PairMode::Qr => vec![
+                        crate::i18n::t("connect.step_open_whatsapp"),
+                        crate::i18n::t("connect.step_linked_devices"),
+                        crate::i18n::t("connect.step_scan_code"),
+                    ],
+                    PairMode::Code => vec![
+                        crate::i18n::t("connect.step_open_whatsapp"),
+                        crate::i18n::t("connect.step_linked_devices"),
+                        crate::i18n::t("connect.step_enter_code"),
+                    ],
                 };
                 let complete = self.stepper_complete();
                 // The glass card: the one elevated surface on
@@ -219,10 +227,10 @@ impl App {
                 // The other pairing path, as a real secondary
                 // button under the status line.
                 let (label, target) = match self.pair_mode {
-                    PairMode::Qr => ("Link with phone number", PairMode::Code),
-                    PairMode::Code => ("Link with QR code", PairMode::Qr),
+                    PairMode::Qr => (crate::i18n::t("connect.link_with_number"), PairMode::Code),
+                    PairMode::Code => (crate::i18n::t("connect.link_with_qr"), PairMode::Qr),
                 };
-                if crate::widgets::button(&mut col, t, label, crate::widgets::Btn::Secondary)
+                if crate::widgets::button(&mut col, t, &label, crate::widgets::Btn::Secondary)
                     .clicked()
                 {
                     self.pair_mode = target;
@@ -273,9 +281,9 @@ impl App {
                             let fake = self.live.as_ref().is_some_and(|s| s.fake);
                             ui.label(
                                 RichText::new(if fake {
-                                    "Test mode code. WhatsApp cannot scan it."
+                                    crate::i18n::t("connect.qr_test_mode")
                                 } else {
-                                    "Live QR. Scan it with your phone."
+                                    crate::i18n::t("connect.qr_live")
                                 })
                                 .size(11.0)
                                 .color(rgb(t.text_faint)),
@@ -304,7 +312,7 @@ impl App {
         // A failed live start owns the line in both pair modes:
         // nothing is waiting to be scanned or entered.
         if self.live_start_error.is_some() {
-            slot.label(RichText::new("Could not connect.").size(12.5).color(rgb(t.danger)));
+            slot.label(RichText::new(crate::i18n::t("connect.could_not_connect_dot")).size(12.5).color(rgb(t.danger)));
             return;
         }
         if self.live_mode {
@@ -329,7 +337,7 @@ impl App {
                         None => session.status.label(),
                     };
                 let (status_text, color) = if session.fake {
-                    (format!("Test mode (not WhatsApp): {status_label}"), t.text_faint)
+                    (crate::i18n::tf("connect.test_mode_prefix", "status", &status_label), t.text_faint)
                 } else if failed {
                     (status_label, t.danger)
                 } else {
@@ -356,7 +364,7 @@ impl App {
             } else if self.logged_out {
                 slot.add(
                     egui::Label::new(
-                        RichText::new("Logged out. Link again to continue.")
+                        RichText::new(crate::i18n::t("connect.logged_out_line"))
                             .size(12.5)
                             .color(rgb(t.accent)),
                     )
@@ -369,7 +377,7 @@ impl App {
             PairMode::Qr => {
                 slot.add(
                     egui::Label::new(
-                        RichText::new("Demo mode. There is no code to scan here.")
+                        RichText::new(crate::i18n::t("connect.demo_no_code"))
                             .size(12.5)
                             .color(rgb(t.text_secondary)),
                     )
@@ -381,7 +389,7 @@ impl App {
                 slot.add_space(6.0);
                 slot.add(
                     egui::Label::new(
-                        RichText::new("Waiting for the code to be entered on your phone\u{2026}")
+                        RichText::new(crate::i18n::t("connect.waiting_code_entry"))
                             .size(12.5)
                             .color(rgb(t.text_secondary)),
                     )
@@ -391,7 +399,7 @@ impl App {
             PairMode::Code => {
                 slot.add(
                     egui::Label::new(
-                        RichText::new("Enter your phone number to get a pairing code.")
+                        RichText::new(crate::i18n::t("connect.enter_number_for_code"))
                             .size(12.5)
                             .color(rgb(t.text_secondary)),
                     )
@@ -442,13 +450,10 @@ impl App {
             }
             Slot::Demo => {
                 slot.add_space(84.0);
-                slot.label(RichText::new("Demo mode").size(14.0).strong());
+                slot.label(RichText::new(crate::i18n::t("connect.demo_title")).size(14.0).strong());
                 slot.add_space(8.0);
                 slot.label(
-                    RichText::new(
-                        "Pairing is not real in the demo, and there is no code \
-                         to scan. Run Zaprust in live mode to link an account.",
-                    )
+                    RichText::new(crate::i18n::t("connect.demo_body"))
                     .size(12.0)
                     .color(rgb(t.text_secondary)),
                 );
@@ -464,18 +469,15 @@ impl App {
     /// pairing-code panel: the state in plain words and the way
     /// back in (a fresh link, which starts a new session).
     fn connect_logged_out_panel(&mut self, ui: &mut egui::Ui, t: Tokens) {
-        ui.label(RichText::new("You are logged out").size(14.0).strong());
+        ui.label(RichText::new(crate::i18n::t("connect.logged_out_title")).size(14.0).strong());
         ui.add_space(8.0);
         ui.label(
-            RichText::new(
-                "This computer is unlinked. The chats saved on this \
-                 computer stay in the local archive.",
-            )
+            RichText::new(crate::i18n::t("connect.logged_out_body"))
             .size(12.0)
             .color(rgb(t.text_secondary)),
         );
         ui.add_space(12.0);
-        if crate::widgets::button(ui, t, "Link again", crate::widgets::Btn::Primary).clicked() {
+        if crate::widgets::button(ui, t, &crate::i18n::t("connect.link_again"), crate::widgets::Btn::Primary).clicked() {
             let ctx = ui.ctx().clone();
             self.start_live(&ctx, false, false);
         }
@@ -490,12 +492,12 @@ impl App {
     /// connect screen itself for as long as no session exists;
     /// the same text is not repeated as a banner over it.
     fn connect_start_failed_panel(&mut self, ui: &mut egui::Ui, t: Tokens, message: &str) {
-        ui.label(RichText::new("Could not connect").size(14.0).strong());
+        ui.label(RichText::new(crate::i18n::t("connect.could_not_connect")).size(14.0).strong());
         ui.add_space(8.0);
         ui.label(RichText::new(message).size(12.0).color(rgb(t.text_secondary)));
         ui.add_space(12.0);
         ui.horizontal(|ui| {
-            if crate::widgets::button(ui, t, "Try again", crate::widgets::Btn::Primary).clicked() {
+            if crate::widgets::button(ui, t, &crate::i18n::t("connect.try_again"), crate::widgets::Btn::Primary).clicked() {
                 let ctx = ui.ctx().clone();
                 self.start_live(&ctx, false, false);
             }
@@ -531,7 +533,7 @@ impl App {
         }
         ui.add_space(6.0);
         if self.pair_code_shown {
-            ui.label(RichText::new("Enter this code on your phone").size(14.0).strong());
+            ui.label(RichText::new(crate::i18n::t("connect.enter_code_on_phone")).size(14.0).strong());
             ui.add_space(12.0);
             // The tiles show a code only when a real one
             // exists: while the flow is still waiting for one,
@@ -611,7 +613,7 @@ impl App {
                 ui.label(RichText::new(caption).size(11.0).color(rgb(t.text_faint)));
             }
         } else {
-            ui.label(RichText::new("Enter your phone number").size(14.0).strong());
+            ui.label(RichText::new(crate::i18n::t("connect.enter_phone_number")).size(14.0).strong());
             ui.add_space(10.0);
             let country = crate::countries::by_iso(&self.pair_country_iso)
                 .unwrap_or_else(|| crate::countries::default_country());
@@ -1023,7 +1025,7 @@ impl App {
                                             let sub = session
                                                 .map(|s| {
                                                     if s.fake {
-                                                        format!("Test mode, {}", s.status.label())
+                                                        crate::i18n::tf("connect.test_mode_line", "status", &s.status.label())
                                                     } else {
                                                         s.status.label()
                                                     }
@@ -1232,7 +1234,7 @@ fn paint_step_disc(painter: &egui::Painter, t: Tokens, center: Pos2, index: usiz
 /// Horizontal stepper for the centered connect layout: one
 /// cell per step (disc over a short label), hairline connectors
 /// at disc height.
-fn steps_stepper(ui: &mut egui::Ui, t: Tokens, items: &[&str], complete: bool) {
+fn steps_stepper(ui: &mut egui::Ui, t: Tokens, items: &[String], complete: bool) {
     let marks = step_marks(complete);
     let (rect, _) = ui.allocate_exact_size(Vec2::new(COL_W, 46.0), Sense::hover());
     let painter = ui.painter();
@@ -1270,7 +1272,7 @@ fn steps_stepper(ui: &mut egui::Ui, t: Tokens, items: &[&str], complete: bool) {
 /// Vertical step list for the wide card's instruction pane: the
 /// same discs and marks as the horizontal stepper, one row per
 /// step, hairline connectors at disc height between rows.
-fn steps_column(ui: &mut egui::Ui, t: Tokens, items: &[&str], complete: bool) {
+fn steps_column(ui: &mut egui::Ui, t: Tokens, items: &[String], complete: bool) {
     let marks = step_marks(complete);
     let row_h = 34.0;
     let (rect, _) =

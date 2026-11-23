@@ -90,15 +90,15 @@ impl CallUi {
         match self.phase {
             CallUiPhase::Incoming => {
                 if self.video {
-                    "Incoming video call".to_owned()
+                    crate::i18n::t("call.incoming_video")
                 } else {
-                    "Incoming voice call".to_owned()
+                    crate::i18n::t("call.incoming_voice")
                 }
             }
-            CallUiPhase::Ringing => "Ringing…".to_owned(),
-            CallUiPhase::Connecting => "Connecting…".to_owned(),
+            CallUiPhase::Ringing => crate::i18n::t("call.ringing"),
+            CallUiPhase::Connecting => crate::i18n::t("connect.status_connecting"),
             CallUiPhase::Active => format_duration(self.seconds),
-            CallUiPhase::Ended => self.reason.clone().unwrap_or_else(|| "Call ended".to_owned()),
+            CallUiPhase::Ended => self.reason.clone().unwrap_or_else(|| crate::i18n::t("call.ended")),
         }
     }
 }
@@ -157,7 +157,7 @@ impl App {
             .chats
             .iter()
             .find(|c| c.id == chat_id)
-            .map_or_else(|| "Unknown caller".to_owned(), |c| c.title.clone());
+            .map_or_else(|| crate::i18n::t("call.unknown_caller"), |c| c.title.clone());
         self.calls.active = Some(CallUi {
             call_id: call_id.to_owned(),
             chat_id,
@@ -231,7 +231,7 @@ impl App {
                 .chats
                 .iter()
                 .find(|c| c.id == chat_id)
-                .map_or_else(|| "Unknown".to_owned(), |c| c.title.clone());
+                .map_or_else(|| crate::i18n::t("call.unknown"), |c| c.title.clone());
             self.calls.active = Some(CallUi {
                 call_id: call_id.to_owned(),
                 chat_id,
@@ -315,9 +315,9 @@ impl App {
         call.ended_elsewhere = true;
         call.phase = CallUiPhase::Ended;
         call.reason = Some(if answered {
-            "Answered on another device".to_owned()
+            crate::i18n::t("call.answered_elsewhere")
         } else {
-            "Declined on another device".to_owned()
+            crate::i18n::t("call.declined_elsewhere")
         });
         if call.ended_at.is_none() {
             call.ended_at = Some(std::time::Instant::now());
@@ -408,7 +408,7 @@ impl App {
                                             Icon::CallEnd,
                                             rgb(t.danger),
                                             rgb(t.on_danger()),
-                                            "Decline",
+                                            &crate::i18n::t("call.decline"),
                                             t,
                                             call.action_pending,
                                         ) {
@@ -419,7 +419,7 @@ impl App {
                                             Icon::Phone,
                                             rgb(t.accent),
                                             rgb(t.on_accent()),
-                                            "Accept",
+                                            &crate::i18n::t("call.accept"),
                                             t,
                                             call.action_pending,
                                         ) {
@@ -431,7 +431,7 @@ impl App {
                                     if crate::widgets::button(
                                         ui,
                                         t,
-                                        "Close",
+                                        &crate::i18n::t("common.close"),
                                         crate::widgets::Btn::Secondary,
                                     )
                                     .clicked()
@@ -451,7 +451,7 @@ impl App {
                                             mute_icon,
                                             rgb(t.bg_panel_alt),
                                             rgb(t.text_primary),
-                                            if call.muted { "Unmute" } else { "Mute" },
+                                            &if call.muted { crate::i18n::t("common.unmute") } else { crate::i18n::t("common.mute") },
                                             t,
                                             call.action_pending,
                                         ) {
@@ -472,7 +472,7 @@ impl App {
                                             Icon::VolumeUp,
                                             speaker_bg,
                                             speaker_glyph,
-                                            "Speaker",
+                                            &crate::i18n::t("call.speaker"),
                                             t,
                                             call.action_pending,
                                         ) {
@@ -483,7 +483,7 @@ impl App {
                                             Icon::CallEnd,
                                             rgb(t.danger),
                                             rgb(t.on_danger()),
-                                            "End call",
+                                            &crate::i18n::t("call.end"),
                                             t,
                                             call.action_pending,
                                         ) {

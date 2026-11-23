@@ -970,7 +970,7 @@ impl Backend for FakeBackend {
                             format!("fake-reply-{sent_counter}"),
                             chat_jid,
                             Some("Sarah Miller".to_owned()),
-                            "Received! (scripted reply from test mode)",
+                            "Received!",
                             ts + 1,
                             false,
                         );
@@ -1985,7 +1985,7 @@ impl Backend for FakeBackend {
                 }
                 BackendCommand::DownloadMedia { .. } => {
                     events.emit(BackendEvent::Error {
-                        message: "Test mode has no downloadable media: its messages are scripted."
+                        message: "That file is not available in the demo."
                             .to_owned(),
                     });
                 }
@@ -1993,7 +1993,7 @@ impl Backend for FakeBackend {
                     events.emit(BackendEvent::PhotoFetchFailed {
                         chat_jid,
                         message_id,
-                        message: "Test mode has no fetchable media: its messages are scripted."
+                        message: "That media is not available in the demo."
                             .to_owned(),
                     });
                 }
@@ -2001,7 +2001,7 @@ impl Backend for FakeBackend {
                     events.emit(BackendEvent::VoiceFetchFailed {
                         chat_jid,
                         message_id,
-                        message: "Test mode has no fetchable media: its messages are scripted."
+                        message: "That media is not available in the demo."
                             .to_owned(),
                     });
                 }
@@ -2009,7 +2009,7 @@ impl Backend for FakeBackend {
                     events.emit(BackendEvent::VideoFetchFailed {
                         chat_jid,
                         message_id,
-                        message: "Test mode has no fetchable media: its messages are scripted."
+                        message: "That media is not available in the demo."
                             .to_owned(),
                     });
                 }
@@ -2017,7 +2017,7 @@ impl Backend for FakeBackend {
                     events.emit(BackendEvent::VideoPosterFetchFailed {
                         chat_jid,
                         message_id,
-                        message: "Test mode has no fetchable media: its messages are scripted."
+                        message: "That media is not available in the demo."
                             .to_owned(),
                     });
                 }
@@ -2104,7 +2104,7 @@ impl Backend for FakeBackend {
                     if !is_group {
                         events.emit(BackendEvent::GroupPictureFailed {
                             chat_jid,
-                            message: "Test mode knows no such group.".to_owned(),
+                            message: "That group is not available in the demo.".to_owned(),
                         });
                     } else if image.as_ref().is_some_and(|bytes| bytes.is_empty()) {
                         events.emit(BackendEvent::GroupPictureFailed {

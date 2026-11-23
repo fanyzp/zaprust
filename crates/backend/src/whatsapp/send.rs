@@ -96,9 +96,6 @@ pub(super) async fn send_media(
             if outgoing.seconds > 0 {
                 opts = opts.with_duration_seconds(outgoing.seconds);
             }
-            if !outgoing.caption.is_empty() {
-                opts = opts.with_caption(outgoing.caption);
-            }
             media::audio_message(upload, opts)
         }
         crate::MediaKind::Document => {

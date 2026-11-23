@@ -2421,6 +2421,8 @@ pub(super) async fn run_async(
                             let targets = retry_for_commands.clone();
                             let dir = config.data_dir.join("downloads");
                             let stem = crate::downloaded_media_stem(&chat_jid, &message_id);
+                            let chat_jid = chat_jid.clone();
+                            let message_id = message_id.clone();
                             tokio::spawn(async move {
                                 let saved = super::util::download_document_by_ref(
                                     &client, &reference, &dir, &stem,

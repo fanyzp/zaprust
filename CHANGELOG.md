@@ -4,6 +4,27 @@ All notable changes to Zaprust are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com), versions
 follow [SemVer](https://semver.org).
 
+## [1.6.13] - 2026-11-24
+
+### feat:
+
+- Videos show their real poster frame and keep their recorded aspect ratio. The poster is fetched from the sender's hosted copy, like a photo.
+- Audio files arrive as audio files, with their format and length, not as voice notes. Only recordings made with the microphone button are voice notes.
+- Documents carry their real file name, size and page count. Tiny files report their size in bytes instead of rounding up to a kilobyte, and a document saved before this version can still be downloaded because its download reference is kept in the archive.
+- GIFs play as GIFs and carry a GIF badge, animated stickers say so on their tile, and a sticker that fails to load offers a retry like photos and videos do.
+- Verified business names badge the chats they belong to, in the chat list and the conversation header.
+- Location messages show their map thumbnail and open the coordinates in your maps app when clicked. Link previews and documents show their thumbnails too.
+- Indonesian is now a complete translation, and pairing failures explain themselves in plain words: a refused code, a wait imposed by the server, or a feature the server does not offer.
+
+### fix:
+
+- View-once voice notes, stickers and documents are spent when you actually view them, using the flags each kind carries on the wire.
+- Mentions are recognised in every message kind that can carry them, and an unresolved mention no longer prints a raw internal identifier.
+- Group sender colours and avatar photos follow the sender's identity, not their display name, so two people who share a name no longer share a colour.
+- The video cache is capped and is cleaned up together with a chat's other media when messages or chats are deleted.
+- A chat with a damaged saved message loads everything else and tells you which message could not be read, instead of silently coming back short. A damaged message payload now fails loudly instead of being overwritten with an empty one.
+- Poll results, added poll options, scheduled calls, sticker packs and music shares show their contents instead of a bare type label.
+
 ## [1.6.12] - 2026-11-24
 
 ### fix:

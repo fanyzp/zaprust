@@ -30,9 +30,11 @@ getrandom = "0.3"
 # is what stranded the database key (see src/dbkey.rs). The
 # Linux persistent variant pairs the kernel keyring with the
 # Secret Service store; the Rust crypto backend keeps it free of
-# a system OpenSSL dependency.
+# a system OpenSSL dependency, and the vendored D-Bus client
+# library keeps the build free of a system libdbus dependency
+# (the build container has none).
 [target.'cfg(target_os = "linux")'.dependencies]
-keyring = { version = "3", features = ["linux-native-sync-persistent", "crypto-rust"] }
+keyring = { version = "3", features = ["linux-native-sync-persistent", "crypto-rust", "vendored"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 keyring = { version = "3", features = ["apple-native"] }

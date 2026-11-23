@@ -32,7 +32,7 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 # for the full story): with no platform feature the keyring crate
 # silently substitutes an in-memory mock that persists nothing.
 [target.'cfg(target_os = "linux")'.dependencies]
-keyring = { version = "3", optional = true, features = ["linux-native-sync-persistent", "crypto-rust"] }
+keyring = { version = "3", optional = true, features = ["linux-native-sync-persistent", "crypto-rust", "vendored"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 keyring = { version = "3", optional = true, features = ["apple-native"] }

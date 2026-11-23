@@ -78,6 +78,23 @@ pub fn archived_unread_count(chats: &[Chat]) -> u32 {
     chats.iter().filter(|c| c.archived && c.unread > 0).count() as u32
 }
 
+/// The one display format for a count on a badge or a count chip
+/// (design standard: count formatting). Exact below 1000; above
+/// that, compact with a floor and a plus: thousands as `NK+`
+/// (2075 reads "2K+"), millions as `NM+`. A badge never renders
+/// the raw integer at 1000 or beyond: four digits overflow the
+/// pill, and the exact figure carries no information a badge
+/// reader can act on. Every badge and count chip in the app
+/// formats through here, so the rule cannot drift per surface.
+#[must_use]
+pub fn format_count(count: u64) -> String {
+    match count {
+        0..=999 => count.to_string(),
+        1_000..=999_999 => format!("{}K+", count / 1_000),
+        _ => format!("{}M+", count / 1_000_000),
+    }
+}
+
 /// Call history for the Calls panel: newest first, optionally
 /// only the missed calls. The input order does not matter; the
 /// sort is stable, so entries with equal timestamps keep their
@@ -185,6 +202,18 @@ fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
 mod tests {
     use super::*;
     use crate::model::demo_chats;
+
+    #[test]
+    fn counts_format_exact_below_a_thousand_and_compact_above() {
+        assert_eq!(format_count(0), "0");
+        assert_eq!(format_count(7), "7");
+        assert_eq!(format_count(999), "999");
+        assert_eq!(format_count(1_000), "1K+");
+        assert_eq!(format_count(2_075), "2K+");
+        assert_eq!(format_count(999_999), "999K+");
+        assert_eq!(format_count(1_000_000), "1M+");
+        assert_eq!(format_count(2_500_000), "2M+");
+    }
 
     #[test]
     fn pinned_comes_first() {

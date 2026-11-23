@@ -582,7 +582,7 @@ impl App {
                         } else {
                             (rgb(t.badge_bg), rgb(t.badge_text))
                         };
-                        let label = chat.unread.to_string();
+                        let label = core::filter::format_count(u64::from(chat.unread));
                         let font = FontId::proportional(11.0);
                         let text_w =
                             painter.layout_no_wrap(label.clone(), font.clone(), btext).size().x;

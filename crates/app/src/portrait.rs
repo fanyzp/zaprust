@@ -439,7 +439,7 @@ fn bottom_tab(
         rgb(t.bg_panel),
     );
     if badge_count > 0 {
-        let text = badge_count.to_string();
+        let text = core::filter::format_count(u64::from(badge_count));
         let font = FontId::proportional(11.0);
         let text_w = ui.ctx().fonts_mut(|f| {
             f.layout_no_wrap(text.clone(), font.clone(), rgb(t.badge_text)).size().x

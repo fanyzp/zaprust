@@ -334,10 +334,13 @@ impl Tokens {
     ///   (dark) or a pale tint (light). `tick_read` ignores the
     ///   seed: it is a fixed blue (hue 199) in both schemes, the
     ///   read-tick color users recognize.
-    /// - `danger` and the unread badge keep their own semantic hues
-    ///   (red family, green family) at scheme-appropriate lightness;
-    ///   the badge text is whichever of black or white contrasts
-    ///   better, the same rule as [`Tokens::on_accent`].
+    /// - `danger` keeps its own semantic hue (red family) at a
+    ///   scheme-appropriate lightness. The unread badge follows
+    ///   the seed hue at a fixed saturation and lightness, so it
+    ///   wears the user's chosen accent like every other
+    ///   accent-driven element; the badge text is whichever of
+    ///   black or white contrasts better, the same rule as
+    ///   [`Tokens::on_accent`].
     ///
     /// Pure and deterministic: the same seed and scheme always
     /// produce the same tokens.
@@ -345,8 +348,6 @@ impl Tokens {
     pub fn dynamic(seed: Rgb, dark: bool) -> Tokens {
         /// Semantic hue for danger (red family), in HSL turns.
         const DANGER_HUE: f32 = 0.008;
-        /// Semantic hue for the success family (badge), in HSL turns.
-        const SUCCESS_HUE: f32 = 0.405;
         /// Fixed hue for read ticks (blue family, 199 degrees),
         /// in HSL turns. Seed-independent on purpose: blue ticks
         /// mean "read" whatever color the user picked.
@@ -380,7 +381,7 @@ impl Tokens {
                 accent_l += 0.02;
                 accent = at(s_acc, accent_l);
             }
-            let badge_bg = hsl_to_rgb(SUCCESS_HUE, 0.55, 0.55);
+            let badge_bg = hsl_to_rgb(h, 0.55, 0.55);
             Tokens {
                 bg_app: at(s_surf, 0.058),
                 bg_panel,
@@ -421,7 +422,7 @@ impl Tokens {
                 accent_l -= 0.02;
                 accent = at(s_acc, accent_l);
             }
-            let badge_bg = hsl_to_rgb(SUCCESS_HUE, 0.52, 0.40);
+            let badge_bg = hsl_to_rgb(h, 0.52, 0.40);
             Tokens {
                 bg_app: at(s_surf, 0.99),
                 bg_panel,
@@ -836,6 +837,30 @@ mod tests {
             );
         }
         assert_ne!(green.tick_read, green.accent);
+    }
+
+    #[test]
+    fn badge_follows_the_seed_hue() {
+        // The unread badge wears the user's accent: its hue is
+        // the seed's hue in both schemes (the owner's blue seed
+        // must produce blue badges, not the old fixed green).
+        for (_, seed) in SEED_PRESETS {
+            let (seed_hue, _, _) = rgb_to_hsl(seed);
+            for dark in [true, false] {
+                let tokens = Tokens::dynamic(seed, dark);
+                let (badge_hue, _, _) = rgb_to_hsl(tokens.badge_bg);
+                let delta = (badge_hue - seed_hue).abs();
+                assert!(
+                    delta < 0.01 || delta > 0.99,
+                    "badge hue {badge_hue} must track seed hue {seed_hue}"
+                );
+            }
+        }
+        // And the default seed's badge is the familiar green
+        // family, unchanged for users who never pick an accent.
+        let (default_hue, _, _) = rgb_to_hsl(Tokens::dark().badge_bg);
+        let (green_hue, _, _) = rgb_to_hsl(SEED_PRESETS[0].1);
+        assert!((default_hue - green_hue).abs() < 0.01);
     }
 
     #[test]

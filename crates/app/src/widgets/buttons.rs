@@ -196,7 +196,7 @@ pub(crate) fn rail_button(
         // row unread badge's language (badge fill, 11 px text,
         // 19 px tall, at least 19 px wide), scaled to sit on the
         // 46 px rail button.
-        let label = badge_count.to_string();
+        let label = core::filter::format_count(u64::from(badge_count));
         let font = FontId::proportional(11.0);
         let text_w = ui.ctx().fonts_mut(|f| {
             f.layout_no_wrap(label.clone(), font.clone(), rgb(t.badge_text)).size().x

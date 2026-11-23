@@ -60,9 +60,10 @@ palette for a mode is generated from one seed color by
 `Tokens::dynamic` in core: the seed's hue drives tinted neutral
 surfaces (low saturation), a legible accent (lightness adjusted
 until it clears contrast on the panel), a deep or pale tint of the
-seed for outgoing bubbles, and fixed semantic colors for danger,
-the unread badge (green family), and read ticks (always the same
-blue, whatever the seed). Preset seeds ship in Settings (Green,
+seed for outgoing bubbles, a fixed semantic color for danger
+(red family), read ticks that are always the same blue whatever
+the seed, and an unread badge that follows the seed hue, so it
+wears the user's chosen accent. Preset seeds ship in Settings (Green,
 Blue, Purple, Rose, Amber, Teal); any other color works as a custom
 seed. Every preset in both schemes is contrast-verified
 programmatically in core tests (text vs bg/surface/bubbles, badge

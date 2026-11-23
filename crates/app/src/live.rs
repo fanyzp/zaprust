@@ -2723,11 +2723,11 @@ impl crate::state::App {
                     if let Some(store) = &session.store {
                         let _ = store.put_avatar(&jid, None, None, now);
                     }
-                    session.avatar_missing.insert(jid, now);
                     // Answered: the in-flight mark clears, so
                     // the negative's own 24-hour re-ask rule in
                     // ensure_avatar can actually fire later.
                     session.avatar_requested.remove(&jid);
+                    session.avatar_missing.insert(jid, now);
                 }
             }
             BackendEvent::AvatarUnavailable { jid } => {

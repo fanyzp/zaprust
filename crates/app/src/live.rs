@@ -8,6 +8,7 @@
 
 use std::collections::HashMap;
 
+use crate::state::Notice;
 use backend::{
     spawn_backend, Backend, BackendChannels, BackendCommand, BackendConfig, BackendEvent,
     FakeBackend, LiveChat, LiveChatKind, LiveMessage, QrMatrix, QuotedRef, ReceiptKind,
@@ -768,9 +769,9 @@ impl crate::state::App {
                 self.start_live(ctx, false, false);
             }
             Err(e) => {
-                self.notice = Some(format!(
+                self.notice = Some(Notice::info(format!(
                     "Zaprust could not set the old data aside, so nothing was changed. {e}"
-                ));
+                )));
             }
         }
     }
@@ -800,7 +801,7 @@ impl crate::state::App {
                 // and the screen behind it used to fall through to
                 // a demo QR with a waiting-for-scan status).
                 self.live_start_error = Some(message.clone());
-                self.notice = Some(message);
+                self.notice = Some(Notice::error(message));
                 return;
             }
         };
@@ -1008,7 +1009,7 @@ impl crate::state::App {
         self.live_start_error = None;
         self.logged_out = false;
         if let Some(note) = archive_note {
-            self.notice = Some(note);
+            self.notice = Some(Notice::info(note));
         }
         self.live_mode = true;
         // The Calls panel's live history loads from the same
@@ -1337,8 +1338,9 @@ impl crate::state::App {
     pub(crate) fn request_pair_code(&mut self) {
         let digits: String = self.pair_phone.chars().filter(char::is_ascii_digit).collect();
         if digits.is_empty() {
-            self.notice =
-                Some("Type your phone number first (digits, with country code).".to_owned());
+            self.notice = Some(Notice::info(
+                "Type your phone number first (digits, with country code).".to_owned(),
+            ));
             return;
         }
         self.send_backend(BackendCommand::ConnectPairCode { phone: digits });
@@ -1603,7 +1605,9 @@ impl crate::state::App {
                 session.pair_code_at = None;
                 if !session.status.is_linked() {
                     self.pair_code_shown = false;
-                    self.notice = Some("That pairing code expired. Request a new one.".to_owned());
+                    self.notice = Some(Notice::info(
+                        "That pairing code expired. Request a new one.".to_owned(),
+                    ));
                 }
             }
         }
@@ -1780,7 +1784,7 @@ impl crate::state::App {
                     session.status = LinkStatus::LoggedOut;
                     session.clear_qr();
                 }
-                self.notice = Some("The device was logged out.".to_owned());
+                self.notice = Some(Notice::info("The device was logged out.".to_owned()));
                 // A logged-out client belongs on the link screen,
                 // not on an empty chat list.
                 if self.live_mode {
@@ -1962,7 +1966,7 @@ impl crate::state::App {
                     }
                     self.apply_my_reaction_to_actors(chat_id, mid, previous.as_deref());
                 }
-                self.notice = Some(human_error(&message));
+                self.notice = Some(Notice::error(human_error(&message)));
             }
             BackendEvent::StarFailed { chat_jid, message_id: pid, message } => {
                 let chat_id = jid_id(&chat_jid);
@@ -1980,7 +1984,7 @@ impl crate::state::App {
                     // report takes.
                     self.apply_star_changed(chat_id, mid, &pid, previous);
                 }
-                self.notice = Some(human_error(&message));
+                self.notice = Some(Notice::error(human_error(&message)));
             }
             BackendEvent::PinFailed { chat_jid, message_id: pid, message } => {
                 let chat_id = jid_id(&chat_jid);
@@ -1994,7 +1998,7 @@ impl crate::state::App {
                     // the pin back to what it was before it.
                     self.apply_pin_restored(chat_id, mid, &pid, previous);
                 }
-                self.notice = Some(human_error(&message));
+                self.notice = Some(Notice::error(human_error(&message)));
             }
             BackendEvent::StatusPosted { text } => {
                 self.apply_status_posted(text);
@@ -2088,8 +2092,11 @@ impl crate::state::App {
                 self.blocked_chats = jids.iter().map(|j| jid_id(j)).collect();
                 self.persist_blocked_chats();
             }
-            BackendEvent::MediaSaved { path, .. } => {
-                self.notice = Some(format!("Saved to {path}"));
+            BackendEvent::MediaSaved { chat_jid, message_id: pid, path } => {
+                // The download is done: its chip stops spinning.
+                let mid = message_id(&chat_jid, &pid);
+                self.media.downloads.remove(&mid);
+                self.notice = Some(Notice::info(format!("Saved to {path}")));
             }
             BackendEvent::PhotoBytes { chat_jid, message_id: pid, bytes } => {
                 // The fetched bytes become the message's texture:
@@ -2145,7 +2152,7 @@ impl crate::state::App {
                                 .voice_fetch
                                 .insert(mid, crate::state::VoiceFetchState::Failed);
                             self.media.voice_pending_seek.remove(&mid);
-                            self.notice = Some(message);
+                            self.notice = Some(Notice::error(message));
                         }
                     }
                 }
@@ -2161,7 +2168,7 @@ impl crate::state::App {
                     if self.media.voice_wanted == Some(mid) {
                         self.media.voice_fetch.insert(mid, crate::state::VoiceFetchState::Failed);
                         self.media.voice_pending_seek.remove(&mid);
-                        self.notice = Some(message);
+                        self.notice = Some(Notice::error(message));
                     }
                 }
             }
@@ -2194,7 +2201,7 @@ impl crate::state::App {
                 if self.media.video_fetch.get(&mid) == Some(&crate::state::PhotoFetchState::Loading)
                 {
                     self.media.video_fetch.insert(mid, crate::state::PhotoFetchState::Failed);
-                    self.notice = Some(message);
+                    self.notice = Some(Notice::error(message));
                 }
             }
             BackendEvent::TypingReceived { chat_jid, typing } => {
@@ -2300,7 +2307,10 @@ impl crate::state::App {
                 if let Some(call) = &mut self.calls.active {
                     call.action_pending = false;
                 }
-                self.notice = Some(human_error(&message));
+                self.notice = Some(Notice::error(human_error(&message)));
+                // A download that failed reports through this
+                // arm; its chip stops spinning either way.
+                self.media.downloads.clear();
                 // A failed send must surface on its own bubble, not
                 // only as a transient notice (logic review F6).
                 self.fail_pending_echoes(false);
@@ -2314,6 +2324,59 @@ impl crate::state::App {
             BackendEvent::IncomingCall { call_id, chat_jid, video } => {
                 let chat_id = jid_id(&chat_jid);
                 self.on_incoming_call(&call_id, chat_id, video);
+                // When the window is not in front of the user,
+                // the ring needs an OS popup like a message gets:
+                // the overlay alone rings to an empty room. The
+                // popup follows the message discipline (the
+                // per-kind toggles, the mute and block gates, the
+                // preview privacy) and fires only when the
+                // overlay actually took this call.
+                let adopted = self.calls.active.as_ref().is_some_and(|call| {
+                    call.call_id == call_id && call.phase == crate::call_ui::CallUiPhase::Incoming
+                });
+                if adopted {
+                    let title = self
+                        .calls
+                        .active
+                        .as_ref()
+                        .map(|call| call.title.clone())
+                        .unwrap_or_default();
+                    let chat = self.chats.iter().find(|c| c.id == chat_id);
+                    let settings = crate::notify::NotifySettings {
+                        messages: self.notify_messages,
+                        groups: self.notify_groups,
+                        sound: self.notify_sound,
+                        preview: self.notify_preview,
+                    };
+                    let req = crate::notify::NotifyRequest {
+                        chat_id,
+                        title: title.clone(),
+                        kind: chat.map(|c| c.kind).unwrap_or(core::model::ChatKind::Dm),
+                        muted: chat.map(|c| c.muted).unwrap_or(false),
+                        blocked: self.blocked_chats.contains(&chat_id),
+                        sender: None,
+                        body: String::new(),
+                    };
+                    // For a call, a focused window IS looking at
+                    // it: the overlay covers the window while it
+                    // rings, so focus alone is the suppression.
+                    let focused = ctx.input(|i| i.viewport().focused.unwrap_or(false));
+                    if crate::notify::should_notify(settings, &req, focused) {
+                        let (summary, body) = if settings.preview {
+                            (
+                                title,
+                                if video {
+                                    "Incoming video call".to_owned()
+                                } else {
+                                    "Incoming voice call".to_owned()
+                                },
+                            )
+                        } else {
+                            ("Zaprust".to_owned(), "Incoming call".to_owned())
+                        };
+                        crate::notify::fire_os_notification(summary, body, settings.sound);
+                    }
+                }
             }
             BackendEvent::CallChanged { call_id, chat_jid, phase, seconds, reason } => {
                 let chat_id = jid_id(&chat_jid);
@@ -2325,6 +2388,23 @@ impl crate::state::App {
             }
             BackendEvent::CallMissed { call_id, chat_jid, at } => {
                 self.record_missed_call(&call_id, &chat_jid, at);
+                // This event only fires for calls that never rang
+                // on this device (the offer could not be shown, or
+                // it rang while the device was away and replayed
+                // on reconnect), so the Calls list was the only
+                // place it existed. Name it in a notice too: the
+                // caller resolves through the roster, like every
+                // other surface.
+                let title = self
+                    .chats
+                    .iter()
+                    .find(|c| c.id == jid_id(&chat_jid))
+                    .map(|c| c.title.as_str())
+                    .filter(|title| !title.is_empty());
+                self.notice = Some(Notice::info(match title {
+                    Some(title) => format!("Missed call from {title}"),
+                    None => "Missed call".to_owned(),
+                }));
             }
             BackendEvent::CallEndedElsewhere { call_id, chat_jid, answered, at } => {
                 self.record_elsewhere_call(&call_id, &chat_jid, answered, at);
@@ -3611,7 +3691,7 @@ impl crate::state::App {
         }
         if self.live.is_none() {
             self.media.voice_fetch.insert(msg_id, crate::state::VoiceFetchState::Failed);
-            self.notice = Some(crate::i18n::t("voice.demo_unavailable"));
+            self.notice = Some(Notice::info(crate::i18n::t("voice.demo_unavailable")));
             return;
         }
         if self.media.voice_fetch.get(&msg_id) == Some(&crate::state::VoiceFetchState::Loading) {
@@ -3661,7 +3741,7 @@ impl crate::state::App {
             }
             Err(message) => {
                 self.media.voice_fetch.insert(msg_id, crate::state::VoiceFetchState::Failed);
-                self.notice = Some(message);
+                self.notice = Some(Notice::error(message));
             }
         }
     }
@@ -3708,7 +3788,7 @@ impl crate::state::App {
                         self.drop_video_ref(id);
                     }
                 } else {
-                    self.notice = Some(crate::i18n::t("video.view_once_not_loaded"));
+                    self.notice = Some(Notice::info(crate::i18n::t("video.view_once_not_loaded")));
                 }
             } else {
                 let spent = self.photo_demo_allowed() || self.media.view_once_shown == Some(id);
@@ -3719,7 +3799,7 @@ impl crate::state::App {
                         self.drop_photo_ref(id);
                     }
                 } else {
-                    self.notice = Some(crate::i18n::t("photo.view_once_not_loaded"));
+                    self.notice = Some(Notice::info(crate::i18n::t("photo.view_once_not_loaded")));
                 }
             }
         }
@@ -4032,7 +4112,7 @@ impl crate::state::App {
         match self.my_profile_mode() {
             crate::profile::MyProfileMode::Demo => {
                 self.persist_settings();
-                self.notice = Some(crate::i18n::t("profile.my_saved"));
+                self.notice = Some(Notice::info(crate::i18n::t("profile.my_saved")));
                 self.my_profile_open = false;
             }
             crate::profile::MyProfileMode::Live => match self.my_profile.pending_update() {
@@ -4048,7 +4128,7 @@ impl crate::state::App {
                     self.my_profile_open = false;
                 }
                 Err(message) => {
-                    self.notice = Some(message);
+                    self.notice = Some(Notice::error(message));
                 }
             },
             crate::profile::MyProfileMode::NotLinked => {}
@@ -4109,7 +4189,7 @@ impl crate::state::App {
         if was_saving {
             self.my_profile.save_phase = crate::profile::SavePhase::Idle;
             self.my_profile.adopt_account(account);
-            self.notice = Some(crate::i18n::t("profile.my_saved"));
+            self.notice = Some(Notice::info(crate::i18n::t("profile.my_saved")));
         } else if !dirty {
             self.my_profile.adopt_account(account);
         } else {
@@ -4960,6 +5040,62 @@ mod burst_drain_tests {
         assert_eq!(archived_calls(&app).len(), 1);
     }
 
+    /// Perfection round: a call that never rang here surfaces
+    /// by name, not only as a Calls list entry: the CallMissed
+    /// event also leaves a notice naming the caller through the
+    /// roster.
+    #[test]
+    fn missed_call_event_names_the_caller_in_a_notice() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        tx.send(incoming("m-1", BASE_TS)).unwrap();
+        drain_all(&mut app, &ctx);
+        let title = app
+            .chats
+            .iter()
+            .find(|c| c.id == jid_id(CHAT_JID))
+            .map(|c| c.title.clone())
+            .expect("the upsert created the chat");
+        assert!(!title.is_empty());
+        app.notice = None;
+        tx.send(BackendEvent::CallMissed {
+            call_id: "call-missed-1".to_owned(),
+            chat_jid: CHAT_JID.to_owned(),
+            at: BASE_TS,
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(
+            app.notice_str(),
+            Some(format!("Missed call from {title}").as_str()),
+            "the notice names the caller"
+        );
+        assert_eq!(
+            app.notice.as_ref().map(|n| n.kind),
+            Some(crate::state::NoticeKind::Info),
+            "a missed call is a fact, not a failure"
+        );
+    }
+
+    /// Perfection round: a media download rides the in-flight
+    /// set from its command to the backend's answer: MediaSaved
+    /// clears the message's entry (its chip stops spinning) and
+    /// leaves the saved-path notice.
+    #[test]
+    fn media_saved_clears_the_download_in_flight() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        let mid = message_id(CHAT_JID, "doc-1");
+        app.media.downloads.insert(mid);
+        tx.send(BackendEvent::MediaSaved {
+            chat_jid: CHAT_JID.to_owned(),
+            message_id: "doc-1".to_owned(),
+            path: "/tmp/doc.pdf".to_owned(),
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(!app.media.downloads.contains(&mid), "the chip stops spinning");
+        assert_eq!(app.notice_str(), Some("Saved to /tmp/doc.pdf"));
+    }
+
     /// Item 130: the call ringing here is answered on the
     /// phone. The elsewhere event ends the overlay with that
     /// reason, and the history entry is an incoming call that
@@ -5541,7 +5677,7 @@ mod burst_drain_tests {
         drain_all(&mut app, &ctx);
         assert_eq!(app.media.voice_fetch.get(&mid), Some(&crate::state::VoiceFetchState::Failed));
         assert!(app.media.voice_player.is_none());
-        assert_eq!(app.notice.as_deref(), Some("Download failed."));
+        assert_eq!(app.notice_str(), Some("Download failed."));
 
         // Retrying fetches again; undecodable bytes fail the same
         // way instead of playing.
@@ -5574,7 +5710,7 @@ mod burst_drain_tests {
         app.toggle_voice(42);
         assert_eq!(app.media.voice_fetch.get(&42), Some(&crate::state::VoiceFetchState::Failed));
         assert!(app.media.voice_player.is_none());
-        assert_eq!(app.notice.as_deref(), Some(crate::i18n::t("voice.demo_unavailable").as_str()));
+        assert_eq!(app.notice_str(), Some(crate::i18n::t("voice.demo_unavailable").as_str()));
         assert!(cmd_rx.try_recv().is_err(), "no fetch leaves a sessionless app");
     }
 
@@ -5865,10 +6001,7 @@ mod burst_drain_tests {
             "an unpresented video has not been viewed"
         );
         assert!(app.notice.is_some(), "the kept view is said out loud");
-        assert_eq!(
-            app.notice.as_deref(),
-            Some(crate::i18n::t("video.view_once_not_loaded").as_str())
-        );
+        assert_eq!(app.notice_str(), Some(crate::i18n::t("video.view_once_not_loaded").as_str()));
         let session = app.live.as_ref().unwrap();
         assert!(session.video_refs.contains_key(&mid), "the reference survives for a retry");
         assert!(session.video_thumbs.contains_key(&mid), "the thumbnail survives too");
@@ -5941,7 +6074,7 @@ mod burst_drain_tests {
         })
         .unwrap();
         drain_all(&mut app, &ctx);
-        let notice = app.notice.clone().expect("the error surfaces as a notice");
+        let notice = app.notice_str().expect("the error surfaces as a notice");
         assert!(!notice.contains("812-3456"), "phone leaked into the notice: {notice}");
         assert!(!notice.contains("zzz999888"), "secret leaked into the notice: {notice}");
         let status = app.live.as_ref().unwrap().status.label();
@@ -5960,7 +6093,7 @@ mod burst_drain_tests {
         })
         .unwrap();
         drain_all(&mut app, &ctx);
-        assert_eq!(app.notice.as_deref(), Some("The group settings could not be changed."));
+        assert_eq!(app.notice_str(), Some("The group settings could not be changed."));
     }
 
     /// The removal-refresh path (delete-for-me, clear, expiry)
@@ -7183,7 +7316,7 @@ mod chat_state_routing_tests {
         drain_all(&mut app, &ctx);
         assert_eq!(app.my_profile.save_phase, crate::profile::SavePhase::Idle);
         assert_eq!(app.my_profile.name, "New Name");
-        assert_eq!(app.notice.as_deref(), Some(crate::i18n::t("profile.my_saved").as_str()));
+        assert_eq!(app.notice_str(), Some(crate::i18n::t("profile.my_saved").as_str()));
     }
 
     /// A failed save reports the server's reason in the panel
@@ -9176,7 +9309,7 @@ mod logout_tests {
         .unwrap();
         drop(tx);
         drain_all(&mut app, &ctx);
-        let notice = app.notice.clone().unwrap_or_default();
+        let notice = app.notice_str().unwrap_or_default().to_owned();
         assert!(
             notice.contains("still appear linked on your phone"),
             "the deregistration failure is the visible outcome: {notice}"
@@ -9505,7 +9638,7 @@ mod reaction_tests {
         assert!(!app.pending_reactions.contains_key(&mid), "nothing stays pending");
         let view = app.conversation.iter().find(|m| m.id == mid).unwrap();
         assert_eq!(view.reactions, vec![("👍".to_owned(), 1)], "the open view rolls back too");
-        let notice = app.notice.clone().unwrap_or_default();
+        let notice = app.notice_str().unwrap_or_default().to_owned();
         assert!(notice.contains("Reaction failed"), "the failure is surfaced: {notice}");
     }
 
@@ -9789,7 +9922,7 @@ mod star_pin_tests {
         assert!(!mirror_flag(&app, chat_id, mid, false), "the mirror rolls back");
         assert_eq!(archived_flags(&app, GROUP_JID, "g1"), 0, "the archive flag clears");
         assert!(!app.pending_stars.contains_key(&mid), "nothing stays pending");
-        let notice = app.notice.clone().unwrap_or_default();
+        let notice = app.notice_str().unwrap_or_default().to_owned();
         assert!(notice.contains("Starring failed"), "the failure is surfaced: {notice}");
     }
 
@@ -9816,7 +9949,7 @@ mod star_pin_tests {
         assert!(!mirror_flag(&app, chat_id, mid, true), "the mirror rolls back");
         assert_eq!(archived_flags(&app, GROUP_JID, "g1"), 0, "the archive flag clears");
         assert!(!app.pending_pins.contains_key(&mid), "nothing stays pending");
-        let notice = app.notice.clone().unwrap_or_default();
+        let notice = app.notice_str().unwrap_or_default().to_owned();
         assert!(notice.contains("Pinning the message failed"), "the failure is surfaced: {notice}");
     }
 

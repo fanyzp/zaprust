@@ -298,6 +298,7 @@ impl App {
                         },
                         voice_fetch: self.media.voice_fetch.get(&msg.id).copied(),
                         view_once_opened: self.media.opened_view_once.contains(&msg.id),
+                        downloading: self.media.downloads.contains(&msg.id),
                         sender_photo: if group_incoming {
                             msg.sender.as_deref().and_then(|name| sender_photos.get(name).copied())
                         } else {

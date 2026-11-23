@@ -6,7 +6,7 @@
 
 use super::*;
 use core::model::{Message, MessageKind};
-use state::{now_unix, StagedKind, StagedMedia, StagedSendState};
+use state::{now_unix, Notice, StagedKind, StagedMedia, StagedSendState};
 use std::io::Read as _;
 
 /// Photo extensions the picker accepts and the stager recognizes.
@@ -278,7 +278,7 @@ impl App {
             self.composer.staged.push(staged_from_path(ctx, &path));
         }
         if !refused.is_empty() {
-            self.notice = Some(format!("Not attached: {}.", refused.join(", ")));
+            self.notice = Some(Notice::error(format!("Not attached: {}.", refused.join(", "))));
         }
         // The stage belongs to the chat it was attached in;
         // `send_staged` refuses to send it anywhere else.
@@ -308,8 +308,9 @@ impl App {
             }
             self.composer.staged_caption.clear();
             self.composer.staged_chat = None;
-            self.notice =
-                Some("Those files were attached in a different chat and were not sent.".to_owned());
+            self.notice = Some(Notice::info(
+                "Those files were attached in a different chat and were not sent.".to_owned(),
+            ));
             return;
         }
         if self.live_mode {
@@ -374,14 +375,15 @@ impl App {
     /// finishes, never silently dropped.
     fn dispatch_staged_send(&mut self, engaged: &mut bool) {
         if self.staged_send.is_some() {
-            self.notice =
-                Some("Still sending the previous files; wait for those to finish.".to_owned());
+            self.notice = Some(Notice::info(
+                "Still sending the previous files; wait for those to finish.".to_owned(),
+            ));
             return;
         }
         let Some(jid) = self.live_jid(self.selected_chat) else {
             // Nothing is taken: the stage stays put for a retry
             // once a live chat is open.
-            self.notice = Some("Open a live chat first.".to_owned());
+            self.notice = Some(Notice::info("Open a live chat first.".to_owned()));
             return;
         };
         let staged = std::mem::take(&mut self.composer.staged);
@@ -411,6 +413,12 @@ impl App {
         }
         let (tx, rx) = std::sync::mpsc::channel();
         self.staged_send = Some(StagedSendState { rx, pending, sent: 0, failed: Vec::new() });
+        // The reads run on the worker and can take seconds for
+        // a large file; until the first message lands (or the
+        // send completes), the send reads as in flight instead
+        // of as silence (audit S18). The completion in
+        // poll_staged_send clears or replaces this.
+        self.notice = Some(Notice::busy("Sending…".to_owned()));
         // A failed spawn leaves the receiver disconnected, so
         // the poll reports every file as unreadable instead of
         // hanging or dropping the album silently.
@@ -496,8 +504,11 @@ impl App {
                     discard_pasted_temp(&entry.item.path);
                 }
                 if let Some(notice) = staged_send_summary(send.sent, &send.failed) {
-                    self.notice = Some(notice);
+                    self.notice = Some(Notice::error(notice));
                 }
+                // A clean finish has no summary; the Busy
+                // marker from the send's start goes with it.
+                self.clear_busy_notice();
             }
         }
     }
@@ -553,12 +564,12 @@ impl App {
         let lon = draft.longitude.trim().parse::<f64>().ok();
         let (Some(lat), Some(lon)) = (lat, lon) else {
             self.composer.location_draft = Some(draft);
-            self.notice = Some(crate::i18n::t("attach.location_needs_numbers"));
+            self.notice = Some(Notice::info(crate::i18n::t("attach.location_needs_numbers")));
             return;
         };
         if !(-90.0..=90.0).contains(&lat) || !(-180.0..=180.0).contains(&lon) {
             self.composer.location_draft = Some(draft);
-            self.notice = Some(crate::i18n::t("attach.location_needs_numbers"));
+            self.notice = Some(Notice::info(crate::i18n::t("attach.location_needs_numbers")));
             return;
         }
         let name = draft.name.trim().to_owned();
@@ -566,7 +577,7 @@ impl App {
             let Some(jid) =
                 self.live.as_ref().and_then(|s| s.jids.get(&self.selected_chat).cloned())
             else {
-                self.notice = Some("Open a live chat first.".to_owned());
+                self.notice = Some(Notice::info("Open a live chat first.".to_owned()));
                 return;
             };
             self.send_backend(backend::BackendCommand::SendLocation {
@@ -616,7 +627,7 @@ impl App {
         let _ = std::fs::create_dir_all(&dir);
         let path = pasted_image_path_in(&dir);
         if let Err(e) = rgba.save(&path) {
-            self.notice = Some(format!("Could not save the pasted image: {e}"));
+            self.notice = Some(Notice::error(format!("Could not save the pasted image: {e}")));
             return;
         }
         self.stage_files(ctx, vec![path.clone()]);
@@ -636,7 +647,7 @@ impl App {
         }
         match crate::recorder::Recorder::start() {
             Ok(rec) => self.recorder = Some(rec),
-            Err(e) => self.notice = Some(e),
+            Err(e) => self.notice = Some(Notice::error(e)),
         }
     }
 
@@ -659,7 +670,7 @@ impl App {
                     let Some(jid) =
                         self.live.as_ref().and_then(|s| s.jids.get(&self.selected_chat).cloned())
                     else {
-                        self.notice = Some("Open a live chat first.".to_owned());
+                        self.notice = Some(Notice::info("Open a live chat first.".to_owned()));
                         return;
                     };
                     self.send_backend(backend::BackendCommand::SendMedia {
@@ -692,7 +703,7 @@ impl App {
                 }
                 *engaged = true;
             }
-            Err(e) => self.notice = Some(e),
+            Err(e) => self.notice = Some(Notice::error(e)),
         }
     }
 }

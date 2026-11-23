@@ -190,7 +190,27 @@ impl App {
                 // rides the shared loading row; a lost connection
                 // is a plain label in the same slot.
                 if let Some(session) = &self.live {
-                    if matches!(session.status, crate::live::LinkStatus::Lost(_)) {
+                    if matches!(session.status, crate::live::LinkStatus::Crashed(_)) {
+                        // Terminal states win over the transient
+                        // ones below: a crashed or banned session
+                        // is not coming back on its own, and the
+                        // row says so in the danger voice instead
+                        // of leaving the list silently stale
+                        // (audit S11 completion).
+                        ui.label(
+                            RichText::new(crate::i18n::t("chats.connection_stopped"))
+                                .size(12.5)
+                                .color(rgb(t.danger)),
+                        );
+                        ui.add_space(8.0);
+                    } else if matches!(session.status, crate::live::LinkStatus::Banned(_)) {
+                        ui.label(
+                            RichText::new(crate::i18n::t("chats.account_banned"))
+                                .size(12.5)
+                                .color(rgb(t.danger)),
+                        );
+                        ui.add_space(8.0);
+                    } else if matches!(session.status, crate::live::LinkStatus::Lost(_)) {
                         ui.label(
                             RichText::new(crate::i18n::t("chats.connection_lost"))
                                 .size(12.5)

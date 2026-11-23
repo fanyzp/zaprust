@@ -10,7 +10,7 @@ use super::dock::{
 };
 use super::{profile_kind, MemberAction, ProfileIntents, ProfileKind};
 use crate::icons::Icon;
-use crate::state::{App, UiConfirm};
+use crate::state::{App, Notice, UiConfirm};
 use crate::theme::rgb;
 use crate::widgets::{button, text_field, Btn};
 use core::model::ChatKind;
@@ -477,7 +477,7 @@ impl App {
                                     {
                                         ui.ctx().copy_text(link.clone());
                                         self.notice =
-                                            Some(crate::i18n::t("profile.link_copied"));
+                                            Some(Notice::info(crate::i18n::t("profile.link_copied")));
                                     }
                                     if button(
                                         ui,
@@ -890,7 +890,7 @@ impl App {
                                 self.add_member_open = !self.add_member_open;
                                 self.add_participant_input.clear();
                             } else {
-                                self.notice = Some(crate::i18n::t("profile.add_member_caption"));
+                                self.notice = Some(Notice::info(crate::i18n::t("profile.add_member_caption")));
                             }
                         }
                         if self.add_member_open && self.live.is_some() {
@@ -1055,7 +1055,7 @@ impl App {
                 c.title = subject;
             }
         }
-        self.notice = Some("Group info saved.".to_owned());
+        self.notice = Some(Notice::info("Group info saved.".to_owned()));
     }
 
     /// One participant operation from the profile panel. `address`
@@ -1071,7 +1071,7 @@ impl App {
         };
         let target = address.unwrap_or_else(|| self.add_participant_input.trim().to_owned());
         if target.is_empty() {
-            self.notice = Some("Type a phone number or address first.".to_owned());
+            self.notice = Some(Notice::info("Type a phone number or address first.".to_owned()));
             return;
         }
         self.send_backend(backend::BackendCommand::GroupParticipants {
@@ -1085,7 +1085,7 @@ impl App {
         // Refresh the member list so the panel shows the result.
         self.groups.live_members.remove(&chat_id);
         self.send_backend(backend::BackendCommand::FetchGroupMembers { chat_jid: jid });
-        self.notice = Some("Sent. The member list will refresh.".to_owned());
+        self.notice = Some(Notice::info("Sent. The member list will refresh.".to_owned()));
     }
 
     /// Leaves a live group and archives the local row.
@@ -1112,7 +1112,7 @@ impl App {
             }
         }
         if self.live.is_none() {
-            self.notice = Some("You left the group.".to_owned());
+            self.notice = Some(Notice::info("You left the group.".to_owned()));
         }
     }
 
@@ -1137,10 +1137,10 @@ impl App {
         // state after a restart, before (or without) the
         // backend's connect-time blocklist fetch.
         self.persist_blocked_chats();
-        self.notice = Some(if now_blocked {
+        self.notice = Some(Notice::info(if now_blocked {
             "Contact blocked.".to_owned()
         } else {
             "Contact unblocked.".to_owned()
-        });
+        }));
     }
 }

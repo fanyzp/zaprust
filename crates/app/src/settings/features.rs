@@ -190,7 +190,8 @@ impl App {
                                         self.credential_drafts.remove(&slot.id);
                                     }
                                     Err(e) => {
-                                        self.notice = Some(format!("Credential store: {e}"));
+                                        self.notice =
+                                            Some(Notice::error(format!("Credential store: {e}")));
                                     }
                                 }
                             }

@@ -6,7 +6,7 @@ use backend::BackendCommand;
 use eframe::egui::{self, Align2, Area, Id, Margin, RichText, Sense, Vec2};
 
 use crate::icons::{self, Icon};
-use crate::state::App;
+use crate::state::{App, Notice};
 use crate::theme::rgb;
 
 /// Phases the overlay renders.
@@ -128,12 +128,13 @@ impl App {
     /// picked is the kind the backend is asked for.
     pub(crate) fn start_call_kind(&mut self, video: bool) {
         if !self.live_mode {
-            self.notice =
-                Some("Calls work in live mode and test mode, not in the offline demo.".to_owned());
+            self.notice = Some(Notice::info(
+                "Calls work in live mode and test mode, not in the offline demo.".to_owned(),
+            ));
             return;
         }
         if self.calls.active.is_some() {
-            self.notice = Some("A call is already in progress.".to_owned());
+            self.notice = Some(Notice::info("A call is already in progress.".to_owned()));
             return;
         }
         match self.live_jid(self.selected_chat) {
@@ -142,7 +143,7 @@ impl App {
                 self.send_backend(BackendCommand::StartCall { chat_jid: jid, video });
             }
             None => {
-                self.notice = Some("Open a real chat to start a call.".to_owned());
+                self.notice = Some(Notice::info("Open a real chat to start a call.".to_owned()));
             }
         }
     }
@@ -348,24 +349,39 @@ impl App {
                 // and shadow), keeping its own panel fill.
                 let card = crate::theme::glass_frame(t, 16)
                     .fill(rgb(t.bg_panel))
-                    .inner_margin(Margin::symmetric(28, 22))
+                    .inner_margin(Margin::symmetric(24, 20))
                     .show(ui, |ui| {
-                        ui.set_min_width(280.0);
+                        // One fixed content width, so the identity
+                        // block and the action row compose on a
+                        // single axis (design standard section 19)
+                        // whatever the caller's name or the phase.
+                        ui.set_min_width(CALL_CARD_W);
                         ui.vertical_centered(|ui| {
-                            // Avatar disc with the title initial.
+                            // The caller's identity exactly as the
+                            // chat list and the conversation header
+                            // paint it: the shared avatar dispatch
+                            // for the call's chat, so the card and
+                            // the list behind it show one person.
+                            // A chat the roster does not know falls
+                            // back to the shared silhouette avatar.
                             let (rect, _) =
                                 ui.allocate_exact_size(Vec2::splat(64.0), Sense::hover());
-                            ui.painter().circle_filled(rect.center(), 32.0, rgb(t.accent));
-                            let initial =
-                                call.title.chars().next().unwrap_or('?').to_uppercase().to_string();
-                            ui.painter().text(
-                                rect.center(),
-                                Align2::CENTER_CENTER,
-                                initial,
-                                egui::FontId::proportional(26.0),
-                                egui::Color32::WHITE,
-                            );
-                            ui.add_space(10.0);
+                            match self.chats.iter().find(|c| c.id == call.chat_id) {
+                                Some(chat) => crate::widgets::paint_chat_avatar(
+                                    ui.painter(),
+                                    rect.center(),
+                                    32.0,
+                                    chat,
+                                ),
+                                None => crate::widgets::paint_avatar(
+                                    ui.painter(),
+                                    rect.center(),
+                                    32.0,
+                                    false,
+                                    (call.chat_id % 251) as u8,
+                                ),
+                            }
+                            ui.add_space(12.0);
                             ui.label(
                                 RichText::new(&call.title)
                                     .font(crate::theme::semibold(17.0))
@@ -376,87 +392,102 @@ impl App {
                                     .size(13.0)
                                     .color(rgb(t.text_secondary)),
                             );
-                            ui.add_space(16.0);
-                            ui.horizontal(|ui| {
-                                match call.phase {
-                                    CallUiPhase::Incoming => {
-                                        if call_button(
-                                            ui,
-                                            Icon::Phone,
+                            ui.add_space(20.0);
+                            match call.phase {
+                                CallUiPhase::Incoming => {
+                                    // Decline and Accept as a
+                                    // symmetric pair of labeled
+                                    // actions in equal cells.
+                                    ui.columns(2, |cols| {
+                                        if call_action(
+                                            &mut cols[0],
+                                            Icon::CallEnd,
                                             rgb(t.danger),
+                                            rgb(t.on_danger()),
                                             "Decline",
+                                            t,
                                             call.action_pending,
                                         ) {
                                             action = Some("reject");
                                         }
-                                        ui.add_space(18.0);
-                                        if call_button(
-                                            ui,
+                                        if call_action(
+                                            &mut cols[1],
                                             Icon::Phone,
                                             rgb(t.accent),
+                                            rgb(t.on_accent()),
                                             "Accept",
+                                            t,
                                             call.action_pending,
                                         ) {
                                             action = Some("accept");
                                         }
+                                    });
+                                }
+                                CallUiPhase::Ended => {
+                                    if crate::widgets::button(
+                                        ui,
+                                        t,
+                                        "Close",
+                                        crate::widgets::Btn::Secondary,
+                                    )
+                                    .clicked()
+                                    {
+                                        action = Some("close");
                                     }
-                                    CallUiPhase::Ended => {
-                                        if crate::widgets::button(
-                                            ui,
-                                            t,
-                                            "Close",
-                                            crate::widgets::Btn::Secondary,
-                                        )
-                                        .clicked()
-                                        {
-                                            action = Some("close");
-                                        }
-                                    }
-                                    _ => {
+                                }
+                                _ => {
+                                    // The in-call controls as an
+                                    // even triple of labeled
+                                    // actions in equal cells.
+                                    ui.columns(3, |cols| {
                                         let mute_icon =
                                             if call.muted { Icon::MicOff } else { Icon::Mic };
-                                        if call_button(
-                                            ui,
+                                        if call_action(
+                                            &mut cols[0],
                                             mute_icon,
                                             rgb(t.bg_panel_alt),
+                                            rgb(t.text_primary),
                                             if call.muted { "Unmute" } else { "Mute" },
+                                            t,
                                             call.action_pending,
                                         ) {
                                             action = Some("mute");
                                         }
-                                        ui.add_space(10.0);
-                                        if call_button(
-                                            ui,
-                                            Icon::Megaphone,
-                                            rgb(t.bg_panel_alt),
-                                            if call.speaker { "Speaker on" } else { "Speaker off" },
+                                        // The speaker toggle wears
+                                        // the accent while it is on,
+                                        // so its state reads at a
+                                        // glance, not only from its
+                                        // glyph.
+                                        let (speaker_bg, speaker_glyph) = if call.speaker {
+                                            (rgb(t.accent), rgb(t.on_accent()))
+                                        } else {
+                                            (rgb(t.bg_panel_alt), rgb(t.text_primary))
+                                        };
+                                        if call_action(
+                                            &mut cols[1],
+                                            Icon::VolumeUp,
+                                            speaker_bg,
+                                            speaker_glyph,
+                                            "Speaker",
+                                            t,
                                             call.action_pending,
                                         ) {
                                             action = Some("speaker");
                                         }
-                                        ui.add_space(10.0);
-                                        // Video is a later sub-phase;
-                                        // the button is honest about
-                                        // it instead of pretending.
-                                        call_button_disabled(
-                                            ui,
-                                            t,
-                                            Icon::Video,
-                                            "Video calls are not available yet",
-                                        );
-                                        ui.add_space(10.0);
-                                        if call_button(
-                                            ui,
-                                            Icon::Phone,
+                                        if call_action(
+                                            &mut cols[2],
+                                            Icon::CallEnd,
                                             rgb(t.danger),
+                                            rgb(t.on_danger()),
                                             "End call",
+                                            t,
                                             call.action_pending,
                                         ) {
                                             action = Some("end");
                                         }
-                                    }
+                                    });
                                 }
-                            });
+                            }
                         });
                     });
                 crate::theme::paint_glass_edge(ui.painter(), card.response.rect, 16.0, t);
@@ -486,43 +517,66 @@ impl App {
     }
 }
 
-/// One round call-control button; returns true on click. While
-/// an action is latched (the `pending` argument, fed from the
-/// call's action_pending flag) the disc and its glyph paint
-/// dimmed, so the latch the click handling enforces is visible
-/// instead of silently swallowing further clicks.
-fn call_button(
+/// The call card's content width: the identity block and the
+/// action row share this one axis (design standard section 19),
+/// so the card's composition never shifts with the caller's name
+/// or the call's phase.
+const CALL_CARD_W: f32 = 264.0;
+
+/// Diameter of one call action disc.
+const CALL_DISC: f32 = 56.0;
+
+/// One labeled call action: a disc with its caption under it,
+/// centered in the cell it is given (one column of the action
+/// row). The whole column is the click target, and the caption
+/// is always visible: a call action never hides its meaning in
+/// a hover tooltip. While an action is latched (the `pending`
+/// argument, fed from the call's action_pending flag) the disc,
+/// its glyph and its caption paint dimmed, so the latch the
+/// click handling enforces is visible instead of silently
+/// swallowing further clicks.
+fn call_action(
     ui: &mut egui::Ui,
     icon: Icon,
     bg: egui::Color32,
-    tooltip: &str,
+    glyph: egui::Color32,
+    label: &str,
+    t: core::theme::Tokens,
     pending: bool,
 ) -> bool {
-    let (rect, response) = ui.allocate_exact_size(Vec2::splat(52.0), Sense::click());
-    let dim = |c: egui::Color32| {
-        egui::Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), (f32::from(c.a()) * 0.55) as u8)
-    };
-    let (bg, glyph) =
-        if pending { (dim(bg), dim(egui::Color32::WHITE)) } else { (bg, egui::Color32::WHITE) };
-    ui.painter().circle_filled(rect.center(), 26.0, bg);
-    icons::draw(ui.painter(), icon, rect.center(), crate::icons::SIZE_TAB, glyph, bg);
-    response.on_hover_text(tooltip).clicked()
-}
-
-/// The disabled variant (greyed, hover-only, explains itself).
-fn call_button_disabled(ui: &mut egui::Ui, t: core::theme::Tokens, icon: Icon, tooltip: &str) {
-    let (rect, response) = ui.allocate_exact_size(Vec2::splat(52.0), Sense::hover());
-    let bg = rgb(t.bg_panel_alt);
-    ui.painter().circle_filled(rect.center(), 26.0, bg);
-    icons::draw(
-        ui.painter(),
-        icon,
-        rect.center(),
-        crate::icons::SIZE_TAB,
-        rgb(t.text_secondary),
-        bg,
-    );
-    response.on_hover_text(tooltip);
+    let mut clicked = false;
+    ui.vertical_centered(|ui| {
+        // Disc, a 6 px gap, and room for the 12 px caption.
+        let (rect, response) = ui.allocate_exact_size(
+            Vec2::new(CALL_DISC + 16.0, CALL_DISC + 6.0 + 16.0),
+            Sense::click(),
+        );
+        let dim = |c: egui::Color32| {
+            egui::Color32::from_rgba_unmultiplied(
+                c.r(),
+                c.g(),
+                c.b(),
+                (f32::from(c.a()) * 0.55) as u8,
+            )
+        };
+        let (bg, glyph, label_color) = if pending {
+            (dim(bg), dim(glyph), dim(rgb(t.text_secondary)))
+        } else {
+            (bg, glyph, rgb(t.text_secondary))
+        };
+        let disc_center = egui::Pos2::new(rect.center().x, rect.top() + CALL_DISC / 2.0);
+        ui.painter().circle_filled(disc_center, CALL_DISC / 2.0, bg);
+        icons::draw(ui.painter(), icon, disc_center, crate::icons::SIZE_TAB, glyph, bg);
+        ui.painter().text(
+            egui::Pos2::new(rect.center().x, rect.top() + CALL_DISC + 6.0),
+            Align2::CENTER_TOP,
+            label,
+            egui::FontId::proportional(12.0),
+            label_color,
+        );
+        clicked = response.on_hover_text(label).clicked();
+    });
+    clicked
 }
 
 #[cfg(test)]

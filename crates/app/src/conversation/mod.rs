@@ -45,7 +45,7 @@ pub(crate) fn scroll_bottom_button_top(full_bottom: f32, stack_h: f32, size: f32
 }
 
 use crate::bubble::{message_bubble, BubbleAction, MediaCtx};
-use crate::state::App;
+use crate::state::{App, Notice};
 use crate::theme::rgb;
 use core::model::{Delivery, Message};
 use core::theme::Tokens;
@@ -576,13 +576,13 @@ impl App {
     /// crash mid-write cannot leave a truncated export behind.
     pub(crate) fn export_current_chat(&mut self) {
         if !self.feature_active("export-chat") {
-            self.notice = Some(
+            self.notice = Some(Notice::info(
                 "The Chat Export feature is off. Turn it on in Settings > Features.".to_owned(),
-            );
+            ));
             return;
         }
         if self.export_rx.is_some() {
-            self.notice = Some("An export is already in progress.".to_owned());
+            self.notice = Some(Notice::info("An export is already in progress.".to_owned()));
             return;
         }
         let chat = self.selected().clone();
@@ -602,8 +602,14 @@ impl App {
                 let _ = tx.send(result);
             });
         match spawned {
-            Ok(_) => self.export_rx = Some(rx),
-            Err(e) => self.notice = Some(format!("Export failed: {e}")),
+            Ok(_) => {
+                self.export_rx = Some(rx);
+                // The write runs on its worker; until its result
+                // lands in the poll, the export reads as in
+                // flight instead of as silence (audit S49).
+                self.notice = Some(Notice::busy("Exporting chat…".to_owned()));
+            }
+            Err(e) => self.notice = Some(Notice::error(format!("Export failed: {e}"))),
         }
     }
 }

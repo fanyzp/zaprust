@@ -90,6 +90,8 @@ WANTED = [
     ("CallMade", ["call_made"]),
     ("CallReceived", ["call_received"]),
     ("CallMissed", ["call_missed"]),
+    ("CallEnd", ["call_end"]),
+    ("VolumeUp", ["volume_up"]),
     ("LogOut", ["logout"]),
     ("Send", ["send"]),
     ("Lock", ["lock"]),

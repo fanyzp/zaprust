@@ -61,7 +61,8 @@ impl App {
             .map(|o| (o, 0))
             .collect();
         if draft.question.trim().is_empty() || options.len() < 2 {
-            self.notice = Some("A poll needs a question and at least two options.".to_owned());
+            self.notice =
+                Some(Notice::info("A poll needs a question and at least two options.".to_owned()));
             self.composer.poll_draft = Some(draft);
             return;
         }

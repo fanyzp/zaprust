@@ -28,7 +28,7 @@
 //! and only join the chat list when the user joins one, through
 //! `App::join_community_group`.
 
-use crate::state::App;
+use crate::state::{App, Notice};
 use crate::theme::rgb;
 use crate::widgets::{icon_button, paint_avatar};
 use core::model::{
@@ -571,7 +571,8 @@ impl App {
             let joined_title = other_owned.iter().find(|c| c.id == id).map(|c| c.title.clone());
             self.join_community_group(id);
             if let Some(title) = joined_title {
-                self.notice = Some(crate::i18n::tf("community.joined", "name", &title));
+                self.notice =
+                    Some(Notice::info(crate::i18n::tf("community.joined", "name", &title)));
             }
         }
         if let Some(id) = intents.open_chat {
@@ -895,7 +896,7 @@ impl App {
             return;
         }
         self.add_session_community(name.to_owned(), chat_id);
-        self.notice = Some(crate::i18n::tf("community.created_notice", "name", name));
+        self.notice = Some(Notice::info(crate::i18n::tf("community.created_notice", "name", name)));
     }
 
     /// Executes the "New community" form. Returns false when
@@ -913,7 +914,7 @@ impl App {
         self.community_create_name.clear();
         if self.live.is_some() {
             self.send_backend(backend::BackendCommand::CreateCommunity { name: name.clone() });
-            self.notice = Some(crate::i18n::tf("community.creating", "name", &name));
+            self.notice = Some(Notice::busy(crate::i18n::tf("community.creating", "name", &name)));
             return true;
         }
         // Demo: a local community at the end of the overview list.
@@ -926,7 +927,8 @@ impl App {
             .unwrap_or(0)
             + 1;
         self.add_session_community(name.clone(), announcement_chat_id);
-        self.notice = Some(crate::i18n::tf("community.created_notice", "name", &name));
+        self.notice =
+            Some(Notice::info(crate::i18n::tf("community.created_notice", "name", &name)));
         true
     }
 

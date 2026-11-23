@@ -148,6 +148,10 @@ pub(crate) struct MediaCtx {
     pub(crate) quoted_color: Option<Color32>,
     /// This view-once photo was already opened (receipt state).
     pub(crate) view_once_opened: bool,
+    /// A save-to-disk download of this message's media is in
+    /// flight: its download chip spins instead of offering the
+    /// download again.
+    pub(crate) downloading: bool,
 }
 
 /// Playback rates the speed pill cycles through, in order.
@@ -1371,14 +1375,28 @@ pub(crate) fn message_bubble(
                         rgb(dl_base)
                     };
                     painter.circle_filled(dl.center(), VOICE_DL / 2.0, fill);
-                    crate::icons::draw(
-                        painter,
-                        crate::icons::Icon::Download,
-                        dl.center(),
-                        crate::icons::SIZE_ROW,
-                        rgb(t.accent),
-                        fill,
-                    );
+                    if media.downloading {
+                        // The download is in flight: the chip
+                        // spins (the shared spinner at the voice
+                        // disc size) instead of offering the same
+                        // download again.
+                        let slot_rect = Rect::from_center_size(dl.center(), Vec2::splat(VOICE_DL));
+                        let mut slot = ui.new_child(
+                            egui::UiBuilder::new()
+                                .max_rect(slot_rect)
+                                .layout(Layout::centered_and_justified(egui::Direction::TopDown)),
+                        );
+                        crate::widgets::spinner(&mut slot, 17.0);
+                    } else {
+                        crate::icons::draw(
+                            painter,
+                            crate::icons::Icon::Download,
+                            dl.center(),
+                            crate::icons::SIZE_ROW,
+                            rgb(t.accent),
+                            fill,
+                        );
+                    }
                 }
                 if let Some(s) = snap {
                     let prect = voice_pill_rect(x, y, inner_w);
@@ -1447,14 +1465,26 @@ pub(crate) fn message_bubble(
                         rgb(t.bg_panel_alt)
                     };
                     painter.circle_filled(dl.center(), DOC_DL / 2.0, fill);
-                    crate::icons::draw(
-                        painter,
-                        crate::icons::Icon::Download,
-                        dl.center(),
-                        crate::icons::SIZE_ROW,
-                        rgb(t.accent),
-                        fill,
-                    );
+                    if media.downloading {
+                        // In flight: the shared spinner, same as
+                        // the voice chip.
+                        let slot_rect = Rect::from_center_size(dl.center(), Vec2::splat(DOC_DL));
+                        let mut slot = ui.new_child(
+                            egui::UiBuilder::new()
+                                .max_rect(slot_rect)
+                                .layout(Layout::centered_and_justified(egui::Direction::TopDown)),
+                        );
+                        crate::widgets::spinner(&mut slot, 17.0);
+                    } else {
+                        crate::icons::draw(
+                            painter,
+                            crate::icons::Icon::Download,
+                            dl.center(),
+                            crate::icons::SIZE_ROW,
+                            rgb(t.accent),
+                            fill,
+                        );
+                    }
                 }
                 if !msg.body.is_empty() {
                     let g = layout_text(ui, &msg.body, body_font.clone(), text_color, inner_w);

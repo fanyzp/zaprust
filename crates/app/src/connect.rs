@@ -7,7 +7,7 @@
 //! demo pairing code is a deterministic placeholder.
 
 use crate::icons::{draw as draw_icon, Icon};
-use crate::state::{App, PairMode, Screen};
+use crate::state::{App, Notice, PairMode, Screen};
 use crate::theme::rgb;
 use crate::widgets::paint_avatar;
 use core::theme::Tokens;
@@ -335,9 +335,15 @@ impl App {
                 } else {
                     (status_label, t.accent)
                 };
+                // Logging out is a wait too (audit S13): the
+                // line reads "Logging out..." while the backend
+                // tears the session down, and it spins like the
+                // other waits instead of sitting static.
                 let waiting = matches!(
                     session.status,
-                    crate::live::LinkStatus::Starting | crate::live::LinkStatus::WaitingQr
+                    crate::live::LinkStatus::Starting
+                        | crate::live::LinkStatus::WaitingQr
+                        | crate::live::LinkStatus::LoggingOut
                 );
                 if waiting {
                     crate::widgets::spinner(&mut slot, 14.0);
@@ -653,7 +659,7 @@ impl App {
                         self.request_pair_code();
                     }
                 } else {
-                    self.notice = Some("Enter your phone number first.".to_owned());
+                    self.notice = Some(Notice::info("Enter your phone number first.".to_owned()));
                 }
             }
         }
@@ -919,8 +925,13 @@ impl App {
         let area = root.max_rect();
         root.painter().rect_filled(area, CornerRadius::ZERO, crate::theme::modal_dim(menu_p));
         // The modal grows by one row while a linked session can
-        // be logged out.
-        let size = Vec2::new(430.0, if self.can_log_out() { 271.0 } else { 221.0 });
+        // be logged out. The width clamps to the window like
+        // every other modal: a fixed 430 px overflows a portrait
+        // window narrower than that.
+        let size = Vec2::new(
+            (area.width() - 24.0).min(430.0),
+            if self.can_log_out() { 271.0 } else { 221.0 },
+        );
         let rect = egui::Rect::from_min_size(
             Pos2::new(area.center().x - size.x / 2.0, area.top() + 96.0),
             size,

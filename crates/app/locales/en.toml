@@ -50,6 +50,8 @@
 "chats.search_hint" = "Search"
 "chats.syncing" = "Syncing chats..."
 "chats.connection_lost" = "Connection lost. Reconnecting..."
+"chats.connection_stopped" = "Connection stopped."
+"chats.account_banned" = "This account is temporarily banned."
 "chats.new_group" = "New group"
 "chats.no_match" = "No chats match this filter."
 "chats.typing" = "typing..."

@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 use core::model::{Message, MessageKind};
 
-use crate::state::{now_unix, App};
+use crate::state::{now_unix, App, Notice};
 
 /// Messages arriving from GIPHY worker threads.
 pub(crate) enum GiphyMsg {
@@ -521,11 +521,12 @@ impl App {
         if let Some(rx) = &self.export_rx {
             match rx.try_recv() {
                 Ok(Ok(path)) => {
-                    self.notice = Some(format!("Chat exported to {}", path.display()));
+                    self.notice =
+                        Some(Notice::info(format!("Chat exported to {}", path.display())));
                     self.export_rx = None;
                 }
                 Ok(Err(e)) => {
-                    self.notice = Some(format!("Export failed: {e}"));
+                    self.notice = Some(Notice::error(format!("Export failed: {e}")));
                     self.export_rx = None;
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
@@ -570,7 +571,7 @@ impl App {
                         if e.contains("401") || e.contains("403") {
                             self.picker.giphy_rejected = true;
                         }
-                        self.notice = Some(format!("GIF: {e}"));
+                        self.notice = Some(Notice::info(format!("GIF: {e}")));
                         failed = true;
                     }
                     GiphyMsg::Preview(url, bytes) => {
@@ -609,11 +610,19 @@ impl App {
                     }
                 }
             }
+            let landed = !results.is_empty() || disconnected;
             for done in results {
                 match done.result {
                     Ok(bytes) => self.complete_live_gif_send(&done.jid, &done.title, bytes),
-                    Err(e) => self.notice = Some(format!("GIF: {e}")),
+                    Err(e) => self.notice = Some(Notice::error(format!("GIF: {e}"))),
                 }
+            }
+            if landed {
+                // The fetch landed: a success leaves no notice
+                // of its own, so the Busy marker from the send's
+                // start goes with it (an error already replaced
+                // it above and is not touched).
+                self.clear_busy_notice();
             }
             if disconnected {
                 self.picker.media_fetch_rx = None;

@@ -401,12 +401,50 @@ impl App {
                             .clicked()
                         }),
                         None => tile_add(ui, t, |ui| {
-                            ui.add(
-                                egui::Button::new(RichText::new("Sticker").size(11.0))
-                                    .min_size(Vec2::new(52.0, 52.0)),
-                            )
-                            .on_hover_text(&name)
-                            .clicked()
+                            // No art yet: the tile speaks the
+                            // picker's skeleton language instead of
+                            // wearing a stock button (a pending
+                            // preview pulses like the GIF tiles, a
+                            // failed one rests static), and it
+                            // still sends on click, as before.
+                            let failed = self.picker.sticker_failures.still_failed(sticker);
+                            let (rect, resp) =
+                                ui.allocate_exact_size(Vec2::new(52.0, 52.0), egui::Sense::click());
+                            // The same pulse the GIF skeleton
+                            // tiles breathe on (a failed preview
+                            // rests at full strength instead).
+                            let now = ui.ctx().input(|i| i.time);
+                            let pulse = if failed {
+                                1.0
+                            } else {
+                                0.55 + 0.3
+                                    * f32::sin((now * crate::motion::SKELETON_PULSE_RATE) as f32)
+                            };
+                            let base = rgb(t.bg_panel_alt);
+                            ui.painter().rect_filled(
+                                rect,
+                                CornerRadius::same(8),
+                                egui::Color32::from_rgba_unmultiplied(
+                                    base.r(),
+                                    base.g(),
+                                    base.b(),
+                                    (255.0 * pulse) as u8,
+                                ),
+                            );
+                            ui.painter().rect_stroke(
+                                rect,
+                                CornerRadius::same(8),
+                                egui::Stroke::new(1.0_f32, rgb(t.border)),
+                                egui::StrokeKind::Inside,
+                            );
+                            ui.painter().text(
+                                rect.center(),
+                                egui::Align2::CENTER_CENTER,
+                                "Sticker",
+                                egui::FontId::proportional(11.0),
+                                rgb(t.text_faint),
+                            );
+                            resp.on_hover_text(&name).clicked()
                         }),
                     };
                     if clicked {
@@ -433,7 +471,7 @@ impl App {
                 let name = self.picker.sticker_new_pack.clone();
                 match stickers::create_pack(&root, &name) {
                     Ok(_) => self.picker.sticker_new_pack.clear(),
-                    Err(e) => self.notice = Some(e),
+                    Err(e) => self.notice = Some(Notice::error(e)),
                 }
             }
         });
@@ -447,10 +485,10 @@ impl App {
                     let text = self.picker.sticker_new_text.clone();
                     match stickers::add_text_sticker(&first.dir, &text) {
                         Ok(_) => self.picker.sticker_new_text.clear(),
-                        Err(e) => self.notice = Some(e),
+                        Err(e) => self.notice = Some(Notice::error(e)),
                     }
                 } else {
-                    self.notice = Some("Create a pack first.".to_owned());
+                    self.notice = Some(Notice::info("Create a pack first.".to_owned()));
                 }
             }
         });
@@ -579,20 +617,20 @@ impl App {
             return;
         }
         let Some(jid) = self.live_jid(self.selected_chat) else {
-            self.notice = Some("Open a live chat first.".to_owned());
+            self.notice = Some(Notice::info("Open a live chat first.".to_owned()));
             return;
         };
         let bytes = match std::fs::read(path) {
             Ok(b) => b,
             Err(e) => {
-                self.notice = Some(format!("Could not read the sticker file: {e}"));
+                self.notice = Some(Notice::error(format!("Could not read the sticker file: {e}")));
                 return;
             }
         };
         let webp = match sticker_webp(&bytes) {
             Ok(w) => w,
             Err(e) => {
-                self.notice = Some(format!("Sticker: {e}"));
+                self.notice = Some(Notice::error(format!("Sticker: {e}")));
                 return;
             }
         };
@@ -626,25 +664,30 @@ impl App {
             return;
         }
         let Some(jid) = self.live_jid(self.selected_chat) else {
-            self.notice = Some("Open a live chat first.".to_owned());
+            self.notice = Some(Notice::info("Open a live chat first.".to_owned()));
             return;
         };
         // One media download at a time: overwriting the slot would
         // silently drop the first GIF's result (logic review F20).
         if self.picker.media_fetch_rx.is_some() {
-            self.notice = Some("Still fetching the previous GIF.".to_owned());
+            self.notice = Some(Notice::info("Still fetching the previous GIF.".to_owned()));
             return;
         }
         let Some(mp4_url) = item.mp4_url.clone() else {
-            self.notice = Some(
+            self.notice = Some(Notice::info(
                 "This GIF has no video version, so it cannot be sent in live mode.".to_owned(),
-            );
+            ));
             return;
         };
         let title = item.title.clone();
         let (tx, rx) = std::sync::mpsc::channel();
         self.picker.media_fetch_rx = Some(rx);
         self.picker.open = false;
+        // The MP4 fetch runs on its thread and can take
+        // seconds; until it lands in the extras poll, the send
+        // reads as in flight instead of as silence. The poll
+        // clears or replaces this.
+        self.notice = Some(Notice::busy("Sending GIF…".to_owned()));
         std::thread::Builder::new()
             .name("zaprust-gif-send".to_owned())
             .spawn(move || {

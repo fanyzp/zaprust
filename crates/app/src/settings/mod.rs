@@ -19,7 +19,7 @@ mod notifications;
 mod privacy;
 mod storage;
 
-use crate::state::App;
+use crate::state::{App, Notice};
 use crate::theme::rgb;
 use crate::widgets::{
     avatar, chip, form_row, number_field, radio_row, select, switch, text_field_password,

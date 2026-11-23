@@ -6,7 +6,7 @@
 //! bodies exist only in the local ring and leave the machine
 //! solely inside an explicitly opted-in bundle.
 
-use crate::state::{App, Screen};
+use crate::state::{App, Notice, Screen};
 use backend::BackendEvent;
 use core::debug;
 use eframe::egui::{self, RichText};
@@ -498,11 +498,12 @@ impl App {
                     use std::os::unix::fs::PermissionsExt;
                     let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
                 }
-                self.notice = Some(format!("Debug bundle written to {}", path.display()));
+                self.notice =
+                    Some(Notice::info(format!("Debug bundle written to {}", path.display())));
                 self.trace_push("ui", "debug bundle exported", None);
             }
             Err(e) => {
-                self.notice = Some(format!("Bundle export failed: {e}"));
+                self.notice = Some(Notice::error(format!("Bundle export failed: {e}")));
             }
         }
     }

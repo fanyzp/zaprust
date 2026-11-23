@@ -14,7 +14,7 @@ use backend::BackendCommand;
 use core::model::{Message, MessageKind};
 use eframe::egui::{self, Align2, CornerRadius, Margin, RichText, Vec2};
 
-use crate::state::{App, UiConfirm};
+use crate::state::{App, Notice, UiConfirm};
 use crate::theme::rgb;
 
 /// The six quick reactions offered by the picker (WhatsApp's set).
@@ -605,7 +605,7 @@ impl App {
         // also hides Forward for these; this is the backstop for
         // every other entry point, and the backend refuses too.)
         if msg.is_view_once() {
-            self.notice = Some("View-once media cannot be forwarded.".to_owned());
+            self.notice = Some(Notice::info("View-once media cannot be forwarded.".to_owned()));
             return;
         }
         if self.live.is_some() {
@@ -614,7 +614,9 @@ impl App {
                 self.live_jid(target_chat),
                 self.protocol_ids.get(&msg_id).cloned(),
             ) else {
-                self.notice = Some("That message cannot be forwarded in this session.".to_owned());
+                self.notice = Some(Notice::info(
+                    "That message cannot be forwarded in this session.".to_owned(),
+                ));
                 return;
             };
             self.send_backend(backend::BackendCommand::ForwardMessage {
@@ -650,7 +652,7 @@ impl App {
             chat.messages.push(copy);
             chat.preview = msg.preview_text();
         }
-        self.notice = Some("Message forwarded.".to_owned());
+        self.notice = Some(Notice::info("Message forwarded.".to_owned()));
     }
 
     /// Stars/unstars one message: local state + archive flag +
@@ -807,7 +809,13 @@ impl App {
     /// sent: it is viewed inside the app only, never saved.
     pub(crate) fn download_media(&mut self, msg_id: u64) {
         if self.conversation.iter().find(|m| m.id == msg_id).is_some_and(|m| m.is_view_once()) {
-            self.notice = Some("View-once media cannot be saved.".to_owned());
+            self.notice = Some(Notice::info("View-once media cannot be saved.".to_owned()));
+            return;
+        }
+        if self.media.downloads.contains(&msg_id) {
+            // Already in flight: the chip on the message is
+            // spinning and the Busy notice is standing; a second
+            // command would only double the work.
             return;
         }
         if let (Some(jid), Some(pid)) =
@@ -817,9 +825,11 @@ impl App {
                 chat_jid: jid,
                 message_id: pid,
             });
-            self.notice = Some("Downloading…".to_owned());
+            self.media.downloads.insert(msg_id);
+            self.notice = Some(Notice::busy("Downloading…".to_owned()));
         } else {
-            self.notice = Some("That media is not available in this session.".to_owned());
+            self.notice =
+                Some(Notice::info("That media is not available in this session.".to_owned()));
         }
     }
 }
@@ -849,7 +859,7 @@ impl App {
                 name: name.clone(),
                 participants,
             });
-            self.notice = Some(format!("Creating group \"{name}\"…"));
+            self.notice = Some(Notice::info(format!("Creating group \"{name}\"…")));
             return true;
         }
         // Demo: a local group entry at the top of the list.
@@ -889,7 +899,7 @@ impl App {
                 messages: Vec::new(),
             },
         );
-        self.notice = Some(format!("Group \"{name}\" created (demo)."));
+        self.notice = Some(Notice::info(format!("Group \"{name}\" created (demo).")));
         true
     }
 }

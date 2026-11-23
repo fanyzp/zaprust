@@ -2,7 +2,7 @@
 //! full-report viewer, and the shared open-a-URL helper (cross-platform
 //! via the `open` crate; falls back to copying the URL + a note).
 
-use crate::state::App;
+use crate::state::{App, Notice, NoticeKind};
 use crate::theme::rgb;
 use eframe::egui::{self, CornerRadius, Margin, Pos2, RichText, Stroke, Vec2};
 
@@ -22,8 +22,9 @@ fn open_or_copy_with(
 ) {
     if opener(url).is_err() {
         ui.ctx().copy_text(url.to_owned());
-        app.notice =
-            Some("Could not open a browser, the link was copied to your clipboard.".to_owned());
+        app.notice = Some(Notice::info(
+            "Could not open a browser, the link was copied to your clipboard.".to_owned(),
+        ));
     }
 }
 
@@ -73,15 +74,17 @@ impl App {
         // A notice never paints while the crash details modal is
         // open: a toast over the dialog was the second half of the
         // owner's crash report screenshot.
-        let notice = self.notice.clone().filter(|n| {
+        let notice = self.notice.clone().filter(|_| {
             !self.crash_details_open
-                && !(on_connect && self.live_start_error.as_deref() == Some(n.as_str()))
+                && !(on_connect && self.live_start_error.as_deref() == self.notice_str())
         });
         if let Some(notice) = notice {
             // The banner fades/slides in and out like every popup
-            // (popup_phase); while an AI worker runs, a spinner
-            // rides in front of the text so a busy action reads as
-            // busy.
+            // (popup_phase). The notice's kind picks its voice: a
+            // Busy notice carries the shared spinner in front of
+            // its text so work in flight reads as busy, and an
+            // Error notice speaks in the danger token like every
+            // other failure in the app.
             let phase = crate::anim::popup_phase(root.ctx(), "notice_banner", true, self.motion);
             if let Some(banner_p) = phase {
                 // Same window-sized width as the crash banner
@@ -109,7 +112,15 @@ impl App {
                             .show(ui, |ui| {
                                 ui.set_width(size.x - 24.0);
                                 ui.horizontal(|ui| {
-                                    ui.label(RichText::new(&notice).size(12.5));
+                                    if notice.kind == NoticeKind::Busy {
+                                        crate::widgets::spinner(ui, 14.0);
+                                        ui.add_space(2.0);
+                                    }
+                                    let mut label = RichText::new(&notice.text).size(12.5);
+                                    if notice.kind == NoticeKind::Error {
+                                        label = label.color(rgb(t.danger));
+                                    }
+                                    ui.label(label);
                                     ui.with_layout(
                                         egui::Layout::right_to_left(egui::Align::Center),
                                         |ui| {
@@ -259,7 +270,11 @@ impl App {
         let exiting = !self.crash_details_open;
         let area = root.max_rect();
         root.painter().rect_filled(area, CornerRadius::ZERO, crate::theme::modal_dim(det_p));
-        let size = Vec2::new(460.0, 208.0);
+        // The modal sizes to the window like the banners do:
+        // the fixed width on wide windows, and never wider than
+        // the window minus the same 12.0 side margins, so a
+        // portrait window never clips it.
+        let size = Vec2::new((area.width() - 24.0).min(460.0), 208.0);
         let rect = egui::Rect::from_center_size(area.center(), size);
         let mut close = false;
         let mut copy = false;
@@ -413,7 +428,7 @@ mod tests {
         let out = run(&mut app, &ctx, no_browser);
         assert_eq!(copied_texts(&out), [URL], "the link lands on the clipboard instead");
         assert_eq!(
-            app.notice.as_deref(),
+            app.notice_str(),
             Some("Could not open a browser, the link was copied to your clipboard.")
         );
     }

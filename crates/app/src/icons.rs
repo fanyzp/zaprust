@@ -64,6 +64,8 @@ pub(crate) enum Icon {
     CallMade,
     CallReceived,
     CallMissed,
+    CallEnd,
+    VolumeUp,
     LogOut,
     Schedule,
     Send,
@@ -157,6 +159,8 @@ pub(crate) fn glyph(icon: Icon) -> char {
         Icon::CallMade => '\u{e0b2}',     // call_made
         Icon::CallReceived => '\u{e0b5}', // call_received
         Icon::CallMissed => '\u{e0b4}',   // call_missed
+        Icon::CallEnd => '\u{f0bc}',      // call_end
+        Icon::VolumeUp => '\u{e050}',     // volume_up
         Icon::LogOut => '\u{e9ba}',       // logout
         Icon::Schedule => '\u{efd6}',     // schedule
         Icon::Send => '\u{e163}',         // send

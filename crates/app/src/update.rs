@@ -25,7 +25,7 @@ use std::time::Duration;
 
 use core::update::{InstallKind, ReleaseInfo, UpdateError, Version};
 
-use crate::state::{now_unix, App};
+use crate::state::{now_unix, App, Notice};
 
 /// GitHub API endpoint for the newest stable release.
 fn latest_release_url() -> String {
@@ -425,11 +425,11 @@ impl App {
         match std::process::Command::new(&target).spawn() {
             Ok(_) => std::process::exit(0),
             Err(_) => {
-                self.notice = Some(
+                self.notice = Some(Notice::error(
                     "The update is installed, but the new copy could not be started. \
                      Please reopen Zaprust yourself."
                         .to_owned(),
-                );
+                ));
             }
         }
     }

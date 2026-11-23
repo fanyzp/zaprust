@@ -50,6 +50,8 @@
 "chats.search_hint" = "Cari"
 "chats.syncing" = "Menyinkronkan chat..."
 "chats.connection_lost" = "Koneksi terputus. Menyambung ulang..."
+"chats.connection_stopped" = "Koneksi terhenti."
+"chats.account_banned" = "Akun ini diblokir sementara."
 "chats.new_group" = "Grup baru"
 "chats.no_match" = "Tidak ada obrolan yang cocok dengan filter ini."
 "chats.typing" = "mengetik..."

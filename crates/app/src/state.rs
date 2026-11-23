@@ -600,6 +600,11 @@ pub(crate) struct MediaState {
     /// fetch removes the entry and lands the decoded texture in
     /// `textures` instead.
     pub(crate) photo_fetch: std::collections::HashMap<u64, PhotoFetchState>,
+    /// Media downloads (save-to-disk) in flight, per app message
+    /// ID: the message's download chip spins while its ID is in
+    /// here, and the entry leaves when the backend answers with
+    /// MediaSaved or an error.
+    pub(crate) downloads: std::collections::HashSet<u64>,
     /// The view-once photo whose real pixels were actually
     /// painted in the viewer during the current viewing. Closing
     /// the viewer spends the single view only when this names the
@@ -886,6 +891,65 @@ pub(crate) struct ComposerState {
     pub(crate) editing_id: Option<u64>,
 }
 
+/// What a transient notice is doing, so its banner speaks in
+/// the right voice (design standard section 14): an ordinary
+/// result in the plain voice, work still in flight with the
+/// shared spinner riding in front of its text, and a failure
+/// in the danger token like every other failure in the app.
+/// A notice is replaced wholesale by the next one, so an
+/// in-flight notice never outlives the result that replaces
+/// or clears it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NoticeKind {
+    Info,
+    Busy,
+    Error,
+}
+
+/// A transient user-facing notice: its text and its kind.
+/// Built through the named constructors so every assignment
+/// site declares which voice it means.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Notice {
+    pub text: String,
+    pub kind: NoticeKind,
+}
+
+impl Notice {
+    pub(crate) fn info(text: impl Into<String>) -> Self {
+        Self { text: text.into(), kind: NoticeKind::Info }
+    }
+
+    pub(crate) fn busy(text: impl Into<String>) -> Self {
+        Self { text: text.into(), kind: NoticeKind::Busy }
+    }
+
+    pub(crate) fn error(text: impl Into<String>) -> Self {
+        Self { text: text.into(), kind: NoticeKind::Error }
+    }
+}
+
+impl App {
+    /// The standing notice's text, if any: the read the banner's
+    /// duplicate suppression and the tests need, without
+    /// threading the kind through call sites that only care
+    /// what the notice says.
+    pub(crate) fn notice_str(&self) -> Option<&str> {
+        self.notice.as_ref().map(|n| n.text.as_str())
+    }
+
+    /// Clears the standing notice when it is a Busy one: the
+    /// in-flight marker an async start left behind, whose
+    /// completion has now landed without a result notice of
+    /// its own. A standing Info or Error notice is a result
+    /// and is never cleared by this.
+    pub(crate) fn clear_busy_notice(&mut self) {
+        if self.notice.as_ref().is_some_and(|n| n.kind == NoticeKind::Busy) {
+            self.notice = None;
+        }
+    }
+}
+
 pub(crate) struct App {
     pub(crate) screen: Screen,
     pub(crate) theme_choice: ThemeId,
@@ -1049,7 +1113,7 @@ pub(crate) struct App {
     pub(crate) logged_out: bool,
     /// Transient user-facing notice (backend errors, feature
     /// crashes, export results). Shown as a dismissible banner.
-    pub(crate) notice: Option<String>,
+    pub(crate) notice: Option<Notice>,
     /// A crash report from a previous run that the user has not
     /// dismissed yet (crash-safety flow).
     pub(crate) crash_report: Option<core::crash::CrashReport>,
@@ -1623,6 +1687,7 @@ impl App {
                 opened_view_once: std::collections::HashSet::new(),
                 viewing_photo: if args.open_viewonce { Some(112) } else { None },
                 photo_fetch: std::collections::HashMap::new(),
+                downloads: std::collections::HashSet::new(),
                 view_once_shown: None,
                 voice_player: None,
                 voice_fetch: std::collections::HashMap::new(),
@@ -2068,10 +2133,10 @@ impl App {
             Some(value)
         } else {
             self.feature_flags.insert(feature_id.to_owned(), false);
-            self.notice = Some(format!(
+            self.notice = Some(Notice::error(format!(
                 "The {feature_id} feature crashed and was switched off. \
                  The rest of Zaprust is unaffected."
-            ));
+            )));
             None
         }
     }
@@ -2290,10 +2355,31 @@ mod tests {
         let result: Option<()> = app.guard_feature(id, |_| panic!("feature blew up"));
         assert!(result.is_none(), "no value crosses a caught panic");
         assert!(!app.feature_flags.get(id).copied().unwrap_or(true));
-        let notice = app.notice.clone().unwrap_or_default();
+        let notice = app.notice_str().unwrap_or_default().to_owned();
         assert!(notice.contains("switched off"), "notice explains: {notice}");
         // An unrelated switch is untouched by the guard.
         assert!(!app.feature_flags.get("stickers").copied().unwrap_or(true));
+    }
+
+    /// Perfection round: notices are typed, and the Busy marker
+    /// an async start leaves behind is cleared by its completion
+    /// only while it is still the Busy marker: a result notice
+    /// (Info or Error) standing in its place is never cleared.
+    #[test]
+    fn clear_busy_notice_only_clears_busy() {
+        let ctx = egui::Context::default();
+        let mut args = Args::parse();
+        args.live = false;
+        let mut app = App::new(args, &ctx);
+        app.notice = Some(Notice::busy("Sending…"));
+        app.clear_busy_notice();
+        assert!(app.notice.is_none(), "the Busy marker goes with its work");
+        app.notice = Some(Notice::error("Export failed: disk full"));
+        app.clear_busy_notice();
+        assert_eq!(app.notice_str(), Some("Export failed: disk full"));
+        app.notice = Some(Notice::info("Saved to /tmp/x.pdf"));
+        app.clear_busy_notice();
+        assert_eq!(app.notice_str(), Some("Saved to /tmp/x.pdf"));
     }
 
     /// Drives real frames through the same draw dispatch the
@@ -2633,11 +2719,11 @@ mod tests {
         let before = count(&app);
 
         app.do_forward(9001, target);
-        assert_eq!(app.notice.as_deref(), Some("View-once media cannot be forwarded."));
+        assert_eq!(app.notice_str(), Some("View-once media cannot be forwarded."));
         assert_eq!(count(&app), before, "view-once media must not land in the target chat");
 
         app.do_forward(9002, target);
-        assert_eq!(app.notice.as_deref(), Some("Message forwarded."));
+        assert_eq!(app.notice_str(), Some("Message forwarded."));
         assert_eq!(count(&app), before + 1, "ordinary media still forwards");
     }
 
@@ -2647,13 +2733,13 @@ mod tests {
         app.conversation = vec![media_msg(9001, true), media_msg(9002, false)];
 
         app.download_media(9001);
-        assert_eq!(app.notice.as_deref(), Some("View-once media cannot be saved."));
+        assert_eq!(app.notice_str(), Some("View-once media cannot be saved."));
 
         // Demo mode has no live session, so ordinary media reaches
         // the usual path and earns the session notice there: the
         // view-once guard must not be what stops it.
         app.download_media(9002);
-        assert_eq!(app.notice.as_deref(), Some("That media is not available in this session."));
+        assert_eq!(app.notice_str(), Some("That media is not available in this session."));
     }
 
     #[test]

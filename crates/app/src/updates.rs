@@ -18,7 +18,7 @@
 //! conversation placeholder in the right pane. In single-pane
 //! modes (portrait included) the same content fills the screen.
 
-use crate::state::App;
+use crate::state::{App, Notice};
 use crate::theme::rgb;
 use eframe::egui::{self, Align2, CornerRadius, FontId, Margin, Pos2, RichText, Sense, Vec2};
 
@@ -207,7 +207,7 @@ impl App {
         self.updates.composer_open = false;
         self.updates.draft.clear();
         self.updates.error = None;
-        self.notice = Some(crate::i18n::t("updates.posted"));
+        self.notice = Some(Notice::info(crate::i18n::t("updates.posted")));
     }
 
     /// A live status post failed (the backend's
@@ -403,7 +403,7 @@ mod tests {
         assert_eq!(app.updates.my_status.as_deref(), Some("Out for a walk"));
         assert!(!app.updates.composer_open, "a landed post closes the composer");
         assert!(app.updates.draft.is_empty(), "the draft is spent");
-        assert_eq!(app.notice.as_deref(), Some(crate::i18n::t("updates.posted").as_str()));
+        assert_eq!(app.notice_str(), Some(crate::i18n::t("updates.posted").as_str()));
         // The posted state survives leaving the screen and
         // coming back: it is session state, not screen state.
         app.screen = Screen::Chats;

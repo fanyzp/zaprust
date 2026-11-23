@@ -9,12 +9,11 @@ impl App {
         // My selection before this vote, captured before any
         // apply moves it: a PollVoteFailed re-applies it as my
         // ballot and the tally recomputes back.
-        let previous_votes = self.conversation.iter().find(|m| m.id == msg_id).and_then(|m| {
-            match &m.kind {
+        let previous_votes =
+            self.conversation.iter().find(|m| m.id == msg_id).and_then(|m| match &m.kind {
                 MessageKind::Poll { my_votes, .. } => Some(my_votes.clone()),
                 _ => None,
-            }
-        });
+            });
         let mut new_options: Vec<usize> = Vec::new();
         if let Some(msg) = self.conversation.iter_mut().find(|m| m.id == msg_id) {
             if let MessageKind::Poll { options, multiple, my_votes, .. } = &mut msg.kind {

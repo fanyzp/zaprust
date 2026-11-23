@@ -161,11 +161,8 @@ impl App {
         }
         // The pre-edit state, captured before the local apply:
         // an EditMessageFailed restores it verbatim.
-        let previous = self
-            .conversation
-            .iter()
-            .find(|m| m.id == msg_id)
-            .map(|m| (m.body.clone(), m.edited));
+        let previous =
+            self.conversation.iter().find(|m| m.id == msg_id).map(|m| (m.body.clone(), m.edited));
         for msg in &mut self.conversation {
             if msg.id == msg_id {
                 msg.body = new_body.to_owned();

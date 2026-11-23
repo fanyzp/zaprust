@@ -1047,8 +1047,7 @@ pub(super) fn structured_text(msg: &whatsapp_rust::prelude::wa::Message) -> Opti
         }
     }
     if let Some(reply) = base.list_response_message.as_option() {
-        if let Some(text) =
-            clean(reply.title.clone()).or_else(|| clean(reply.description.clone()))
+        if let Some(text) = clean(reply.title.clone()).or_else(|| clean(reply.description.clone()))
         {
             return Some(text);
         }
@@ -2767,10 +2766,7 @@ mod live_pairing_fix_tests {
             lid_to_pn: std::collections::HashMap::new(),
             pn_to_lid: std::collections::HashMap::new(),
         };
-        book.saved.insert(
-            "6281234567890@s.whatsapp.net".to_owned(),
-            "Saved Sarah".to_owned(),
-        );
+        book.saved.insert("6281234567890@s.whatsapp.net".to_owned(), "Saved Sarah".to_owned());
         let mut info = wa::WebMessageInfo::default();
         let mut key = wa::MessageKey::default();
         key.id = Some("h1".to_owned());
@@ -2783,13 +2779,9 @@ mod live_pairing_fix_tests {
         inner.conversation = Some("hello".to_owned());
         info.message = MessageField::some(inner);
         let mut resolved = Vec::new();
-        let msg = super::history_message(
-            "6281234567890@s.whatsapp.net",
-            &info,
-            &book,
-            &mut resolved,
-        )
-        .expect("the message translates");
+        let msg =
+            super::history_message("6281234567890@s.whatsapp.net", &info, &book, &mut resolved)
+                .expect("the message translates");
         assert_eq!(msg.sender.as_deref(), Some("Saved Sarah"));
     }
 }

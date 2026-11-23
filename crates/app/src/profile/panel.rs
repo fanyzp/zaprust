@@ -1208,12 +1208,14 @@ impl App {
         };
         let subject = self.group_subject_edit.trim().to_owned();
         let description = self.group_desc_edit.trim().to_owned();
-        let previous_title =
-            self.chats.iter().find(|c| c.id == chat_id).map(|c| c.title.clone()).unwrap_or_default();
+        let previous_title = self
+            .chats
+            .iter()
+            .find(|c| c.id == chat_id)
+            .map(|c| c.title.clone())
+            .unwrap_or_default();
         let new_subject = if subject.is_empty() { None } else { Some(subject) };
-        self.pending_group_info
-            .entry(chat_id)
-            .or_insert((previous_title, new_subject.clone()));
+        self.pending_group_info.entry(chat_id).or_insert((previous_title, new_subject.clone()));
         self.send_backend(backend::BackendCommand::SetGroupInfo {
             chat_jid: jid,
             subject: new_subject,
@@ -1280,8 +1282,7 @@ impl App {
     /// the account is still a member.
     pub(crate) fn leave_group(&mut self, chat_id: u64) {
         if let Some(jid) = self.live_jid(chat_id) {
-            let previous =
-                self.chats.iter().find(|c| c.id == chat_id).is_some_and(|c| c.archived);
+            let previous = self.chats.iter().find(|c| c.id == chat_id).is_some_and(|c| c.archived);
             self.pending_leave.entry(chat_id).or_insert(previous);
             self.send_backend(backend::BackendCommand::LeaveGroup { chat_jid: jid });
         }
@@ -1329,9 +1330,7 @@ impl App {
             .live
             .as_ref()
             .and_then(|s| s.messages.get(&chat_id))
-            .and_then(|msgs| {
-                msgs.iter().rev().find(|(_, m)| m.sender.is_some()).map(|(_, m)| m.id)
-            })
+            .and_then(|msgs| msgs.iter().rev().find(|(_, m)| m.sender.is_some()).map(|(_, m)| m.id))
             .filter(|id| self.protocol_ids.contains_key(id));
         let Some(msg_id) = candidate else {
             self.notice = Some(Notice::error(crate::i18n::t("notice.report_unavailable")));
@@ -1343,11 +1342,7 @@ impl App {
             .find(|c| c.id == chat_id)
             .map(|c| c.title.clone())
             .unwrap_or_else(|| "this contact".to_owned());
-        self.ui_confirm = Some(crate::state::UiConfirm::ReportSpam {
-            chat_id,
-            msg_id,
-            name,
-        });
+        self.ui_confirm = Some(crate::state::UiConfirm::ReportSpam { chat_id, msg_id, name });
     }
 
     /// Blocks/unblocks a DM contact: local state plus the backend

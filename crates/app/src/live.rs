@@ -3562,8 +3562,7 @@ impl crate::state::App {
     /// someone else's pin, so no pending entry is involved.
     fn apply_server_pin_changed(&mut self, chat_jid: &str, protocol_id: &str, pinned: bool) {
         let chat_id = jid_id(chat_jid);
-        let Some((&msg_id, _)) =
-            self.protocol_ids.iter().find(|(_, p)| p.as_str() == protocol_id)
+        let Some((&msg_id, _)) = self.protocol_ids.iter().find(|(_, p)| p.as_str() == protocol_id)
         else {
             return;
         };
@@ -5981,12 +5980,8 @@ impl crate::state::App {
         // same group while the first is unsettled rolls back to
         // the state before both, the last server-known state.
         if self.live.is_some() {
-            let snap = (
-                was_archived,
-                was_pinned,
-                was_muted,
-                i64::try_from(was_mute_until).unwrap_or(0),
-            );
+            let snap =
+                (was_archived, was_pinned, was_muted, i64::try_from(was_mute_until).unwrap_or(0));
             if archived != was_archived {
                 self.pending_chat_actions.entry((chat_id, "archive")).or_insert(snap);
             }
@@ -6153,12 +6148,8 @@ impl crate::state::App {
         // taken before the mirror moves (see apply_chat_action).
         if self.live.is_some() {
             if let Some(c) = self.chats.iter().find(|c| c.id == chat_id) {
-                let snap = (
-                    c.archived,
-                    c.pinned,
-                    c.muted,
-                    i64::try_from(c.mute_until).unwrap_or(0),
-                );
+                let snap =
+                    (c.archived, c.pinned, c.muted, i64::try_from(c.mute_until).unwrap_or(0));
                 self.pending_chat_actions.entry((chat_id, "mute")).or_insert(snap);
             }
         }
@@ -12180,14 +12171,8 @@ mod star_pin_tests {
     }
 
     fn alice_dm_message() -> LiveMessage {
-        let mut msg = LiveMessage::text(
-            "d1",
-            DM_JID,
-            Some("Partner".to_owned()),
-            "hi",
-            1_700_000_000,
-            false,
-        );
+        let mut msg =
+            LiveMessage::text("d1", DM_JID, Some("Partner".to_owned()), "hi", 1_700_000_000, false);
         msg.sender_jid = Some(DM_JID.to_owned());
         msg
     }
@@ -12582,8 +12567,11 @@ mod star_pin_tests {
             app.conversation.iter().any(|m| m.id == mid2),
             "nothing is cleared before the server answers"
         );
-        tx.send(BackendEvent::ChatCleared { chat_jid: GROUP_JID.to_owned(), delete_starred: false })
-            .unwrap();
+        tx.send(BackendEvent::ChatCleared {
+            chat_jid: GROUP_JID.to_owned(),
+            delete_starred: false,
+        })
+        .unwrap();
         drain_all(&mut app, &ctx);
         assert!(app.conversation.iter().any(|m| m.id == mid), "the starred message stays");
         assert!(app.conversation.iter().all(|m| m.id != mid2), "the rest is cleared");
@@ -12606,11 +12594,11 @@ mod star_pin_tests {
         .unwrap();
         drain_all(&mut app, &ctx);
         assert!(app.conversation.iter().any(|m| m.id == mid), "the message survives");
+        assert!(archived_has(&app, GROUP_JID, "g1"), "the archive row survives");
         assert!(
-            archived_has(&app, GROUP_JID, "g1"),
-            "the archive row survives"
+            notice_kind(&app) == Some(crate::state::NoticeKind::Error),
+            "the failure is announced"
         );
-        assert!(notice_kind(&app) == Some(crate::state::NoticeKind::Error), "the failure is announced");
         assert!(app.pending_clears.is_empty(), "the wait is settled");
     }
 
@@ -12656,7 +12644,10 @@ mod star_pin_tests {
         drain_all(&mut app, &ctx);
         assert!(app.chats.iter().any(|c| c.id == chat_id), "the chat stays");
         assert!(archived_has(&app, GROUP_JID, "g1"), "its messages stay");
-        assert!(notice_kind(&app) == Some(crate::state::NoticeKind::Error), "the failure is announced");
+        assert!(
+            notice_kind(&app) == Some(crate::state::NoticeKind::Error),
+            "the failure is announced"
+        );
     }
 
     /// Section 24: a failed timed mute restores the exact
@@ -12684,8 +12675,12 @@ mod star_pin_tests {
         // unmute fails keeps its end.
         app.apply_mute_for(chat_id, MuteChoice::Hours8);
         let until = app.chats.iter().find(|c| c.id == chat_id).unwrap().mute_until;
-        tx.send(BackendEvent::MuteChanged { chat_jid: GROUP_JID.to_owned(), muted: true, mute_until: i64::try_from(until).unwrap_or(0) })
-            .unwrap();
+        tx.send(BackendEvent::MuteChanged {
+            chat_jid: GROUP_JID.to_owned(),
+            muted: true,
+            mute_until: i64::try_from(until).unwrap_or(0),
+        })
+        .unwrap();
         drain_all(&mut app, &ctx);
         assert!(app.pending_chat_actions.is_empty(), "the report settles the mute");
         app.apply_chat_action(chat_id, false, false, false);
@@ -12697,7 +12692,10 @@ mod star_pin_tests {
         .unwrap();
         drain_all(&mut app, &ctx);
         let chat = app.chats.iter().find(|c| c.id == chat_id).unwrap();
-        assert!(chat.muted && chat.mute_until == until, "the failed unmute restores the timed mute");
+        assert!(
+            chat.muted && chat.mute_until == until,
+            "the failed unmute restores the timed mute"
+        );
     }
 
     /// Section 24: mark-as-unread rolls the badge back when
@@ -12849,10 +12847,7 @@ mod star_pin_tests {
         let mid = open_message(&mut app, &tx, &ctx, mine);
         let original = app.conversation.iter().find(|m| m.id == mid).unwrap().body.clone();
         app.apply_edit(mid, "a corrected body");
-        assert_eq!(
-            app.conversation.iter().find(|m| m.id == mid).unwrap().body,
-            "a corrected body"
-        );
+        assert_eq!(app.conversation.iter().find(|m| m.id == mid).unwrap().body, "a corrected body");
         tx.send(BackendEvent::EditMessageFailed {
             chat_jid: GROUP_JID.to_owned(),
             message_id: "g1".to_owned(),
@@ -12915,16 +12910,11 @@ mod star_pin_tests {
             correct: None,
         };
         let mid = open_message(&mut app, &tx, &ctx, poll);
-        let my_votes = |app: &App| match &app
-            .conversation
-            .iter()
-            .find(|m| m.id == mid)
-            .unwrap()
-            .kind
-        {
-            MessageKind::Poll { ref my_votes, .. } => my_votes.clone(),
-            _ => panic!("not a poll"),
-        };
+        let my_votes =
+            |app: &App| match &app.conversation.iter().find(|m| m.id == mid).unwrap().kind {
+                MessageKind::Poll { ref my_votes, .. } => my_votes.clone(),
+                _ => panic!("not a poll"),
+            };
         app.vote_poll(mid, 1);
         assert_eq!(my_votes(&app), vec![1], "the vote applies at once");
         tx.send(BackendEvent::PollVoteFailed {
@@ -13064,7 +13054,10 @@ mod star_pin_tests {
         let _ = open_message(&mut app2, &tx2, &ctx2, mine);
         app2.report_chat(chat_id);
         assert!(app2.ui_confirm.is_none(), "no confirmation opens");
-        assert!(notice_kind(&app2) == Some(crate::state::NoticeKind::Error), "the refusal is spoken");
+        assert!(
+            notice_kind(&app2) == Some(crate::state::NoticeKind::Error),
+            "the refusal is spoken"
+        );
     }
 
     /// A received voice note renders the waveform its payload

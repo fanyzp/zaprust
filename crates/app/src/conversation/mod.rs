@@ -155,36 +155,34 @@ impl App {
                         // It reports the click instead of writing
                         // `action` itself: two closures may not
                         // hold the same mutable capture.
-                        let row_danger = |ui: &mut egui::Ui,
-                                          icon: crate::icons::Icon,
-                                          label: &str|
-                         -> bool {
-                            let (rect, resp) =
-                                ui.allocate_exact_size(Vec2::new(204.0, 32.0), Sense::click());
-                            if resp.hovered() {
-                                ui.painter().rect_filled(
-                                    rect,
-                                    CornerRadius::same(8),
-                                    rgb(t.bg_panel_alt),
+                        let row_danger =
+                            |ui: &mut egui::Ui, icon: crate::icons::Icon, label: &str| -> bool {
+                                let (rect, resp) =
+                                    ui.allocate_exact_size(Vec2::new(204.0, 32.0), Sense::click());
+                                if resp.hovered() {
+                                    ui.painter().rect_filled(
+                                        rect,
+                                        CornerRadius::same(8),
+                                        rgb(t.bg_panel_alt),
+                                    );
+                                }
+                                crate::icons::draw(
+                                    ui.painter(),
+                                    icon,
+                                    Pos2::new(rect.left() + 17.0, rect.center().y),
+                                    crate::icons::SIZE_ROW,
+                                    rgb(t.danger),
+                                    rgb(t.bg_panel),
                                 );
-                            }
-                            crate::icons::draw(
-                                ui.painter(),
-                                icon,
-                                Pos2::new(rect.left() + 17.0, rect.center().y),
-                                crate::icons::SIZE_ROW,
-                                rgb(t.danger),
-                                rgb(t.bg_panel),
-                            );
-                            ui.painter().text(
-                                Pos2::new(rect.left() + 38.0, rect.center().y),
-                                egui::Align2::LEFT_CENTER,
-                                label,
-                                FontId::proportional(13.0),
-                                rgb(t.danger),
-                            );
-                            resp.clicked() && !exiting
-                        };
+                                ui.painter().text(
+                                    Pos2::new(rect.left() + 38.0, rect.center().y),
+                                    egui::Align2::LEFT_CENTER,
+                                    label,
+                                    FontId::proportional(13.0),
+                                    rgb(t.danger),
+                                );
+                                resp.clicked() && !exiting
+                            };
                         row(
                             ui,
                             crate::icons::Icon::Person,

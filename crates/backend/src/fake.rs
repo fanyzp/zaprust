@@ -117,12 +117,7 @@ impl FakeBackend {
     /// linked script lands.
     #[must_use]
     pub fn demo() -> Self {
-        Self {
-            auto_connect: true,
-            command_log: None,
-            demo_script: true,
-            fail_next: env_failures(),
-        }
+        Self { auto_connect: true, command_log: None, demo_script: true, fail_next: env_failures() }
     }
 }
 
@@ -2730,8 +2725,7 @@ mod tests {
             message_timestamp: None,
         };
         ch.commands.send(delete.clone()).unwrap();
-        let failed =
-            collect_until(&ch, &|e| matches!(e, BackendEvent::DeleteForMeFailed { .. }));
+        let failed = collect_until(&ch, &|e| matches!(e, BackendEvent::DeleteForMeFailed { .. }));
         assert!(
             failed.iter().all(|e| !matches!(e, BackendEvent::MessageDeletedForMe { .. })),
             "a failed delete removes nothing: {failed:?}"

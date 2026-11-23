@@ -1107,9 +1107,7 @@ pub(super) async fn run_async(
                                 }),
                                 Err(e) => events.emit(BackendEvent::DisappearingTimerFailed {
                                     chat_jid: chat_jid.clone(),
-                                    message: format!(
-                                        "Changing disappearing messages failed: {e}"
-                                    ),
+                                    message: format!("Changing disappearing messages failed: {e}"),
                                 }),
                             }
                         }
@@ -1220,14 +1218,16 @@ pub(super) async fn run_async(
                                 }
                             }
                         }
-                        (None, _) => fail("This poll cannot be voted on from Zaprust: its \
+                        (None, _) => fail(
+                            "This poll cannot be voted on from Zaprust: its \
                                           creation secret is not available. The secret \
                                           travels with the poll when it is created or \
                                           received, and Zaprust keeps it with the archived \
                                           poll; this poll's secret never reached this \
                                           device, so the poll predates the archive or the \
                                           sender's client did not include it."
-                            .to_owned()),
+                                .to_owned(),
+                        ),
                         (_, Err(e)) => {
                             fail(format!("Invalid chat address: {e}"));
                         }
@@ -1979,15 +1979,13 @@ pub(super) async fn run_async(
                                         if let Err(e) =
                                             client.groups().set_subject(jid.clone(), subject).await
                                         {
-                                            failure = Some(format!(
-                                                "Renaming the group failed: {e}"
-                                            ));
+                                            failure =
+                                                Some(format!("Renaming the group failed: {e}"));
                                         }
                                     }
                                     Err(e) => {
-                                        failure = Some(format!(
-                                            "That group name is not allowed: {e}"
-                                        ));
+                                        failure =
+                                            Some(format!("That group name is not allowed: {e}"));
                                     }
                                 }
                             }
@@ -2037,9 +2035,9 @@ pub(super) async fn run_async(
                             chat_jid: chat_jid.clone(),
                             message,
                         }),
-                        None => events.emit(BackendEvent::GroupInfoSaved {
-                            chat_jid: chat_jid.clone(),
-                        }),
+                        None => {
+                            events.emit(BackendEvent::GroupInfoSaved { chat_jid: chat_jid.clone() })
+                        }
                     }
                 }
                 BackendCommand::FetchGroupMembers { chat_jid } => match chat_jid.parse::<Jid>() {

@@ -145,8 +145,33 @@ pub(crate) fn paint_photo_avatar(
     painter.add(egui::Shape::mesh(mesh));
 }
 
-/// A colored disc with the contact's initials (first letters of the
-/// first two name words), the no-photo avatar Telegram uses.
+/// The initials a display title yields (first letters of the
+/// first two name words), or None when the title is an
+/// identifier rather than a name: a raw number or a formatted
+/// phone number has no initials, and painting its first
+/// character (a digit, or the "+" of the international form)
+/// as if it were a name initial mislabels who this is.
+pub(crate) fn initials_of(name: &str) -> Option<String> {
+    if crate::live::is_raw_identifier(name) || crate::live::is_formatted_phone(name) {
+        return None;
+    }
+    let initials: String = name
+        .split_whitespace()
+        .take(2)
+        .filter_map(|w| w.chars().next())
+        .collect::<String>()
+        .to_uppercase();
+    if initials.is_empty() {
+        None
+    } else {
+        Some(initials)
+    }
+}
+
+/// A colored disc with the contact's initials, the no-photo
+/// avatar Telegram uses. A title that is an identifier rather
+/// than a name paints the generic person glyph instead: the
+/// neutral silhouette WhatsApp uses for unnamed contacts.
 pub(crate) fn paint_initials_avatar(
     painter: &egui::Painter,
     center: Pos2,
@@ -154,22 +179,18 @@ pub(crate) fn paint_initials_avatar(
     name: &str,
     seed: u8,
 ) {
+    let Some(initials) = initials_of(name) else {
+        paint_avatar(painter, center, radius, false, seed);
+        return;
+    };
     painter.circle_filled(center, radius, avatar_color(seed));
-    let initials: String = name
-        .split_whitespace()
-        .take(2)
-        .filter_map(|w| w.chars().next())
-        .collect::<String>()
-        .to_uppercase();
-    if !initials.is_empty() {
-        painter.text(
-            center,
-            egui::Align2::CENTER_CENTER,
-            initials,
-            crate::theme::semibold(radius * 0.82),
-            Color32::from_rgba_unmultiplied(255, 255, 255, 242),
-        );
-    }
+    painter.text(
+        center,
+        egui::Align2::CENTER_CENTER,
+        initials,
+        crate::theme::semibold(radius * 0.82),
+        Color32::from_rgba_unmultiplied(255, 255, 255, 242),
+    );
 }
 
 /// The verified badge: a scalloped disc in the theme's success
@@ -246,4 +267,23 @@ pub(crate) fn sender_color(name: &str, t: Tokens) -> Color32 {
     let palette = sender_palette(t);
     let hash: usize = name.bytes().map(usize::from).sum();
     rgb(palette[hash % palette.len()])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::initials_of;
+
+    /// A name title yields its initials; an identifier title
+    /// (a raw number, a LID, a formatted phone number) yields
+    /// none, so the painter falls back to the generic person
+    /// glyph instead of painting a digit or a "+" as an initial.
+    #[test]
+    fn identifier_titles_have_no_initials() {
+        assert_eq!(initials_of("Sari Wulandari"), Some("SW".to_owned()));
+        assert_eq!(initials_of("Bima"), Some("B".to_owned()));
+        assert_eq!(initials_of("+6282156420238"), None);
+        assert_eq!(initials_of("6282156420238"), None);
+        assert_eq!(initials_of("213898716303498"), None);
+        assert_eq!(initials_of(""), None);
+    }
 }

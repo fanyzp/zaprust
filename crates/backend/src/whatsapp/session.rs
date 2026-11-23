@@ -206,6 +206,7 @@ fn heal_unresolved_titles(
     sink: crate::EventSink,
     unresolved: Vec<(String, crate::LiveChatKind)>,
     attempts: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+    identities: std::sync::Arc<std::sync::Mutex<super::translate::IdentityBook>>,
 ) {
     let fresh: Vec<(String, crate::LiveChatKind)> = {
         let mut guard = attempts.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -216,7 +217,7 @@ fn heal_unresolved_titles(
     }
     tokio::spawn(async move {
         for (jid, kind) in fresh {
-            heal_one(&client, &sink, &jid, kind).await;
+            heal_one(&client, &sink, &jid, kind, &identities).await;
         }
     });
 }
@@ -230,6 +231,7 @@ async fn heal_one(
     sink: &crate::EventSink,
     jid: &str,
     kind: crate::LiveChatKind,
+    identities: &std::sync::Mutex<super::translate::IdentityBook>,
 ) -> bool {
     match kind {
         crate::LiveChatKind::Group => {
@@ -260,6 +262,23 @@ async fn heal_one(
             renamed
         }
         crate::LiveChatKind::Dm => {
+            // A name the session already learned (a saved
+            // contact name from a payload's inline contacts or a
+            // contact update, or a push name) outranks the
+            // number: the heal exists to bring exactly that name
+            // to a chat the payloads titled by number alone.
+            let known_name = {
+                let book = identities.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                book.name_for(jid).filter(|name| !super::translate::is_raw_identifier(name))
+            };
+            if let Some(name) = known_name {
+                sink.emit(BackendEvent::ChatRenamed {
+                    chat_jid: jid.to_owned(),
+                    title: name,
+                    authoritative: false,
+                });
+                return true;
+            }
             if jid.ends_with("@s.whatsapp.net") {
                 // The title is the phone number itself; the
                 // formatted form is the improvement the
@@ -333,6 +352,7 @@ fn heal_titles_with_retry(
     client: std::sync::Arc<whatsapp_rust::Client>,
     sink: crate::EventSink,
     jids: Vec<String>,
+    identities: std::sync::Arc<std::sync::Mutex<super::translate::IdentityBook>>,
 ) {
     if jids.is_empty() {
         return;
@@ -349,7 +369,7 @@ fn heal_titles_with_retry(
                     let pause = if attempt == 1 { 3 } else { 8 };
                     tokio::time::sleep(std::time::Duration::from_secs(pause)).await;
                 }
-                if heal_one(&client, &sink, &jid, kind).await {
+                if heal_one(&client, &sink, &jid, kind, &identities).await {
                     break;
                 }
             }
@@ -565,6 +585,7 @@ pub(super) async fn run_async(
         std::sync::Arc::new(std::sync::Mutex::new(super::translate::IdentityBook::default()));
     let identities_events = identities.clone();
     let identities_msg = identities.clone();
+    let identities_commands = identities.clone();
     // (sender JID, name) pairs already broadcast as SenderNamed
     // from the live path, so a name learned mid-session is
     // announced once, not on every message its sender sends.
@@ -849,6 +870,7 @@ pub(super) async fn run_async(
                             sink.clone(),
                             vec![(chat.jid.clone(), chat.kind)],
                             heal_attempts.clone(),
+                            identities_msg.clone(),
                         );
                     }
                 }
@@ -923,6 +945,7 @@ pub(super) async fn run_async(
                         sink.clone(),
                         unresolved,
                         heal_attempts.clone(),
+                        identities.clone(),
                     );
                 }
             }
@@ -2815,7 +2838,12 @@ pub(super) async fn run_async(
                     });
                 }
                 BackendCommand::ResolveTitles { jids } => {
-                    heal_titles_with_retry(client.clone(), events.clone(), jids);
+                    heal_titles_with_retry(
+                        client.clone(),
+                        events.clone(),
+                        jids,
+                        identities_commands.clone(),
+                    );
                 }
                 BackendCommand::FetchOlderMessages {
                     chat_jid,

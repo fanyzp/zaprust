@@ -80,6 +80,7 @@ fn parse(text: &str) -> Vec<(String, Style)> {
 /// line-based (a fenced code block opens and closes on its own
 /// line, a list item starts its line), so the job builder
 /// classifies each line before the inline parser sees it.
+#[derive(Debug, PartialEq, Eq)]
 enum BlockLine<'a> {
     /// A normal line: inline formatting applies.
     Text(&'a str),
@@ -490,8 +491,12 @@ mod tests {
         assert_eq!(parts[0].1, Style::default());
     }
 
+    fn section_text(job: &eframe::egui::text::LayoutJob, section: &eframe::egui::text::LayoutSection) -> String {
+        job.text[section.byte_range.start.0..section.byte_range.end.0].to_string()
+    }
+
     fn job_text(job: &eframe::egui::text::LayoutJob) -> String {
-        job.sections.iter().map(|section| job.text[section.byte_range.clone()].to_string()).collect()
+        job.sections.iter().map(|section| section_text(job, section)).collect()
     }
 
     #[test]
@@ -522,7 +527,7 @@ mod tests {
         let code = job
             .sections
             .iter()
-            .find(|s| job.text[s.byte_range.clone()] == *"let x = -1;")
+            .find(|s| section_text(&job, s) == "let x = -1;")
             .expect("code section");
         assert_eq!(code.format.font_id.family, FontFamily::Monospace);
         assert_eq!(code.format.background, Color32::from_gray(40));
@@ -530,16 +535,16 @@ mod tests {
         let fresh = job
             .sections
             .iter()
-            .find(|s| job.text[s.byte_range.clone()] == *"fresh")
+            .find(|s| section_text(&job, s) == "fresh")
             .expect("bold section");
         assert_eq!(fresh.format.font_id.family, FontFamily::Name("bold".into()));
     }
 
     #[test]
     fn job_fence_at_the_edges_leaves_no_blank_rows() {
-        let job = job("```\ncode\n```", 14.0, Color32::WHITE, Color32::from_gray(40), Color32::LIGHT_BLUE, None);
-        assert_eq!(job_text(&job), "code");
-        let job = job("plain\ntext", 14.0, Color32::WHITE, Color32::from_gray(40), Color32::LIGHT_BLUE, None);
-        assert_eq!(job_text(&job), "plain\ntext");
+        let fenced = job("```\ncode\n```", 14.0, Color32::WHITE, Color32::from_gray(40), Color32::LIGHT_BLUE, None);
+        assert_eq!(job_text(&fenced), "code");
+        let plain = job("plain\ntext", 14.0, Color32::WHITE, Color32::from_gray(40), Color32::LIGHT_BLUE, None);
+        assert_eq!(job_text(&plain), "plain\ntext");
     }
 }

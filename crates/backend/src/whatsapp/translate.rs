@@ -781,7 +781,7 @@ impl IdentityBook {
     /// The best display name the payload knows for a JID: a saved
     /// contact name first, then a push name, each tried under the
     /// JID itself and under its counterpart form.
-    fn name_for(&self, jid: &str) -> Option<String> {
+    pub(super) fn name_for(&self, jid: &str) -> Option<String> {
         if let Some(name) = self.saved.get(jid) {
             return Some(name.clone());
         }
@@ -904,11 +904,13 @@ fn translate_history_conversation(
     // conversation's own name (a group subject or a saved contact
     // name), then the payload's saved/push names for this JID in
     // either form, then (for a direct chat) the last sender's
-    // already-resolved name, then the formatted phone number from
-    // the LID-to-phone mapping. The raw identifier is the last
-    // resort, and the caller is told so it can heal the title
-    // from the client's stores.
-    let resolved_title = conv
+    // already-resolved name. The formatted phone number from the
+    // LID-to-phone mapping is only the displayed fallback, never
+    // a resolution: a chat titled by its number is reported
+    // unresolved, so the heal pass can still bring the saved
+    // contact name the payload did not carry. The raw identifier
+    // is the last resort.
+    let named_title = conv
         .name
         .clone()
         .filter(|n| !n.trim().is_empty())
@@ -919,13 +921,14 @@ fn translate_history_conversation(
                 last.and_then(|m| m.sender.clone()).filter(|name| !is_raw_identifier(name))
             }
             _ => None,
-        })
+        });
+    let title_unresolved = named_title.is_none();
+    let title = named_title
         .or_else(|| match kind {
             LiveChatKind::Dm => book.phone_for(&chat_jid),
             _ => None,
-        });
-    let title_unresolved = resolved_title.is_none();
-    let title = resolved_title.unwrap_or_else(|| user_part(&chat_jid));
+        })
+        .unwrap_or_else(|| user_part(&chat_jid));
     let timestamp = conv
         .last_msg_timestamp
         .map(|t| i64::try_from(t).unwrap_or(0))
@@ -996,7 +999,16 @@ fn history_message(
         kind = LiveMessageKind::Other(unhandled_label(proto));
     }
     let body = body_for(&kind, view_once, text.as_deref());
-    let sender_jid = key.participant.clone().or_else(|| info.participant.clone());
+    let sender_jid = key.participant.clone().or_else(|| info.participant.clone()).or_else(|| {
+        // A 1:1 payload names no participant: the author of an
+        // incoming direct message is the conversation's other
+        // party, named by the key's remote JID. Without this the
+        // author collapses to None, which the app's model reads
+        // as "mine", so the message would render as the owner's
+        // own outgoing message.
+        (!from_me && kind_of(chat_jid) == LiveChatKind::Dm)
+            .then(|| key.remote_jid.clone().unwrap_or_else(|| chat_jid.to_owned()))
+    });
     let sender_name = if from_me {
         None
     } else {
@@ -2502,9 +2514,151 @@ mod live_pairing_fix_tests {
 
         assert_eq!(
             unresolved,
-            vec![("120363430176830545@g.us".to_owned(), LiveChatKind::Group)],
-            "only the subjectless group is reported unresolved"
+            vec![
+                ("120363430176830545@g.us".to_owned(), LiveChatKind::Group),
+                ("128815045062660@lid".to_owned(), LiveChatKind::Dm),
+            ],
+            "the subjectless group and the number-titled DM stay unresolved: \
+             a formatted number is a displayed fallback, not a resolution"
         );
+    }
+
+    /// A 1:1 history payload names no participant: the author
+    /// of an incoming message is the conversation's other party
+    /// (the key's remote JID), resolved through the book like
+    /// any other sender. Regressed on the owner's real account
+    /// in v1.6.11: the author collapsed to None, which the app
+    /// reads as "mine", so incoming DM history rendered as the
+    /// owner's own outgoing messages.
+    #[test]
+    fn history_dm_messages_name_the_peer_as_author() {
+        let dm_info = |id: &str, from_me: bool, ts: u64, body: &str| {
+            let mut text = wa::Message::default();
+            text.conversation = Some(body.to_owned());
+            let mut key = wa::MessageKey::default();
+            key.id = Some(id.to_owned());
+            key.from_me = Some(from_me);
+            key.remote_jid = Some("62812345@s.whatsapp.net".to_owned());
+            let mut info = wa::WebMessageInfo::default();
+            info.key = MessageField::some(key);
+            info.message = MessageField::some(text);
+            info.message_timestamp = Some(ts);
+            info
+        };
+        let mut conv = wa::Conversation::default();
+        conv.id = "62812345@s.whatsapp.net".to_owned();
+        conv.messages = vec![
+            {
+                let mut e = wa::HistorySyncMsg::default();
+                e.message = MessageField::some(dm_info("d1", false, 100, "from them"));
+                e
+            },
+            {
+                let mut e = wa::HistorySyncMsg::default();
+                e.message = MessageField::some(dm_info("d2", true, 200, "from me"));
+                e
+            },
+        ];
+        let mut sync = wa::HistorySync::default();
+        sync.conversations = vec![conv];
+        sync.pushnames = vec![{
+            let mut p = wa::Pushname::default();
+            p.id = Some("62812345@s.whatsapp.net".to_owned());
+            p.pushname = Some("Peer Name".to_owned());
+            p
+        }];
+
+        let (tx, rx) = std::sync::mpsc::sync_channel(16);
+        let sink = EventSink { tx, wake: std::sync::Arc::new(|| {}) };
+        translate_history_sync(&sync, &sink, &mut super::IdentityBook::default());
+        let events: Vec<BackendEvent> = rx.try_iter().collect();
+        let msgs: Vec<_> = events
+            .iter()
+            .filter_map(|e| match e {
+                BackendEvent::MessageUpsert(m) => Some(m),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(msgs.len(), 2);
+        let incoming = msgs.iter().find(|m| m.id == "d1").expect("the incoming message");
+        assert!(!incoming.from_me);
+        assert_eq!(incoming.sender_jid.as_deref(), Some("62812345@s.whatsapp.net"));
+        assert_eq!(incoming.sender.as_deref(), Some("Peer Name"));
+        let outgoing = msgs.iter().find(|m| m.id == "d2").expect("the outgoing message");
+        assert!(outgoing.from_me);
+        assert_eq!(outgoing.sender, None);
+    }
+
+    /// The same author fallback without any name source: the
+    /// sender label is the formatted phone number, never None
+    /// (None would render the message as the owner's own).
+    #[test]
+    fn history_dm_author_falls_back_to_the_formatted_number() {
+        let mut text = wa::Message::default();
+        text.conversation = Some("hello".to_owned());
+        let mut key = wa::MessageKey::default();
+        key.id = Some("d1".to_owned());
+        key.from_me = Some(false);
+        key.remote_jid = Some("62812345@s.whatsapp.net".to_owned());
+        let mut info = wa::WebMessageInfo::default();
+        info.key = MessageField::some(key);
+        info.message = MessageField::some(text);
+        info.message_timestamp = Some(100);
+        let mut conv = wa::Conversation::default();
+        conv.id = "62812345@s.whatsapp.net".to_owned();
+        conv.messages = vec![{
+            let mut e = wa::HistorySyncMsg::default();
+            e.message = MessageField::some(info);
+            e
+        }];
+        let mut sync = wa::HistorySync::default();
+        sync.conversations = vec![conv];
+
+        let (tx, rx) = std::sync::mpsc::sync_channel(16);
+        let sink = EventSink { tx, wake: std::sync::Arc::new(|| {}) };
+        translate_history_sync(&sync, &sink, &mut super::IdentityBook::default());
+        let events: Vec<BackendEvent> = rx.try_iter().collect();
+        let msg = events
+            .iter()
+            .find_map(|e| match e {
+                BackendEvent::MessageUpsert(m) => Some(m),
+                _ => None,
+            })
+            .expect("the message is emitted");
+        assert_eq!(msg.sender.as_deref(), Some("+62812345"));
+    }
+
+    /// A direct chat whose only identity is its number keeps
+    /// the formatted number as its displayed title but is
+    /// reported unresolved, so the heal pass can still bring a
+    /// saved name learned later; a chat with a name-grade title
+    /// is settled. Regressed in v1.6.11: the number counted as
+    /// a resolution, so saved contacts stayed titled by number.
+    #[test]
+    fn history_number_titled_dm_stays_unresolved() {
+        let mut number_only = wa::Conversation::default();
+        number_only.id = "62812345@s.whatsapp.net".to_owned();
+        let mut named = wa::Conversation::default();
+        named.id = "62899999@s.whatsapp.net".to_owned();
+        named.name = Some("Named Friend".to_owned());
+        let mut sync = wa::HistorySync::default();
+        sync.conversations = vec![number_only, named];
+
+        let (tx, rx) = std::sync::mpsc::sync_channel(16);
+        let sink = EventSink { tx, wake: std::sync::Arc::new(|| {}) };
+        let (unresolved, _marks) =
+            translate_history_sync(&sync, &sink, &mut super::IdentityBook::default());
+        let events: Vec<BackendEvent> = rx.try_iter().collect();
+        let title_of = |jid: &str| {
+            events.iter().find_map(|e| match e {
+                BackendEvent::ChatUpsert(c) if c.jid == jid => Some(c.title.clone()),
+                _ => None,
+            })
+        };
+        assert_eq!(title_of("62812345@s.whatsapp.net").as_deref(), Some("+62812345"));
+        assert_eq!(title_of("62899999@s.whatsapp.net").as_deref(), Some("Named Friend"));
+        assert!(unresolved.contains(&("62812345@s.whatsapp.net".to_owned(), LiveChatKind::Dm)));
+        assert!(!unresolved.contains(&("62899999@s.whatsapp.net".to_owned(), LiveChatKind::Dm)));
     }
 
     fn call_log_record() -> whatsapp_rust::prelude::wa::CallLogRecord {

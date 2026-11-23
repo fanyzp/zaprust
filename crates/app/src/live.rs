@@ -449,9 +449,7 @@ pub(crate) fn is_raw_identifier(text: &str) -> bool {
 /// identifier, not a resolved name: when the contact's name
 /// arrives later, it must still be able to replace the number.
 pub(crate) fn is_formatted_phone(text: &str) -> bool {
-    text.len() >= 10
-        && text.starts_with('+')
-        && text[1..].bytes().all(|b| b.is_ascii_digit())
+    text.len() >= 10 && text.starts_with('+') && text[1..].bytes().all(|b| b.is_ascii_digit())
 }
 
 /// Maps a backend error string to a human sentence for the
@@ -3228,6 +3226,21 @@ impl crate::state::App {
     /// raw identifier are rewritten in the archive and in memory.
     /// Labels that already hold a name are never touched.
     fn apply_sender_named(&mut self, sender_jid: &str, name: &str) {
+        // A phone-formatted name learned for a LID identity is
+        // the session learning that identity's LID-to-phone
+        // mapping. A picture negative recorded while the mapping
+        // was unknown may be a LID-form miss rather than a true
+        // absence, so it is dropped: the next paint retries the
+        // fetch, which now resolves under the phone form.
+        if sender_jid.ends_with("@lid") && is_formatted_phone(name) {
+            let has_negative = self
+                .live
+                .as_ref()
+                .is_some_and(|session| session.avatar_missing.contains_key(sender_jid));
+            if has_negative {
+                self.drop_avatar(sender_jid);
+            }
+        }
         // Every learned name joins the name directory first
         // (mention resolution reads it), whether or not any
         // stored label still needs the rewrite below.
@@ -6887,6 +6900,34 @@ mod burst_drain_tests {
         let store = session.store.as_ref().unwrap();
         let (_, bytes, _) = store.avatar(CHAT_JID).unwrap().unwrap();
         assert!(bytes.is_none(), "the negative is archived without bytes");
+    }
+
+    /// A picture negative recorded for a LID identity while its
+    /// LID-to-phone mapping was unknown may be a LID-form miss
+    /// rather than a true absence: when the mapping is learned
+    /// (the healer broadcasts the phone-formatted name for the
+    /// LID), the negative is dropped so the next paint retries
+    /// the fetch, which now resolves under the phone form.
+    #[test]
+    fn learned_lid_mapping_drops_the_avatar_negative() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        let lid = "123456789012345@lid";
+        tx.send(BackendEvent::AvatarMissing { jid: lid.to_owned() }).unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(
+            app.live.as_ref().unwrap().avatar_missing.contains_key(lid),
+            "the negative is remembered"
+        );
+        tx.send(BackendEvent::SenderNamed {
+            sender_jid: lid.to_owned(),
+            name: "+628123456789".to_owned(),
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        let session = app.live.as_ref().unwrap();
+        assert!(!session.avatar_missing.contains_key(lid), "the mapping drops the negative");
+        let store = session.store.as_ref().unwrap();
+        assert!(store.avatar(lid).unwrap().is_none(), "and its archive row");
     }
 
     /// v1.6.7: the defect behind the owner's largest group

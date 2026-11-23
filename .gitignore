@@ -22,3 +22,4 @@ debug/
 
 # Local development workspace (notes, backlog, checkpoints; never shipped)
 .workspacedev/
+/target-fast/

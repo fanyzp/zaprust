@@ -110,9 +110,14 @@ pub(super) enum AvatarOutcome {
 /// to the identity it labels, so the address form is resolved
 /// before the lookup: a group is queried under its group JID,
 /// and a contact known under a LID is queried under its
-/// phone-number form whenever the session's LID-to-phone cache
-/// knows the mapping (the same cache the title healer reads),
-/// falling back to the LID itself when it does not.
+/// phone-number form (the same cache the title healer reads).
+/// A LID whose phone form is not known yet is not queried at
+/// all: the picture lookup is phone-addressed, so an answer
+/// to a LID query says nothing about the picture, and treating
+/// it as a definitive miss would cache a wrong negative for a
+/// contact who may well have one. That case is Unavailable
+/// (retryable, never cached), so a later paint retries once
+/// the mapping is learned.
 pub(super) async fn fetch_avatar(client: &Client, jid_str: &str) -> AvatarOutcome {
     use whatsapp_rust::ProfilePictureLookup;
     let Ok(jid) = jid_str.parse::<Jid>() else { return AvatarOutcome::Unavailable };
@@ -126,7 +131,7 @@ pub(super) async fn fetch_avatar(client: &Client, jid_str: &str) -> AvatarOutcom
                     .unwrap_or_else(|_| jid.clone()),
                 false,
             ),
-            _ => (jid.clone(), false),
+            _ => return AvatarOutcome::Unavailable,
         }
     } else {
         (jid.clone(), false)

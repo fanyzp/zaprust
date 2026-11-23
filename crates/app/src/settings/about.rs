@@ -2,7 +2,7 @@
 
 use super::*;
 
-/// The official brand mark (the bolt bubble of
+/// The official brand mark (the chat bubble tile of
 /// `packaging/icon.svg`, via its bundled PNG) as a GPU texture,
 /// decoded once and kept for the life of the app. About is the
 /// brand mark's one in-app home: screens do not repeat the brand

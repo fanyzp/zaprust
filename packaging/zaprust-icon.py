@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Generate the Zaprust app icon rasters from the SVG master.
 
-The master artwork is packaging/icon.svg: a green squircle field
-with a white speech bubble and a lightning bolt cut out of the
-bubble as negative space. This script renders it to the shipped
-rasters:
+The master artwork is packaging/icon.svg: a green rounded-square
+tile with a white speech bubble (bottom-left tail) and three dots
+inside the bubble in the tile green. This script renders it to
+the shipped rasters:
 
 - packaging/icon.png (1024x1024), the PNG master
 - packaging/zaprust.png (512x512), the icon the installers ship

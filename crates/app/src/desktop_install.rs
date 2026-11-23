@@ -6,7 +6,7 @@
 //! install ships both (see `packaging/zaprust.spec`), but the
 //! bare release binary installs nothing, and on KDE Plasma the
 //! window then wears the compositor's generic Wayland fallback
-//! mark instead of the bolt bubble (the owner's first live run,
+//! mark instead of its own icon (the owner's first live run,
 //! 23 Nov 2026). So on Linux the app installs its own desktop
 //! integration into the user's data home on startup: the themed
 //! icons and a desktop entry whose Exec points at the running

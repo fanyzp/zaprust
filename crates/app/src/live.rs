@@ -829,7 +829,19 @@ pub(crate) fn to_message_with_flags(live: &LiveMessage, flags: i64) -> Message {
         kind,
         time: fmt_time(live.timestamp),
         day: fmt_day(live.timestamp),
-        delivery: if live.from_me { Some(Delivery::Delivered) } else { None },
+        delivery: if live.from_me {
+            // Delivery is synced state, never a display floor:
+            // the carried state wins, and a state the wire did
+            // not state reads as Sent (the message exists, so
+            // the server accepted it), never as Delivered.
+            Some(match live.delivery {
+                Some(backend::DeliveryState::Read) => Delivery::Read,
+                Some(backend::DeliveryState::Delivered) => Delivery::Delivered,
+                Some(backend::DeliveryState::Sent) | None => Delivery::Sent,
+            })
+        } else {
+            None
+        },
         quoted_sender: live.quoted_sender.clone(),
         quoted_body: live.quoted_body.clone(),
         reactions: live.reactions.clone(),
@@ -1907,19 +1919,25 @@ impl crate::state::App {
         // completion event covers the offline drain, and a
         // catch-up can end without one (a reconnect with an
         // empty backlog produces no end marker), which used to
-        // latch the row forever. Twenty-five seconds with no
-        // sync activity reported means the catch-up is over in
-        // practice; the row clears and the session counts as
-        // synced.
+        // latch the row forever. After a long quiet with an
+        // empty event queue the row retires, but the session
+        // does not count as synced: only a real completion
+        // latches that.
         if let Some(session) = &mut self.live {
             if session.syncing {
+                // Sync honesty (QC1614-A0-5): the quiet fallback
+                // may only retire the visual row after a long
+                // quiet (real inter-chunk gaps run minutes on a
+                // populated roster) and only while no backend
+                // events are still queued unapplied. It never
+                // latches synced_once: only a real completion
+                // event may do that.
                 let quiet = session
                     .sync_last_activity
-                    .is_some_and(|last| last.elapsed() > std::time::Duration::from_secs(25));
-                if quiet {
+                    .is_some_and(|last| last.elapsed() > std::time::Duration::from_secs(180));
+                if quiet && self.event_queue.is_empty() {
                     session.syncing = false;
                     session.sync_last_activity = None;
-                    session.synced_once = true;
                 }
             }
         }
@@ -2241,15 +2259,28 @@ impl crate::state::App {
             BackendEvent::MessageSent { chat_jid, message_id } => {
                 self.apply_message_sent(&chat_jid, &message_id);
             }
-            BackendEvent::Receipt { chat_jid, message_ids, kind, at } => {
+            BackendEvent::Receipt { chat_jid, message_ids, kind, at, actor } => {
                 let chat_id = jid_id(&chat_jid);
                 for pid in &message_ids {
                     let mid = message_id(&chat_jid, pid);
-                    let delivery = match kind {
+                    let mut delivery = match kind {
                         ReceiptKind::Sent => Delivery::Sent,
                         ReceiptKind::Delivered => Delivery::Delivered,
                         ReceiptKind::Read | ReceiptKind::Played => Delivery::Read,
                     };
+                    // Group correctness: one member's receipt is
+                    // not everyone's. A named actor's Read in a
+                    // group advances the ticks to Delivered at
+                    // most; Read in a group is the aggregate the
+                    // library reports without a single actor.
+                    let is_group = self
+                        .chats
+                        .iter()
+                        .find(|c| c.id == chat_id)
+                        .is_some_and(|c| c.kind == core::model::ChatKind::Group);
+                    if is_group && actor.is_some() && delivery == Delivery::Read {
+                        delivery = Delivery::Delivered;
+                    }
                     let log = self.receipt_log.entry(mid).or_default();
                     log.push((kind, fmt_time(at)));
                     // The receipt log only feeds the message-info
@@ -2308,6 +2339,34 @@ impl crate::state::App {
                                 echo.id = mid;
                                 self.protocol_ids.insert(mid, pid.clone());
                             }
+                        }
+                    }
+                }
+                // Persist the advanced state: ticks are synced
+                // state, and a restart must not lose a Read the
+                // receipts already proved.
+                if let Some(session) = &self.live {
+                    if let Some(store) = &session.store {
+                        let state = match kind {
+                            ReceiptKind::Sent => backend::DeliveryState::Sent,
+                            ReceiptKind::Delivered | ReceiptKind::Played => {
+                                backend::DeliveryState::Delivered
+                            }
+                            ReceiptKind::Read => backend::DeliveryState::Read,
+                        };
+                        let group_named_actor = actor.is_some()
+                            && self
+                                .chats
+                                .iter()
+                                .find(|c| c.id == chat_id)
+                                .is_some_and(|c| c.kind == core::model::ChatKind::Group);
+                        let state = if group_named_actor && state == backend::DeliveryState::Read {
+                            backend::DeliveryState::Delivered
+                        } else {
+                            state
+                        };
+                        for pid in &message_ids {
+                            let _ = store.set_message_delivery(&chat_jid, pid, state);
                         }
                     }
                 }
@@ -2618,11 +2677,13 @@ impl crate::state::App {
                 self.apply_archive_changed(chat_id, archived);
             }
             BackendEvent::StarChanged { chat_jid, message_id: pid, starred } => {
+                self.stamp_sync_activity();
                 let chat_id = jid_id(&chat_jid);
                 let mid = message_id(&chat_jid, &pid);
                 self.apply_star_changed(chat_id, mid, &pid, starred);
             }
             BackendEvent::ChatReadChanged { chat_jid, read, unread_count } => {
+                self.stamp_sync_activity();
                 let chat_id = jid_id(&chat_jid);
                 self.pending_unread.remove(&chat_id);
                 self.apply_chat_read_changed(chat_id, read, unread_count);
@@ -3271,6 +3332,40 @@ impl crate::state::App {
                     session.sync_last_activity = Some(std::time::Instant::now());
                 }
             }
+            BackendEvent::SyncInterrupted => {
+                // The drain did not finish: the client is not
+                // caught up. The sync row stays up and
+                // synced_once is never latched by an interruption
+                // (QC1614-A0-5 W1).
+                if let Some(session) = &mut self.live {
+                    session.syncing = true;
+                    session.sync_last_activity = Some(std::time::Instant::now());
+                }
+            }
+            BackendEvent::ChatCommunity { chat_jid, parent_jid, is_parent } => {
+                let chat_id = jid_id(&chat_jid);
+                if is_parent {
+                    self.chat_parents.insert(chat_id, chat_id);
+                }
+                if let Some(parent) = &parent_jid {
+                    self.chat_parents.insert(chat_id, jid_id(parent));
+                }
+                // The child's community tag is the parent's
+                // title; the parent's tag is its own title.
+                let tag = if is_parent {
+                    self.chats.iter().find(|c| c.id == chat_id).map(|c| c.title.clone())
+                } else if let Some(parent) = &parent_jid {
+                    let pid = jid_id(parent);
+                    self.chats.iter().find(|c| c.id == pid).map(|c| c.title.clone())
+                } else {
+                    None
+                };
+                if let Some(tag) = tag.filter(|t| !t.is_empty() && !is_raw_identifier(t)) {
+                    if let Some(chat) = self.chats.iter_mut().find(|c| c.id == chat_id) {
+                        chat.community = Some(tag);
+                    }
+                }
+            }
             BackendEvent::SyncCompleted => {
                 // On a fresh pairing, Connected fired before
                 // the history sync delivered the roster, so the
@@ -3282,8 +3377,13 @@ impl crate::state::App {
                     Some(session) if !session.synced_once => self
                         .chats
                         .iter()
-                        .filter(|chat| is_raw_identifier(&chat.title))
+                        .filter(|chat| {
+                            is_raw_identifier(&chat.title)
+                                || chat.kind == core::model::ChatKind::Group
+                        })
                         .filter_map(|chat| session.jids.get(&chat.id).cloned())
+                        .collect::<std::collections::HashSet<_>>()
+                        .into_iter()
                         .collect(),
                     _ => Vec::new(),
                 };
@@ -3704,6 +3804,15 @@ impl crate::state::App {
                 }
             }
         }
+        // Community structure rides the same upsert: a parent
+        // maps to itself, a linked subgroup to its parent, and
+        // the community tag is the parent's title once known.
+        if merged.is_parent {
+            self.chat_parents.insert(id, id);
+        }
+        if let Some(parent) = &merged.parent_jid {
+            self.chat_parents.insert(id, jid_id(parent));
+        }
         if let Some(session) = &mut self.live {
             if let Some(store) = &session.store {
                 let _ = store.upsert_chat(&merged);
@@ -4022,6 +4131,17 @@ impl crate::state::App {
     /// adopts the reported count, floored at one: the chat IS
     /// unread, so a zero badge would hide the state the server
     /// just asserted.
+    /// App-state arrivals are sync activity too (QC1614-A0-5
+    /// W3): while a catch-up is running they hold the sync row,
+    /// exactly as a history chunk does.
+    pub(crate) fn stamp_sync_activity(&mut self) {
+        if let Some(session) = &mut self.live {
+            if session.syncing {
+                session.sync_last_activity = Some(std::time::Instant::now());
+            }
+        }
+    }
+
     pub(crate) fn apply_chat_read_changed(&mut self, chat_id: u64, read: bool, unread_count: u32) {
         let unread = if read { 0 } else { unread_count.max(1) };
         if let Some(c) = self.chats.iter_mut().find(|c| c.id == chat_id) {
@@ -4688,6 +4808,26 @@ impl crate::state::App {
                     }
                 }
             }
+            // Delivery merges monotonically across re-upserts,
+            // the same discipline as the poll tallies above: a
+            // re-delivered copy carries at best the state its
+            // payload states, and a Read the receipts already
+            // proved must never fall back to a lesser tick.
+            if converted.delivery.is_some() {
+                if let Some((_, old)) = entry.iter().find(|(_, m)| m.id == converted.id) {
+                    let rank = |d: Delivery| match d {
+                        Delivery::Failed | Delivery::Sending => 0,
+                        Delivery::Sent => 1,
+                        Delivery::Delivered => 2,
+                        Delivery::Read => 3,
+                    };
+                    if let (Some(new_d), Some(old_d)) = (converted.delivery, old.delivery) {
+                        if rank(old_d) > rank(new_d) {
+                            converted.delivery = Some(old_d);
+                        }
+                    }
+                }
+            }
             // Replace a pending local echo of this outgoing message.
             // Text echoes match on body; media echoes match on kind,
             // because their display bodies legitimately differ
@@ -4770,6 +4910,8 @@ impl crate::state::App {
                 ephemeral_secs: 0,
                 muted: false,
                 mute_until: 0,
+                parent_jid: None,
+                is_parent: false,
             });
         }
         // Protocol-id bookkeeping (receipts, reactions, read marks).
@@ -4833,7 +4975,15 @@ impl crate::state::App {
             // Snippet anatomy for the row: ticks when the latest
             // message is ours, a media label when it is not text.
             chat.preview_mine = live.from_me;
-            chat.preview_delivery = if live.from_me { Some(Delivery::Delivered) } else { None };
+            chat.preview_delivery = if live.from_me {
+                Some(match live.delivery {
+                    Some(backend::DeliveryState::Read) => Delivery::Read,
+                    Some(backend::DeliveryState::Delivered) => Delivery::Delivered,
+                    Some(backend::DeliveryState::Sent) | None => Delivery::Sent,
+                })
+            } else {
+                None
+            };
             chat.preview_media = core::model::PreviewMedia::of(&to_kind(&live.kind));
             // Only a genuinely new message raises the unread badge;
             // re-upserts (edits, votes, stars) must not (F8). The
@@ -6961,6 +7111,8 @@ pub(crate) fn chat_to_live(chat: &Chat, jid: &str, timestamp: i64) -> LiveChat {
         ephemeral_secs: chat.ephemeral_secs,
         muted: chat.muted,
         mute_until: i64::try_from(chat.mute_until).unwrap_or(0),
+        parent_jid: None,
+        is_parent: false,
     }
 }
 
@@ -7601,6 +7753,8 @@ mod burst_drain_tests {
                 ephemeral_secs: 0,
                 muted: false,
                 mute_until: 0,
+                parent_jid: None,
+                is_parent: false,
             })
         };
         let (mut app, tx, ctx, _cmd_rx) = live_app();
@@ -7641,6 +7795,8 @@ mod burst_drain_tests {
                 ephemeral_secs: 0,
                 muted: false,
                 mute_until: 0,
+                parent_jid: None,
+                is_parent: false,
             })
         };
         let stored_title = |app: &App| {
@@ -7726,6 +7882,8 @@ mod burst_drain_tests {
             ephemeral_secs: 0,
             muted: false,
             mute_until: 0,
+            parent_jid: None,
+            is_parent: false,
         }))
         .unwrap();
         drain_all(&mut app, &ctx);
@@ -9065,6 +9223,8 @@ mod burst_drain_tests {
             archived: false,
             muted: false,
             mute_until: 0,
+            parent_jid: None,
+            is_parent: false,
             ephemeral_secs: 0,
         }));
         {
@@ -9368,6 +9528,7 @@ mod burst_drain_tests {
             message_ids: vec!["mine-1".to_owned()],
             kind: ReceiptKind::Read,
             at: BASE_TS + 60,
+            actor: None,
         })
         .unwrap();
         tx.send(incoming("theirs-1", BASE_TS + 120)).unwrap();
@@ -9412,6 +9573,7 @@ mod burst_drain_tests {
             message_ids: vec!["mine-1".to_owned()],
             kind: ReceiptKind::Sent,
             at: BASE_TS + 600,
+            actor: None,
         })
         .unwrap();
         tx.send(BackendEvent::Receipt {
@@ -9419,6 +9581,7 @@ mod burst_drain_tests {
             message_ids: vec!["mine-1".to_owned()],
             kind: ReceiptKind::Delivered,
             at: BASE_TS + 1_200,
+            actor: None,
         })
         .unwrap();
         // One receipt event can cover several messages at once.
@@ -9427,6 +9590,7 @@ mod burst_drain_tests {
             message_ids: vec!["mine-1".to_owned(), "mine-2".to_owned()],
             kind: ReceiptKind::Read,
             at: BASE_TS + 1_800,
+            actor: None,
         })
         .unwrap();
         drain_all(&mut app, &ctx);
@@ -9467,6 +9631,7 @@ mod burst_drain_tests {
                 message_ids: vec!["mine-1".to_owned()],
                 kind: ReceiptKind::Delivered,
                 at: BASE_TS + i * 60,
+                actor: None,
             })
             .unwrap();
         }
@@ -9615,6 +9780,8 @@ mod burst_drain_tests {
             ephemeral_secs: 0,
             muted: false,
             mute_until: 0,
+            parent_jid: None,
+            is_parent: false,
         };
         app.new_chat.open = true;
         tx.send(BackendEvent::ContactResolved {
@@ -9728,6 +9895,8 @@ mod burst_drain_tests {
             ephemeral_secs: 0,
             muted: false,
             mute_until: 0,
+            parent_jid: None,
+            is_parent: false,
         })
     }
 
@@ -9754,6 +9923,8 @@ mod burst_drain_tests {
                 ephemeral_secs: 0,
                 muted: false,
                 mute_until: 0,
+                parent_jid: None,
+                is_parent: false,
             });
             assert!(chat.subtitle.is_empty(), "{kind:?} carries no invented subtitle");
         }
@@ -9932,6 +10103,8 @@ mod burst_drain_tests {
             ephemeral_secs: 0,
             muted: false,
             mute_until: 0,
+            parent_jid: None,
+            is_parent: false,
         }))
         .unwrap();
         drain_all(&mut app, &ctx);
@@ -10046,6 +10219,8 @@ mod burst_drain_tests {
             ephemeral_secs: 0,
             muted: false,
             mute_until: 0,
+            parent_jid: None,
+            is_parent: false,
         }))
         .unwrap();
         let mut bob_msg = LiveMessage::text(
@@ -10437,6 +10612,8 @@ mod chat_state_routing_tests {
             ephemeral_secs: 0,
             muted: false,
             mute_until: 0,
+            parent_jid: None,
+            is_parent: false,
         })
     }
 
@@ -10456,6 +10633,8 @@ mod chat_state_routing_tests {
             ephemeral_secs: 0,
             muted: false,
             mute_until: 0,
+            parent_jid: None,
+            is_parent: false,
         })
     }
 
@@ -10495,6 +10674,8 @@ mod chat_state_routing_tests {
             ephemeral_secs: 0,
             muted: false,
             mute_until: 0,
+            parent_jid: None,
+            is_parent: false,
         })
     }
 
@@ -10552,6 +10733,8 @@ mod chat_state_routing_tests {
             ephemeral_secs: 0,
             muted: false,
             mute_until: 0,
+            parent_jid: None,
+            is_parent: false,
         })
     }
 
@@ -11383,6 +11566,8 @@ mod chat_state_routing_tests {
             ephemeral_secs: 0,
             muted: false,
             mute_until: 0,
+            parent_jid: None,
+            is_parent: false,
         })
     }
 
@@ -12148,6 +12333,8 @@ mod mirror_pruning_tests {
             ephemeral_secs: 0,
             muted: false,
             mute_until: 0,
+            parent_jid: None,
+            is_parent: false,
         };
         app.chats.push(to_chat(&live_row));
         {
@@ -14249,6 +14436,8 @@ mod star_pin_tests {
             ephemeral_secs: 0,
             muted: false,
             mute_until: 0,
+            parent_jid: None,
+            is_parent: false,
         }))
         .unwrap();
         let mut status_msg = alice_dm_message();
@@ -14289,6 +14478,8 @@ mod star_pin_tests {
             ephemeral_secs: 0,
             muted: false,
             mute_until: 0,
+            parent_jid: None,
+            is_parent: false,
         }))
         .unwrap();
         drain_all(&mut app, &ctx);

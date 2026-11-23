@@ -31,6 +31,8 @@ fn chat(jid: &str, title: &str) -> LiveChat {
         ephemeral_secs: 0,
         muted: false,
         mute_until: 0,
+        parent_jid: None,
+        is_parent: false,
     }
 }
 

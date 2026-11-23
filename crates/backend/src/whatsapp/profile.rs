@@ -411,6 +411,8 @@ pub(super) async fn lookup_contact(client: &Client, digits: &str) -> ContactOutc
             ephemeral_secs: 0,
             muted: false,
             mute_until: 0,
+            parent_jid: None,
+            is_parent: false,
         },
         alt_jid,
     }

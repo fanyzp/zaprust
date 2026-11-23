@@ -53,10 +53,6 @@ use eframe::egui::{
     self, Align, Color32, CornerRadius, FontId, Layout, Margin, Pos2, RichText, Sense, Stroke, Vec2,
 };
 
-/// Native quick replies (storage + composer panel state),
-/// declared here, where its only UI lives.
-pub(crate) mod quick_replies;
-
 /// The conversation column's side margin: the stream, the
 /// composer stack and the scroll-to-bottom button all inset
 /// from the panel edges by this one measure. A phone-width
@@ -675,7 +671,7 @@ impl App {
         let now = root.ctx().input(|i| i.time);
         // Bottom clearance for the floating composer stack: the
         // stack's height as measured the last time it was drawn
-        // (accessory lines, the quick replies panel and the pill
+        // (accessory lines and the pill
         // itself), plus its lift off the bottom edge and the
         // stream's gap above it (see composer_clearance).
         // Measured, not estimated, so the clearance
@@ -981,7 +977,6 @@ impl App {
                 );
                 self.draw_composer(ui, full_rect, t, now, &mut engaged);
                 self.draw_scroll_bottom(ui, full_rect, &chat, &scroll_out, t, &mut engaged);
-                self.draw_quick_replies_editor(ui, t);
                 // Switch fade overlay: bg_chat at fading alpha over
                 // the whole panel; gone (and not repainting) once
                 // the animation completes.
@@ -1006,10 +1001,12 @@ impl App {
         // chat go out now and its badge clears. Nothing here runs
         // on passive arrival or on merely opening the chat.
         if engaged && self.live_mode && self.note_read_engagement() > 0 {
+            // The local-read zero persists through the same
+            // store write the server read path uses: a memory
+            // only zero resurrects from the archive on restart
+            // (QC1614-A0-1).
             let chat_id = self.selected_chat;
-            if let Some(chat) = self.chats.iter_mut().find(|c| c.id == chat_id) {
-                chat.unread = 0;
-            }
+            self.apply_chat_read_changed(chat_id, true, 0);
         }
         self.draw_conversation_popups(root.ctx());
         self.draw_header_menu(root.ctx());

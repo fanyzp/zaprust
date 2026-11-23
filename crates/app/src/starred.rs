@@ -130,13 +130,72 @@ impl App {
         // core helper can take one slice. The stored chats are
         // never mutated.
         let mut view: Vec<Chat> = Vec::with_capacity(self.chats.len() + 1);
-        for chat in &self.chats {
-            let mut entry = chat.clone();
-            if chat.id == self.selected_chat {
-                entry.messages = self.conversation.clone();
+        if self.live_mode {
+            // Live mode's data source is the archive, not
+            // chat.messages: live conversion builds every chat
+            // with an empty message list, so reading it here
+            // showed only the open chat's stars and reported
+            // "none" on real accounts (QC1614-A0-4). The
+            // persisted FLAG_STARRED rows across all chats are
+            // the truth; the open conversation's fresher working
+            // copy then replaces its own chat's rows.
+            let archived: Vec<(backend::LiveMessage, i64)> = self
+                .live
+                .as_ref()
+                .and_then(|session| session.store.as_ref())
+                .and_then(|store| store.starred_messages().ok())
+                .unwrap_or_default();
+            let mut by_chat: std::collections::HashMap<u64, Vec<Message>> =
+                std::collections::HashMap::new();
+            for (live_msg, flags) in &archived {
+                let cid = crate::live::jid_id(&live_msg.chat_jid);
+                by_chat
+                    .entry(cid)
+                    .or_default()
+                    .push(crate::live::to_message_with_flags(live_msg, *flags));
             }
-            entry.messages.retain(|m| m.starred);
-            view.push(entry);
+            for chat in &self.chats {
+                let mut entry = chat.clone();
+                entry.messages = by_chat.remove(&chat.id).unwrap_or_default();
+                view.push(entry);
+            }
+            // Archived stars in a chat the roster no longer
+            // lists still belong in the panel.
+            for (cid, messages) in by_chat {
+                if let Some(mut entry) = view.first().cloned() {
+                    entry.id = cid;
+                    entry.title = archived
+                        .iter()
+                        .find(|(m, _)| crate::live::jid_id(&m.chat_jid) == cid)
+                        .map(|(m, _)| m.chat_jid.clone())
+                        .unwrap_or_default();
+                    entry.messages = messages;
+                    view.push(entry);
+                }
+            }
+            for entry in &mut view {
+                if entry.id == self.selected_chat {
+                    let mut fresh: Vec<Message> = self
+                        .conversation
+                        .iter()
+                        .filter(|m| m.starred)
+                        .cloned()
+                        .collect();
+                    let fresh_ids: std::collections::HashSet<u64> =
+                        fresh.iter().map(|m| m.id).collect();
+                    entry.messages.retain(|m| !fresh_ids.contains(&m.id));
+                    entry.messages.append(&mut fresh);
+                }
+            }
+        } else {
+            for chat in &self.chats {
+                let mut entry = chat.clone();
+                if chat.id == self.selected_chat {
+                    entry.messages = self.conversation.clone();
+                }
+                entry.messages.retain(|m| m.starred);
+                view.push(entry);
+            }
         }
         if let Some(detached) = &self.detached_chat {
             let mut entry = detached.clone();

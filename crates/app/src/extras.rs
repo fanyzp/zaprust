@@ -89,8 +89,8 @@ pub(crate) fn write_file_atomic(path: &std::path::Path, bytes: &[u8]) {
     let tmp = path.with_extension("tmp");
     let written = (|| -> std::io::Result<()> {
         let mut f = std::fs::File::create(&tmp)?;
-        // These files carry user content (settings, quick
-        // replies, plugin state): owner-only on Unix, asserted
+        // These files carry user content (settings and
+        // feature state): owner-only on Unix, asserted
         // on the temp before any bytes land and inherited by the
         // target through the rename (privacy audit A5).
         #[cfg(unix)]
@@ -109,15 +109,6 @@ pub(crate) fn write_file_atomic(path: &std::path::Path, bytes: &[u8]) {
     }
 }
 
-/// Shared with quick_replies.rs (same persistence helpers).
-pub(crate) fn read_json_file_pub(path: &std::path::Path) -> Option<String> {
-    read_json_file(path)
-}
-
-/// Shared with quick_replies.rs (same persistence helpers).
-pub(crate) fn write_json_file_pub(path: &std::path::Path, text: &str) {
-    write_json_file(path, text);
-}
 
 /// Whether a live message body is media-only, as a pure
 /// predicate so it is testable without a window or a backend.
@@ -180,27 +171,6 @@ impl App {
     pub(crate) fn feature_active(&self, id: &str) -> bool {
         let short = id.strip_prefix("community.").unwrap_or(id);
         self.feature_flags.get(short).copied().unwrap_or(false)
-    }
-
-    /// The composer's live quick replies: the user's saved list
-    /// while the Quick Replies feature is on, nothing while it
-    /// is off. The persisted list (seeded with the built-in set
-    /// on first run) is owned by the conversation quick replies
-    /// module; the panel and this expansion path read the same
-    /// snapshot from it.
-    pub(crate) fn quick_replies(&self) -> Vec<quick_replies::QuickReply> {
-        if self.feature_active("quick-replies") {
-            crate::conversation::quick_replies::items()
-        } else {
-            Vec::new()
-        }
-    }
-
-    /// Expands a leading quick-reply trigger in `text` (see the
-    /// quick-replies feature crate), unchanged when the feature is
-    /// off or nothing matches.
-    pub(crate) fn expand_quick_reply(&self, text: &str) -> String {
-        quick_replies::expand(text, &self.quick_replies())
     }
 
     /// The media picker's feature tabs (GIF search, Stickers).

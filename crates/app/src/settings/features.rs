@@ -33,13 +33,6 @@ impl App {
                 if on != self.feature_flags.get(*id).copied().unwrap_or(false) {
                     self.feature_flags.insert((*id).to_owned(), on);
                     changed = true;
-                    if *id == "quick-replies" && !on {
-                        // Switching Quick Replies off also closes
-                        // its composer surfaces, so no panel or
-                        // editor state outlives the feature.
-                        crate::conversation::quick_replies::set_panel_open(false);
-                        crate::conversation::quick_replies::set_editor_open(false);
-                    }
                 }
                 if i + 1 < FEATURE_ROWS.len() {
                     divider(ui, t);

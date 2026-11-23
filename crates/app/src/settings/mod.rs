@@ -893,12 +893,7 @@ fn label_column(ui: &mut egui::Ui, title: &str, desc: &str) {
 /// `crate::state::FEATURE_IDS`. The description is search
 /// index text only (see `search_candidates`); the rows
 /// themselves render name plus switch, no companion text.
-const FEATURE_ROWS: [(&str, &str, &str); 4] = [
-    (
-        "quick-replies",
-        "Quick Replies",
-        "Type /thanks, /omw or /docs and the full text is sent instead",
-    ),
+const FEATURE_ROWS: [(&str, &str, &str); 3] = [
     ("export-chat", "Chat Export", "Export the open chat as a Markdown file"),
     ("stickers", "Stickers", "Sticker packs in the media picker"),
     ("giphy", "GIF Search", "GIF tab in the media picker, powered by GIPHY"),

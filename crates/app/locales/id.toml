@@ -94,11 +94,6 @@
 "conversation.disappearing_off_notice" = "Pesan sementara dimatikan."
 "conversation.more_options" = "Opsi lainnya"
 "conversation.view_profile" = "Lihat profil"
-"conversation.quick_replies" = "Balasan cepat"
-"conversation.quick_replies_edit" = "Edit"
-"conversation.quick_replies_new" = "Balasan cepat baru"
-"conversation.quick_replies_add" = "Tambah"
-"conversation.quick_replies_empty" = "Belum ada balasan cepat. Tambahkan lewat Edit."
 "conversation.editing_message" = "Mengedit pesan"
 "conversation.type_message" = "Ketik pesan"
 

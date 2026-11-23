@@ -135,8 +135,8 @@ fn init_debug_tracing() {
 /// `accounts/<id>/` (an earlier version of this pass looked for
 /// them one level too shallow and never reached them, and never
 /// touched `crashes/` either; privacy audit A4), and every other
-/// artifact the app keeps there: settings, quick replies,
-/// plugin state, stickers, downloads, exports, pasted temps,
+/// artifact the app keeps there: settings,
+/// feature state, stickers, downloads, exports, pasted temps,
 /// crash reports and debug output (A5). Symlinks are not
 /// followed. Runs at startup; files created later in the
 /// session are tightened on the next start, and the writers of

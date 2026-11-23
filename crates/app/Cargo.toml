@@ -20,7 +20,6 @@ workspace = true
 core = { path = "../core", features = ["keyring-store"] }
 backend = { path = "../backend", features = ["calls"] }
 store = { path = "../store" }
-quick-replies = { path = "../features/quick-replies" }
 export-chat = { path = "../features/export-chat" }
 stickers = { path = "../features/stickers" }
 giphy = { path = "../features/giphy" }

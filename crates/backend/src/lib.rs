@@ -1245,6 +1245,38 @@ pub enum ReceiptKind {
     Played,
 }
 
+/// Persisted delivery state of an outgoing message, as synced
+/// state (never a display constant). Ordered by rank: a stored
+/// state never moves backward.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+pub enum DeliveryState {
+    /// Reached the server (one tick).
+    Sent,
+    /// Reached the recipient device (two grey ticks).
+    Delivered,
+    /// Read by the recipient (two blue ticks).
+    Read,
+}
+
+impl DeliveryState {
+    /// Rank for monotonic merges (higher wins).
+    #[must_use]
+    pub fn rank(self) -> u8 {
+        match self { Self::Sent => 1, Self::Delivered => 2, Self::Read => 3 }
+    }
+    /// The stronger of two states.
+    #[must_use]
+    pub fn max_opt(a: Option<Self>, b: Option<Self>) -> Option<Self> {
+        match (a, b) { (Some(x), Some(y)) => Some(if x.rank() >= y.rank() { x } else { y }), (Some(x), None) => Some(x), (None, y) => y }
+    }
+}
+
+impl From<ReceiptKind> for DeliveryState {
+    fn from(k: ReceiptKind) -> Self {
+        match k { ReceiptKind::Sent => Self::Sent, ReceiptKind::Delivered | ReceiptKind::Played => Self::Delivered, ReceiptKind::Read => Self::Read }
+    }
+}
+
 /// Which kind of conversation a live chat is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LiveChatKind {
@@ -1344,6 +1376,12 @@ pub struct LiveChat {
     /// mute changes made on the server arrive as
     /// [`BackendEvent::MuteChanged`] instead.
     pub mute_until: i64,
+    /// For a group: the JID of its parent community group, when
+    /// the group metadata names one. `None` for DMs, channels and
+    /// groups outside a community.
+    pub parent_jid: Option<String>,
+    /// True when this group is itself a community parent group.
+    pub is_parent: bool,
 }
 
 /// A chat-level action from the chat-actions set (app-state sync).
@@ -1715,6 +1753,10 @@ pub struct LiveMessage {
     /// app treats its presence as proof the sender is a
     /// verified business and badges the chat.
     pub sender_verified_name: Option<String>,
+    /// Synced delivery state for an outgoing message, from the
+    /// history status or a live receipt. `None` for incoming
+    /// messages and for outgoing messages with no known state.
+    pub delivery: Option<DeliveryState>,
 }
 
 impl LiveMessage {
@@ -1768,6 +1810,7 @@ impl LiveMessage {
             document_page_count: None,
             document_thumbnail: None,
             sender_verified_name: None,
+            delivery: None,
             location_thumbnail: None,
             poll_secret: None,
             poll_creator: None,
@@ -1853,6 +1896,10 @@ pub enum BackendEvent {
         kind: ReceiptKind,
         /// Unix timestamp (seconds) of the receipt.
         at: i64,
+        /// JID of the receipt actor, when the wire names one.
+        /// In a group, one member's receipt must not advance a
+        /// message to Read for everyone.
+        actor: Option<String>,
     },
     /// Someone reacted to a message (full per-sender mapping is the
     /// app's job; this carries one actor's current emoji).
@@ -2808,6 +2855,23 @@ pub enum BackendEvent {
     /// The catch-up sync finished: the roster and recent history
     /// the phone sent are fully applied.
     SyncCompleted,
+    /// The offline drain was interrupted before finishing: the
+    /// client is NOT caught up and the remainder stays queued
+    /// server-side for redelivery. This must never be treated as
+    /// completion and must never latch the synced state.
+    SyncInterrupted,
+    /// A group's community structure, learned from its group
+    /// metadata: the parent community JID (when the group is a
+    /// linked subgroup) and whether this group is itself a
+    /// community parent.
+    ChatCommunity {
+        /// Group JID the structure describes.
+        chat_jid: String,
+        /// Parent community group JID, when linked.
+        parent_jid: Option<String>,
+        /// True when this group is a community parent.
+        is_parent: bool,
+    },
     /// A better display name was resolved for a chat (a contact
     /// update arrived, group metadata supplied the subject, or
     /// the LID-to-phone mapping identified a direct chat). With

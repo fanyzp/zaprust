@@ -420,7 +420,15 @@ impl App {
                     .filter(|c| c.kind == ChatKind::Group && c.community.as_deref() == Some(name))
                     .collect();
                 tagged.sort_by_key(|c| c.id);
-                let announcement_chat_id = tagged.first().map_or(0, |c| c.id);
+                // The announcement chat is the community parent
+                // itself when the real hierarchy is known (it
+                // maps to itself in chat_parents); the first
+                // tagged group is only the fallback for rosters
+                // whose metadata has not landed yet.
+                let announcement_chat_id = tagged
+                    .iter()
+                    .find(|c| self.chat_parents.get(&c.id) == Some(&c.id))
+                    .map_or_else(|| tagged.first().map_or(0, |c| c.id), |c| c.id);
                 let avatar_seed = name.bytes().fold(0u8, u8::wrapping_add);
                 Community {
                     id: i as u64 + 1,
@@ -428,7 +436,11 @@ impl App {
                     description: None,
                     avatar_seed,
                     announcement_chat_id,
-                    group_chat_ids: tagged.iter().skip(1).map(|c| c.id).collect(),
+                    group_chat_ids: tagged
+                        .iter()
+                        .map(|c| c.id)
+                        .filter(|id| *id != announcement_chat_id)
+                        .collect(),
                     other_group_ids: Vec::new(),
                 }
             })

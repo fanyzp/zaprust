@@ -574,6 +574,7 @@ impl App {
                 // content. A live photo whose bytes are not here
                 // paints nothing in this block; the loading phase
                 // or the failure note speaks for it instead.
+                let mut photo_bottom: Option<f32> = None;
                 if is_photo && photo_a > 0.001 {
                     ui.set_opacity(photo_a);
                     let tex = self.media.textures.get(&id).cloned().or_else(|| {
@@ -592,11 +593,28 @@ impl App {
                         }
                         let max_w = (rect.width() - 120.0).min(620.0);
                         let scale = 0.96 + 0.04 * photo_a;
-                        let size = egui::Vec2::new(max_w * scale, max_w * scale * 400.0 / 600.0);
+                        // Fit the texture's real aspect inside
+                        // the stage, letterboxed: a portrait or
+                        // square photo must never be stretched
+                        // into a fixed landscape frame
+                        // (QC1614-A0-2).
+                        let tex_size = tex.size_vec2();
+                        let aspect = if tex_size.y > 0.0 {
+                            (tex_size.x / tex_size.y).clamp(0.05, 20.0)
+                        } else {
+                            1.0
+                        };
+                        let max_h = (rect.height() - 180.0).max(80.0);
+                        let mut size = egui::Vec2::new(max_w, max_w / aspect);
+                        if size.y > max_h {
+                            size = egui::Vec2::new(max_h * aspect, max_h);
+                        }
+                        size *= scale;
                         let img_rect = egui::Rect::from_center_size(
                             egui::Pos2::new(rect.center().x, rect.center().y - 24.0),
                             size,
                         );
+                        photo_bottom = Some(img_rect.bottom());
                         ui.painter().image(
                             tex.id(),
                             img_rect,
@@ -623,8 +641,10 @@ impl App {
                 // before it.
                 let content_a = if is_photo { photo_a } else { video_a };
                 if content_a > 0.001 {
-                    let cap_y =
-                        rect.center().y + (rect.width().min(740.0) * 400.0 / 600.0) / 2.0 + 2.0;
+                    let cap_y = photo_bottom.map_or_else(
+                        || rect.center().y + (rect.width().min(740.0) * 400.0 / 600.0) / 2.0 + 2.0,
+                        |bottom| bottom + 8.0,
+                    );
                     ui.painter().text(
                         egui::Pos2::new(rect.center().x, cap_y),
                         egui::Align2::CENTER_TOP,

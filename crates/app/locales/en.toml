@@ -99,11 +99,6 @@
 "conversation.unpin" = "Unpin chat"
 "conversation.mute_notifications" = "Mute notifications"
 "conversation.unmute_notifications" = "Unmute notifications"
-"conversation.quick_replies" = "Quick replies"
-"conversation.quick_replies_edit" = "Edit"
-"conversation.quick_replies_new" = "New quick reply"
-"conversation.quick_replies_add" = "Add"
-"conversation.quick_replies_empty" = "No quick replies yet. Add one with Edit."
 "conversation.editing_message" = "Editing message"
 "conversation.type_message" = "Type a message"
 

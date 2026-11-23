@@ -9,7 +9,6 @@ members = [
     "crates/backend",
     "crates/store",
     "crates/app",
-    "crates/features/quick-replies",
     "crates/features/export-chat",
     "crates/features/stickers",
     "crates/features/giphy",

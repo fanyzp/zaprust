@@ -552,6 +552,8 @@ mod tests {
             ephemeral_secs: 0,
             muted: false,
             mute_until: 0,
+            parent_jid: None,
+            is_parent: false,
         }));
         let mut msg = LiveMessage::text(
             "m1",

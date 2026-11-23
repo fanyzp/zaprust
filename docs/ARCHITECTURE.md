@@ -22,8 +22,8 @@ zaprust/
 │  │              audio, and the panic-containing supervisor.
 │  ├─ store/      The app's own chat archive: rusqlite (bundled
 │  │              SQLite), PRAGMA user_version migrations.
-│  ├─ features/   One crate per native feature (quick replies,
-│  │              export, stickers, giphy).
+│  ├─ features/   One crate per native feature (export,
+│  │              stickers, giphy).
 │  │              Compiled in, switched
 │  │              in Settings; there is no plugin system.
 │  └─ app/        The egui binary (bin name: zaprust). Screens,

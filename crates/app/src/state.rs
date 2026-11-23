@@ -1006,7 +1006,7 @@ pub(crate) struct ComposerState {
     /// if the stage ever outlives a switch that did not park it.
     pub(crate) staged_chat: Option<u64>,
     /// Measured height of the floating composer stack (accessory
-    /// lines, quick replies panel and pill) from the last frame
+    /// lines and pill) from the last frame
     /// it was drawn. The conversation reserves exactly this much
     /// bottom clearance, so the clearance cannot desync when the
     /// stack changes shape.
@@ -1689,6 +1689,12 @@ pub(crate) struct App {
     /// event lands. They merge into the overview list and their
     /// homes resolve like any other community's.
     pub(crate) session_communities: Vec<core::model::Community>,
+    /// Live community structure by chat id: a subgroup maps to
+    /// its parent community's chat id, a parent maps to itself.
+    /// Learned from group metadata (BackendEvent::ChatCommunity
+    /// and LiveChat parent fields); the Communities panel
+    /// derives from it, never from name heuristics.
+    pub(crate) chat_parents: std::collections::HashMap<u64, u64>,
     /// The announcement chats of the session-created communities,
     /// kept outside `chats` under the same rule as the demo
     /// announcement chat: the chat list never renders them as
@@ -1827,15 +1833,12 @@ pub(crate) fn today_string() -> String {
 /// features themselves live in `crates/features/*`; this list is
 /// only the switchboard the Settings page and `feature_active`
 /// share.
-pub(crate) const FEATURE_IDS: [&str; 4] = ["quick-replies", "export-chat", "stickers", "giphy"];
+pub(crate) const FEATURE_IDS: [&str; 3] = ["export-chat", "stickers", "giphy"];
 
-/// First-run feature switches: Quick Replies on, everything
-/// else off. This matches the pre-native first-run state (Quick
-/// Replies came pre-installed), so an upgrade or a fresh install
-/// behaves the way the app always did until the user changes a
-/// switch in Settings > Features.
+/// First-run feature switches: everything off until the user
+/// changes a switch in Settings > Features.
 pub(crate) fn default_feature_flags() -> std::collections::BTreeMap<String, bool> {
-    FEATURE_IDS.iter().map(|id| ((*id).to_owned(), *id == "quick-replies")).collect()
+    FEATURE_IDS.iter().map(|id| ((*id).to_owned(), false)).collect()
 }
 
 impl App {
@@ -2231,6 +2234,7 @@ impl App {
             community_create_name: String::new(),
             community_create_error: None,
             session_communities: Vec::new(),
+            chat_parents: std::collections::HashMap::new(),
             session_announcements: Vec::new(),
             header_menu_open: args.header_menu,
             pending_notifications: Vec::new(),
@@ -2800,8 +2804,10 @@ mod tests {
         // launch defaults to live mode (see Args::parse).
         args.live = false;
         let mut app = App::new(args, &ctx);
-        // quick-replies is a native feature and starts switched on.
-        let id = "quick-replies";
+        // export-chat is a native feature; switch it on to
+        // exercise the guard.
+        let id = "export-chat";
+        app.feature_flags.insert(id.to_owned(), true);
         assert!(app.feature_flags.get(id).copied().unwrap_or(false));
         let result: Option<()> = app.guard_feature(id, |_| panic!("feature blew up"));
         assert!(result.is_none(), "no value crosses a caught panic");

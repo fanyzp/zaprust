@@ -235,6 +235,7 @@ pub(super) fn translate_event(
                     message_ids: receipt.message_ids.iter().map(ToString::to_string).collect(),
                     kind,
                     at: receipt.timestamp.timestamp(),
+                    actor: Some(receipt.source.sender.to_string()),
                 });
             }
         }
@@ -489,10 +490,10 @@ pub(super) fn translate_event(
             sink.emit(BackendEvent::SyncCompleted);
         }
         Event::OfflineSyncInterrupted(_) => {
-            // The drain ended early (the connection dropped
-            // mid-sync): the sync row clears now instead of
-            // waiting out the app's quiet-window fallback.
-            sink.emit(BackendEvent::SyncCompleted);
+            // The library contract is explicit: the drain did
+            // not finish and the client is not caught up. This
+            // is never a completion (QC1614-A0-5 W1).
+            sink.emit(BackendEvent::SyncInterrupted);
         }
         Event::PictureUpdate(update) => {
             // A picture was set, changed, or removed: any cached
@@ -987,6 +988,8 @@ fn translate_history_conversation(
             .map(|end| i64::try_from(end).unwrap_or(0))
             .filter(|end| *end > now_secs)
             .unwrap_or(0),
+        parent_jid: None,
+        is_parent: false,
     };
     sink.emit(BackendEvent::ChatUpsert(chat));
     for msg in messages {
@@ -1071,6 +1074,18 @@ fn history_message(
     // app's flag resolution never lets an uninformed upsert clear
     // a star either path set.
     msg.starred = info.starred.unwrap_or(false);
+    // The wire's authoritative per-message status restores the
+    // delivery ticks a fresh link would otherwise lose: history
+    // translation reads WebMessageInfo.status for outgoing rows.
+    if from_me {
+        use whatsapp_rust::prelude::wa::web_message_info::Status as WireStatus;
+        msg.delivery = match info.status {
+            Some(WireStatus::Read) | Some(WireStatus::Played) => Some(crate::DeliveryState::Read),
+            Some(WireStatus::DeliveryAck) => Some(crate::DeliveryState::Delivered),
+            Some(WireStatus::ServerAck) | Some(WireStatus::Pending) => Some(crate::DeliveryState::Sent),
+            _ => None,
+        };
+    }
     msg.kind = kind;
     msg.view_once = view_once;
     msg.photo_ref = super::util::photo_ref_of(proto);
@@ -1486,6 +1501,8 @@ pub(super) fn translate_message(
         ephemeral_secs: 0,
         muted: false,
         mute_until: 0,
+        parent_jid: None,
+        is_parent: false,
     };
     let mut msg = LiveMessage::text(
         ctx.info.id.to_string(),

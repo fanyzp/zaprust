@@ -1,38 +1,25 @@
-//! The composer: the floating glass pill (Composer B: attach,
-//! emoji and quick replies buttons plus the text input, with
-//! the send/microphone morph in its own always-reserved slot
-//! outside the pill), the accessory lines above it, the send
-//! path, and the quick replies editor popover.
+//! The composer: the floating glass pill (Composer B: attach
+//! and emoji buttons plus the text input, with the
+//! send/microphone morph in its own always-reserved slot
+//! outside the pill), the accessory lines above it, and the
+//! send path.
 
 use super::*;
 
 impl App {
     /// Closes every composer-attached floating surface: the media
-    /// picker, the attach menu, the quick replies panel and its
-    /// editor. These surfaces are mutually exclusive BY STATE:
+    /// picker and the attach menu. These surfaces are mutually
+    /// exclusive BY STATE:
     /// at most one of them is open at any moment, so two
     /// translucent panels can never stack over the stream (the
-    /// overlap in the owner's report came from the quick replies
+    /// overlap in the owner's report came from a floating
     /// bar rendering through the open emoji picker). Every open
     /// site below routes through here first.
     pub(crate) fn close_composer_surfaces(&mut self) {
         self.picker.open = false;
         self.composer.rich_menu_open = false;
-        quick_replies::set_panel_open(false);
-        quick_replies::set_editor_open(false);
     }
 
-    /// Opens the quick replies editor, closing the panel it edits
-    /// and every other composer surface: the editor carries the
-    /// full list itself, so nothing is lost by the panel closing,
-    /// and the two never overlap on narrow windows.
-    fn open_quick_replies_editor(&mut self) {
-        if !self.feature_active("quick-replies") {
-            return;
-        }
-        self.close_composer_surfaces();
-        quick_replies::set_editor_open(true);
-    }
 
     /// Draws the floating composer stack and measures it: the
     /// measured height becomes the stream's bottom clearance
@@ -49,15 +36,6 @@ impl App {
         // bar), detached from every edge, soft shadow, messages
         // scroll underneath it. egui has no backdrop blur, so the
         // glass feel is a slightly translucent elevated fill.
-        let quick_replies_active = self.feature_active("quick-replies");
-        if !quick_replies_active {
-            // The feature switch owns the panel and its editor:
-            // switching it off while either surface is open must
-            // not leave a stale surface behind, so both close
-            // here, at render time, before anything can draw.
-            quick_replies::set_panel_open(false);
-            quick_replies::set_editor_open(false);
-        }
         let fmargin = side_margin(full_rect.width());
         // Fake-frost underlay for the composer zone: a
         // soft chat-background rect under the whole
@@ -79,128 +57,6 @@ impl App {
             .order(egui::Order::Foreground)
             .show(ui.ctx(), |ui| {
                 ui.set_width(full_rect.width() - fmargin * 2.0);
-                // No quick replies hint line: the triggers
-                // are not advertised as a permanent pill
-                // above the composer. The feature is found
-                // through use (typing "/" opens the panel,
-                // the composer button toggles it) and the
-                // send path still expands a typed trigger.
-                // Native quick replies panel: a row of canned
-                // messages above the pill. Tapping one inserts
-                // it into the draft; it never sends directly.
-                let qr_open = quick_replies_active && quick_replies::panel_open();
-                // The phase machine still runs while the feature
-                // is off so its exit state drains, but its result
-                // is discarded: with the switch off the panel
-                // never renders at all.
-                let qr_phase = crate::anim::popup_phase(ui.ctx(), "qr_panel", qr_open, self.motion);
-                let qr_phase = if quick_replies_active { qr_phase } else { None };
-                let qr_exiting = !qr_open;
-                if let Some(qr_p) = qr_phase {
-                    let items = quick_replies::items();
-                    let qr_frame = crate::theme::glass_panel_frame(t, 12)
-                        .inner_margin(Margin::symmetric(8, 6))
-                        .show(ui, |ui| {
-                            if qr_p < 0.999 {
-                                ui.set_opacity(qr_p);
-                            }
-                            ui.horizontal(|ui| {
-                                if items.is_empty() {
-                                    ui.label(
-                                        RichText::new(crate::i18n::t(
-                                            "conversation.quick_replies_empty",
-                                        ))
-                                        .size(11.5)
-                                        .color(rgb(t.text_secondary)),
-                                    );
-                                } else {
-                                    let chips_w = (ui.available_width() - 84.0).max(80.0);
-                                    ui.allocate_ui_with_layout(
-                                        Vec2::new(chips_w, 36.0),
-                                        Layout::left_to_right(Align::Center),
-                                        |ui| {
-                                            egui::ScrollArea::horizontal()
-                                                .id_salt("native_qr_chips")
-                                                .show(ui, |ui| {
-                                                    ui.horizontal(|ui| {
-                                                        for item in &items {
-                                                            let label: String = item
-                                                                .body
-                                                                .chars()
-                                                                .take(42)
-                                                                .collect();
-                                                            if crate::widgets::button(
-                                                                ui,
-                                                                t,
-                                                                &label,
-                                                                crate::widgets::Btn::Secondary,
-                                                            )
-                                                            .clicked()
-                                                                && !qr_exiting
-                                                            {
-                                                                if self
-                                                                    .composer
-                                                                    .draft
-                                                                    .trim_start()
-                                                                    .starts_with('/')
-                                                                    || self
-                                                                        .composer
-                                                                        .draft
-                                                                        .trim()
-                                                                        .is_empty()
-                                                                {
-                                                                    self.composer.draft =
-                                                                        item.body.clone();
-                                                                } else {
-                                                                    self.composer.draft.push(' ');
-                                                                    self.composer
-                                                                        .draft
-                                                                        .push_str(&item.body);
-                                                                }
-                                                                quick_replies::set_panel_open(
-                                                                    false,
-                                                                );
-                                                            }
-                                                        }
-                                                    });
-                                                });
-                                        },
-                                    );
-                                }
-                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                    if crate::widgets::icon_button(
-                                        ui,
-                                        t,
-                                        crate::icons::Icon::X,
-                                        28.0,
-                                        &crate::i18n::t("conversation.quick_replies"),
-                                        None,
-                                    )
-                                    .clicked()
-                                    {
-                                        quick_replies::set_panel_open(false);
-                                    }
-                                    if crate::widgets::button(
-                                        ui,
-                                        t,
-                                        &crate::i18n::t("conversation.quick_replies_edit"),
-                                        crate::widgets::Btn::Secondary,
-                                    )
-                                    .clicked()
-                                        && !qr_exiting
-                                    {
-                                        self.open_quick_replies_editor();
-                                    }
-                                });
-                            });
-                        });
-                    crate::theme::paint_glass_edge(ui.painter(), qr_frame.response.rect, 12.0, t);
-                    // Entrance settle: the gap under the
-                    // panel starts 8 px wider and eases
-                    // shut, so the panel reads as rising
-                    // out of the composer it belongs to.
-                    ui.add_space(4.0 + (1.0 - qr_p) * 8.0);
-                }
                 {
                     // Set inside the row from the text
                     // input's state; the focus ring is
@@ -214,7 +70,7 @@ impl App {
                     let mut send_clicked = false;
                     // Composer B: one horizontal row. The
                     // glass pill (the attach and emoji
-                    // buttons, the quick replies toggle and
+                    // buttons and
                     // the text input, with the reply and
                     // editing bars above the input) takes
                     // the width left after the external
@@ -555,11 +411,7 @@ impl App {
                                     // field's own 8 px reserve,
                                     // mirroring the desired_width
                                     // call below.
-                                    let icons = if quick_replies_active && !self.single_pane {
-                                        3.0
-                                    } else {
-                                        2.0
-                                    };
+                                    let icons = 2.0;
                                     let consumed = icons * (36.0 + ui.spacing().item_spacing.x);
                                     let field_w = (ui.available_width() - consumed - 8.0).max(80.0);
                                     let rows = composer_visual_rows(
@@ -599,30 +451,6 @@ impl App {
                                             } else {
                                                 self.close_composer_surfaces();
                                                 self.picker.open = true;
-                                            }
-                                        }
-                                        // In single-pane mode the
-                                        // quick replies button leaves
-                                        // the pill: at phone widths its
-                                        // 36 px is the difference
-                                        // between a usable input and a
-                                        // wrapped placeholder. The
-                                        // panel still opens by typing
-                                        // "/" in the input.
-                                        if quick_replies_active
-                                            && !self.single_pane
-                                            && composer_icon(
-                                                ui,
-                                                crate::icons::Icon::Chat,
-                                                t,
-                                                &crate::i18n::t("conversation.quick_replies"),
-                                            )
-                                        {
-                                            if quick_replies::panel_open() {
-                                                quick_replies::set_panel_open(false);
-                                            } else {
-                                                self.close_composer_surfaces();
-                                                quick_replies::set_panel_open(true);
                                             }
                                         }
                                         if rec_p > 0.001 {
@@ -699,19 +527,6 @@ impl App {
                                             // real read action (see live.rs).
                                             if response.gained_focus() || response.changed() {
                                                 *engaged = true;
-                                            }
-                                            // Typing "/" at the start of the
-                                            // draft opens the native quick
-                                            // replies panel, closing the
-                                            // picker or attach menu if one
-                                            // is up (one surface at a time).
-                                            if quick_replies_active
-                                                && !staged_active
-                                                && self.composer.draft.starts_with('/')
-                                                && !quick_replies::panel_open()
-                                            {
-                                                self.close_composer_surfaces();
-                                                quick_replies::set_panel_open(true);
                                             }
                                             enter_send = self.enter_sends
                                                 && response.has_focus()
@@ -923,14 +738,7 @@ impl App {
                                 // Quick Replies expansion
                                 // runs through the feature
                                 // guard (see state.rs).
-                                let body = if quick_replies_active {
-                                    self.guard_feature("quick-replies", |app| {
-                                        app.expand_quick_reply(&raw)
-                                    })
-                                    .unwrap_or(raw)
-                                } else {
-                                    raw
-                                };
+                                let body = raw;
                                 // The reply target is honored only
                                 // while its message is in the open
                                 // conversation: the per-chat parking
@@ -1081,113 +889,6 @@ impl App {
         }
     }
 
-    /// The quick replies editor popover: the list with a remove
-    /// button per entry and an add row, anchored above the
-    /// composer so it reads as part of the panel it edits.
-    pub(crate) fn draw_quick_replies_editor(&mut self, ui: &mut egui::Ui, t: Tokens) {
-        // Quick replies editor popover: the list with a
-        // remove button per entry and an add row. Anchored
-        // above the composer so it reads as part of the
-        // panel it edits.
-        if !self.feature_active("quick-replies") {
-            // Same switch as the panel: with the feature off the
-            // editor cannot open, and an editor left open when
-            // the switch flips closes here. The phase machine
-            // still ticks once with closed state so its exit
-            // state drains instead of replaying later.
-            quick_replies::set_editor_open(false);
-            quick_replies::set_panel_open(false);
-            let _ = crate::anim::popup_phase(ui.ctx(), "qr_editor", false, self.motion);
-            return;
-        }
-        let qr_editor_open = quick_replies::editor_open();
-        let ed_phase = crate::anim::popup_phase(ui.ctx(), "qr_editor", qr_editor_open, self.motion);
-        if let Some(ed_p) = ed_phase {
-            let ed_exiting = !qr_editor_open;
-            // The window's own open flag stays up while
-            // the exit runs; its close button feeds the
-            // module state, which starts the exit.
-            let mut win_open = true;
-            let qr_win = egui::Window::new(crate::i18n::t("conversation.quick_replies"))
-                .open(&mut win_open)
-                .collapsible(false)
-                .resizable(false)
-                .anchor(egui::Align2::CENTER_BOTTOM, Vec2::new(0.0, -108.0))
-                .default_width(330.0)
-                .frame(
-                    crate::theme::glass_panel_frame(t, 12).inner_margin(Margin::symmetric(12, 10)),
-                )
-                .show(ui.ctx(), |ui| {
-                    if ed_p < 0.999 {
-                        ui.set_opacity(ed_p);
-                    }
-                    let items = quick_replies::items();
-                    if items.is_empty() {
-                        ui.label(
-                            RichText::new(crate::i18n::t("conversation.quick_replies_empty"))
-                                .size(12.0)
-                                .color(rgb(t.text_secondary)),
-                        );
-                    }
-                    for (i, item) in items.iter().enumerate() {
-                        ui.horizontal(|ui| {
-                            if crate::widgets::icon_button(
-                                ui,
-                                t,
-                                crate::icons::Icon::X,
-                                24.0,
-                                &crate::i18n::t("conversation.quick_replies"),
-                                None,
-                            )
-                            .clicked()
-                                && !ed_exiting
-                            {
-                                quick_replies::remove(i);
-                            }
-                            let label = if item.trigger.is_empty() {
-                                item.body.clone()
-                            } else {
-                                format!("{}  {}", item.trigger, item.body)
-                            };
-                            ui.label(RichText::new(label).size(13.0));
-                        });
-                    }
-                    ui.add_space(6.0);
-                    ui.horizontal(|ui| {
-                        let mut draft = quick_replies::editor_draft();
-                        let resp = ui.add(
-                            egui::TextEdit::singleline(&mut draft)
-                                .hint_text(crate::i18n::t("conversation.quick_replies_new"))
-                                .desired_width(190.0),
-                        );
-                        quick_replies::set_editor_draft(draft.clone());
-                        let add_clicked = crate::widgets::button(
-                            ui,
-                            t,
-                            &crate::i18n::t("conversation.quick_replies_add"),
-                            crate::widgets::Btn::Primary,
-                        )
-                        .clicked();
-                        let enter =
-                            resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                        if (add_clicked || enter) && !ed_exiting && !draft.trim().is_empty() {
-                            quick_replies::add(&draft);
-                            quick_replies::set_editor_draft(String::new());
-                        }
-                    });
-                });
-            if let Some(win) = &qr_win {
-                let painter = ui.ctx().layer_painter(egui::LayerId::new(
-                    egui::Order::Foreground,
-                    egui::Id::unique("zaprust_glass_edge"),
-                ));
-                crate::theme::paint_glass_edge(&painter, win.response.rect, 12.0, t);
-            }
-            if !win_open {
-                quick_replies::set_editor_open(false);
-            }
-        }
-    }
 }
 
 /// The tallest the composer text field may grow, in visual

@@ -237,6 +237,14 @@ async fn heal_one(
         crate::LiveChatKind::Group => {
             let Ok(parsed) = jid.parse::<Jid>() else { return true };
             let Ok(meta) = client.groups().fetch_metadata(&parsed).await else { return false };
+            // The same metadata carries the community hierarchy:
+            // surface it so the Communities panel works from the
+            // real structure, not from name tags.
+            sink.emit(BackendEvent::ChatCommunity {
+                chat_jid: jid.to_owned(),
+                parent_jid: meta.parent_group_jid().map(|p| p.to_string()),
+                is_parent: meta.is_parent_group(),
+            });
             let mut renamed = false;
             if let Some(subject) = meta.subject.clone().filter(|s| !s.trim().is_empty()) {
                 sink.emit(BackendEvent::ChatRenamed {
@@ -2006,6 +2014,8 @@ pub(super) async fn run_async(
                                         ephemeral_secs: 0,
                                         muted: false,
                                         mute_until: 0,
+                                        parent_jid: None,
+                                        is_parent: false,
                                     }));
                                 }
                                 Err(e) => events.emit(BackendEvent::Error {
@@ -2381,6 +2391,8 @@ pub(super) async fn run_async(
                                 ephemeral_secs: 0,
                                 muted: false,
                                 mute_until: 0,
+                                parent_jid: None,
+                                is_parent: false,
                             }));
                         }
                         Err(e) => events.emit(BackendEvent::Error {

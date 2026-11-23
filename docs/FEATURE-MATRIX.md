@@ -99,7 +99,6 @@ live session.
 
 | Feature | Crate | Settings home | Notes |
 |---|---|---|---|
-| Quick Replies | `crates/features/quick-replies` | Features (on by default) | Trigger expansion (`/thanks`, `/omw`, `/docs`) on send |
 | Chat Export | `crates/features/export-chat` | Features | Export the open chat as Markdown, or as a ZIP with its media attachments and a manifest |
 | Stickers | `crates/features/stickers` | Features | Sticker packs in the media picker |
 | GIF Search | `crates/features/giphy` | Features | GIF tab in the media picker (GIPHY, own API key) |

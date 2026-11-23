@@ -44,6 +44,8 @@ pub const FAKE_DM_JID: &str = "10000000001@s.whatsapp.net";
 pub const FAKE_GROUP_JID: &str = "10000000002@g.us";
 /// JID of the scripted channel.
 pub const FAKE_CHANNEL_JID: &str = "10000000003@newsletter";
+/// JID of the scripted community parent group.
+pub const FAKE_COMMUNITY_JID: &str = "10000000004@g.us";
 
 /// The deterministic fake backend. See the module docs.
 #[derive(Debug, Clone)]
@@ -261,6 +263,8 @@ pub fn scripted_chats() -> Vec<LiveChat> {
             ephemeral_secs: 0,
             muted: false,
             mute_until: 0,
+            parent_jid: None,
+            is_parent: false,
         },
         LiveChat {
             jid: FAKE_GROUP_JID.to_owned(),
@@ -275,6 +279,8 @@ pub fn scripted_chats() -> Vec<LiveChat> {
             ephemeral_secs: 0,
             muted: false,
             mute_until: 0,
+            parent_jid: Some(FAKE_COMMUNITY_JID.to_owned()),
+            is_parent: false,
         },
         LiveChat {
             jid: FAKE_CHANNEL_JID.to_owned(),
@@ -289,6 +295,24 @@ pub fn scripted_chats() -> Vec<LiveChat> {
             ephemeral_secs: 0,
             muted: false,
             mute_until: 0,
+            parent_jid: None,
+            is_parent: false,
+        },
+        LiveChat {
+            jid: FAKE_COMMUNITY_JID.to_owned(),
+            title: "Weekend Community (live demo)".to_owned(),
+            kind: LiveChatKind::Group,
+            preview: "Welcome to the community".to_owned(),
+            preview_sender: None,
+            timestamp: 1_700_000_050,
+            unread: 0,
+            archived: false,
+            pinned: false,
+            ephemeral_secs: 0,
+            muted: false,
+            mute_until: 0,
+            parent_jid: None,
+            is_parent: true,
         },
     ]
 }
@@ -691,6 +715,7 @@ pub fn demo_script() -> Vec<DemoStep> {
                 message_ids: vec!["fake-2".to_owned()],
                 kind: crate::ReceiptKind::Delivered,
                 at: BASE + 58,
+                actor: None,
             },
         ),
         step(
@@ -709,6 +734,7 @@ pub fn demo_script() -> Vec<DemoStep> {
                 message_ids: vec!["fake-2".to_owned()],
                 kind: crate::ReceiptKind::Read,
                 at: BASE + 84,
+                actor: None,
             },
         ),
         step(
@@ -954,12 +980,14 @@ impl Backend for FakeBackend {
                         message_ids: vec![id.clone()],
                         kind: crate::ReceiptKind::Delivered,
                         at: ts,
+                        actor: None,
                     });
                     events.emit(BackendEvent::Receipt {
                         chat_jid: chat_jid.clone(),
                         message_ids: vec![id],
                         kind: crate::ReceiptKind::Read,
                         at: ts,
+                        actor: None,
                     });
                     if chat_jid == FAKE_DM_JID {
                         // The scripted reply lives under the
@@ -1080,12 +1108,14 @@ impl Backend for FakeBackend {
                         message_ids: vec![id.clone()],
                         kind: crate::ReceiptKind::Delivered,
                         at: ts,
+                        actor: None,
                     });
                     events.emit(BackendEvent::Receipt {
                         chat_jid,
                         message_ids: vec![id],
                         kind: crate::ReceiptKind::Read,
                         at: ts,
+                        actor: None,
                     });
                 }
                 BackendCommand::SendLocation {
@@ -1120,12 +1150,14 @@ impl Backend for FakeBackend {
                         message_ids: vec![id.clone()],
                         kind: crate::ReceiptKind::Delivered,
                         at: ts,
+                        actor: None,
                     });
                     events.emit(BackendEvent::Receipt {
                         chat_jid,
                         message_ids: vec![id],
                         kind: crate::ReceiptKind::Read,
                         at: ts,
+                        actor: None,
                     });
                 }
                 BackendCommand::StartCall { chat_jid, video } => {
@@ -1720,6 +1752,8 @@ impl Backend for FakeBackend {
                             ephemeral_secs: 0,
                             muted: false,
                             mute_until: 0,
+                            parent_jid: None,
+                            is_parent: false,
                         },
                     );
                     events.emit(BackendEvent::ChatUpsert(LiveChat {
@@ -1735,6 +1769,8 @@ impl Backend for FakeBackend {
                         ephemeral_secs: 0,
                         muted: false,
                         mute_until: 0,
+                        parent_jid: None,
+                        is_parent: false,
                     }));
                 }
                 BackendCommand::CreateCommunity { name } => {
@@ -1961,6 +1997,8 @@ impl Backend for FakeBackend {
                             ephemeral_secs: 0,
                             muted: false,
                             mute_until: 0,
+                            parent_jid: None,
+                            is_parent: false,
                         };
                         chat_state.insert(jid, chat.clone());
                         events.emit(BackendEvent::ChatUpsert(chat));
@@ -2133,6 +2171,8 @@ impl Backend for FakeBackend {
                                 ephemeral_secs: 0,
                                 muted: false,
                                 mute_until: 0,
+                                parent_jid: None,
+                                is_parent: false,
                             });
                             events.emit(BackendEvent::ContactResolved { chat, alt_jid: None });
                         }

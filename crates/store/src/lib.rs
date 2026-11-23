@@ -371,6 +371,11 @@ struct MessageData {
     /// stated one; the app badges the chat from it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     verified_name: Option<String>,
+    /// Synced delivery state of an outgoing message,
+    /// archived so read ticks survive a restart. Merges are
+    /// monotonic: a rewrite never lowers it.
+    #[serde(default)]
+    delivery: Option<backend::DeliveryState>,
 }
 
 /// One stored profile picture row: (picture_id, bytes,
@@ -1134,6 +1139,13 @@ impl Store {
         } else {
             None
         };
+        // Delivery is synced state: a rewrite carrying a lesser
+        // (or no) state must never lower what the archive knows.
+        let stored_delivery = Self::read_message_data(conn, &msg.chat_jid, &msg.id)
+            .ok()
+            .flatten()
+            .and_then(|data| data.delivery);
+        let delivery = backend::DeliveryState::max_opt(msg.delivery, stored_delivery);
         let mut poll_ballots: Vec<(String, Vec<usize>)> = msg.poll_ballots.clone();
         let existing_poll = if matches!(stored_kind, Some(backend::LiveMessageKind::Poll { .. })) {
             Self::read_message_data(conn, &msg.chat_jid, &msg.id)?
@@ -1190,6 +1202,7 @@ impl Store {
             document_thumbnail: msg.document_thumbnail.clone(),
             location_thumbnail: msg.location_thumbnail.clone(),
             verified_name: msg.sender_verified_name.clone(),
+            delivery,
             poll_secret: msg
                 .poll_secret
                 .clone()
@@ -1816,6 +1829,8 @@ impl Store {
                 ephemeral_secs: u32::try_from(row.get::<_, i64>(9)?).unwrap_or(0),
                 muted: row.get::<_, i64>(10)? != 0,
                 mute_until: row.get(11)?,
+                parent_jid: None,
+                is_parent: false,
             })
         })?;
         let mut out = Vec::new();
@@ -1996,6 +2011,7 @@ impl Store {
             msg.document_thumbnail = data.document_thumbnail;
             msg.location_thumbnail = data.location_thumbnail;
             msg.sender_verified_name = data.verified_name;
+            msg.delivery = data.delivery;
             msg.poll_secret = data.poll_secret;
             msg.poll_creator = data.poll_creator;
             msg.poll_ballots = data.poll_ballots;
@@ -2013,6 +2029,79 @@ impl Store {
             out.push((msg, flags));
         }
         Ok((out, skipped))
+    }
+
+    /// Sets one message's archived delivery state, monotonically:
+    /// a lesser state never overwrites a greater one. Used by the
+    /// live receipt path, which advances ticks without a full
+    /// message rewrite.
+    ///
+    /// # Errors
+    /// [`StoreError`] on SQLite failures or a corrupt payload.
+    pub fn set_message_delivery(
+        &self,
+        chat_jid: &str,
+        id: &str,
+        delivery: backend::DeliveryState,
+    ) -> Result<bool, StoreError> {
+        let mut data = match Self::read_message_data(&self.conn, chat_jid, id)? {
+            Some(data) => data,
+            None => {
+                // A plain-text row carries no payload yet; the
+                // message exists, so start one for it. A missing
+                // row is not an error, just nothing to advance.
+                let exists: bool = self.conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM messages WHERE chat_jid = ?1 AND id = ?2)",
+                    params![chat_jid, id],
+                    |row| row.get(0),
+                )?;
+                if !exists {
+                    return Ok(false);
+                }
+                MessageData::default()
+            }
+        };
+        if backend::DeliveryState::max_opt(data.delivery, Some(delivery)) == data.delivery {
+            return Ok(false);
+        }
+        data.delivery = Some(delivery);
+        let data_json = serde_json::to_string(&data).map_err(|e| {
+            StoreError::Sqlite(rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
+        })?;
+        self.conn.execute(
+            "UPDATE messages SET data = ?1 WHERE chat_jid = ?2 AND id = ?3",
+            params![data_json, chat_jid, id],
+        )?;
+        Ok(true)
+    }
+
+    /// Every starred message in the archive, across all chats,
+    /// newest first: the Starred panel's live data source. Rows
+    /// are returned with their flags so the caller can filter
+    /// and render exactly as the per-chat loads do.
+    ///
+    /// # Errors
+    /// [`StoreError`] on SQLite failures.
+    pub fn starred_messages(&self) -> Result<Vec<(LiveMessage, i64)>, StoreError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT chat_jid FROM messages WHERE flags & ?1 != 0 GROUP BY chat_jid",
+        )?;
+        let chat_rows = stmt.query_map(params![FLAG_STARRED], |row| row.get::<_, String>(0))?;
+        let mut chat_jids = Vec::new();
+        for row in chat_rows {
+            chat_jids.push(row?);
+        }
+        drop(stmt);
+        let mut out = Vec::new();
+        for jid in &chat_jids {
+            for (msg, flags) in self.messages(jid)? {
+                if flags & FLAG_STARRED != 0 {
+                    out.push((msg, flags));
+                }
+            }
+        }
+        out.sort_by(|a, b| b.0.timestamp.cmp(&a.0.timestamp).then_with(|| b.0.id.cmp(&a.0.id)));
+        Ok(out)
     }
 
     /// Global message search over the archive (design standard
@@ -3657,6 +3746,8 @@ mod tests {
             ephemeral_secs: 0,
             muted: false,
             mute_until: 0,
+            parent_jid: None,
+            is_parent: false,
         }
     }
 

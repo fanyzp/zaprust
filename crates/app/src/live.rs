@@ -442,6 +442,18 @@ pub(crate) fn is_raw_identifier(text: &str) -> bool {
     text.len() >= 9 && text.bytes().all(|b| b.is_ascii_digit())
 }
 
+/// Whether a display string is a formatted phone number (a plus
+/// sign and at least nine digits, nothing else): the state a
+/// direct chat's title sits in after the LID-to-phone heal,
+/// before any name is known. It is a healable state like a raw
+/// identifier, not a resolved name: when the contact's name
+/// arrives later, it must still be able to replace the number.
+pub(crate) fn is_formatted_phone(text: &str) -> bool {
+    text.len() >= 10
+        && text.starts_with('+')
+        && text[1..].bytes().all(|b| b.is_ascii_digit())
+}
+
 /// Maps a backend error string to a human sentence for the
 /// notice banner. The caller (the BackendEvent::Error arm) has
 /// already scrubbed the text for display; this function only
@@ -2507,7 +2519,7 @@ impl crate::state::App {
                     if let Some(subject) = subject {
                         if let Some(session) = &self.live {
                             if let Some(store) = &session.store {
-                                let _ = store.rename_chat(&chat_jid, &subject);
+                                let _ = store.rename_chat_authoritative(&chat_jid, &subject);
                             }
                         }
                         if let Some(chat) = self.chats.iter_mut().find(|c| c.id == chat_id) {
@@ -2992,8 +3004,8 @@ impl crate::state::App {
                     }
                 }
             }
-            BackendEvent::ChatRenamed { chat_jid, title } => {
-                self.apply_chat_renamed(&chat_jid, &title);
+            BackendEvent::ChatRenamed { chat_jid, title, authoritative } => {
+                self.apply_chat_renamed(&chat_jid, &title, authoritative);
             }
             BackendEvent::SenderNamed { sender_jid, name } => {
                 self.apply_sender_named(&sender_jid, &name);
@@ -3166,25 +3178,46 @@ impl crate::state::App {
         }
     }
 
-    /// Applies a resolved display name for a chat whose title is
-    /// still a raw identifier (identity healing from the backend:
-    /// a contact update, a group subject, a LID-to-phone mapping).
-    /// The archive rename carries the same guard, so memory and
-    /// disk only ever move from identifier to name.
-    fn apply_chat_renamed(&mut self, chat_jid: &str, title: &str) {
+    /// Applies a resolved display name for a chat (identity
+    /// healing from the backend: a contact update, a group
+    /// subject, a LID-to-phone mapping). A heal rename applies
+    /// only where the title is still a raw identifier or the
+    /// chat's own formatted phone number, so memory and disk
+    /// only ever move upward from an identifier. An authoritative
+    /// rename (the server stated the chat's current name: a
+    /// saved contact renamed on a device, a group subject
+    /// change) replaces a resolved title outright; without it
+    /// the first name a chat ever resolved would be frozen
+    /// forever, and real renames would never land.
+    fn apply_chat_renamed(&mut self, chat_jid: &str, title: &str, authoritative: bool) {
+        if title.is_empty() || is_raw_identifier(title) {
+            return;
+        }
         if let Some(session) = &mut self.live {
             if let Some(store) = &session.store {
-                let _ = store.rename_chat(chat_jid, title);
+                if authoritative {
+                    let _ = store.rename_chat_authoritative(chat_jid, title);
+                } else {
+                    let _ = store.rename_chat(chat_jid, title);
+                }
             }
             // A direct chat's title is the contact's name: it
             // joins the name directory under the chat's JID.
-            if !chat_jid.ends_with("@g.us") && !title.is_empty() && !is_raw_identifier(title) {
+            // Only direct chats feed the person directory: a
+            // channel's healed name is not a person, and letting
+            // it in would let a channel title answer for a
+            // mention or a sender later.
+            let is_dm = chat_jid.ends_with("@s.whatsapp.net") || chat_jid.ends_with("@lid");
+            if is_dm {
                 session.names.insert(chat_jid.to_owned(), title.to_owned());
             }
         }
         let id = jid_id(chat_jid);
         if let Some(chat) = self.chats.iter_mut().find(|c| c.id == id) {
-            if chat.title.is_empty() || is_raw_identifier(&chat.title) {
+            let healable = chat.title.is_empty()
+                || is_raw_identifier(&chat.title)
+                || is_formatted_phone(&chat.title);
+            if authoritative || healable {
                 chat.title = title.to_owned();
             }
         }
@@ -3327,6 +3360,24 @@ impl crate::state::App {
             if let Some(known) = self.chats.iter().find(|c| c.id == id) {
                 if !known.title.is_empty() && !is_raw_identifier(&known.title) {
                     merged.title = known.title.clone();
+                }
+            }
+        }
+        // Same protection in the saved-name direction: a direct
+        // chat whose contact name the session directory already
+        // knows (learned from a history payload, a contact
+        // update, or a rename) keeps that name over an arrival
+        // upsert's lesser title. An arrival titles its chat from
+        // the sender's current push name, and a push name must
+        // never downgrade a saved name; the backend resolves its
+        // own titles through its identity book, and this is the
+        // same rule on the host side for upserts from any source.
+        if live.kind == LiveChatKind::Dm {
+            if let Some(session) = &self.live {
+                if let Some(name) = session.names.get(&live.jid) {
+                    if !name.is_empty() && !is_raw_identifier(name) {
+                        merged.title = name.clone();
+                    }
                 }
             }
         }
@@ -6873,6 +6924,129 @@ mod burst_drain_tests {
         tx.send(group_upsert("Grup Kebesaran Baru")).unwrap();
         drain_all(&mut app, &ctx);
         assert_eq!(chat_of(&app, jid_id(GROUP)).title, "Grup Kebesaran Baru");
+    }
+
+    /// v1.6.12: the identity discipline on titles. A direct
+    /// chat's arrival upsert titles from the sender's push name;
+    /// once the session directory knows the saved name, arrivals
+    /// must not downgrade the title back to the push name. A
+    /// heal rename never replaces a resolved title, an
+    /// authoritative rename does (mirror and archive), a title
+    /// healed to the formatted phone number still upgrades to a
+    /// name, and a channel's healed name never enters the person
+    /// directory.
+    #[test]
+    fn dm_titles_follow_the_identity_discipline() {
+        let dm_upsert_title = |title: &str| {
+            BackendEvent::ChatUpsert(LiveChat {
+                jid: CHAT_JID.to_owned(),
+                title: title.to_owned(),
+                kind: LiveChatKind::Dm,
+                preview: String::new(),
+                preview_sender: None,
+                timestamp: BASE_TS,
+                unread: 0,
+                archived: false,
+                pinned: false,
+                ephemeral_secs: 0,
+                muted: false,
+                mute_until: 0,
+            })
+        };
+        let stored_title = |app: &App| {
+            app.live
+                .as_ref()
+                .unwrap()
+                .store
+                .as_ref()
+                .unwrap()
+                .chats()
+                .unwrap()
+                .iter()
+                .find(|c| c.jid == CHAT_JID)
+                .unwrap()
+                .title
+                .clone()
+        };
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        // The chat arrives titled by the push name; the saved
+        // name is learned (a history payload or contact update
+        // broadcasts it), and the next push-name arrival must
+        // not downgrade the title.
+        tx.send(dm_upsert_title("Push Sarah")).unwrap();
+        drain_all(&mut app, &ctx);
+        tx.send(BackendEvent::SenderNamed {
+            sender_jid: CHAT_JID.to_owned(),
+            name: "Saved Sarah".to_owned(),
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        tx.send(dm_upsert_title("Push Sarah")).unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(chat_of(&app, jid_id(CHAT_JID)).title, "Saved Sarah");
+        assert_eq!(stored_title(&app), "Saved Sarah");
+        // A heal rename cannot replace a resolved title; an
+        // authoritative one can, in the mirror and the archive.
+        tx.send(BackendEvent::ChatRenamed {
+            chat_jid: CHAT_JID.to_owned(),
+            title: "Heal Name".to_owned(),
+            authoritative: false,
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(chat_of(&app, jid_id(CHAT_JID)).title, "Saved Sarah");
+        tx.send(BackendEvent::ChatRenamed {
+            chat_jid: CHAT_JID.to_owned(),
+            title: "Sarah Wijaya".to_owned(),
+            authoritative: true,
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(chat_of(&app, jid_id(CHAT_JID)).title, "Sarah Wijaya");
+        assert_eq!(stored_title(&app), "Sarah Wijaya");
+        // A channel's healed name stays out of the person
+        // directory.
+        tx.send(BackendEvent::ChatRenamed {
+            chat_jid: "120363999888777@newsletter".to_owned(),
+            title: "Some Channel".to_owned(),
+            authoritative: false,
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        let session = app.live.as_ref().unwrap();
+        assert!(!session.names.contains_key("120363999888777@newsletter"));
+    }
+
+    /// v1.6.12: a direct chat healed to its formatted phone
+    /// number upgrades when the name arrives through the heal
+    /// path (the number is a healable state, not a resolution).
+    #[test]
+    fn phone_healed_dm_title_upgrades_to_the_name() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        tx.send(BackendEvent::ChatUpsert(LiveChat {
+            jid: CHAT_JID.to_owned(),
+            title: "+6281234567890".to_owned(),
+            kind: LiveChatKind::Dm,
+            preview: String::new(),
+            preview_sender: None,
+            timestamp: BASE_TS,
+            unread: 0,
+            archived: false,
+            pinned: false,
+            ephemeral_secs: 0,
+            muted: false,
+            mute_until: 0,
+        }))
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        tx.send(BackendEvent::ChatRenamed {
+            chat_jid: CHAT_JID.to_owned(),
+            title: "Saved Sarah".to_owned(),
+            authoritative: false,
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(chat_of(&app, jid_id(CHAT_JID)).title, "Saved Sarah");
     }
 
     /// v1.6.7: an undecryptable message the wire says to show

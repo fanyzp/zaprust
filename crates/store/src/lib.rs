@@ -859,10 +859,15 @@ impl Store {
     }
 
     /// Applies a resolved display name to a chat whose stored
-    /// title is still a raw identifier (or empty). Returns whether
-    /// a row changed. A resolved title is never overwritten, and a
-    /// raw identifier is never accepted as the new title: renames
-    /// only ever move a title from identifier to name.
+    /// title is still a raw identifier (or empty, or the chat's
+    /// own formatted phone number from the LID-to-phone heal).
+    /// Returns whether a row changed. A resolved title is never
+    /// overwritten, and a raw identifier is never accepted as the
+    /// new title: renames only ever move a title upward from an
+    /// identifier or a bare number to a name. The formatted-phone
+    /// state counts as healable, not resolved: a chat healed to
+    /// "+phone" must still be able to upgrade when the contact's
+    /// name arrives later.
     ///
     /// # Errors
     /// [`StoreError`] on SQLite failures.
@@ -872,7 +877,36 @@ impl Store {
         }
         let changed = self.conn.execute(
             "UPDATE chats SET title = ?2 WHERE jid = ?1
-             AND (title = '' OR (length(title) >= 9 AND title NOT GLOB '*[^0-9]*'))",
+             AND (title = ''
+                  OR (length(title) >= 9 AND title NOT GLOB '*[^0-9]*')
+                  OR (length(title) >= 10 AND title LIKE '+%'
+                      AND substr(title, 2) NOT GLOB '*[^0-9]*'))",
+            params![chat_jid, title],
+        )?;
+        Ok(changed > 0)
+    }
+
+    /// Applies an authoritative rename: the server has stated
+    /// the chat's current name (a saved contact renamed on a
+    /// device, a group subject change), so the stored title is
+    /// replaced outright, resolved titles included. Without this
+    /// path the heal guard above would freeze the first name a
+    /// chat ever resolved, and real renames would never reach
+    /// the archive. An empty or raw-identifier title is still
+    /// refused: no authoritative source states those.
+    ///
+    /// # Errors
+    /// [`StoreError`] on SQLite failures.
+    pub fn rename_chat_authoritative(
+        &self,
+        chat_jid: &str,
+        title: &str,
+    ) -> Result<bool, StoreError> {
+        if title.trim().is_empty() || is_raw_identifier(title) {
+            return Ok(false);
+        }
+        let changed = self.conn.execute(
+            "UPDATE chats SET title = ?2 WHERE jid = ?1",
             params![chat_jid, title],
         )?;
         Ok(changed > 0)
@@ -3198,6 +3232,22 @@ mod tests {
             !store.rename_chat(group, "120363430176830545").unwrap(),
             "a raw rename is refused"
         );
+
+        // A chat healed to its formatted phone number is not
+        // resolved yet: the contact's name still upgrades it
+        // through the heal path.
+        let dm = "6281234567890@s.whatsapp.net";
+        store.upsert_chat(&titled_chat(dm, "+6281234567890")).unwrap();
+        assert!(store.rename_chat(dm, "Saved Sarah").unwrap());
+        // An authoritative rename replaces even a resolved
+        // title (a contact renamed on the phone, a group subject
+        // change); empty and raw inputs stay refused.
+        assert!(store.rename_chat_authoritative(dm, "Sarah Wijaya").unwrap());
+        assert!(!store.rename_chat_authoritative(dm, "").unwrap());
+        assert!(!store.rename_chat_authoritative(dm, "6281234567890").unwrap());
+        let chats = store.chats().unwrap();
+        let dm_row = chats.iter().find(|c| c.jid == dm).unwrap();
+        assert_eq!(dm_row.title, "Sarah Wijaya");
 
         let mut msg = LiveMessage::text(
             "m1",

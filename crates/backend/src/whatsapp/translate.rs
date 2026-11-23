@@ -55,17 +55,19 @@ pub(super) fn privacy_map(
 /// Handles message types that map to dedicated backend events
 /// (reactions, edits, revokes) instead of message upserts. Returns
 /// true when the message was fully handled.
-pub(super) fn translate_special(ctx: &MessageContext, sink: &EventSink) -> bool {
+pub(super) fn translate_special(
+    ctx: &MessageContext,
+    sink: &EventSink,
+    book: &IdentityBook,
+) -> bool {
     let source = &ctx.info.source;
     let chat_jid = source.chat.to_string();
     let actor = {
         let push = ctx.info.push_name.trim();
         if source.is_from_me {
             "Me".to_owned()
-        } else if !push.is_empty() {
-            push.to_owned()
         } else {
-            user_part(&source.sender.to_string())
+            book.sender_label(&source.sender.to_string(), push)
         }
     };
     let msg = &ctx.message;
@@ -181,6 +183,7 @@ pub(super) fn translate_event(
     event: &Event,
     sink: &EventSink,
     own_jids: &[String],
+    book: &mut IdentityBook,
 ) -> (TitleHeals, RetryMarks) {
     let mut unresolved_titles: TitleHeals = Vec::new();
     let mut retry_marks: RetryMarks = Vec::new();
@@ -392,7 +395,7 @@ pub(super) fn translate_event(
             // happens to create. Progress rides the same event.
             sink.emit(BackendEvent::SyncProgress { percent: lazy.progress() });
             if let Some(sync) = lazy.get() {
-                (unresolved_titles, retry_marks) = translate_history_sync(sync, sink);
+                (unresolved_titles, retry_marks) = translate_history_sync(sync, sink, book);
             }
         }
         Event::ContactUpdate(update) => {
@@ -422,12 +425,30 @@ pub(super) fn translate_event(
                         jids.push(pn.clone());
                     }
                 }
+                // The name joins the session identity book as a
+                // saved name under every JID form, and the forms
+                // are recorded as counterparts, so live traffic
+                // from this contact resolves from here on.
+                for jid in &jids {
+                    book.note_saved(jid, &name);
+                }
+                for pair in jids.windows(2) {
+                    book.note_mapping(&pair[0], &pair[1]);
+                }
                 for jid in jids {
                     sink.emit(BackendEvent::SenderNamed {
                         sender_jid: jid.clone(),
                         name: name.clone(),
                     });
-                    sink.emit(BackendEvent::ChatRenamed { chat_jid: jid, title: name.clone() });
+                    // A saved name set or changed on a device is
+                    // an authoritative rename: it replaces even a
+                    // resolved title, it does not only heal a raw
+                    // one.
+                    sink.emit(BackendEvent::ChatRenamed {
+                        chat_jid: jid,
+                        title: name.clone(),
+                        authoritative: true,
+                    });
                 }
             }
         }
@@ -458,9 +479,14 @@ pub(super) fn translate_event(
             let chat_jid = update.group_jid.to_string();
             if let GroupNotificationAction::Subject { subject, .. } = &*update.action {
                 if !subject.trim().is_empty() {
+                    // A subject change on the wire is an
+                    // authoritative rename: the group's current
+                    // subject replaces whatever title the chat
+                    // carries, resolved ones included.
                     sink.emit(BackendEvent::ChatRenamed {
                         chat_jid: chat_jid.clone(),
                         title: subject.clone(),
+                        authoritative: true,
                     });
                 }
             }
@@ -603,15 +629,20 @@ fn call_record_of(
 pub(super) fn translate_history_sync(
     sync: &whatsapp_rust::prelude::wa::HistorySync,
     sink: &EventSink,
+    book: &mut IdentityBook,
 ) -> (TitleHeals, RetryMarks) {
-    let book = IdentityBook::from_sync(sync);
+    // The payload's own sources join the session book first, so
+    // this payload resolves against everything the session has
+    // learned so far, and later payloads and live messages
+    // resolve against this payload in turn.
+    book.absorb(IdentityBook::from_sync(sync));
     let mut resolved_senders: Vec<(String, String)> = Vec::new();
     let mut unresolved: TitleHeals = Vec::new();
     let mut retry_marks: RetryMarks = Vec::new();
     for conv in &sync.conversations {
         if let Some(item) = translate_history_conversation(
             conv,
-            &book,
+            book,
             &mut resolved_senders,
             &mut retry_marks,
             sink,
@@ -637,11 +668,19 @@ pub(super) fn translate_history_sync(
     (unresolved, retry_marks)
 }
 
-/// The identity sources one history payload carries, indexed for
+/// The identity sources a session has learned, indexed for
 /// resolution. A person appears under two JID forms (phone number
 /// and LID); sources are keyed by whichever form they used, so
 /// every lookup tries the JID itself and its counterpart form.
-struct IdentityBook {
+/// The session owns one book for its whole life: history payloads
+/// are absorbed into it, live messages register their sender's
+/// push name and counterpart mapping into it, and contact updates
+/// land in it as saved names, so the live translation path
+/// resolves sender labels, quoted authors and direct-chat titles
+/// from the same sources the history path uses, in the same
+/// order (saved contact name, push name, formatted phone number).
+#[derive(Default)]
+pub(super) struct IdentityBook {
     /// Saved contact names (inline contacts: full name, else
     /// first name, else username), by JID in either form.
     saved: std::collections::HashMap<String, String>,
@@ -689,6 +728,50 @@ impl IdentityBook {
         Self { saved, push, lid_to_pn, pn_to_lid }
     }
 
+    /// Merges another book (one history payload's sources) into
+    /// this one. Later sources win within their own map; the
+    /// resolution order keeps the maps apart, so a push name can
+    /// never downgrade a saved name no matter the merge order.
+    fn absorb(&mut self, other: IdentityBook) {
+        self.saved.extend(other.saved);
+        self.push.extend(other.push);
+        self.lid_to_pn.extend(other.lid_to_pn);
+        self.pn_to_lid.extend(other.pn_to_lid);
+    }
+
+    /// Records a saved contact name for a JID (a contact update,
+    /// or a history payload's inline contact).
+    pub(super) fn note_saved(&mut self, jid: &str, name: &str) {
+        if !name.trim().is_empty() {
+            self.saved.insert(jid.to_owned(), name.to_owned());
+        }
+    }
+
+    /// Records a push name for a JID (a live message carries its
+    /// sender's current push name).
+    pub(super) fn note_push(&mut self, jid: &str, name: &str) {
+        if !name.trim().is_empty() {
+            self.push.insert(jid.to_owned(), name.to_owned());
+        }
+    }
+
+    /// Records that two JIDs are the same person's two forms
+    /// (phone number and LID), from whichever source learned it:
+    /// a payload mapping, a contact update's JID pair, or a live
+    /// message's alternate sender address.
+    pub(super) fn note_mapping(&mut self, a: &str, b: &str) {
+        if a == b {
+            return;
+        }
+        if a.ends_with("@lid") && b.ends_with("@s.whatsapp.net") {
+            self.lid_to_pn.insert(a.to_owned(), b.to_owned());
+            self.pn_to_lid.insert(b.to_owned(), a.to_owned());
+        } else if b.ends_with("@lid") && a.ends_with("@s.whatsapp.net") {
+            self.lid_to_pn.insert(b.to_owned(), a.to_owned());
+            self.pn_to_lid.insert(a.to_owned(), b.to_owned());
+        }
+    }
+
     /// The same person's other JID form, when the payload's
     /// mappings know it.
     fn counterpart(&self, jid: &str) -> Option<&str> {
@@ -716,6 +799,46 @@ impl IdentityBook {
             }
         }
         None
+    }
+
+    /// The display label for a live message's sender: the book's
+    /// best name (saved contact name first), then the push name
+    /// this message itself carries, then the formatted phone
+    /// number, and the raw user part only when nothing better
+    /// exists in any source.
+    pub(super) fn sender_label(&self, sender_jid: &str, own_push: &str) -> String {
+        if let Some(name) = self.name_for(sender_jid) {
+            return name;
+        }
+        if !own_push.trim().is_empty() {
+            return own_push.to_owned();
+        }
+        if let Some(phone) = self.phone_for(sender_jid) {
+            return phone;
+        }
+        user_part(sender_jid)
+    }
+
+    /// The display label for an author named only by JID (a
+    /// quoted message's author, a reaction's actor): the book's
+    /// best name, then the formatted phone number, then the raw
+    /// user part.
+    pub(super) fn author_label(&self, author_jid: &str) -> String {
+        self.name_for(author_jid)
+            .or_else(|| self.phone_for(author_jid))
+            .unwrap_or_else(|| user_part(author_jid))
+    }
+
+    /// The title a live arrival gives its direct chat: the book's
+    /// name for the chat itself first (a name recorded under the
+    /// counterpart JID form counts), then the sender's label,
+    /// then the chat's formatted phone number, then the raw user
+    /// part.
+    pub(super) fn dm_title(&self, chat_jid: &str, sender_label: Option<&str>) -> String {
+        self.name_for(chat_jid)
+            .or_else(|| sender_label.map(ToOwned::to_owned))
+            .or_else(|| self.phone_for(chat_jid))
+            .unwrap_or_else(|| user_part(chat_jid))
     }
 
     /// The person's phone number, formatted for display, when the
@@ -1134,8 +1257,16 @@ pub(super) fn unhandled_label(msg: &whatsapp_rust::prelude::wa::Message) -> Stri
 }
 
 /// Translates one incoming message context into a chat + message
-/// upsert, in Zaprust terms.
-pub(super) fn translate_message(ctx: &MessageContext) -> Option<(LiveChat, LiveMessage)> {
+/// upsert, in Zaprust terms. Sender labels, the quoted author and
+/// the direct-chat title resolve through the session identity
+/// book, in the documented order (saved contact name, push name,
+/// formatted phone number), so live traffic shows the same names
+/// the history path resolved; the raw identifier is the last
+/// resort only.
+pub(super) fn translate_message(
+    ctx: &MessageContext,
+    book: &IdentityBook,
+) -> Option<(LiveChat, LiveMessage)> {
     let source = &ctx.info.source;
     let chat_jid = source.chat.to_string();
     if chat_jid == STATUS_BROADCAST_JID {
@@ -1155,15 +1286,17 @@ pub(super) fn translate_message(ctx: &MessageContext) -> Option<(LiveChat, LiveM
     }
     let body = body_for(&msg_kind, view_once, text.as_deref());
     let push_name = ctx.info.push_name.trim();
+    let sender_jid = source.sender.to_string();
     let sender_name = if source.is_from_me {
         None
-    } else if !push_name.is_empty() {
-        Some(push_name.to_owned())
     } else {
-        Some(user_part(&source.sender.to_string()))
+        // The book prefers the saved contact name over any push
+        // name, this message's included: a saved name is never
+        // downgraded by a push name arriving later.
+        Some(book.sender_label(&sender_jid, push_name))
     };
     let title = match kind {
-        LiveChatKind::Dm => sender_name.clone().unwrap_or_else(|| user_part(&chat_jid)),
+        LiveChatKind::Dm => book.dm_title(&chat_jid, sender_name.as_deref()),
         _ => user_part(&chat_jid),
     };
     let timestamp = ctx.info.timestamp.timestamp();
@@ -1228,9 +1361,12 @@ pub(super) fn translate_message(ctx: &MessageContext) -> Option<(LiveChat, LiveM
     msg.photo_thumbnail = super::util::photo_thumbnail_of(&ctx.message);
     msg.sticker_ref = super::util::sticker_ref_of(&ctx.message);
     msg.mentions = super::util::mentioned_jids_of(&ctx.message);
-    // Quote context, when the message carries one.
+    // Quote context, when the message carries one. The quoted
+    // author resolves through the same book as the sender: the
+    // wire carries only the author's JID, and painting its raw
+    // user part would head every quote with a bare number.
     if let Some(quoted) = quoted_context(ctx) {
-        msg.quoted_sender = quoted.0;
+        msg.quoted_sender = quoted.0.map(|author_jid| book.author_label(&author_jid));
         msg.quoted_body = quoted.1;
     }
     // A link preview the sender's client attached travels with
@@ -1591,16 +1727,18 @@ pub(super) fn embedded_link_preview(
     Some(LivePreview { title, description, url: extended.matched_text.clone().unwrap_or_default() })
 }
 
-/// Extracts (sender, excerpt) when a message quotes another one:
-/// the context info of an extended-text message carries the stanza
-/// id + participant + quoted payload.
+/// Extracts (author JID, excerpt) when a message quotes another
+/// one: the context info of an extended-text message carries the
+/// stanza id + participant + quoted payload. The author crosses
+/// as its JID; the caller resolves it to a display name through
+/// the identity book, like any sender.
 pub(super) fn quoted_context(ctx: &MessageContext) -> Option<(Option<String>, Option<String>)> {
     let extended = ctx.message.get_base_message().extended_text_message.as_option()?;
     let context = extended.context_info.as_option()?;
     context.stanza_id.as_ref()?;
     let excerpt =
         context.quoted_message.as_option().and_then(|q| q.text_content().map(ToOwned::to_owned));
-    let sender = context.participant.as_ref().map(|p| user_part(&p.clone()));
+    let sender = context.participant.clone();
     Some((sender, excerpt))
 }
 
@@ -2020,7 +2158,7 @@ mod qr_expiry_translate_tests {
         let event = Event::PairingQrCodesExhausted(
             PairingQrCodesExhausted::builder().disconnected(true).build(),
         );
-        translate_event(&event, &sink, &[]);
+        translate_event(&event, &sink, &[], &mut super::IdentityBook::default());
         assert!(matches!(rx.try_recv(), Ok(BackendEvent::QrExpired)));
     }
 }
@@ -2050,7 +2188,7 @@ mod presence_translate_tests {
         let event = Event::Presence(
             PresenceUpdate::builder().from(contact()).status(PresenceStatus::Available).build(),
         );
-        translate_event(&event, &sink, &[]);
+        translate_event(&event, &sink, &[], &mut super::IdentityBook::default());
         assert!(matches!(
             rx.try_recv(),
             Ok(BackendEvent::PresenceReceived { ref chat_jid, online: true, last_seen: None })
@@ -2070,7 +2208,7 @@ mod presence_translate_tests {
                 .last_seen(at)
                 .build(),
         );
-        translate_event(&event, &sink, &[]);
+        translate_event(&event, &sink, &[], &mut super::IdentityBook::default());
         assert!(matches!(
             rx.try_recv(),
             Ok(BackendEvent::PresenceReceived {
@@ -2183,7 +2321,7 @@ mod live_pairing_fix_tests {
 
         let (tx, rx) = std::sync::mpsc::sync_channel(16);
         let sink = EventSink { tx, wake: std::sync::Arc::new(|| {}) };
-        translate_history_sync(&sync, &sink);
+        translate_history_sync(&sync, &sink, &mut super::IdentityBook::default());
         let events: Vec<BackendEvent> = rx.try_iter().collect();
 
         let chat = events.iter().find_map(|e| match e {
@@ -2239,7 +2377,7 @@ mod live_pairing_fix_tests {
 
         let (tx, rx) = std::sync::mpsc::sync_channel(16);
         let sink = EventSink { tx, wake: std::sync::Arc::new(|| {}) };
-        translate_history_sync(&sync, &sink);
+        translate_history_sync(&sync, &sink, &mut super::IdentityBook::default());
         let events: Vec<BackendEvent> = rx.try_iter().collect();
 
         let stars: Vec<(&str, bool)> = events
@@ -2332,7 +2470,7 @@ mod live_pairing_fix_tests {
 
         let (tx, rx) = std::sync::mpsc::sync_channel(32);
         let sink = EventSink { tx, wake: std::sync::Arc::new(|| {}) };
-        let (unresolved, _retry_marks) = translate_history_sync(&sync, &sink);
+        let (unresolved, _retry_marks) = translate_history_sync(&sync, &sink, &mut super::IdentityBook::default());
         let events: Vec<BackendEvent> = rx.try_iter().collect();
 
         let title_of = |jid: &str| {
@@ -2789,6 +2927,61 @@ mod live_pairing_fix_tests {
             super::history_message("6281234567890@s.whatsapp.net", &info, &book, &mut resolved)
                 .expect("the message translates");
         assert_eq!(msg.sender.as_deref(), Some("Saved Sarah"));
+    }
+
+    /// The live path resolves through the session book in the
+    /// documented order: a saved name beats the message's own
+    /// push name, a push name recorded earlier beats the raw
+    /// number, a LID sender resolves through the mapping to the
+    /// formatted phone, and a quoted author resolves like a
+    /// sender.
+    #[test]
+    fn live_labels_resolve_through_the_session_book() {
+        let mut book = super::IdentityBook::default();
+        let pn = "6281234567890@s.whatsapp.net";
+        let lid = "123456789012345@lid";
+        book.note_saved(pn, "Saved Sarah");
+        book.note_mapping(lid, pn);
+        // Saved name wins over this message's push name, under
+        // either JID form.
+        assert_eq!(book.sender_label(pn, "Push Sarah"), "Saved Sarah");
+        assert_eq!(book.sender_label(lid, "Push Sarah"), "Saved Sarah");
+        assert_eq!(book.author_label(lid), "Saved Sarah");
+        // The DM title prefers the saved name for the chat, in
+        // either form, over the sender label a push name made.
+        assert_eq!(book.dm_title(lid, Some("Push Sarah")), "Saved Sarah");
+        assert_eq!(book.dm_title(pn, Some("Push Sarah")), "Saved Sarah");
+
+        let mut book = super::IdentityBook::default();
+        book.note_push(pn, "Push Sarah");
+        book.note_mapping(lid, pn);
+        assert_eq!(book.sender_label(lid, ""), "Push Sarah");
+        // No name anywhere: the formatted phone, never the raw
+        // LID digits.
+        let mut book = super::IdentityBook::default();
+        book.note_mapping(lid, pn);
+        assert_eq!(book.sender_label(lid, ""), "+6281234567890");
+        assert_eq!(book.author_label(lid), "+6281234567890");
+        assert_eq!(book.dm_title(lid, None), "+6281234567890");
+        // Nothing known at all: the raw user part is the last
+        // resort, exactly as documented.
+        let book = super::IdentityBook::default();
+        assert_eq!(book.sender_label(lid, ""), "123456789012345");
+    }
+
+    /// Absorbing a payload book keeps the resolution order: a
+    /// push name absorbed later never shadows a saved name, and
+    /// mappings arrive in both directions.
+    #[test]
+    fn absorbed_books_keep_the_resolution_order() {
+        let mut session = super::IdentityBook::default();
+        session.note_saved("6281234567890@s.whatsapp.net", "Saved Sarah");
+        let mut payload = super::IdentityBook::default();
+        payload.note_push("6281234567890@s.whatsapp.net", "Push Sarah");
+        payload.note_mapping("123456789012345@lid", "6281234567890@s.whatsapp.net");
+        session.absorb(payload);
+        assert_eq!(session.sender_label("6281234567890@s.whatsapp.net", ""), "Saved Sarah");
+        assert_eq!(session.author_label("123456789012345@lid"), "Saved Sarah");
     }
 }
 

@@ -2145,6 +2145,7 @@ impl Backend for FakeBackend {
                                 events.emit(BackendEvent::ChatRenamed {
                                     chat_jid: jid,
                                     title: chat.title.clone(),
+                                    authoritative: false,
                                 });
                             }
                         }

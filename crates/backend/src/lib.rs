@@ -2537,17 +2537,25 @@ pub enum BackendEvent {
     /// The catch-up sync finished: the roster and recent history
     /// the phone sent are fully applied.
     SyncCompleted,
-    /// A better display name was resolved for a chat whose stored
-    /// title is still a raw identifier (a contact update arrived,
-    /// group metadata supplied the subject, or the LID-to-phone
-    /// mapping identified a direct chat). The host applies it only
-    /// where the current title is a raw identifier; a resolved
-    /// name is never downgraded by this event.
+    /// A better display name was resolved for a chat (a contact
+    /// update arrived, group metadata supplied the subject, or
+    /// the LID-to-phone mapping identified a direct chat). With
+    /// `authoritative: false` the event is a heal: the host
+    /// applies it only where the current title is still a raw
+    /// identifier or the chat's own formatted phone number, and
+    /// a resolved name is never downgraded. With
+    /// `authoritative: true` the server has stated the chat's
+    /// current name (a saved contact renamed on a device, a
+    /// group subject change): the host replaces the title
+    /// outright, because the heal discipline would otherwise
+    /// freeze the first resolved name forever.
     ChatRenamed {
         /// The chat whose title improved.
         chat_jid: String,
         /// The resolved display name.
         title: String,
+        /// Whether this rename replaces a resolved title too.
+        authoritative: bool,
     },
     /// A better display name was resolved for a message sender
     /// (a contact update, group metadata, or a history payload's

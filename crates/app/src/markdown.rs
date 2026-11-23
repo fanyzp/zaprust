@@ -76,6 +76,49 @@ fn parse(text: &str) -> Vec<(String, Style)> {
     out
 }
 
+/// The block structure of one line: WhatsApp's block syntax is
+/// line-based (a fenced code block opens and closes on its own
+/// line, a list item starts its line), so the job builder
+/// classifies each line before the inline parser sees it.
+enum BlockLine<'a> {
+    /// A normal line: inline formatting applies.
+    Text(&'a str),
+    /// One line inside a fenced code block: mono, no inline
+    /// parsing, no marker characters.
+    Code(&'a str),
+    /// A list item: the marker to paint (a bullet, or the item's
+    /// own number) and the item text, which still parses inline.
+    Item(String, &'a str),
+}
+
+/// Classifies one line, tracking the fence state across lines.
+/// A fence delimiter line (three backticks at the line's start,
+/// an optional language tag after them) toggles the state and
+/// renders nothing itself.
+fn block_line<'a>(line: &'a str, in_fence: &mut bool) -> Option<BlockLine<'a>> {
+    let trimmed = line.trim_start();
+    if trimmed.starts_with("```") {
+        *in_fence = !*in_fence;
+        return None;
+    }
+    if *in_fence {
+        return Some(BlockLine::Code(line));
+    }
+    for marker in ["- ", "• "] {
+        if let Some(item) = trimmed.strip_prefix(marker) {
+            return Some(BlockLine::Item("•  ".to_owned(), item));
+        }
+    }
+    // An ordered item: one to three digits, a dot, a space.
+    let digits = trimmed.len() - trimmed.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+    if (1..=3).contains(&digits) {
+        if let Some(item) = trimmed[digits..].strip_prefix(". ") {
+            return Some(BlockLine::Item(format!("{}  ", &trimmed[..digits + 1]), item));
+        }
+    }
+    Some(BlockLine::Text(line))
+}
+
 fn job(
     text: &str,
     size: f32,
@@ -86,6 +129,65 @@ fn job(
 ) -> egui::text::LayoutJob {
     let mut job = egui::text::LayoutJob::default();
     let plain = FontId::proportional(size);
+    let mut in_fence = false;
+    // Rows are separated by appending the newline before each
+    // rendered line after the first, so a fence delimiter (which
+    // renders nothing) never leaves a blank row behind, wherever
+    // it sits.
+    let mut started = false;
+    for raw_line in text.split('\n') {
+        let line = raw_line.strip_suffix('\r').unwrap_or(raw_line);
+        let Some(block) = block_line(line, &mut in_fence) else { continue };
+        if started {
+            job.append(
+                "\n",
+                0.0,
+                TextFormat { font_id: plain.clone(), color, line_height: leading, ..Default::default() },
+            );
+        }
+        started = true;
+        match block {
+            BlockLine::Code(code) => {
+                job.append(
+                    code,
+                    0.0,
+                    TextFormat {
+                        font_id: FontId::monospace(size - 1.0),
+                        color,
+                        background: code_bg,
+                        line_height: leading,
+                        ..Default::default()
+                    },
+                );
+            }
+            BlockLine::Item(marker, item) => {
+                job.append(
+                    &marker,
+                    0.0,
+                    TextFormat { font_id: plain.clone(), color, line_height: leading, ..Default::default() },
+                );
+                append_inline(&mut job, item, size, color, code_bg, mention_color, leading, &plain);
+            }
+            BlockLine::Text(line) => {
+                append_inline(&mut job, line, size, color, code_bg, mention_color, leading, &plain);
+            }
+        }
+    }
+    job
+}
+
+/// Appends one line's inline-parsed segments to the job.
+#[allow(clippy::too_many_arguments)]
+fn append_inline(
+    job: &mut egui::text::LayoutJob,
+    text: &str,
+    size: f32,
+    color: Color32,
+    code_bg: Color32,
+    mention_color: Color32,
+    leading: Option<f32>,
+    plain: &FontId,
+) {
     for (segment, style) in parse(text) {
         let format = if style.mention {
             TextFormat {
@@ -129,7 +231,6 @@ fn job(
         };
         job.append(&segment, 0.0, format);
     }
-    job
 }
 
 /// Lays out `text` with WhatsApp formatting, wrapped at `wrap` pixels.
@@ -183,8 +284,12 @@ pub(crate) fn measure(
 
 #[cfg(test)]
 mod tests {
+    use super::block_line;
+    use super::job;
     use super::parse;
+    use super::BlockLine;
     use super::Style;
+    use eframe::egui::{Color32, FontFamily};
 
     /// The body of the demo showcase message (GTA VI chat): one
     /// bubble mixing every WhatsApp span, `*bold*`, `` `mono` ``
@@ -383,5 +488,58 @@ mod tests {
         let parts = parse("2 * 3 = 6 and *not closed");
         assert_eq!(parts.len(), 1);
         assert_eq!(parts[0].1, Style::default());
+    }
+
+    fn job_text(job: &eframe::egui::text::LayoutJob) -> String {
+        job.sections.iter().map(|section| job.text[section.byte_range.clone()].to_string()).collect()
+    }
+
+    #[test]
+    fn block_lines_classify_lists_and_fences() {
+        let mut in_fence = false;
+        assert_eq!(block_line("- milk", &mut in_fence), Some(BlockLine::Item("•  ".to_owned(), "milk")));
+        assert_eq!(block_line("• bread", &mut in_fence), Some(BlockLine::Item("•  ".to_owned(), "bread")));
+        assert_eq!(block_line("1. first", &mut in_fence), Some(BlockLine::Item("1.  ".to_owned(), "first")));
+        assert_eq!(block_line("12. twelfth", &mut in_fence), Some(BlockLine::Item("12.  ".to_owned(), "twelfth")));
+        assert_eq!(block_line("1.5 not a list", &mut in_fence), Some(BlockLine::Text("1.5 not a list")));
+        assert_eq!(block_line("-5 degrees", &mut in_fence), Some(BlockLine::Text("-5 degrees")));
+        assert_eq!(block_line("plain", &mut in_fence), Some(BlockLine::Text("plain")));
+        assert_eq!(block_line("```", &mut in_fence), None);
+        assert!(in_fence);
+        // Inside a fence, list markers are literal code.
+        assert_eq!(block_line("- not a list", &mut in_fence), Some(BlockLine::Code("- not a list")));
+        assert_eq!(block_line("```rust", &mut in_fence), None);
+        assert!(!in_fence);
+    }
+
+    #[test]
+    fn job_renders_lists_and_code_blocks() {
+        let text = "groceries:\n- milk\n- *fresh* bread\n2. eggs\n```\nlet x = -1;\n```\ndone";
+        let job = job(text, 14.0, Color32::WHITE, Color32::from_gray(40), Color32::LIGHT_BLUE, None);
+        assert_eq!(job_text(&job), "groceries:\n•  milk\n•  fresh bread\n2.  eggs\nlet x = -1;\ndone");
+        // The code line is one monospace section on the code
+        // background; the fence delimiters never appear.
+        let code = job
+            .sections
+            .iter()
+            .find(|s| job.text[s.byte_range.clone()] == *"let x = -1;")
+            .expect("code section");
+        assert_eq!(code.format.font_id.family, FontFamily::Monospace);
+        assert_eq!(code.format.background, Color32::from_gray(40));
+        // Inline formatting still applies inside list items.
+        let fresh = job
+            .sections
+            .iter()
+            .find(|s| job.text[s.byte_range.clone()] == *"fresh")
+            .expect("bold section");
+        assert_eq!(fresh.format.font_id.family, FontFamily::Name("bold".into()));
+    }
+
+    #[test]
+    fn job_fence_at_the_edges_leaves_no_blank_rows() {
+        let job = job("```\ncode\n```", 14.0, Color32::WHITE, Color32::from_gray(40), Color32::LIGHT_BLUE, None);
+        assert_eq!(job_text(&job), "code");
+        let job = job("plain\ntext", 14.0, Color32::WHITE, Color32::from_gray(40), Color32::LIGHT_BLUE, None);
+        assert_eq!(job_text(&job), "plain\ntext");
     }
 }

@@ -237,7 +237,11 @@ async fn heal_one(
             let Ok(meta) = client.groups().fetch_metadata(&parsed).await else { return false };
             let mut renamed = false;
             if let Some(subject) = meta.subject.clone().filter(|s| !s.trim().is_empty()) {
-                sink.emit(BackendEvent::ChatRenamed { chat_jid: jid.to_owned(), title: subject });
+                sink.emit(BackendEvent::ChatRenamed {
+                    chat_jid: jid.to_owned(),
+                    title: subject,
+                    authoritative: false,
+                });
                 renamed = true;
             }
             for participant in &meta.participants {
@@ -264,6 +268,7 @@ async fn heal_one(
                 sink.emit(BackendEvent::ChatRenamed {
                     chat_jid: jid.to_owned(),
                     title: format!("+{}", super::translate::user_part(jid)),
+                    authoritative: false,
                 });
                 true
             } else if let Ok(parsed) = jid.parse::<Jid>() {
@@ -273,6 +278,7 @@ async fn heal_one(
                         sink.emit(BackendEvent::ChatRenamed {
                             chat_jid: jid.to_owned(),
                             title: phone.clone(),
+                            authoritative: false,
                         });
                         sink.emit(BackendEvent::SenderNamed {
                             sender_jid: jid.to_owned(),
@@ -303,6 +309,7 @@ async fn heal_one(
                     sink.emit(BackendEvent::ChatRenamed {
                         chat_jid: jid.to_owned(),
                         title: meta.name.clone(),
+                        authoritative: false,
                     });
                     true
                 }
@@ -550,6 +557,21 @@ pub(super) async fn run_async(
         std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
     let heal_attempts_events = heal_attempts.clone();
     let heal_attempts_msg = heal_attempts.clone();
+    // The session identity book: every identity source the
+    // session learns (history payloads, contact updates, live
+    // messages' push names and alternate addresses) accumulates
+    // here, and both translation paths resolve through it.
+    let identities: std::sync::Arc<std::sync::Mutex<super::translate::IdentityBook>> =
+        std::sync::Arc::new(std::sync::Mutex::new(super::translate::IdentityBook::default()));
+    let identities_events = identities.clone();
+    let identities_msg = identities.clone();
+    // (sender JID, name) pairs already broadcast as SenderNamed
+    // from the live path, so a name learned mid-session is
+    // announced once, not on every message its sender sends.
+    let named_broadcasts: std::sync::Arc<
+        std::sync::Mutex<std::collections::HashSet<(String, String)>>,
+    > = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
+    let named_broadcasts_msg = named_broadcasts.clone();
     // On-demand history requests in flight (see PendingHistory).
     let pending_history: PendingHistory =
         std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
@@ -656,6 +678,7 @@ pub(super) async fn run_async(
                                 sink_channels.emit(BackendEvent::ChatRenamed {
                                     chat_jid: meta.jid.to_string(),
                                     title: meta.name.clone(),
+                                    authoritative: false,
                                 });
                             }
                         }
@@ -677,6 +700,8 @@ pub(super) async fn run_async(
             let secrets = secrets_for_messages.clone();
             let retry = retry_for_messages.clone();
             let heal_attempts = heal_attempts_msg.clone();
+            let identities = identities_msg.clone();
+            let named_broadcasts = named_broadcasts_msg.clone();
             async move {
                 super::util::record_retry_target(
                     &retry,
@@ -764,12 +789,54 @@ pub(super) async fn run_async(
                     }
                     guard.0.insert(key, ctx.message.clone());
                 }
-                if translate_special(&ctx, &sink) {
+                // This message's identity evidence joins the
+                // session book before translation: the sender's
+                // push name as the wire states it now, and the
+                // alternate address as the counterpart mapping.
+                let book = {
+                    let mut guard =
+                        identities.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                    if !ctx.info.source.is_from_me {
+                        guard.note_push(
+                            &ctx.info.source.sender.to_string(),
+                            ctx.info.push_name.trim(),
+                        );
+                    }
+                    if let Some(alt) = &ctx.info.source.sender_alt {
+                        guard.note_mapping(
+                            &ctx.info.source.sender.to_string(),
+                            &alt.to_string(),
+                        );
+                    }
+                    guard
+                };
+                if translate_special(&ctx, &sink, &book) {
                     return;
                 }
-                if let Some((chat, msg)) = translate_message(&ctx) {
+                if let Some((chat, msg)) = translate_message(&ctx, &book) {
                     sink.emit(BackendEvent::ChatUpsert(chat.clone()));
-                    sink.emit(BackendEvent::MessageUpsert(msg));
+                    sink.emit(BackendEvent::MessageUpsert(msg.clone()));
+                    // A sender this message names with a real
+                    // name (the book resolved what an earlier
+                    // message could not) is announced once, so
+                    // the host rewrites any stored labels that
+                    // still show the raw identifier, the same
+                    // healing the history path broadcasts.
+                    if let (Some(sender_jid), Some(name)) = (&msg.sender_jid, &msg.sender) {
+                        if !super::translate::is_raw_identifier(name) {
+                            let pair = (sender_jid.clone(), name.clone());
+                            let fresh = named_broadcasts
+                                .lock()
+                                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                                .insert(pair);
+                            if fresh {
+                                sink.emit(BackendEvent::SenderNamed {
+                                    sender_jid: sender_jid.clone(),
+                                    name: name.clone(),
+                                });
+                            }
+                        }
+                    }
                     // A chat whose live upsert still carries its
                     // raw identifier as the title is reported to
                     // the healer: live traffic creates chats
@@ -792,6 +859,7 @@ pub(super) async fn run_async(
             let heal_attempts = heal_attempts_events.clone();
             let pending_history = pending_history_events.clone();
             let retry = retry_for_events.clone();
+            let identities = identities_events.clone();
             #[cfg(feature = "calls")]
             let incoming_slot = call_incoming_events.clone();
             async move {
@@ -823,7 +891,11 @@ pub(super) async fn run_async(
                     }
                     _ => None,
                 };
-                let (unresolved, marks) = translate_event(&event, &sink, &own_jids);
+                let (unresolved, marks) = {
+                    let mut book =
+                        identities.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                    translate_event(&event, &sink, &own_jids, &mut book)
+                };
                 if let Some(chat_jid) = history_claim {
                     if let Event::HistorySync(lazy) = &*event {
                         match lazy.get() {
@@ -2077,6 +2149,7 @@ pub(super) async fn run_async(
                                 events.emit(BackendEvent::ChatRenamed {
                                     chat_jid: chat_jid.clone(),
                                     title: subject,
+                                    authoritative: false,
                                 });
                             }
                             for participant in &meta.participants {

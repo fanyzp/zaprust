@@ -163,6 +163,8 @@ mod tests {
             voice_refs: HashMap::new(),
             video_refs: HashMap::new(),
             video_thumbs: HashMap::new(),
+            poster_refs: HashMap::new(),
+            video_dims: HashMap::new(),
             sticker_refs: HashMap::new(),
             photo_thumbs: HashMap::new(),
             message_mentions: HashMap::new(),

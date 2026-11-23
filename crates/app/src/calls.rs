@@ -1411,6 +1411,8 @@ mod tests {
             voice_refs: std::collections::HashMap::new(),
             video_refs: std::collections::HashMap::new(),
             video_thumbs: std::collections::HashMap::new(),
+            poster_refs: std::collections::HashMap::new(),
+            video_dims: std::collections::HashMap::new(),
             sticker_refs: std::collections::HashMap::new(),
             photo_thumbs: std::collections::HashMap::new(),
             message_mentions: std::collections::HashMap::new(),

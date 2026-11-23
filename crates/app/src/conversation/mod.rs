@@ -32,13 +32,6 @@ pub(crate) const SCROLL_BUTTON_GAP: f32 = 10.0;
 /// and the gap above it. The last bubble always rests at
 /// least this far above the panel's bottom edge, fully clear
 /// of the composer.
-/// Header-menu row geometry (P2-26): the menu is 220 wide,
-/// its rows 204 by 32, named here instead of repeated as
-/// literals at every row site.
-const HEADER_MENU_ROW_W: f32 = 204.0;
-/// Header-menu row height.
-const HEADER_MENU_ROW_H: f32 = 32.0;
-
 pub(crate) fn composer_clearance(stack_h: f32) -> f32 {
     stack_h + COMPOSER_LIFT + STREAM_COMPOSER_GAP
 }
@@ -121,35 +114,18 @@ impl App {
                 let _menu_frame =
                     crate::theme::glass_frame(t, crate::theme::RADIUS_PANEL).inner_margin(Margin::same(8)).show(ui, |ui| {
                         ui.set_width(220.0);
+                        // The rows are the shared menu-item
+                        // components (P2-28): one row anatomy
+                        // for every menu in the app, instead of
+                        // a hand-rolled painter here.
                         let mut row = |ui: &mut egui::Ui,
                                        icon: crate::icons::Icon,
                                        label: &str,
                                        key: &'static str| {
-                            let (rect, resp) =
-                                ui.allocate_exact_size(Vec2::new(HEADER_MENU_ROW_W, HEADER_MENU_ROW_H), Sense::click());
-                            if resp.hovered() {
-                                ui.painter().rect_filled(
-                                    rect,
-                                    CornerRadius::same(crate::theme::RADIUS_MICRO),
-                                    rgb(t.bg_panel_alt),
-                                );
-                            }
-                            crate::icons::draw(
-                                ui.painter(),
-                                icon,
-                                Pos2::new(rect.left() + 17.0, rect.center().y),
-                                crate::icons::SIZE_ROW,
-                                rgb(t.text_secondary),
-                                rgb(t.bg_panel),
-                            );
-                            ui.painter().text(
-                                Pos2::new(rect.left() + 38.0, rect.center().y),
-                                egui::Align2::LEFT_CENTER,
-                                label,
-                                FontId::proportional(12.0),
-                                rgb(t.text_primary),
-                            );
-                            if resp.clicked() && !exiting {
+                            if crate::widgets::menu_item_icon(ui, t, Some(icon), label, None)
+                                .clicked()
+                                && !exiting
+                            {
                                 action = Some(key);
                             }
                         };
@@ -160,31 +136,8 @@ impl App {
                         // hold the same mutable capture.
                         let row_danger =
                             |ui: &mut egui::Ui, icon: crate::icons::Icon, label: &str| -> bool {
-                                let (rect, resp) =
-                                    ui.allocate_exact_size(Vec2::new(HEADER_MENU_ROW_W, HEADER_MENU_ROW_H), Sense::click());
-                                if resp.hovered() {
-                                    ui.painter().rect_filled(
-                                        rect,
-                                        CornerRadius::same(crate::theme::RADIUS_MICRO),
-                                        rgb(t.bg_panel_alt),
-                                    );
-                                }
-                                crate::icons::draw(
-                                    ui.painter(),
-                                    icon,
-                                    Pos2::new(rect.left() + 17.0, rect.center().y),
-                                    crate::icons::SIZE_ROW,
-                                    rgb(t.danger),
-                                    rgb(t.bg_panel),
-                                );
-                                ui.painter().text(
-                                    Pos2::new(rect.left() + 38.0, rect.center().y),
-                                    egui::Align2::LEFT_CENTER,
-                                    label,
-                                    FontId::proportional(12.0),
-                                    rgb(t.danger),
-                                );
-                                resp.clicked() && !exiting
+                                crate::widgets::menu_item_danger(ui, t, icon, label).clicked()
+                                    && !exiting
                             };
                         row(
                             ui,

@@ -43,7 +43,7 @@ pub(crate) fn release_page_url() -> String {
 /// falling back to 0.0.0, under which every release would
 /// compare as newer and be offered.
 pub(crate) fn current_version() -> Option<Version> {
-    Version::parse(env!("CARGO_PKG_VERSION")).ok()
+    Version::parse(env!("CARGO_PKG_VERSION"))
 }
 
 /// Where this copy of the app lives, and whether the app may

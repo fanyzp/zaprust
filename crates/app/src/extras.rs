@@ -621,13 +621,14 @@ impl App {
                 }
             }
             let landed = !results.is_empty() || disconnected;
+            let any_results = !results.is_empty();
             for done in results {
                 match done.result {
                     Ok(bytes) => self.complete_live_gif_send(&done.jid, &done.title, bytes),
                     Err(e) => self.notice = Some(Notice::error(format!("GIF: {e}"))),
                 }
             }
-            if disconnected && results.is_empty() {
+            if disconnected && !any_results {
                 // The worker died without reporting (P2-36):
                 // an error outcome, never a silent clear.
                 self.notice =

@@ -134,7 +134,7 @@ impl eframe::App for App {
 /// convention), so its greys do not come from the theme
 /// tokens; they are named once here instead of scattered as
 /// literals across the paint code.
-const VIEWER_BACKDROP: egui::Color32 = egui::Color32::from_rgba_unmultiplied(8, 10, 12, 242);
+const VIEWER_BACKDROP: egui::Color32 = egui::Color32 { r: 8, g: 10, b: 12, a: 242 };
 /// Primary text on the viewer stage.
 const VIEWER_TEXT: egui::Color32 = egui::Color32::from_rgb(234, 238, 241);
 /// Secondary text on the viewer stage.

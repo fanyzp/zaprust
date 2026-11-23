@@ -1094,6 +1094,10 @@ pub(super) fn unhandled_label(msg: &whatsapp_rust::prelude::wa::Message) -> Stri
         "Encrypted reaction"
     } else if base.enc_event_response_message.as_option().is_some() {
         "Encrypted response"
+    } else if base.placeholder_message.as_option().is_some() {
+        "Unavailable message"
+    } else if base.poll_add_option_message.as_option().is_some() {
+        "Poll option added"
     } else if base.template_button_reply_message.as_option().is_some()
         || base.buttons_response_message.as_option().is_some()
         || base.list_response_message.as_option().is_some()
@@ -1313,6 +1317,8 @@ fn classify_unwrapped_deep(
             .or_else(|| msg.limit_sharing_message.as_option())
             .or_else(|| msg.audio_sticker_message.as_option())
             .or_else(|| msg.event_cover_image.as_option())
+            .or_else(|| msg.poll_creation_option_image_message.as_option())
+            .or_else(|| msg.status_add_yours.as_option())
             .or_else(|| msg.newsletter_scheduled_message.as_option());
         if let Some(inner) = envelope.and_then(|e| e.message.as_option()) {
             return classify_unwrapped_deep(inner.get_base_message(), depth + 1);

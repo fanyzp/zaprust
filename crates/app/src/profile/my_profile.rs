@@ -423,7 +423,7 @@ pub fn draw_my_profile_panel(
         .collapsible(false)
         .resizable(false)
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-        .frame(crate::theme::glass_frame(t, 16).inner_margin(egui::Margin::same(20)))
+        .frame(crate::theme::glass_frame(t, crate::theme::RADIUS_PANEL).inner_margin(egui::Margin::same(20)))
         .show(ctx, |ui| {
             if fade < 0.999 {
                 ui.set_opacity(fade);
@@ -432,7 +432,7 @@ pub fn draw_my_profile_panel(
             ui.vertical_centered(|ui| {
                 ui.label(
                     RichText::new(crate::i18n::t("profile.my_title"))
-                        .font(crate::theme::semibold(16.0))
+                        .font(crate::theme::semibold(15.0))
                         .color(rgb(t.text_primary)),
                 );
             });
@@ -441,7 +441,7 @@ pub fn draw_my_profile_panel(
                 MyProfileMode::NotLinked => {
                     ui.label(
                         RichText::new(crate::i18n::t("profile.my_not_linked"))
-                            .size(13.0)
+                            .size(12.0)
                             .color(rgb(t.text_secondary)),
                     );
                     ui.add_space(16.0);
@@ -455,7 +455,7 @@ pub fn draw_my_profile_panel(
                     crate::widgets::loading_row(
                         ui,
                         &crate::i18n::t("profile.my_loading"),
-                        13.0,
+                        14.0,
                         t.text_secondary,
                     );
                     ui.add_space(16.0);
@@ -518,11 +518,11 @@ fn draw_editor_form(
             } else {
                 state.name.clone()
             })
-            .font(crate::theme::semibold(17.0))
+            .font(crate::theme::semibold(19.0))
             .color(rgb(t.text_primary)),
         );
         if !state.about.trim().is_empty() {
-            ui.label(RichText::new(state.about.clone()).size(12.5).color(rgb(t.text_secondary)));
+            ui.label(RichText::new(state.about.clone()).size(12.0).color(rgb(t.text_secondary)));
         }
     });
     ui.add_space(16.0);
@@ -605,7 +605,7 @@ fn draw_editor_form(
     if state.photo_error {
         ui.add_space(6.0);
         ui.label(
-            RichText::new(crate::i18n::t("profile.my_photo_error")).size(11.0).color(rgb(t.danger)),
+            RichText::new(crate::i18n::t("profile.my_photo_error")).size(10.0).color(rgb(t.danger)),
         );
     }
     if mode == MyProfileMode::Live {
@@ -615,7 +615,7 @@ fn draw_editor_form(
                 crate::widgets::loading_row(
                     ui,
                     &crate::i18n::t("profile.my_saving"),
-                    12.0,
+                    14.0,
                     t.text_secondary,
                 );
             }

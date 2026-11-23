@@ -2444,10 +2444,14 @@ mod sticker_sync_translate_tests {
         let (sink, rx) = sink();
         let mut action = whatsapp_rust::prelude::wa::sync_action_value::StickerAction::default();
         action.is_favorite = Some(true);
+        let at = whatsapp_rust::wacore::chrono::DateTime::from_timestamp(1_700_000_000, 0)
+            .expect("valid timestamp");
         let event = Event::FavoriteStickerUpdate(
             FavoriteStickerUpdate::builder()
                 .filehash("hash-a".to_owned())
+                .timestamp(at)
                 .action(Box::new(action))
+                .from_full_sync(false)
                 .build(),
         );
         translate_event(&event, &sink, &[], &mut super::IdentityBook::default());
@@ -2461,8 +2465,17 @@ mod sticker_sync_translate_tests {
     #[test]
     fn remove_recent_sticker_update_crosses_the_boundary() {
         let (sink, rx) = sink();
+        let at = whatsapp_rust::wacore::chrono::DateTime::from_timestamp(1_700_000_000, 0)
+            .expect("valid timestamp");
         let event = Event::RemoveRecentStickerUpdate(
-            RemoveRecentStickerUpdate::builder().filehash("hash-b".to_owned()).build(),
+            RemoveRecentStickerUpdate::builder()
+                .filehash("hash-b".to_owned())
+                .timestamp(at)
+                .action(Box::new(
+                    whatsapp_rust::prelude::wa::sync_action_value::RemoveRecentStickerAction::default(),
+                ))
+                .from_full_sync(false)
+                .build(),
         );
         translate_event(&event, &sink, &[], &mut super::IdentityBook::default());
         assert!(matches!(

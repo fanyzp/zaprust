@@ -83,7 +83,7 @@ pub struct CommunityIntents {
 /// A section caption on the community home ("Announcements",
 /// "Groups you're in").
 fn section_label(ui: &mut egui::Ui, t: Tokens, text: &str) {
-    ui.label(RichText::new(text).size(11.0).strong().color(rgb(t.text_faint)));
+    ui.label(RichText::new(text).size(10.0).strong().color(rgb(t.text_faint)));
     ui.add_space(SP_1);
 }
 
@@ -134,7 +134,7 @@ fn other_group_row(ui: &mut egui::Ui, chat: &Chat, t: Tokens) -> bool {
     // The Join pill occupies a right slot; the title and snippet
     // are ellipsized to the width left of it.
     let join_label = crate::i18n::t("community.join");
-    let join_font = crate::theme::medium(12.5);
+    let join_font = crate::theme::medium(12.0);
     let join_w = ui.ctx().fonts_mut(|f| {
         f.layout_no_wrap(join_label.clone(), join_font.clone(), rgb(t.badge_text)).size().x
     }) + 24.0;
@@ -144,7 +144,7 @@ fn other_group_row(ui: &mut egui::Ui, chat: &Chat, t: Tokens) -> bool {
     );
     let text_left = rect.left() + crate::chat_list::TEXT_X;
     let budget = (pill.left() - 10.0 - text_left).max(0.0);
-    let title_font = crate::theme::medium(15.5);
+    let title_font = crate::theme::medium(15.0);
     let title = crate::widgets::ellipsize(ui, &chat.title, title_font.clone(), budget);
     painter.text(
         Pos2::new(text_left, rect.top() + crate::chat_list::TITLE_DY),
@@ -154,7 +154,7 @@ fn other_group_row(ui: &mut egui::Ui, chat: &Chat, t: Tokens) -> bool {
         rgb(t.text_primary),
     );
     let preview = crate::chat_list::chat_preview_line(chat);
-    let snippet_font = FontId::proportional(13.0);
+    let snippet_font = FontId::proportional(12.0);
     let preview = crate::widgets::ellipsize(ui, &preview, snippet_font.clone(), budget);
     if !preview.is_empty() {
         painter.text(
@@ -278,7 +278,7 @@ pub fn community_home(
             ui.add_space(SP_2);
             ui.label(
                 RichText::new(&community.name)
-                    .font(crate::theme::semibold(20.0))
+                    .font(crate::theme::semibold(19.0))
                     .color(rgb(t.text_primary)),
             );
             ui.label(
@@ -287,7 +287,7 @@ pub fn community_home(
                     "count",
                     &total_groups.to_string(),
                 ))
-                .size(12.5)
+                .size(12.0)
                 .color(rgb(t.text_faint)),
             );
             if let Some(desc) = &community.description {
@@ -311,7 +311,7 @@ pub fn community_home(
                             &shown,
                             0.0,
                             egui::TextFormat {
-                                font_id: FontId::proportional(13.0),
+                                font_id: FontId::proportional(12.0),
                                 color: rgb(t.text_secondary),
                                 ..Default::default()
                             },
@@ -326,7 +326,7 @@ pub fn community_home(
                                 &format!(" {label}"),
                                 0.0,
                                 egui::TextFormat {
-                                    font_id: FontId::proportional(13.0),
+                                    font_id: FontId::proportional(12.0),
                                     color: rgb(t.accent),
                                     ..Default::default()
                                 },
@@ -354,7 +354,7 @@ pub fn community_home(
         // distance from the pane edge as they do in the list,
         // instead of running to the edge of the content area.
         egui::Frame::new()
-            .inner_margin(egui::Margin::symmetric(crate::theme::LIST_PANEL_INSET_X, 0))
+            .inner_margin(egui::Margin::symmetric(crate::theme::LIST_PANEL_INSET_X, 8))
             .show(ui, |ui| {
                 // Announcement chat: the shared chat row with a
                 // megaphone avatar override, keeping its own unread
@@ -667,7 +667,7 @@ impl App {
                     }
                     ui.label(
                         RichText::new(crate::i18n::t("communities.title"))
-                            .font(crate::theme::medium(16.0))
+                            .font(crate::theme::medium(15.0))
                             .color(rgb(t.text_primary)),
                     );
                 });
@@ -738,7 +738,7 @@ impl App {
                             ui.add_space(24.0);
                             ui.label(
                                 RichText::new(crate::i18n::t("communities.empty"))
-                                    .size(13.5)
+                                    .size(15.0)
                                     .color(rgb(t.text_secondary)),
                             );
                         }
@@ -809,7 +809,7 @@ impl App {
                                     "count",
                                     &total.to_string(),
                                 ),
-                                FontId::proportional(12.5),
+                                FontId::proportional(12.0),
                                 rgb(t.text_faint),
                             );
                             crate::icons::draw(
@@ -1001,7 +1001,7 @@ impl App {
                 if p < 0.999 {
                     ui.set_opacity(p);
                 }
-                let frame = crate::theme::glass_panel_frame(t, 14)
+                let frame = crate::theme::glass_panel_frame(t, crate::theme::RADIUS_PANEL)
                     .inner_margin(egui::Margin::symmetric(12, 10));
                 let _inner = frame.show(ui, |ui| {
                     ui.set_width(300.0);
@@ -1015,7 +1015,7 @@ impl App {
                         ui.add_space(6.0);
                         ui.label(
                             RichText::new(crate::i18n::t("community.name_label"))
-                                .size(11.5)
+                                .size(12.0)
                                 .color(rgb(t.text_secondary)),
                         );
                         crate::widgets::text_field(
@@ -1028,13 +1028,13 @@ impl App {
                         if !self.live_mode {
                             ui.label(
                                 RichText::new(crate::i18n::t("community.demo_note"))
-                                    .size(11.0)
+                                    .size(10.0)
                                     .color(rgb(t.text_faint)),
                             );
                         }
                         if let Some(error) = &self.community_create_error {
                             ui.add_space(4.0);
-                            ui.label(RichText::new(error.clone()).size(11.5).color(rgb(t.danger)));
+                            ui.label(RichText::new(error.clone()).size(12.0).color(rgb(t.danger)));
                         }
                         ui.add_space(8.0);
                         ui.horizontal(|ui| {

@@ -21,8 +21,7 @@ whatsapp = ["dep:whatsapp-rust", "dep:diesel", "dep:tokio", "dep:tracing", "dep:
 # Voice/video calls. The feature set is assembled by hand instead of
 # using the library's umbrella `voip` feature: the umbrella pulls
 # voip-libopus (a C library binding), while WhatsApp calls natively
-# speak MLOW and the PCM path needs no C codec. See
-# docs/design/calls.md for the full reasoning and trade-off.
+# speak MLOW and the PCM path needs no C codec.
 calls = ["whatsapp", "whatsapp-rust/voip-mlow", "whatsapp-rust/voip-relay-native", "dep:cpal"]
 
 [dependencies]
@@ -48,7 +47,7 @@ ureq = { version = "3", default-features = false, features = ["rustls"], optiona
 # Pinned to a git revision, deliberately not the crates.io release:
 # crates.io 0.7.0 enables a `simd` feature in wacore-binary that needs a
 # nightly compiler (portable_simd); this revision builds on stable.
-# See docs/research/whatsapp-rust.md §4. Bump the rev deliberately,
+# Bump the rev deliberately,
 # never float it, the library is pre-1.0 and breaks API on purpose.
 # The library's `sqlite-storage-bundled` feature is deliberately NOT
 # enabled: it pins libsqlite3-sys 0.40 while diesel 2.4 (the store's

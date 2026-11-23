@@ -84,7 +84,7 @@ pub(crate) fn select(
     add_contents: impl FnOnce(&mut egui::Ui),
 ) -> egui::Response {
     egui::ComboBox::from_id_salt(id)
-        .selected_text(RichText::new(selected).font(crate::theme::medium(13.0)))
+        .selected_text(RichText::new(selected).font(crate::theme::medium(12.0)))
         .width(width)
         .show_ui(ui, add_contents)
         .response
@@ -141,9 +141,9 @@ pub(crate) fn form_row<R>(
             Vec2::new(FORM_LABEL_W, 0.0),
             egui::Layout::top_down(egui::Align::Min),
             |ui| {
-                ui.label(RichText::new(label).font(crate::theme::medium(13.0)));
+                ui.label(RichText::new(label).font(crate::theme::medium(12.0)));
                 if let Some(hint) = hint {
-                    ui.label(RichText::new(hint).size(11.5).color(rgb(t.text_faint)));
+                    ui.label(RichText::new(hint).size(12.0).color(rgb(t.text_faint)));
                 }
             },
         );
@@ -164,9 +164,9 @@ pub(crate) fn form_field<R>(
     add: impl FnOnce(&mut egui::Ui) -> R,
 ) -> (R, egui::Rect) {
     let resp = ui.vertical(|ui| {
-        ui.label(RichText::new(label).font(crate::theme::medium(13.0)));
+        ui.label(RichText::new(label).font(crate::theme::medium(12.0)));
         if let Some(hint) = hint {
-            ui.label(RichText::new(hint).size(11.5).color(rgb(t.text_faint)));
+            ui.label(RichText::new(hint).size(12.0).color(rgb(t.text_faint)));
         }
         add(ui)
     });
@@ -240,14 +240,14 @@ pub(crate) fn radio_row(
         Pos2::new(x, cy),
         egui::Align2::LEFT_CENTER,
         label,
-        FontId::proportional(14.0),
+        FontId::proportional(15.0),
         rgb(t.text_primary),
     );
     if !hint.is_empty() {
         let w = ui
             .ctx()
             .fonts_mut(|f| {
-                f.layout_no_wrap(label.to_owned(), FontId::proportional(14.0), rgb(t.text_primary))
+                f.layout_no_wrap(label.to_owned(), FontId::proportional(15.0), rgb(t.text_primary))
             })
             .size()
             .x;

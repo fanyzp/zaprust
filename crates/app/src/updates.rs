@@ -61,7 +61,7 @@ impl App {
         let t = self.tokens();
         ui.label(
             RichText::new(crate::i18n::t("nav.updates"))
-                .font(crate::theme::semibold(20.0))
+                .font(crate::theme::semibold(19.0))
                 .color(rgb(t.text_primary)),
         );
         ui.add_space(12.0);
@@ -110,14 +110,14 @@ impl App {
             let subtitle = crate::widgets::ellipsize(
                 ui,
                 &self.my_status_subtitle(),
-                FontId::proportional(12.5),
+                FontId::proportional(12.0),
                 (rect.right() - 8.0 - text_left).max(0.0),
             );
             painter.text(
                 Pos2::new(text_left, rect.top() + 44.0),
                 Align2::LEFT_CENTER,
                 subtitle,
-                FontId::proportional(12.5),
+                FontId::proportional(12.0),
                 rgb(t.text_secondary),
             );
             if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
@@ -131,7 +131,7 @@ impl App {
         ui.add_space(16.0);
         ui.label(
             RichText::new(crate::i18n::t("updates.recent"))
-                .font(crate::theme::medium(13.0))
+                .font(crate::theme::medium(12.0))
                 .color(rgb(t.text_secondary)),
         );
         // The feed area: other people's statuses cannot be
@@ -249,7 +249,7 @@ impl App {
                     ui.set_opacity(p);
                 }
                 let frame =
-                    crate::theme::glass_panel_frame(t, 14).inner_margin(Margin::symmetric(12, 10));
+                    crate::theme::glass_panel_frame(t, crate::theme::RADIUS_PANEL).inner_margin(Margin::symmetric(12, 10));
                 let _inner = frame.show(ui, |ui| {
                     ui.set_width(300.0);
                     ui.add_enabled_ui(!exiting && !self.updates.posting, |ui| {
@@ -269,20 +269,20 @@ impl App {
                         if self.live.is_none() {
                             ui.label(
                                 RichText::new(crate::i18n::t("updates.demo_note"))
-                                    .size(11.0)
+                                    .size(10.0)
                                     .color(rgb(t.text_faint)),
                             );
                         }
                         if let Some(error) = &self.updates.error {
                             ui.add_space(4.0);
-                            ui.label(RichText::new(error.clone()).size(11.5).color(rgb(t.danger)));
+                            ui.label(RichText::new(error.clone()).size(12.0).color(rgb(t.danger)));
                         }
                         ui.add_space(8.0);
                         if self.updates.posting {
                             crate::widgets::loading_row(
                                 ui,
                                 &crate::i18n::t("updates.posting"),
-                                12.5,
+                                14.0,
                                 t.text_secondary,
                             );
                             ui.add_space(8.0);

@@ -64,7 +64,7 @@ impl App {
                     crate::widgets::loading_row(
                         ui,
                         &crate::i18n::t("chat.loading_older"),
-                        11.5,
+                        14.0,
                         t.text_secondary,
                     );
                     ui.add_space(8.0);
@@ -884,7 +884,7 @@ impl App {
                             (rgb(t.badge_bg), rgb(t.badge_text))
                         };
                         let label = core::filter::format_count(u64::from(chat.unread));
-                        let font = FontId::proportional(11.0);
+                        let font = FontId::proportional(10.0);
                         let text_w =
                             painter.layout_no_wrap(label.clone(), font.clone(), btext).size().x;
                         let bw = (text_w + 11.0).max(20.0);

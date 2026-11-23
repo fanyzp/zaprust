@@ -11,9 +11,9 @@
 //! separated by hairlines. The AI variant swaps the rows for a capability
 //! description and suggestion chips, the way Meta AI presents
 //! itself. Only actions that do something real in the app are
-//! wired; the audio/video rows render because the layout calls for
-//! them and answer with an honest notice, because Zaprust has no
-//! calls surface yet.
+//! wired; the dock's audio action rides the real call path
+//! (there is no video action, because video calling is not
+//! built).
 
 use core::model::{Chat, ChatKind};
 

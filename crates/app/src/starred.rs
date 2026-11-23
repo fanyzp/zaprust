@@ -238,7 +238,7 @@ impl App {
                     }
                     ui.label(
                         RichText::new(crate::i18n::t("nav.starred"))
-                            .font(crate::theme::medium(16.0))
+                            .font(crate::theme::medium(15.0))
                             .color(rgb(t.text_primary)),
                     );
                 });
@@ -300,7 +300,7 @@ impl App {
                         // row's context) and the compact date,
                         // right-aligned at the chat row's inset.
                         let date = compact_date(msg);
-                        let date_font = FontId::proportional(11.5);
+                        let date_font = FontId::proportional(12.0);
                         let date_w = ui.ctx().fonts_mut(|f| {
                             f.layout_no_wrap(date.clone(), date_font.clone(), rgb(t.text_faint))
                                 .size()
@@ -317,14 +317,14 @@ impl App {
                         let title_text = crate::widgets::ellipsize(
                             ui,
                             title,
-                            crate::theme::medium(15.5),
+                            crate::theme::medium(15.0),
                             title_budget,
                         );
                         painter.text(
                             Pos2::new(text_left, rect.top() + crate::chat_list::TITLE_DY),
                             egui::Align2::LEFT_CENTER,
                             title_text,
-                            crate::theme::medium(15.5),
+                            crate::theme::medium(15.0),
                             rgb(t.text_primary),
                         );
                         // Second line: a kind chip for media, the
@@ -334,7 +334,7 @@ impl App {
                         let budget = (rect.right() - 28.0 - text_left).max(0.0);
                         if let Some(kind) = chip_label(msg) {
                             let chip_text = format!("{kind} {}", twelve_hour(&msg.time));
-                            let chip_font = FontId::proportional(11.5);
+                            let chip_font = FontId::proportional(12.0);
                             let chip_w = ui.ctx().fonts_mut(|f| {
                                 f.layout_no_wrap(
                                     chip_text.clone(),
@@ -364,14 +364,14 @@ impl App {
                             let line = crate::widgets::ellipsize(
                                 ui,
                                 &snippet(msg),
-                                FontId::proportional(13.0),
+                                FontId::proportional(12.0),
                                 budget,
                             );
                             painter.text(
                                 Pos2::new(text_left, line2_y),
                                 egui::Align2::LEFT_CENTER,
                                 line,
-                                FontId::proportional(13.0),
+                                FontId::proportional(12.0),
                                 rgb(t.text_secondary),
                             );
                         }

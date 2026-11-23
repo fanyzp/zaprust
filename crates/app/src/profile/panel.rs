@@ -232,7 +232,7 @@ impl App {
             |ui| {
                 ui.label(
                     RichText::new(info_title)
-                        .font(crate::theme::semibold(14.0))
+                        .font(crate::theme::semibold(15.0))
                         .color(rgb(t.text_primary)),
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -372,7 +372,7 @@ impl App {
                                 dock_prose(ui, |ui| {
                                     ui.label(
                                         RichText::new(desc)
-                                            .size(12.5)
+                                            .size(12.0)
                                             .color(rgb(t.text_secondary)),
                                     );
                                 });
@@ -400,7 +400,7 @@ impl App {
                                 dock_prose(ui, |ui| {
                                     ui.label(
                                         RichText::new(format!("Community · {name}"))
-                                            .size(12.5)
+                                            .size(12.0)
                                             .color(rgb(t.text_secondary)),
                                     );
                                 });
@@ -450,7 +450,7 @@ impl App {
                             // destructive action.
                             ui.label(
                                 RichText::new(crate::i18n::t("profile.group_photo"))
-                                    .size(11.5)
+                                    .size(12.0)
                                     .color(rgb(t.text_secondary)),
                             );
                             ui.horizontal(|ui| {
@@ -480,7 +480,7 @@ impl App {
                                 }
                             });
                             ui.add_space(SP_2);
-                            ui.label(RichText::new("Name").size(11.5).color(rgb(t.text_secondary)));
+                            ui.label(RichText::new("Name").size(12.0).color(rgb(t.text_secondary)));
                             text_field(
                                 ui,
                                 t,
@@ -490,7 +490,7 @@ impl App {
                             );
                             ui.label(
                                 RichText::new("Description")
-                                    .size(11.5)
+                                    .size(12.0)
                                     .color(rgb(t.text_secondary)),
                             );
                             text_field(ui, t, &mut self.group_desc_edit, "", ui.available_width());
@@ -498,7 +498,7 @@ impl App {
                                 RichText::new(
                                     "Leave the description empty to keep the current one.",
                                 )
-                                .size(11.0)
+                                .size(10.0)
                                 .color(rgb(t.text_faint)),
                             );
                             ui.add_space(SP_2);
@@ -517,7 +517,7 @@ impl App {
                             ui.add_space(SP_3);
                             ui.label(
                                 RichText::new(crate::i18n::t("profile.add_participant"))
-                                    .size(11.5)
+                                    .size(12.0)
                                     .color(rgb(t.text_secondary)),
                             );
                             // The button keeps its natural size on
@@ -550,7 +550,7 @@ impl App {
                             // backend last reported for this chat.
                             ui.label(
                                 RichText::new(crate::i18n::t("profile.invite_link"))
-                                    .size(11.5)
+                                    .size(12.0)
                                     .color(rgb(t.text_secondary)),
                             );
                             let invite = self
@@ -561,7 +561,7 @@ impl App {
                             if let Some(link) = invite {
                                 ui.label(
                                     RichText::new(link.clone())
-                                        .size(11.0)
+                                        .size(10.0)
                                         .color(rgb(t.text_faint)),
                                 );
                                 ui.horizontal(|ui| {
@@ -719,7 +719,7 @@ impl App {
                                     if rows.is_empty() {
                                         ui.label(
                                             RichText::new(crate::i18n::t("profile.no_requests"))
-                                                .size(11.0)
+                                                .size(10.0)
                                                 .color(rgb(t.text_faint)),
                                         );
                                     }
@@ -793,7 +793,7 @@ impl App {
                             ui.add_space(SP_3);
                             ui.label(
                                 RichText::new(crate::i18n::t("profile.group_management_live_only"))
-                                    .size(11.5)
+                                    .size(12.0)
                                     .color(rgb(t.text_faint)),
                             );
                         }
@@ -836,7 +836,7 @@ impl App {
                                             continue;
                                         };
                                         egui::Popup::menu(&kebab)
-                                            .frame(crate::theme::glass_panel_frame(t, 12))
+                                            .frame(crate::theme::glass_panel_frame(t, crate::theme::RADIUS_PANEL))
                                             .width(208.0)
                                             .show(|ui| {
                                                 // Message is offered
@@ -1039,7 +1039,7 @@ impl App {
                                 ui.add_space(DOCK_LABEL_X);
                                 ui.label(
                                     RichText::new(format!("… and {extra_members} more"))
-                                        .size(11.5)
+                                        .size(12.0)
                                         .color(rgb(t.text_faint)),
                                 );
                             });

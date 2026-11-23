@@ -112,7 +112,7 @@ impl App {
                     ui.set_opacity(menu_p);
                 }
                 let _menu_frame =
-                    crate::theme::glass_frame(t, 14).inner_margin(Margin::same(8)).show(ui, |ui| {
+                    crate::theme::glass_frame(t, crate::theme::RADIUS_PANEL).inner_margin(Margin::same(8)).show(ui, |ui| {
                         ui.set_width(220.0);
                         let mut row = |ui: &mut egui::Ui,
                                        icon: crate::icons::Icon,
@@ -139,7 +139,7 @@ impl App {
                                 Pos2::new(rect.left() + 38.0, rect.center().y),
                                 egui::Align2::LEFT_CENTER,
                                 label,
-                                FontId::proportional(13.0),
+                                FontId::proportional(12.0),
                                 rgb(t.text_primary),
                             );
                             if resp.clicked() && !exiting {
@@ -174,7 +174,7 @@ impl App {
                                     Pos2::new(rect.left() + 38.0, rect.center().y),
                                     egui::Align2::LEFT_CENTER,
                                     label,
-                                    FontId::proportional(13.0),
+                                    FontId::proportional(12.0),
                                     rgb(t.danger),
                                 );
                                 resp.clicked() && !exiting
@@ -467,7 +467,7 @@ impl App {
                         if self.chat_search.matches.is_empty() {
                             ui.label(
                                 RichText::new(crate::i18n::t("search.no_results"))
-                                    .size(12.5)
+                                    .size(12.0)
                                     .color(rgb(t.text_secondary)),
                             );
                         } else if let Some(current) = self.chat_search.current {
@@ -483,7 +483,7 @@ impl App {
                                         "{total}",
                                         &self.chat_search.matches.len().to_string(),
                                     );
-                            ui.label(RichText::new(label).size(12.5).color(rgb(t.text_secondary)));
+                            ui.label(RichText::new(label).size(12.0).color(rgb(t.text_secondary)));
                         }
                     }
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -581,11 +581,11 @@ impl App {
             .order(egui::Order::Foreground)
             .fixed_pos(Pos2::new(strip_rect.right() - 252.0, strip_rect.bottom() + 6.0))
             .show(ui.ctx(), |ui| {
-                crate::theme::glass_frame(t, 12).inner_margin(Margin::same(12)).show(ui, |ui| {
+                crate::theme::glass_frame(t, crate::theme::RADIUS_SMALL).inner_margin(Margin::same(12)).show(ui, |ui| {
                     ui.set_width(228.0);
                     ui.label(
                         RichText::new(crate::i18n::t("search.jump_to_date"))
-                            .font(crate::theme::semibold(13.0))
+                            .font(crate::theme::semibold(12.0))
                             .color(rgb(t.text_primary)),
                     );
                     ui.add_space(6.0);
@@ -943,7 +943,7 @@ impl App {
                                 |ui| {
                                     ui.label(
                                         RichText::new(crate::i18n::t("conversation.blocked_note"))
-                                            .size(12.5)
+                                            .size(12.0)
                                             .color(rgb(t.text_secondary)),
                                     );
                                     ui.add_space(10.0);

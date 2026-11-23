@@ -249,7 +249,7 @@ impl App {
                     ui.add_space(10.0);
                     ui.label(
                         RichText::new(crate::i18n::t("conversation.select_chat"))
-                            .size(14.5)
+                            .size(15.0)
                             .color(rgb(t.text_secondary)),
                     );
                 });
@@ -634,7 +634,7 @@ impl App {
                         egui::Pos2::new(rect.center().x, rect.center().y - 24.0),
                         egui::Align2::CENTER_CENTER,
                         crate::i18n::t("viewer.photo_failed"),
-                        egui::FontId::proportional(14.0),
+                        egui::FontId::proportional(15.0),
                         egui::Color32::from_rgb(200, 208, 214),
                     );
                 }
@@ -650,7 +650,7 @@ impl App {
                         egui::Pos2::new(rect.center().x, cap_y),
                         egui::Align2::CENTER_TOP,
                         caption,
-                        egui::FontId::proportional(14.0),
+                        egui::FontId::proportional(15.0),
                         egui::Color32::from_rgba_unmultiplied(
                             230,
                             235,
@@ -698,7 +698,7 @@ impl App {
                     btn_rect.center() + egui::Vec2::new(8.0, 0.0),
                     egui::Align2::CENTER_CENTER,
                     "Close",
-                    egui::FontId::proportional(14.0),
+                    egui::FontId::proportional(15.0),
                     egui::Color32::from_rgb(234, 238, 241),
                 );
                 if resp.clicked() {
@@ -881,7 +881,7 @@ impl App {
                 frame_rect.center() + egui::Vec2::new(0.0, 44.0),
                 egui::Align2::CENTER_CENTER,
                 message,
-                egui::FontId::proportional(13.0),
+                egui::FontId::proportional(12.0),
                 note_color,
             );
         } else if player_waiting_frame {
@@ -965,7 +965,7 @@ impl App {
                 egui::Pos2::new(bar.left(), bar.bottom() + 8.0),
                 egui::Align2::LEFT_TOP,
                 format!("{} / {}", video_clock(position), video_clock(duration)),
-                egui::FontId::proportional(11.5),
+                egui::FontId::proportional(12.0),
                 note_color,
             );
             if let Some(note) = &audio_note {
@@ -977,7 +977,7 @@ impl App {
                     egui::Pos2::new(bar.left(), bar.bottom() + 26.0),
                     egui::Align2::LEFT_TOP,
                     note,
-                    egui::FontId::proportional(11.5),
+                    egui::FontId::proportional(12.0),
                     note_color,
                 );
             }
@@ -988,7 +988,7 @@ impl App {
                         frame_rect.center() + egui::Vec2::new(0.0, 44.0),
                         egui::Align2::CENTER_CENTER,
                         crate::i18n::t("video.demo_unavailable"),
-                        egui::FontId::proportional(13.0),
+                        egui::FontId::proportional(12.0),
                         note_color,
                     );
                 }
@@ -997,7 +997,7 @@ impl App {
                         frame_rect.center() + egui::Vec2::new(0.0, 44.0),
                         egui::Align2::CENTER_CENTER,
                         crate::i18n::t("viewer.video_failed"),
-                        egui::FontId::proportional(13.0),
+                        egui::FontId::proportional(12.0),
                         note_color,
                     );
                     // Clicking the tile retries the fetch.
@@ -1044,7 +1044,7 @@ impl App {
                 egui::Pos2::new(frame_rect.center().x, frame_rect.bottom() + 12.0),
                 egui::Align2::CENTER_TOP,
                 facts,
-                egui::FontId::proportional(11.5),
+                egui::FontId::proportional(12.0),
                 note_color,
             );
         }

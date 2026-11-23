@@ -42,7 +42,7 @@ pub(crate) fn ellipsize(ui: &egui::Ui, text: &str, font: FontId, max_w: f32) -> 
 /// set off from the panel header. Panels differ only in the text.
 pub(crate) fn empty_state(ui: &mut egui::Ui, t: Tokens, text: &str) {
     ui.add_space(24.0);
-    ui.label(RichText::new(text).size(13.5).color(rgb(t.text_secondary)));
+    ui.label(RichText::new(text).size(15.0).color(rgb(t.text_secondary)));
 }
 
 /// The one spinner, sized by the caller. Use [`loading_row`]

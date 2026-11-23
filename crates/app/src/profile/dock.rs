@@ -45,7 +45,7 @@ pub(super) fn profile_header(
     // group at centre minus half the total. Allocation and paint
     // use the same numbers, so the group is centred by
     // construction, badges or not.
-    let name_font = crate::theme::semibold(18.0);
+    let name_font = crate::theme::semibold(19.0);
     let name_w = ui
         .painter()
         .layout_no_wrap(chat.title.clone(), name_font.clone(), rgb(t.text_primary))
@@ -81,7 +81,7 @@ pub(super) fn profile_header(
         crate::widgets::ai_chip(ui.painter(), egui::pos2(x, cy), t);
     }
     ui.vertical_centered(|ui| {
-        ui.label(RichText::new(subtitle).size(12.5).color(rgb(t.text_secondary)));
+        ui.label(RichText::new(subtitle).size(12.0).color(rgb(t.text_secondary)));
     });
 }
 
@@ -198,11 +198,11 @@ pub(super) fn dock_card_section<R>(
     dock_card(ui, t, |ui| {
         ui.horizontal(|ui| {
             ui.add_space(DOCK_LABEL_X);
-            ui.label(RichText::new(title).size(13.0).strong().color(rgb(t.text_primary)));
+            ui.label(RichText::new(title).size(12.0).strong().color(rgb(t.text_primary)));
         });
         if let Some(caption) = caption {
             dock_prose(ui, |ui| {
-                ui.label(RichText::new(caption).size(11.5).color(rgb(t.text_faint)));
+                ui.label(RichText::new(caption).size(12.0).color(rgb(t.text_faint)));
             });
         }
         ui.add_space(SP_1);
@@ -254,7 +254,7 @@ pub(super) fn dock_row(
         egui::pos2(rect.left() + DOCK_LABEL_X, rect.center().y),
         egui::Align2::LEFT_CENTER,
         label,
-        crate::theme::medium(13.0),
+        crate::theme::medium(12.0),
         rgb(label_color),
     );
     if chevron {
@@ -300,14 +300,14 @@ pub(super) fn dock_stat_row(
         egui::pos2(rect.left() + DOCK_LABEL_X, rect.center().y),
         egui::Align2::LEFT_CENTER,
         label,
-        crate::theme::medium(13.0),
+        crate::theme::medium(12.0),
         rgb(t.text_primary),
     );
     ui.painter().text(
         egui::pos2(rect.right() - 26.0, rect.center().y),
         egui::Align2::RIGHT_CENTER,
         value,
-        crate::theme::medium(13.0),
+        crate::theme::medium(12.0),
         rgb(t.text_secondary),
     );
     crate::icons::draw(
@@ -376,7 +376,7 @@ pub(super) fn dock_action_row(
                 egui::pos2(rect.center().x, rect.bottom() - 2.0),
                 egui::Align2::CENTER_BOTTOM,
                 label,
-                medium(11.0),
+                medium(10.0),
                 rgb(t.text_secondary),
             );
             if resp.clicked() {
@@ -419,7 +419,7 @@ pub(super) fn dock_member_row(
                 None => crate::widgets::paint_avatar(ui.painter(), center, 15.0, false, seed),
             }
             ui.vertical(|ui| {
-                ui.label(RichText::new(name).size(12.5).color(rgb(t.text_primary)));
+                ui.label(RichText::new(name).size(12.0).color(rgb(t.text_primary)));
                 if let Some(address) = address {
                     ui.label(
                         RichText::new(address)
@@ -448,7 +448,7 @@ pub(super) fn dock_member_row(
                         }
                         ui.label(
                             RichText::new(crate::i18n::t("profile.admin"))
-                                .font(medium(10.5))
+                                .font(medium(10.0))
                                 .color(rgb(t.accent)),
                         );
                     }
@@ -512,7 +512,7 @@ pub(super) fn ephemeral_option_row(
         egui::pos2(rect.left() + DOCK_LABEL_X, rect.center().y),
         egui::Align2::LEFT_CENTER,
         label,
-        crate::theme::medium(13.0),
+        crate::theme::medium(12.0),
         rgb(t.text_primary),
     );
     let dot_c = egui::pos2(rect.right() - 14.0, rect.center().y);
@@ -594,7 +594,7 @@ pub(crate) fn profile_user_body(
     if let Some(about) = about {
         dock_card_section(ui, t, &crate::i18n::t("profile.about"), None, |ui| {
             dock_prose(ui, |ui| {
-                ui.label(RichText::new(about).size(12.5).color(rgb(t.text_secondary)));
+                ui.label(RichText::new(about).size(12.0).color(rgb(t.text_secondary)));
             });
         });
     }
@@ -630,11 +630,11 @@ pub(crate) fn profile_ai_body(
     intents: &mut ProfileIntents,
 ) {
     ui.add_space(SP_2);
-    ui.label(RichText::new(description).size(12.5).color(rgb(t.text_secondary)));
+    ui.label(RichText::new(description).size(12.0).color(rgb(t.text_secondary)));
     ui.add_space(SP_3);
     ui.label(
         RichText::new(crate::i18n::t("profile.ai_suggest_label"))
-            .size(13.0)
+            .size(12.0)
             .strong()
             .color(rgb(t.text_primary)),
     );

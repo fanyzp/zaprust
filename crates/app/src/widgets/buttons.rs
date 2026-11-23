@@ -93,7 +93,7 @@ fn button_impl(
         Btn::Secondary => "secondary",
         Btn::Danger => "danger",
     };
-    let font = crate::theme::medium(13.0);
+    let font = crate::theme::medium(12.0);
     let text_w = ui
         .ctx()
         .fonts_mut(|f| f.layout_no_wrap(label.to_owned(), font.clone(), Color32::WHITE).size().x);
@@ -128,7 +128,7 @@ fn button_impl(
         prect.center(),
         egui::Align2::CENTER_CENTER,
         label,
-        crate::theme::medium(13.0 * scale),
+        crate::theme::medium(12.0 * scale),
         rgb(text),
     );
     if enabled {
@@ -160,7 +160,7 @@ pub(crate) fn rail_button(
         // stays unmistakable.
         ui.painter().rect_filled(
             rect,
-            CornerRadius::same(14),
+            CornerRadius::same(crate::theme::RADIUS_SMALL),
             crate::theme::glass_wash(t, t.bg_panel_alt, 150),
         );
     } else {
@@ -176,10 +176,10 @@ pub(crate) fn rail_button(
         if press > 0.001 {
             let pressed = core::theme::pressed_step(t.bg_panel_alt);
             let fill = core::theme::mix(t.bg_panel_alt, pressed, press);
-            ui.painter().rect_filled(rect, CornerRadius::same(14), rgb(fill));
+            ui.painter().rect_filled(rect, CornerRadius::same(crate::theme::RADIUS_SMALL), rgb(fill));
         } else if hov > 0.001 {
             let fill = core::theme::mix(t.bg_panel, t.bg_panel_alt, hov);
-            ui.painter().rect_filled(rect, CornerRadius::same(14), rgb(fill));
+            ui.painter().rect_filled(rect, CornerRadius::same(crate::theme::RADIUS_SMALL), rgb(fill));
         }
     }
     let color = if selected { accent } else { rgb(t.text_secondary) };
@@ -197,7 +197,7 @@ pub(crate) fn rail_button(
         // 19 px tall, at least 19 px wide), scaled to sit on the
         // 46 px rail button.
         let label = core::filter::format_count(u64::from(badge_count));
-        let font = FontId::proportional(11.0);
+        let font = FontId::proportional(10.0);
         let text_w = ui.ctx().fonts_mut(|f| {
             f.layout_no_wrap(label.clone(), font.clone(), rgb(t.badge_text)).size().x
         });
@@ -226,7 +226,7 @@ pub(crate) fn chip(ui: &mut egui::Ui, label: &str, selected: bool, t: Tokens) ->
     // State endpoints are unchanged: selected chips step their
     // accent alpha 54 (rest), 84 (hover), 110 (pressed); unselected
     // chips use the shared hover and pressed steps.
-    let font = FontId::proportional(12.5);
+    let font = FontId::proportional(12.0);
     let text_size = ui
         .ctx()
         .fonts_mut(|f| f.layout_no_wrap(label.to_owned(), font.clone(), Color32::WHITE).size());

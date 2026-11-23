@@ -341,7 +341,7 @@ impl App {
                                             RichText::new(crate::i18n::t(
                                                 "conversation.editing_message",
                                             ))
-                                            .size(11.5)
+                                            .size(12.0)
                                             .color(rgb(t.text_secondary)),
                                         );
                                         ui.with_layout(
@@ -981,7 +981,7 @@ fn draw_recording_bar(app: &mut App, ui: &mut egui::Ui, t: Tokens, now: f64, eng
         ui.painter().circle_filled(dot.center(), 5.5, fade(red, pulse));
         let label = format!("{:02}:{:02}", secs / 60, secs % 60);
         ui.label(
-            RichText::new(label).font(crate::theme::semibold(13.0)).color(rgb(t.text_primary)),
+            RichText::new(label).font(crate::theme::semibold(12.0)).color(rgb(t.text_primary)),
         );
         // The level waveform grows across whatever width the row
         // still has, leaving room for the two controls.

@@ -536,7 +536,7 @@ pub(crate) fn typing_dots(ui: &mut egui::Ui, color: Color32) {
     let time = ui.input(|i| i.time);
     let painter = ui.painter();
     for i in 0..3 {
-        let wave = (time * 3.2 + f64::from(i) * 0.65).sin() * 0.5 + 0.5;
+        let wave = (time * crate::motion::TYPING_WAVE_RATE + f64::from(i) * 0.65).sin() * 0.5 + 0.5;
         let lift = (wave as f32).powf(1.5);
         let center = Pos2::new(rect.left() + 4.0 + i as f32 * 10.0, rect.center().y - 2.2 * lift);
         let alpha = (110.0 + 130.0 * lift) as u8;
@@ -546,7 +546,7 @@ pub(crate) fn typing_dots(ui: &mut egui::Ui, color: Color32) {
             Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), alpha),
         );
     }
-    ui.ctx().request_repaint_after(Duration::from_millis(33));
+    ui.ctx().request_repaint_after(Duration::from_millis(crate::motion::TYPING_REPAINT_MS));
 }
 
 #[cfg(test)]

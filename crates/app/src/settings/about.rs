@@ -106,7 +106,7 @@ impl App {
                     divider(ui, t);
                     let summary: String = notes.chars().take(400).collect();
                     row_with_text_control(ui, t, "What is new", "", |ui| {
-                        ui.label(RichText::new(summary).size(12.5).color(rgb(t.text_secondary)));
+                        ui.label(RichText::new(summary).size(12.0).color(rgb(t.text_secondary)));
                     });
                 }
             }
@@ -202,6 +202,11 @@ impl App {
         page_header(ui, "About");
         let repo = core::crash::GITHUB_REPO;
         let repo_url = format!("https://github.com/{repo}");
+        // The contributor profile is the repo URL's owner
+        // segment, derived from the one builder instead of a
+        // second hard-coded copy of the address.
+        let profile_url =
+            format!("https://github.com/{}", repo.split('/').next().unwrap_or(repo));
         let mut report_bug = false;
         group_label(ui, t, "App");
         settings_card(ui, t, |ui| {
@@ -276,7 +281,7 @@ impl App {
                 "Created by",
                 "fanyzp",
                 |ui| {
-                    ui.hyperlink_to("@fanyzp", "https://github.com/fanyzp");
+                    ui.hyperlink_to("@fanyzp", profile_url.clone());
                 },
             );
             divider(ui, t);

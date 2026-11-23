@@ -22,7 +22,7 @@ fn receipt_state_row(
             rgb(color),
             rgb(t.bg_panel),
         );
-        ui.label(RichText::new(text).size(12.5).color(rgb(t.text_secondary)));
+        ui.label(RichText::new(text).size(12.0).color(rgb(t.text_secondary)));
     });
 }
 
@@ -370,7 +370,7 @@ impl App {
                             for emoji in QUICK_REACTIONS {
                                 if ui
                                     .add(
-                                        egui::Button::new(RichText::new(emoji).size(20.0))
+                                        egui::Button::new(RichText::new(emoji).size(19.0))
                                             .frame(false),
                                     )
                                     .clicked()
@@ -441,7 +441,7 @@ impl App {
                 show_popup(self.popup_frame(), self.tokens, ui, |ui| {
                     ui.set_width(240.0);
                     ui.add_enabled_ui(!exiting, |ui| {
-                        ui.label(RichText::new("Message info").size(14.0).strong());
+                        ui.label(RichText::new("Message info").size(15.0).strong());
                         ui.add_space(6.0);
                         if entries.is_empty() {
                             // The state glyph comes from the icon
@@ -472,13 +472,13 @@ impl App {
                                 }
                                 None => {
                                     ui.label(
-                                        RichText::new("-").size(12.5).color(rgb(t.text_secondary)),
+                                        RichText::new("-").size(12.0).color(rgb(t.text_secondary)),
                                     );
                                 }
                             }
                             ui.label(
                                 RichText::new("Detailed receipt events appear here in live mode.")
-                                    .size(11.5)
+                                    .size(12.0)
                                     .color(rgb(t.text_faint)),
                             );
                         } else {
@@ -698,13 +698,13 @@ impl App {
                         ui.add_space(6.0);
                         ui.label(
                             RichText::new(crate::i18n::t("groups.name_label"))
-                                .size(11.5)
+                                .size(12.0)
                                 .color(rgb(t.text_secondary)),
                         );
                         crate::widgets::text_field(ui, t, &mut self.groups.create_name, "", 280.0);
                         ui.label(
                             RichText::new(crate::i18n::t("groups.participants_label"))
-                                .size(11.5)
+                                .size(12.0)
                                 .color(rgb(t.text_secondary)),
                         );
                         crate::widgets::text_field(
@@ -717,13 +717,13 @@ impl App {
                         if !self.live_mode {
                             ui.label(
                                 RichText::new(crate::i18n::t("groups.demo_note"))
-                                    .size(11.0)
+                                    .size(10.0)
                                     .color(rgb(t.text_faint)),
                             );
                         }
                         if let Some(error) = &self.groups.create_error {
                             ui.add_space(4.0);
-                            ui.label(RichText::new(error.clone()).size(11.5).color(rgb(t.danger)));
+                            ui.label(RichText::new(error.clone()).size(12.0).color(rgb(t.danger)));
                         }
                         ui.add_space(8.0);
                         ui.horizontal(|ui| {
@@ -823,7 +823,7 @@ impl App {
                         ui.add_space(6.0);
                         ui.label(
                             RichText::new(crate::i18n::t("groups.join_label"))
-                                .size(11.5)
+                                .size(12.0)
                                 .color(rgb(t.text_secondary)),
                         );
                         crate::widgets::text_field(
@@ -836,13 +836,13 @@ impl App {
                         if !self.live_mode {
                             ui.label(
                                 RichText::new(crate::i18n::t("groups.join_live_only"))
-                                    .size(11.0)
+                                    .size(10.0)
                                     .color(rgb(t.text_faint)),
                             );
                         }
                         if let Some(error) = &self.groups.join_link_error {
                             ui.add_space(4.0);
-                            ui.label(RichText::new(error.clone()).size(11.5).color(rgb(t.danger)));
+                            ui.label(RichText::new(error.clone()).size(12.0).color(rgb(t.danger)));
                         }
                         ui.add_space(8.0);
                         ui.horizontal(|ui| {
@@ -924,7 +924,7 @@ impl App {
                         ui.add_space(6.0);
                         ui.label(
                             RichText::new(crate::i18n::t("chats.phone_label"))
-                                .size(11.5)
+                                .size(12.0)
                                 .color(rgb(t.text_secondary)),
                         );
                         ui.add_enabled_ui(self.new_chat.checking.is_none(), |ui| {
@@ -939,7 +939,7 @@ impl App {
                         if !self.live_mode {
                             ui.label(
                                 RichText::new(crate::i18n::t("chats.new_chat_live_only"))
-                                    .size(11.0)
+                                    .size(10.0)
                                     .color(rgb(t.text_faint)),
                             );
                         }
@@ -948,7 +948,7 @@ impl App {
                             crate::widgets::loading_row(
                                 ui,
                                 &crate::i18n::t("chats.checking_number"),
-                                11.5,
+                                14.0,
                                 t.text_secondary,
                             );
                         }
@@ -960,13 +960,13 @@ impl App {
                                     "phone",
                                     phone,
                                 ))
-                                .size(11.5)
+                                .size(12.0)
                                 .color(rgb(t.text_secondary)),
                             );
                         }
                         if let Some(error) = &self.new_chat.error {
                             ui.add_space(4.0);
-                            ui.label(RichText::new(error.clone()).size(11.5).color(rgb(t.danger)));
+                            ui.label(RichText::new(error.clone()).size(12.0).color(rgb(t.danger)));
                         }
                         ui.add_space(8.0);
                         ui.horizontal(|ui| {

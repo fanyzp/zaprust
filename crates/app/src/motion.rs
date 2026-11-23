@@ -117,6 +117,12 @@ pub(crate) mod dur {
 /// The recording bar's live dot: a soft two-beat breathing pace
 /// that reads as recording without a hard blink.
 pub(crate) const RECORDING_PULSE_RATE: f64 = 2.4;
+/// Typing-indicator wave rate (radians per second) and its
+/// repaint cadence: a pulse rate is a motion parameter
+/// (design standard section 14), so draw code carries no
+/// local tempo literals.
+pub(crate) const TYPING_WAVE_RATE: f64 = 3.2;
+pub(crate) const TYPING_REPAINT_MS: u64 = 33;
 /// The GIF picker's pending-preview skeleton tiles: a slightly
 /// slower breath than the recording dot, so a grid of tiles reads
 /// as quietly loading rather than blinking in chorus.

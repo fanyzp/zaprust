@@ -248,7 +248,7 @@ fn draw_call_row(
     // color, and its width comes out of the name budget, which
     // ends at the call-back button's zone at the right edge.
     let count_text = if count > 1 { format!(" ({count})") } else { String::new() };
-    let count_font = crate::theme::medium(15.5);
+    let count_font = crate::theme::medium(15.0);
     let count_w = if count_text.is_empty() {
         0.0
     } else {
@@ -257,16 +257,16 @@ fn draw_call_row(
         })
     };
     let name_budget = (rect.right() - 52.0 - count_w - text_left).max(0.0);
-    let name_text = crate::widgets::ellipsize(ui, name, crate::theme::medium(15.5), name_budget);
+    let name_text = crate::widgets::ellipsize(ui, name, crate::theme::medium(15.0), name_budget);
     let name_pos = Pos2::new(text_left, rect.top() + crate::chat_list::TITLE_DY);
     let name_w = ui.ctx().fonts_mut(|f| {
-        f.layout_no_wrap(name_text.clone(), crate::theme::medium(15.5), name_color).size().x
+        f.layout_no_wrap(name_text.clone(), crate::theme::medium(15.0), name_color).size().x
     });
     painter.text(
         name_pos,
         egui::Align2::LEFT_CENTER,
         name_text,
-        crate::theme::medium(15.5),
+        crate::theme::medium(15.0),
         name_color,
     );
     if !count_text.is_empty() {
@@ -294,7 +294,7 @@ fn draw_call_row(
         Pos2::new(text_left + 18.0, status_y),
         egui::Align2::LEFT_CENTER,
         day_time_line(entry),
-        FontId::proportional(12.5),
+        FontId::proportional(12.0),
         rgb(t.text_secondary),
     );
     // Call-back button at the right edge, centered on the row.
@@ -384,12 +384,12 @@ fn shortcut_circle(
     if response.hovered() {
         ui.painter().circle_stroke(center, D / 2.0, Stroke::new(1.0_f32, rgb(t.border)));
     }
-    let shown = crate::widgets::ellipsize(ui, label, FontId::proportional(11.0), 64.0);
+    let shown = crate::widgets::ellipsize(ui, label, FontId::proportional(10.0), 64.0);
     ui.painter().text(
         Pos2::new(rect.center().x, rect.top() + D + 6.0),
         egui::Align2::CENTER_TOP,
         shown,
-        FontId::proportional(11.0),
+        FontId::proportional(10.0),
         rgb(t.text_secondary),
     );
     response.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(label).clicked()
@@ -451,7 +451,7 @@ fn calls_empty_state(ui: &mut egui::Ui, t: core::theme::Tokens) {
     // The supporting line is wrapped to a comfortable measure
     // first, because its height decides where the block starts.
     let hint_galley =
-        painter.layout(hint, FontId::proportional(13.0), rgb(t.text_secondary), 280.0);
+        painter.layout(hint, FontId::proportional(12.0), rgb(t.text_secondary), 280.0);
     const DISC_D: f32 = 72.0;
     let total_h = DISC_D + 16.0 + 22.0 + 6.0 + hint_galley.size().y;
     let mut y = rect.top() + ((height - total_h) / 2.0).max(0.0);
@@ -471,7 +471,7 @@ fn calls_empty_state(ui: &mut egui::Ui, t: core::theme::Tokens) {
         Pos2::new(cx, y + 11.0),
         Align2::CENTER_CENTER,
         title,
-        crate::theme::semibold(16.0),
+        crate::theme::semibold(15.0),
         rgb(t.text_primary),
     );
     y += 22.0 + 6.0;
@@ -684,7 +684,7 @@ impl App {
                     }
                     ui.label(
                         RichText::new(crate::i18n::t("nav.calls"))
-                            .font(crate::theme::medium(16.0))
+                            .font(crate::theme::medium(15.0))
                             .color(rgb(t.text_primary)),
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -746,7 +746,7 @@ impl App {
                         } else {
                             ui.label(
                                 RichText::new(crate::i18n::t("calls.recent"))
-                                    .font(crate::theme::semibold(12.5))
+                                    .font(crate::theme::semibold(12.0))
                                     .color(rgb(t.text_faint)),
                             );
                             ui.add_space(4.0);
@@ -844,7 +844,7 @@ impl App {
                 ui.horizontal(|ui| {
                     ui.label(
                         RichText::new(crate::i18n::t("nav.calls"))
-                            .font(crate::theme::semibold(20.0))
+                            .font(crate::theme::semibold(19.0))
                             .color(rgb(t.text_primary)),
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -901,7 +901,7 @@ impl App {
                     // reference's "Terbaru".
                     ui.label(
                         RichText::new(crate::i18n::t("calls.recent"))
-                            .font(crate::theme::semibold(16.0))
+                            .font(crate::theme::semibold(15.0))
                             .color(rgb(t.text_primary)),
                     );
                     ui.add_space(4.0);
@@ -1001,14 +1001,14 @@ impl App {
                 // opaque elevated fill the confirm modal uses:
                 // the glass fill let the conversation's text
                 // ghost through behind the picker's rows.
-                let frame = crate::theme::glass_panel_frame(t, 14)
+                let frame = crate::theme::glass_panel_frame(t, crate::theme::RADIUS_PANEL)
                     .fill(rgb(core::theme::elevated_step(t.bg_panel)))
                     .inner_margin(Margin::symmetric(12, 10));
                 let _inner = frame.show(ui, |ui| {
                     ui.set_width(sheet_w - 24.0);
                     ui.add_enabled_ui(!exiting, |ui| {
                         ui.label(
-                            RichText::new(crate::i18n::t("calls.new_call")).size(13.0).strong(),
+                            RichText::new(crate::i18n::t("calls.new_call")).size(12.0).strong(),
                         );
                         ui.add_space(6.0);
                         crate::widgets::text_field(
@@ -1022,7 +1022,7 @@ impl App {
                         if no_targets {
                             ui.label(
                                 RichText::new(crate::i18n::t("calls.picker_empty"))
-                                    .size(12.5)
+                                    .size(12.0)
                                     .color(rgb(t.text_secondary)),
                             );
                         } else {
@@ -1064,14 +1064,14 @@ impl App {
                                         let name_text = crate::widgets::ellipsize(
                                             ui,
                                             &chat.title,
-                                            crate::theme::medium(13.0),
+                                            crate::theme::medium(12.0),
                                             name_budget,
                                         );
                                         painter.text(
                                             Pos2::new(rect.left() + 44.0, rect.center().y),
                                             egui::Align2::LEFT_CENTER,
                                             name_text,
-                                            crate::theme::medium(13.0),
+                                            crate::theme::medium(12.0),
                                             rgb(t.text_primary),
                                         );
                                         // The trailing actions, in
@@ -1081,7 +1081,8 @@ impl App {
                                         // are checked first, like the
                                         // row paradigm's call-back.
                                         let mut action_chosen: Option<bool> = None;
-                                        for (i, action) in picker_call_actions(self.live_mode).iter().enumerate()
+                                        for (i, action) in
+                                            picker_call_actions(self.live_mode).iter().enumerate()
                                         {
                                             let btn_rect = egui::Rect::from_center_size(
                                                 Pos2::new(

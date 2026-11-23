@@ -529,7 +529,7 @@ impl App {
                     ui.add_space(6.0);
                     ui.label(
                         RichText::new(crate::i18n::t("attach.location_name"))
-                            .font(crate::theme::medium(13.0)),
+                            .font(crate::theme::medium(12.0)),
                     );
                     crate::widgets::text_field(
                         ui,
@@ -542,11 +542,11 @@ impl App {
                     ui.horizontal(|ui| {
                         let half = (ui.available_width() - 12.0) / 2.0;
                         ui.vertical(|ui| {
-                            ui.label(RichText::new("Lat").font(crate::theme::medium(13.0)));
+                            ui.label(RichText::new("Lat").font(crate::theme::medium(12.0)));
                             crate::widgets::text_field(ui, t, &mut draft.latitude, "-6.2", half);
                         });
                         ui.vertical(|ui| {
-                            ui.label(RichText::new("Lon").font(crate::theme::medium(13.0)));
+                            ui.label(RichText::new("Lon").font(crate::theme::medium(12.0)));
                             crate::widgets::text_field(ui, t, &mut draft.longitude, "106.8", half);
                         });
                     });
@@ -631,7 +631,7 @@ impl App {
                         if contacts.is_empty() {
                             ui.label(
                                 RichText::new(crate::i18n::t("attach.contact_empty"))
-                                    .size(12.5)
+                                    .size(12.0)
                                     .color(rgb(t.text_secondary)),
                             );
                         }
@@ -779,9 +779,9 @@ impl App {
                 show_popup(frame, t, ui, |ui| {
                     ui.set_width(320.0);
                     ui.add_enabled_ui(!exiting, |ui| {
-                        ui.label(RichText::new(&title).size(14.0).strong());
+                        ui.label(RichText::new(&title).size(15.0).strong());
                         ui.add_space(4.0);
-                        ui.label(RichText::new(&body).size(12.5).color(rgb(t.text_secondary)));
+                        ui.label(RichText::new(&body).size(12.0).color(rgb(t.text_secondary)));
                         if matches!(confirm, UiConfirm::ClearChat { .. }) {
                             // The keep-starred choice the wire
                             // supports (section 24), defaulting
@@ -902,7 +902,7 @@ impl App {
         // stream, so every one gets the stacked-panel glass
         // treatment: the near-opaque fill whose content behind
         // cannot bleed through (see theme::glass_panel_frame).
-        crate::theme::glass_panel_frame(self.tokens, 14).inner_margin(Margin::symmetric(12, 10))
+        crate::theme::glass_panel_frame(self.tokens, crate::theme::RADIUS_PANEL).inner_margin(Margin::symmetric(12, 10))
     }
 }
 

@@ -86,13 +86,13 @@ pub(crate) enum Icon {
 /// values, and say so at their call sites.
 pub(crate) const SIZE_BADGE: f32 = 12.0;
 /// Row and menu-item glyphs.
-pub(crate) const SIZE_ROW: f32 = 17.0;
+pub(crate) const SIZE_ROW: f32 = 16.0;
 /// Menu and list-control glyphs.
-pub(crate) const SIZE_MENU: f32 = 18.0;
+pub(crate) const SIZE_MENU: f32 = 20.0;
 /// Composer and bubble controls.
-pub(crate) const SIZE_CONTROL: f32 = 22.0;
+pub(crate) const SIZE_CONTROL: f32 = 20.0;
 /// Rail, tab bar and floating action buttons.
-pub(crate) const SIZE_TAB: f32 = 24.0;
+pub(crate) const SIZE_TAB: f32 = 20.0;
 /// Large placeholders on media.
 pub(crate) const SIZE_LARGE: f32 = 32.0;
 /// Empty-state and placeholder display glyphs.

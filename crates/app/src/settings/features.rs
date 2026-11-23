@@ -125,7 +125,7 @@ impl App {
             }
             for (owner, slot) in &slots {
                 divider(ui, t);
-                ui.label(RichText::new(format!("{} · {}", slot.label, owner)).size(13.0).strong());
+                ui.label(RichText::new(format!("{} · {}", slot.label, owner)).size(12.0).strong());
                 let keys = self.credentials.keys_for(&slot.id);
                 if keys.is_empty() {
                     ui.label(RichText::new("No keys yet.").size(12.0).color(rgb(t.text_faint)));
@@ -134,7 +134,7 @@ impl App {
                 for key in &keys {
                     ui.horizontal(|ui| {
                         ui.label(
-                            RichText::new(core::credentials::mask(key)).size(12.5).monospace(),
+                            RichText::new(core::credentials::mask(key)).size(12.0).monospace(),
                         );
                         // A key row's only action is removal:
                         // a quiet danger-tinted icon, not a

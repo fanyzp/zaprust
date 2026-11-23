@@ -43,7 +43,7 @@ impl App {
             settings_card(ui, t, |ui| {
                 ui.label(
                     RichText::new(crate::i18n::t("privacy.default_timer_caption"))
-                        .size(11.5)
+                        .size(12.0)
                         .color(rgb(t.text_secondary)),
                 );
                 ui.add_space(4.0);
@@ -103,7 +103,7 @@ impl App {
                 }
                 ui.label(
                     RichText::new("Changes are sent to WhatsApp immediately (live mode).")
-                        .size(11.5)
+                        .size(12.0)
                         .color(rgb(t.text_faint)),
                 );
             });
@@ -118,7 +118,7 @@ impl App {
                          managed on your phone in WhatsApp > Settings > Privacy. When \
                          Zaprust is linked, this page shows and edits them here for real.",
                     )
-                    .size(12.5)
+                    .size(12.0)
                     .color(rgb(t.text_secondary)),
                 );
             });
@@ -132,7 +132,7 @@ impl App {
                      phone in WhatsApp > Settings. Zaprust shows no fake controls \
                      for them.",
                 )
-                .size(12.5)
+                .size(12.0)
                 .color(rgb(t.text_secondary)),
             );
         });

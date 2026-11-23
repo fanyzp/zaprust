@@ -300,7 +300,7 @@ impl App {
                         RichText::new(
                             "tracing to data dir debug/ · bodies stay local unless exported with opt-in",
                         )
-                        .size(11.0),
+                        .size(10.0),
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if crate::widgets::button(ui, t, "Export bundle…", crate::widgets::Btn::Primary).clicked() {
@@ -338,7 +338,7 @@ impl App {
                 } else {
                     "demo mode".to_owned()
                 };
-                ui.label(RichText::new(format!("Connection: {status}")).size(12.5));
+                ui.label(RichText::new(format!("Connection: {status}")).size(12.0));
                 let animating = usize::from(self.anim.picker.is_some())
                     + usize::from(self.anim.chat_fade.is_some())
                     + usize::from(self.anim.send_pulse.is_some());
@@ -348,10 +348,10 @@ impl App {
                          Idle frames request no repaints.",
                         self.anim.started
                     ))
-                    .size(12.5),
+                    .size(12.0),
                 );
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new("Reveal message bodies (local only)").size(11.5));
+                    ui.label(RichText::new("Reveal message bodies (local only)").size(12.0));
                     let mut v = self.debug.reveal_bodies;
                     if ui.checkbox(&mut v, "").changed() {
                         self.debug.reveal_bodies = v;
@@ -368,7 +368,7 @@ impl App {
     }
 
     fn trace_section(&self, ui: &mut egui::Ui, title: &str, stages: &[&str]) {
-        ui.label(RichText::new(title).size(13.0).strong());
+        ui.label(RichText::new(title).size(12.0).strong());
         let mut shown = 0;
         for entry in self.debug.trace.entries().iter().rev() {
             if stages.contains(&entry.stage.as_str()) {
@@ -383,16 +383,16 @@ impl App {
                 if let Some(d) = entry.duration_ms {
                     line.push_str(&format!(" ({d}ms)"));
                 }
-                ui.label(RichText::new(line).size(11.0));
+                ui.label(RichText::new(line).size(10.0));
                 if self.debug.reveal_bodies {
                     if let Some(body) = &entry.body {
-                        ui.label(RichText::new(format!("    body: {body}")).size(11.0));
+                        ui.label(RichText::new(format!("    body: {body}")).size(10.0));
                     }
                 }
             }
         }
         if shown == 0 {
-            ui.label(RichText::new("(no entries yet)").size(11.0));
+            ui.label(RichText::new("(no entries yet)").size(10.0));
         }
         ui.add_space(8.0);
     }
@@ -428,7 +428,7 @@ impl App {
                             "Warning: bodies are your private conversations. \
                              Only include them for your own debugging.",
                         )
-                        .size(11.5)
+                        .size(12.0)
                         .color(egui::Color32::from_rgb(0xE0, 0x6C, 0x50)),
                     );
                 }

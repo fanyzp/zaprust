@@ -116,7 +116,7 @@ impl App {
                                         crate::widgets::spinner(ui, 14.0);
                                         ui.add_space(2.0);
                                     }
-                                    let mut label = RichText::new(&notice.text).size(12.5);
+                                    let mut label = RichText::new(&notice.text).size(12.0);
                                     if notice.kind == NoticeKind::Error {
                                         label = label.color(rgb(t.danger));
                                     }
@@ -286,12 +286,12 @@ impl App {
                 }
                 let _modal = egui::Frame::new()
                     .fill(crate::theme::glass_text_tint(t, t.bg_panel))
-                    .corner_radius(CornerRadius::same(16))
+                    .corner_radius(CornerRadius::same(crate::theme::RADIUS_SMALL))
                     .stroke(Stroke::new(1.0_f32, rgb(t.border)))
                     .inner_margin(Margin::same(14))
                     .show(ui, |ui| {
                         ui.set_width(size.x - 28.0);
-                        ui.label(RichText::new("Crash report").size(16.0).strong());
+                        ui.label(RichText::new("Crash report").size(15.0).strong());
                         ui.add_space(6.0);
                         ui.label(
                             RichText::new(format!(
@@ -300,7 +300,7 @@ impl App {
                                  trace; nothing from your chats is in it.",
                                 report.app_version
                             ))
-                            .size(12.5)
+                            .size(12.0)
                             .color(rgb(t.text_secondary)),
                         );
                         ui.add_space(10.0);

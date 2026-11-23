@@ -114,7 +114,7 @@ impl App {
                     Pos2::new(area.center().x, footer.center().y),
                     Align2::CENTER_CENTER,
                     "Unofficial client. Using it may be against WhatsApp's terms of service.",
-                    FontId::proportional(11.5),
+                    FontId::proportional(12.0),
                     rgb(t.text_faint),
                 );
                 // The centered column. Its height is estimated
@@ -180,7 +180,7 @@ impl App {
                 // Wide, it also holds the instructions on its
                 // left; narrow, they sit under it as the stepper
                 // and status line.
-                let card = crate::theme::glass_text_frame(t, 16)
+                let card = crate::theme::glass_text_frame(t, crate::theme::RADIUS_PANEL)
                     .inner_margin(Margin::symmetric(20, 18))
                     .show(&mut col, |ui| {
                         ui.set_width(col_w - 40.0);
@@ -284,7 +284,7 @@ impl App {
                                 } else {
                                     crate::i18n::t("connect.qr_live")
                                 })
-                                .size(11.0)
+                                .size(10.0)
                                 .color(rgb(t.text_faint)),
                             );
                         }
@@ -313,7 +313,7 @@ impl App {
         if self.live_start_error.is_some() {
             slot.label(
                 RichText::new(crate::i18n::t("connect.could_not_connect_dot"))
-                    .size(12.5)
+                    .size(12.0)
                     .color(rgb(t.danger)),
             );
             return;
@@ -364,14 +364,14 @@ impl App {
                     slot.add_space(6.0);
                 }
                 slot.add(
-                    egui::Label::new(RichText::new(status_text).size(12.5).color(rgb(color)))
+                    egui::Label::new(RichText::new(status_text).size(12.0).color(rgb(color)))
                         .wrap_mode(egui::TextWrapMode::Truncate),
                 );
             } else if self.logged_out {
                 slot.add(
                     egui::Label::new(
                         RichText::new(crate::i18n::t("connect.logged_out_line"))
-                            .size(12.5)
+                            .size(12.0)
                             .color(rgb(t.accent)),
                     )
                     .wrap_mode(egui::TextWrapMode::Truncate),
@@ -384,7 +384,7 @@ impl App {
                 slot.add(
                     egui::Label::new(
                         RichText::new(crate::i18n::t("connect.demo_no_code"))
-                            .size(12.5)
+                            .size(12.0)
                             .color(rgb(t.text_secondary)),
                     )
                     .wrap_mode(egui::TextWrapMode::Truncate),
@@ -396,7 +396,7 @@ impl App {
                 slot.add(
                     egui::Label::new(
                         RichText::new(crate::i18n::t("connect.waiting_code_entry"))
-                            .size(12.5)
+                            .size(12.0)
                             .color(rgb(t.text_secondary)),
                     )
                     .wrap_mode(egui::TextWrapMode::Truncate),
@@ -406,7 +406,7 @@ impl App {
                 slot.add(
                     egui::Label::new(
                         RichText::new(crate::i18n::t("connect.enter_number_for_code"))
-                            .size(12.5)
+                            .size(12.0)
                             .color(rgb(t.text_secondary)),
                     )
                     .wrap_mode(egui::TextWrapMode::Truncate),
@@ -446,17 +446,17 @@ impl App {
                 crate::widgets::loading_row(
                     &mut slot,
                     &crate::i18n::t("connect.waiting_qr"),
-                    12.0,
+                    14.0,
                     t.text_secondary,
                 );
             }
             Slot::Unavailable(label) => {
                 slot.add_space(96.0);
-                slot.label(RichText::new(label).size(12.5).color(rgb(t.text_secondary)));
+                slot.label(RichText::new(label).size(12.0).color(rgb(t.text_secondary)));
             }
             Slot::Demo => {
                 slot.add_space(84.0);
-                slot.label(RichText::new(crate::i18n::t("connect.demo_title")).size(14.0).strong());
+                slot.label(RichText::new(crate::i18n::t("connect.demo_title")).size(15.0).strong());
                 slot.add_space(8.0);
                 slot.label(
                     RichText::new(crate::i18n::t("connect.demo_body"))
@@ -475,7 +475,7 @@ impl App {
     /// pairing-code panel: the state in plain words and the way
     /// back in (a fresh link, which starts a new session).
     fn connect_logged_out_panel(&mut self, ui: &mut egui::Ui, t: Tokens) {
-        ui.label(RichText::new(crate::i18n::t("connect.logged_out_title")).size(14.0).strong());
+        ui.label(RichText::new(crate::i18n::t("connect.logged_out_title")).size(15.0).strong());
         ui.add_space(8.0);
         ui.label(
             RichText::new(crate::i18n::t("connect.logged_out_body"))
@@ -505,7 +505,7 @@ impl App {
     /// connect screen itself for as long as no session exists;
     /// the same text is not repeated as a banner over it.
     fn connect_start_failed_panel(&mut self, ui: &mut egui::Ui, t: Tokens, message: &str) {
-        ui.label(RichText::new(crate::i18n::t("connect.could_not_connect")).size(14.0).strong());
+        ui.label(RichText::new(crate::i18n::t("connect.could_not_connect")).size(15.0).strong());
         ui.add_space(8.0);
         ui.label(RichText::new(message).size(12.0).color(rgb(t.text_secondary)));
         ui.add_space(12.0);
@@ -554,7 +554,7 @@ impl App {
         ui.add_space(6.0);
         if self.pair_code_shown {
             ui.label(
-                RichText::new(crate::i18n::t("connect.enter_code_on_phone")).size(14.0).strong(),
+                RichText::new(crate::i18n::t("connect.enter_code_on_phone")).size(15.0).strong(),
             );
             ui.add_space(12.0);
             // The tiles show a code only when a real one
@@ -598,7 +598,7 @@ impl App {
                                     rect.center(),
                                     Align2::CENTER_CENTER,
                                     ch.to_string(),
-                                    FontId::proportional(21.0),
+                                    FontId::proportional(23.0),
                                     rgb(t.text_primary),
                                 );
                             }
@@ -630,13 +630,13 @@ impl App {
             let waiting_code =
                 self.live_mode && self.live.as_ref().and_then(|s| s.pair_code_at).is_none();
             if waiting_code {
-                crate::widgets::loading_row(ui, &caption, 11.0, t.text_faint);
+                crate::widgets::loading_row(ui, &caption, 14.0, t.text_faint);
             } else {
-                ui.label(RichText::new(caption).size(11.0).color(rgb(t.text_faint)));
+                ui.label(RichText::new(caption).size(10.0).color(rgb(t.text_faint)));
             }
         } else {
             ui.label(
-                RichText::new(crate::i18n::t("connect.enter_phone_number")).size(14.0).strong(),
+                RichText::new(crate::i18n::t("connect.enter_phone_number")).size(15.0).strong(),
             );
             ui.add_space(10.0);
             let country = crate::countries::by_iso(&self.pair_country_iso)
@@ -720,21 +720,21 @@ impl App {
             Pos2::new(rect.left() + 10.0, rect.center().y),
             Align2::LEFT_CENTER,
             crate::countries::flag_emoji(country.iso),
-            FontId::proportional(20.0),
+            FontId::proportional(19.0),
             rgb(t.text_primary),
         );
         painter.text(
             Pos2::new(rect.left() + 46.0, rect.center().y),
             Align2::LEFT_CENTER,
             country.name,
-            FontId::proportional(13.5),
+            FontId::proportional(15.0),
             rgb(t.text_primary),
         );
         painter.text(
             Pos2::new(rect.right() - 34.0, rect.center().y),
             Align2::RIGHT_CENTER,
             format!("+{}", country.dial),
-            FontId::proportional(13.0),
+            FontId::proportional(12.0),
             rgb(t.text_secondary),
         );
         draw_icon(
@@ -766,7 +766,7 @@ impl App {
             Pos2::new(rect.left() + 10.0, rect.center().y),
             Align2::LEFT_CENTER,
             format!("+{}", country.dial),
-            FontId::proportional(13.5),
+            FontId::proportional(15.0),
             rgb(t.text_secondary),
         );
         let edit_rect = egui::Rect::from_min_max(
@@ -850,7 +850,7 @@ impl App {
                 if pick_p < 0.999 {
                     ui.set_opacity(pick_p);
                 }
-                let _frame = crate::theme::glass_frame(t, 16)
+                let _frame = crate::theme::glass_frame(t, crate::theme::RADIUS_PANEL)
                     .inner_margin(Margin::symmetric(12, 10))
                     .show(ui, |ui| {
                         ui.set_width(size.x - 24.0);
@@ -894,21 +894,21 @@ impl App {
                                         Pos2::new(row.left() + 8.0, row.center().y),
                                         Align2::LEFT_CENTER,
                                         crate::countries::flag_emoji(country.iso),
-                                        FontId::proportional(20.0),
+                                        FontId::proportional(19.0),
                                         rgb(t.text_primary),
                                     );
                                     ui.painter().text(
                                         Pos2::new(row.left() + 48.0, row.center().y),
                                         Align2::LEFT_CENTER,
                                         country.name,
-                                        FontId::proportional(13.5),
+                                        FontId::proportional(15.0),
                                         rgb(t.text_primary),
                                     );
                                     ui.painter().text(
                                         Pos2::new(row.right() - 8.0, row.center().y),
                                         Align2::RIGHT_CENTER,
                                         format!("+{}", country.dial),
-                                        FontId::proportional(13.0),
+                                        FontId::proportional(12.0),
                                         rgb(t.text_faint),
                                     );
                                     if resp.clicked() {
@@ -983,7 +983,7 @@ impl App {
                 // the same fill, hairline and shadow as every
                 // other glass surface (this frame used to carry
                 // a one-off deeper shadow of its own).
-                let _modal = crate::theme::glass_frame(t, 16)
+                let _modal = crate::theme::glass_frame(t, crate::theme::RADIUS_PANEL)
                     .inner_margin(Margin::symmetric(14, 12))
                     .show(ui, |ui| {
                         ui.set_width(size.x - 28.0);
@@ -1065,10 +1065,10 @@ impl App {
                                                 "Demo account, not linked".to_owned(),
                                             )
                                         };
-                                        ui.label(RichText::new(name).size(13.5).strong());
+                                        ui.label(RichText::new(name).size(15.0).strong());
                                         ui.label(
                                             RichText::new(sub)
-                                                .size(11.5)
+                                                .size(12.0)
                                                 .color(rgb(t.text_secondary)),
                                         );
                                     });
@@ -1106,7 +1106,7 @@ impl App {
                         paint_avatar(
                             ui.painter(),
                             Pos2::new(mrect.left() + 26.0, mrect.center().y),
-                            13.0,
+                            14.0,
                             false,
                             0,
                         );
@@ -1114,7 +1114,7 @@ impl App {
                             Pos2::new(mrect.left() + 52.0, mrect.center().y),
                             Align2::LEFT_CENTER,
                             crate::i18n::t("profile.my_title"),
-                            FontId::proportional(13.5),
+                            FontId::proportional(15.0),
                             rgb(t.text_primary),
                         );
                         if mresp.clicked() && !exiting {
@@ -1153,7 +1153,7 @@ impl App {
                             } else {
                                 "account.add_account"
                             }),
-                            FontId::proportional(13.5),
+                            FontId::proportional(15.0),
                             rgb(t.text_primary),
                         );
                         if rresp.clicked() && !exiting {
@@ -1197,7 +1197,7 @@ impl App {
                                 Pos2::new(lrect.left() + 52.0, lrect.center().y),
                                 Align2::LEFT_CENTER,
                                 crate::i18n::t("account.log_out"),
-                                FontId::proportional(13.5),
+                                FontId::proportional(15.0),
                                 rgb(t.danger),
                             );
                             if lresp.clicked() && !exiting {
@@ -1260,7 +1260,7 @@ fn paint_step_disc(painter: &egui::Painter, t: Tokens, center: Pos2, index: usiz
                 center,
                 Align2::CENTER_CENTER,
                 format!("{}", index + 1),
-                FontId::proportional(11.5),
+                FontId::proportional(12.0),
                 rgb(t.text_secondary),
             );
         }
@@ -1299,7 +1299,7 @@ fn steps_stepper(ui: &mut egui::Ui, t: Tokens, items: &[String], complete: bool)
             Pos2::new(center.x, rect.top() + 36.0),
             Align2::CENTER_CENTER,
             text.as_str(),
-            FontId::proportional(11.0),
+            FontId::proportional(10.0),
             rgb(t.text_secondary),
         );
     }

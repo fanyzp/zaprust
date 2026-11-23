@@ -170,8 +170,7 @@ pub(super) async fn start_outgoing_call(
     video: bool,
 ) {
     if video {
-        // Video calling is not built yet (the design notes
-        // live in docs/design/calls.md); the user hears the
+        // Video calling is not built yet; the user hears the
         // plain fact and the working alternative.
         events.emit(BackendEvent::Error {
             message: "Video calls are not available yet. Voice calls work.".to_owned(),

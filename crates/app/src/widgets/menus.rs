@@ -43,7 +43,7 @@ pub(crate) fn menu_item(ui: &mut egui::Ui, t: Tokens, label: &str) -> egui::Resp
         egui::pos2(rect.left() + 10.0, rect.center().y),
         egui::Align2::LEFT_CENTER,
         label,
-        crate::theme::medium(12.5),
+        crate::theme::medium(12.0),
         rgb(t.text_primary),
     );
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
@@ -113,7 +113,7 @@ fn menu_item_row(
         egui::pos2(rect.left() + 38.0, rect.center().y),
         egui::Align2::LEFT_CENTER,
         label,
-        crate::theme::medium(12.5),
+        crate::theme::medium(12.0),
         if danger { rgb(t.danger) } else { rgb(t.text_primary) },
     );
     if let Some(hint) = hint {
@@ -121,7 +121,7 @@ fn menu_item_row(
             egui::pos2(rect.right() - 10.0, rect.center().y),
             egui::Align2::RIGHT_CENTER,
             hint,
-            FontId::proportional(11.5),
+            FontId::proportional(12.0),
             rgb(t.text_faint),
         );
     }

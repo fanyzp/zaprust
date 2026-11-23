@@ -142,7 +142,7 @@ impl App {
                 }
                 show_popup(self.popup_frame(), self.tokens, ui, |ui| {
                     ui.set_width(300.0);
-                    ui.label(RichText::new("Create poll").size(14.0).strong());
+                    ui.label(RichText::new("Create poll").size(15.0).strong());
                     let draft = if exiting {
                         exit_draft.as_mut()
                     } else {

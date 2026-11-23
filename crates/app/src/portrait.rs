@@ -439,7 +439,7 @@ fn bottom_tab(
     );
     if badge_count > 0 {
         let text = core::filter::format_count(u64::from(badge_count));
-        let font = FontId::proportional(11.0);
+        let font = FontId::proportional(10.0);
         let text_w = ui.ctx().fonts_mut(|f| {
             f.layout_no_wrap(text.clone(), font.clone(), rgb(t.badge_text)).size().x
         });
@@ -450,9 +450,9 @@ fn bottom_tab(
         ui.painter().text(brect.center(), Align2::CENTER_CENTER, text, font, rgb(t.badge_text));
     }
     let (label_font, label_color) = if selected {
-        (crate::theme::semibold(11.0), rgb(t.text_primary))
+        (crate::theme::semibold(10.0), rgb(t.text_primary))
     } else {
-        (FontId::proportional(11.0), rgb(t.text_secondary))
+        (FontId::proportional(10.0), rgb(t.text_secondary))
     };
     ui.painter().text(
         Pos2::new(slot.center().x, slot.top() + 47.0),

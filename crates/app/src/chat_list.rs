@@ -162,7 +162,7 @@ impl App {
                         }
                         ui.label(
                             RichText::new(crate::i18n::t(self.screen.filtered_title_key()))
-                                .font(crate::theme::medium(16.0))
+                                .font(crate::theme::medium(15.0))
                                 .color(rgb(t.text_primary)),
                         );
                     });
@@ -174,7 +174,7 @@ impl App {
                     ui.horizontal(|ui| {
                         ui.label(
                             RichText::new(crate::i18n::t("nav.chats"))
-                                .font(crate::theme::medium(16.0))
+                                .font(crate::theme::medium(15.0))
                                 .color(rgb(t.text_primary)),
                         );
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -246,21 +246,21 @@ impl App {
                         // (audit S11 completion).
                         ui.label(
                             RichText::new(crate::i18n::t("chats.connection_stopped"))
-                                .size(12.5)
+                                .size(12.0)
                                 .color(rgb(t.danger)),
                         );
                         ui.add_space(8.0);
                     } else if matches!(session.status, crate::live::LinkStatus::Banned(_)) {
                         ui.label(
                             RichText::new(crate::i18n::t("chats.account_banned"))
-                                .size(12.5)
+                                .size(12.0)
                                 .color(rgb(t.danger)),
                         );
                         ui.add_space(8.0);
                     } else if matches!(session.status, crate::live::LinkStatus::Lost(_)) {
                         ui.label(
                             RichText::new(crate::i18n::t("chats.connection_lost"))
-                                .size(12.5)
+                                .size(12.0)
                                 .color(rgb(t.text_secondary)),
                         );
                         ui.add_space(8.0);
@@ -277,7 +277,7 @@ impl App {
                         crate::widgets::loading_row(
                             ui,
                             &crate::i18n::t("chats.syncing"),
-                            12.5,
+                            14.0,
                             t.text_secondary,
                         );
                         ui.add_space(8.0);
@@ -414,7 +414,7 @@ impl App {
                             Pos2::new(rect.right() - 6.0, rect.center().y),
                             egui::Align2::RIGHT_CENTER,
                             archived_count.to_string(),
-                            FontId::proportional(12.5),
+                            FontId::proportional(12.0),
                             rgb(t.text_faint),
                         );
                         if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
@@ -725,7 +725,7 @@ impl App {
                 }
                 ui.label(
                     RichText::new(crate::i18n::t(self.screen.filtered_title_key()))
-                        .font(crate::theme::medium(16.0))
+                        .font(crate::theme::medium(15.0))
                         .color(rgb(t.text_primary)),
                 );
                 return;
@@ -734,7 +734,7 @@ impl App {
             // the brand is a name, not a localized string.
             ui.label(
                 RichText::new("Zaprust")
-                    .font(crate::theme::semibold(20.0))
+                    .font(crate::theme::semibold(19.0))
                     .color(rgb(t.text_primary)),
             );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -747,7 +747,7 @@ impl App {
                     None,
                 );
                 egui::Popup::menu(&kebab)
-                    .frame(crate::theme::glass_panel_frame(t, 12))
+                    .frame(crate::theme::glass_panel_frame(t, crate::theme::RADIUS_PANEL))
                     .width(220.0)
                     .show(|ui| {
                         if crate::widgets::menu_item_icon(
@@ -957,7 +957,7 @@ pub(crate) fn chat_row(
     // narrow the panel gets. The name steps up a weight while
     // the chat has unread messages.
     let text_left = rect.left() + TEXT_X;
-    let time_font = FontId::proportional(11.5);
+    let time_font = FontId::proportional(12.0);
     let time_w = ui.ctx().fonts_mut(|f| {
         f.layout_no_wrap(chat.time.clone(), time_font.clone(), rgb(t.text_faint)).size().x
     });
@@ -978,7 +978,7 @@ pub(crate) fn chat_row(
     let badges_w =
         (if chat.verified { 20.0 } else { 0.0 }) + (if chat.meta_ai { 28.0 } else { 0.0 });
     let title_font =
-        if chat.unread > 0 { crate::theme::semibold(15.5) } else { crate::theme::medium(15.5) };
+        if chat.unread > 0 { crate::theme::semibold(15.0) } else { crate::theme::medium(15.0) };
     let title_budget =
         (rect.right() - 6.0 - time_w - blocked_w - 8.0 - badges_w - text_left).max(0.0);
     let title = crate::widgets::ellipsize(ui, &chat.title, title_font.clone(), title_budget);
@@ -1043,7 +1043,7 @@ pub(crate) fn chat_row(
     // set by whichever meta sits there (mention badge, unread
     // badge), and the text is ellipsized to whatever width is
     // left after the prefix, measured, never counted.
-    let snippet_font = FontId::proportional(13.0);
+    let snippet_font = FontId::proportional(12.0);
     let line_y = rect.top() + SNIPPET_DY;
     let mut right_limit = rect.right() - 6.0;
     if chat.mentions > 0 {
@@ -1052,7 +1052,7 @@ pub(crate) fn chat_row(
     if chat.unread > 0 {
         let count_label = core::filter::format_count(u64::from(chat.unread));
         let count_w = ui.ctx().fonts_mut(|f| {
-            f.layout_no_wrap(count_label, FontId::proportional(11.0), rgb(t.badge_text)).size().x
+            f.layout_no_wrap(count_label, FontId::proportional(10.0), rgb(t.badge_text)).size().x
         });
         right_limit = right_limit.min(rect.right() - 6.0 - (count_w + 10.0).max(19.0) - 6.0);
     }
@@ -1081,7 +1081,7 @@ pub(crate) fn chat_row(
         Some(RowState::Draft(draft)) => {
             let prefix = crate::i18n::t("chats.draft");
             let prefix_w = ui.ctx().fonts_mut(|f| {
-                f.layout_no_wrap(prefix.clone(), crate::theme::semibold(13.0), rgb(t.accent))
+                f.layout_no_wrap(prefix.clone(), crate::theme::semibold(12.0), rgb(t.accent))
                     .size()
                     .x
             });
@@ -1089,7 +1089,7 @@ pub(crate) fn chat_row(
                 Pos2::new(text_left, line_y),
                 egui::Align2::LEFT_CENTER,
                 prefix,
-                crate::theme::semibold(13.0),
+                crate::theme::semibold(12.0),
                 rgb(t.accent),
             );
             let body = crate::widgets::ellipsize(
@@ -1153,7 +1153,7 @@ pub(crate) fn chat_row(
         // chat visibly lands.
         let scale = crate::anim::pop_scale(ui, ("unread_badge", chat.id), chat.unread);
         let label = core::filter::format_count(u64::from(chat.unread));
-        let font = FontId::proportional(11.0 * scale);
+        let font = FontId::proportional(10.0 * scale);
         let text_w = ui.ctx().fonts_mut(|f| {
             f.layout_no_wrap(label.clone(), font.clone(), rgb(t.badge_text)).size().x
         });
@@ -1182,7 +1182,7 @@ pub(crate) fn chat_row(
             mcenter,
             egui::Align2::CENTER_CENTER,
             "@",
-            FontId::proportional(11.0),
+            FontId::proportional(10.0),
             rgb(t.badge_text),
         );
     }
@@ -1314,7 +1314,7 @@ impl App {
         ui.add_space(10.0);
         ui.label(
             RichText::new(crate::i18n::t("search.messages"))
-                .font(crate::theme::semibold(13.0))
+                .font(crate::theme::semibold(12.0))
                 .color(rgb(t.text_secondary)),
         );
         ui.add_space(4.0);
@@ -1354,7 +1354,7 @@ impl App {
                         );
                     }
                     let text_left = rect.left() + TEXT_X;
-                    let date_font = FontId::proportional(11.5);
+                    let date_font = FontId::proportional(12.0);
                     let date_w = ui.ctx().fonts_mut(|f| {
                         f.layout_no_wrap(hit.when.clone(), date_font.clone(), rgb(t.text_faint))
                             .size()
@@ -1371,14 +1371,14 @@ impl App {
                     let title_text = crate::widgets::ellipsize(
                         ui,
                         &hit.chat_title,
-                        crate::theme::medium(15.5),
+                        crate::theme::medium(15.0),
                         title_budget,
                     );
                     painter.text(
                         Pos2::new(text_left, rect.top() + TITLE_DY),
                         egui::Align2::LEFT_CENTER,
                         title_text,
-                        crate::theme::medium(15.5),
+                        crate::theme::medium(15.0),
                         rgb(t.text_primary),
                     );
                     let line = match &hit.sender {
@@ -1387,12 +1387,12 @@ impl App {
                     };
                     let budget = (rect.right() - 14.0 - text_left).max(0.0);
                     let line =
-                        crate::widgets::ellipsize(ui, &line, FontId::proportional(13.0), budget);
+                        crate::widgets::ellipsize(ui, &line, FontId::proportional(12.0), budget);
                     painter.text(
                         Pos2::new(text_left, rect.top() + SNIPPET_DY),
                         egui::Align2::LEFT_CENTER,
                         line,
-                        FontId::proportional(13.0),
+                        FontId::proportional(12.0),
                         rgb(t.text_secondary),
                     );
                     if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {

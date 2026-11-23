@@ -440,7 +440,7 @@ impl App {
                             ui.label(RichText::new("fanyzp").font(crate::theme::semibold(15.0)));
                             ui.label(
                                 RichText::new("Hey there! I am using Zaprust.")
-                                    .size(11.5)
+                                    .size(12.0)
                                     .color(rgb(t.text_secondary)),
                             );
                         });
@@ -478,7 +478,7 @@ impl App {
                         Pos2::new(text_x, rect.center().y),
                         egui::Align2::LEFT_CENTER,
                         tab_label(item),
-                        FontId::proportional(14.0),
+                        FontId::proportional(15.0),
                         label_color,
                     );
                     if title == "Settings" && item == "About" && self.update_available() {
@@ -534,7 +534,7 @@ impl App {
                     ui.add_space(4.0);
                     ui.label(
                         RichText::new(crate::i18n::t("settings.title"))
-                            .font(crate::theme::semibold(20.0)),
+                            .font(crate::theme::semibold(19.0)),
                     );
                 });
                 ui.add_space(14.0);
@@ -661,7 +661,7 @@ impl App {
                     Pos2::new(rect.left() + 12.0, rect.center().y),
                     egui::Align2::LEFT_CENTER,
                     title,
-                    FontId::proportional(13.0),
+                    FontId::proportional(12.0),
                     rgb(t.text_secondary),
                 );
                 if response.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
@@ -673,7 +673,7 @@ impl App {
         if !any {
             ui.label(
                 RichText::new(crate::i18n::t("settings.no_match"))
-                    .size(12.5)
+                    .size(12.0)
                     .color(rgb(t.text_secondary)),
             );
         }
@@ -720,7 +720,7 @@ fn settings_nav_row(
         Pos2::new(rect.left() + 40.0, rect.center().y),
         egui::Align2::LEFT_CENTER,
         tab_label(item),
-        FontId::proportional(14.0),
+        FontId::proportional(15.0),
         if selected { rgb(t.text_primary) } else { rgb(t.text_secondary) },
     );
     if update_dot {
@@ -768,7 +768,7 @@ fn page_header(ui: &mut egui::Ui, title: &str) {
 
 /// Small caps group label above a card.
 fn group_label(ui: &mut egui::Ui, t: core::theme::Tokens, text: &str) {
-    ui.label(RichText::new(text.to_uppercase()).size(11.0).strong().color(rgb(t.text_secondary)));
+    ui.label(RichText::new(text.to_uppercase()).size(10.0).strong().color(rgb(t.text_secondary)));
     ui.add_space(6.0);
 }
 
@@ -781,7 +781,7 @@ fn settings_card(ui: &mut egui::Ui, t: core::theme::Tokens, body: impl FnOnce(&m
     // specular edge is deliberately not painted per card: a
     // repeated stack of cards is one surface language, not a set
     // of separate floating objects.
-    crate::theme::glass_text_frame(t, 12).inner_margin(Margin::symmetric(18, 12)).show(ui, |ui| {
+    crate::theme::glass_text_frame(t, crate::theme::RADIUS_PANEL).inner_margin(Margin::symmetric(18, 12)).show(ui, |ui| {
         // Every card spans the full content width, no ragged edges
         // where a card's width depends on its longest line. The
         // clamp matters on the first frame inside the nav layout,
@@ -876,9 +876,9 @@ fn row_with_text_control(
 /// wrapping description under it.
 fn label_column(ui: &mut egui::Ui, title: &str, desc: &str) {
     ui.vertical(|ui| {
-        ui.label(RichText::new(title).size(14.0));
+        ui.label(RichText::new(title).size(15.0));
         if !desc.is_empty() {
-            ui.label(RichText::new(desc).size(11.5).color(ui.visuals().weak_text_color()));
+            ui.label(RichText::new(desc).size(12.0).color(ui.visuals().weak_text_color()));
         }
     });
 }

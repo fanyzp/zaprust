@@ -366,7 +366,7 @@ impl App {
                 // carries the frame treatment every other floating
                 // surface carries (the shared glass frame's stroke
                 // and shadow), keeping its own panel fill.
-                let _card = crate::theme::glass_frame(t, 16)
+                let _card = crate::theme::glass_frame(t, crate::theme::RADIUS_PANEL)
                     .fill(rgb(t.bg_panel))
                     .inner_margin(Margin::symmetric(24, 20))
                     .show(ui, |ui| {
@@ -407,12 +407,12 @@ impl App {
                             ui.add_space(12.0);
                             ui.label(
                                 RichText::new(&call.title)
-                                    .font(crate::theme::semibold(17.0))
+                                    .font(crate::theme::semibold(19.0))
                                     .color(rgb(t.text_primary)),
                             );
                             ui.label(
                                 RichText::new(call.status_line())
-                                    .size(13.0)
+                                    .size(12.0)
                                     .color(rgb(t.text_secondary)),
                             );
                             ui.add_space(20.0);

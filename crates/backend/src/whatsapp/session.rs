@@ -744,7 +744,7 @@ pub(super) async fn run_async(
                 // A received poll creation carries its secret in
                 // the message context info; caching it here is what
                 // makes voting on other people's polls possible
-                // later in the session (see docs/research/poll-voting.md).
+                // later in the session.
                 if let Some((secret, names)) = received_poll_secret(&ctx.message) {
                     lock_cache(&secrets).insert(
                         (ctx.info.source.chat.to_string(), ctx.info.id.to_string()),
@@ -1280,7 +1280,7 @@ pub(super) async fn run_async(
                     // It is cached at creation for own polls and
                     // on receipt for other people's polls (the
                     // secret travels inside the creation message,
-                    // see docs/research/poll-voting.md), and the
+                    // the secret-extraction tests), and the
                     // app re-registers the secrets it archived for
                     // polls from earlier sessions. A poll whose
                     // secret none of those paths supplied gets an

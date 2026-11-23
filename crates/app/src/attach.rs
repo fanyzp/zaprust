@@ -942,7 +942,7 @@ impl App {
             .order(egui::Order::Foreground)
             .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
             .show(ctx, |ui| {
-                crate::theme::glass_frame(t, 16).inner_margin(Margin::same(16)).show(ui, |ui| {
+                crate::theme::glass_frame(t, crate::theme::RADIUS_PANEL).inner_margin(Margin::same(16)).show(ui, |ui| {
                     ui.set_width(panel_w - 32.0);
                     ui.horizontal(|ui| {
                         ui.label(

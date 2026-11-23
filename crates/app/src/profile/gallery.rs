@@ -102,7 +102,7 @@ pub(super) fn profile_gallery_body(
         }
         ui.label(
             RichText::new(crate::i18n::t("profile.media"))
-                .font(crate::theme::semibold(14.0))
+                .font(crate::theme::semibold(15.0))
                 .color(rgb(t.text_primary)),
         );
     });
@@ -249,7 +249,7 @@ fn media_cell(
                 Pos2::new(rect.right() - 5.0, rect.bottom() - 5.0),
                 egui::Align2::RIGHT_BOTTOM,
                 format!("{}:{:02}", secs / 60, secs % 60),
-                egui::FontId::proportional(10.5),
+                egui::FontId::proportional(10.0),
                 rgb(t.text_primary),
             );
             if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
@@ -335,12 +335,12 @@ fn links_section(ui: &mut egui::Ui, t: Tokens, source: &[Message], _actions: &mu
             .map_or_else(|| link_host(&link.url), str::to_owned);
         let left = rect.left() + 10.0;
         let budget = (rect.width() - 20.0).max(0.0);
-        let title = crate::widgets::ellipsize(ui, &title, crate::theme::medium(13.5), budget);
+        let title = crate::widgets::ellipsize(ui, &title, crate::theme::medium(15.0), budget);
         painter.text(
             Pos2::new(left, rect.top() + 15.0),
             egui::Align2::LEFT_CENTER,
             title,
-            crate::theme::medium(13.5),
+            crate::theme::medium(15.0),
             rgb(t.text_primary),
         );
         let url =
@@ -389,12 +389,12 @@ fn docs_section(ui: &mut egui::Ui, t: Tokens, source: &[Message], actions: &mut 
         );
         let left = rect.left() + 38.0;
         let budget = (rect.width() - 48.0).max(0.0);
-        let name = crate::widgets::ellipsize(ui, name, crate::theme::medium(13.5), budget);
+        let name = crate::widgets::ellipsize(ui, name, crate::theme::medium(15.0), budget);
         painter.text(
             Pos2::new(left, rect.top() + 15.0),
             egui::Align2::LEFT_CENTER,
             name,
-            crate::theme::medium(13.5),
+            crate::theme::medium(15.0),
             rgb(t.text_primary),
         );
         let day = msg.day_label();

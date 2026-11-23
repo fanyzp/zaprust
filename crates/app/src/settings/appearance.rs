@@ -84,7 +84,7 @@ impl App {
                     .iter()
                     .find(|(_, s)| *s == self.seed)
                     .map_or("Custom", |(n, _)| *n);
-                ui.label(RichText::new(current).size(12.5).color(rgb(t.text_secondary)));
+                ui.label(RichText::new(current).size(12.0).color(rgb(t.text_secondary)));
             })
         });
         paint_highlight(
@@ -131,7 +131,7 @@ impl App {
             egui::Pos2::new(header_rect.left() + 26.0, header_rect.center().y),
             egui::Align2::LEFT_CENTER,
             crate::i18n::t("appearance.advanced").to_uppercase(),
-            crate::theme::semibold(11.0),
+            crate::theme::semibold(10.0),
             rgb(t.text_secondary),
         );
         if header_resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
@@ -143,7 +143,7 @@ impl App {
                 settings_card(ui, t, |ui| {
                     let mut changed = false;
                     ui.horizontal(|ui| {
-                        ui.label(RichText::new(crate::i18n::t("appearance.saturation")).size(13.0));
+                        ui.label(RichText::new(crate::i18n::t("appearance.saturation")).size(12.0));
                         let resp = ui.add(
                             egui::Slider::new(&mut self.saturation, 0.0..=1.5)
                                 .show_value(true)
@@ -152,7 +152,7 @@ impl App {
                         changed |= resp.changed();
                     });
                     ui.horizontal(|ui| {
-                        ui.label(RichText::new(crate::i18n::t("appearance.contrast")).size(13.0));
+                        ui.label(RichText::new(crate::i18n::t("appearance.contrast")).size(12.0));
                         let resp = ui.add(
                             egui::Slider::new(&mut self.contrast, 0.8..=1.2)
                                 .show_value(true)

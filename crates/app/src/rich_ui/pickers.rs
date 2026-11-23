@@ -226,7 +226,7 @@ impl App {
                     .inner_margin(Margin::symmetric(14, 12))
                     .show(ui, |ui| {
                         ui.label(
-                            RichText::new("GIF search needs a GIPHY API key").size(13.5).strong(),
+                            RichText::new("GIF search needs a GIPHY API key").size(15.0).strong(),
                         );
                         if self.picker.giphy_rejected {
                             ui.label(
@@ -246,7 +246,7 @@ impl App {
                         );
                         ui.hyperlink_to(
                             "Get a key at developers.giphy.com",
-                            "https://developers.giphy.com",
+                            GIPHY_DEVELOPERS_URL,
                         );
                         if crate::widgets::button(
                             ui,
@@ -298,7 +298,7 @@ impl App {
                         crate::widgets::loading_row(
                             ui,
                             &crate::i18n::t("picker.loading"),
-                            12.0,
+                            14.0,
                             t.text_secondary,
                         );
                     }
@@ -353,7 +353,7 @@ impl App {
                                     rect.center(),
                                     egui::Align2::CENTER_CENTER,
                                     "GIF",
-                                    egui::FontId::proportional(11.0),
+                                    egui::FontId::proportional(10.0),
                                     rgb(t.text_faint),
                                 );
                             }
@@ -377,7 +377,7 @@ impl App {
         // on the worker (see extras::request_sticker_previews).
         let mut missing: Vec<std::path::PathBuf> = Vec::new();
         for pack in &packs {
-            ui.label(RichText::new(&pack.name).size(13.0).strong());
+            ui.label(RichText::new(&pack.name).size(12.0).strong());
             ui.horizontal_wrapped(|ui| {
                 for sticker in &pack.stickers {
                     let name = sticker
@@ -441,7 +441,7 @@ impl App {
                                 rect.center(),
                                 egui::Align2::CENTER_CENTER,
                                 "Sticker",
-                                egui::FontId::proportional(11.0),
+                                egui::FontId::proportional(10.0),
                                 rgb(t.text_faint),
                             );
                             resp.on_hover_text(&name).clicked()
@@ -468,7 +468,7 @@ impl App {
         }
         self.request_sticker_previews(missing);
         ui.add_space(10.0);
-        ui.label(RichText::new("New pack name").size(11.5).color(rgb(t.text_secondary)));
+        ui.label(RichText::new("New pack name").size(12.0).color(rgb(t.text_secondary)));
         ui.horizontal(|ui| {
             crate::widgets::text_field(ui, t, &mut self.picker.sticker_new_pack, "", 220.0);
             if crate::widgets::button(ui, t, "New pack", crate::widgets::Btn::Secondary).clicked()
@@ -481,7 +481,7 @@ impl App {
                 }
             }
         });
-        ui.label(RichText::new("Text for a new sticker").size(11.5).color(rgb(t.text_secondary)));
+        ui.label(RichText::new("Text for a new sticker").size(12.0).color(rgb(t.text_secondary)));
         ui.horizontal(|ui| {
             crate::widgets::text_field(ui, t, &mut self.picker.sticker_new_text, "", 220.0);
             if crate::widgets::button(ui, t, "Add text sticker", crate::widgets::Btn::Secondary)
@@ -500,7 +500,7 @@ impl App {
         });
         ui.label(
             RichText::new("Text stickers are added to the first pack.")
-                .size(11.0)
+                .size(10.0)
                 .color(rgb(self.tokens.text_faint)),
         );
     }
@@ -546,7 +546,7 @@ impl App {
                     ui.set_width(260.0);
                     ui.add_enabled_ui(!exiting, |ui| {
                         ui.label(
-                            RichText::new(crate::i18n::t("forward.title")).size(13.0).strong(),
+                            RichText::new(crate::i18n::t("forward.title")).size(12.0).strong(),
                         );
                         ui.add_space(4.0);
                         egui::ScrollArea::vertical()
@@ -562,7 +562,7 @@ impl App {
                                         crate::widgets::paint_avatar_disc(
                                             ui.painter(),
                                             rect.center(),
-                                            13.0,
+                                            14.0,
                                             false,
                                             crate::widgets::avatar_color(*seed),
                                         );
@@ -757,6 +757,9 @@ impl App {
 /// Converts a sticker image (the packs render PNG) into the WebP
 /// form WhatsApp stickers use: square 512x512, transparent
 /// background preserved, image fitted inside without distortion.
+/// Where a Giphy API key is obtained (the picker links here).
+const GIPHY_DEVELOPERS_URL: &str = "https://developers.giphy.com";
+
 pub(crate) fn sticker_webp(bytes: &[u8]) -> Result<Vec<u8>, String> {
     let img = image::load_from_memory(bytes).map_err(|e| format!("not a readable image: {e}"))?;
     let fitted = img.resize(512, 512, image::imageops::FilterType::Lanczos3);
@@ -774,7 +777,7 @@ pub(crate) fn sticker_webp(bytes: &[u8]) -> Result<Vec<u8>, String> {
 /// A small caps section label inside the emoji grid (Recent,
 /// Smileys & People, ...).
 fn section_label(ui: &mut egui::Ui, t: core::theme::Tokens, label: &str) {
-    ui.label(RichText::new(label).size(11.0).strong().color(rgb(t.text_secondary)));
+    ui.label(RichText::new(label).size(10.0).strong().color(rgb(t.text_secondary)));
 }
 
 /// One emoji cell of the grid: a frameless button that inserts into

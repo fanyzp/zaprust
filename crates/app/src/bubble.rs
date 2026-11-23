@@ -354,7 +354,7 @@ fn doc_sub_line(size_bytes: u64, page_count: Option<u32>, view_once: bool, opene
 /// chip with light text, the way the reference paints state
 /// over media.
 fn paint_tile_badge(ui: &egui::Ui, painter: &egui::Painter, tile: Rect, label: &str, t: Tokens) {
-    let g = layout_text(ui, label, FontId::proportional(10.5), rgb(t.text_primary), 80.0);
+    let g = layout_text(ui, label, FontId::proportional(10.0), rgb(t.text_primary), 80.0);
     let chip = Rect::from_min_size(
         Pos2::new(tile.left() + 6.0, tile.bottom() - 20.0),
         Vec2::new(g.size().x + 10.0, 15.0),
@@ -384,7 +384,7 @@ fn paint_opened_receipt(
         faint,
         faint,
     );
-    let g = layout_text(ui, "Opened", FontId::proportional(14.0), faint, inner_w - 34.0);
+    let g = layout_text(ui, "Opened", FontId::proportional(15.0), faint, inner_w - 34.0);
     painter.galley(Pos2::new(x + 32.0, y + 3.0), g, faint);
 }
 
@@ -481,7 +481,7 @@ const MAX_BUBBLE_W: f32 = 620.0;
 /// Inner cards inside a bubble (the reply quote block, the link
 /// embed, media placeholders) share one radius, stepped in from
 /// the bubble radius by roughly the bubble's own padding.
-pub(crate) const INNER_CARD_RADIUS: u8 = 10;
+pub(crate) const INNER_CARD_RADIUS: u8 = crate::theme::RADIUS_SMALL;
 
 /// Inner-card text grammar: the quoted sender's name and the
 /// embed's title are semibold at this size; their body text
@@ -656,7 +656,7 @@ fn paint_embed(
     );
     let text_w = inner_w - EMBED_INSET - if e.thumb { EMBED_THUMB_W + 8.0 } else { 0.0 };
     let secondary = rgb(t.text_secondary);
-    let site_g = layout_text(ui, &e.site, FontId::proportional(11.0), rgb(t.text_faint), text_w);
+    let site_g = layout_text(ui, &e.site, FontId::proportional(10.0), rgb(t.text_faint), text_w);
     let site_h = site_g.size().y;
     painter.galley(Pos2::new(x + 10.0, ty + 4.0), site_g, rgb(t.text_faint));
     let title_g = layout_text(
@@ -730,8 +730,8 @@ pub(crate) fn message_bubble(
     let max_bubble = ((ui.available_width() - avatar_slot) * BUBBLE_SHARE).min(MAX_BUBBLE_W);
     let inner_max = max_bubble - pad_x * 2.0;
 
-    let body_font = FontId::proportional(14.5);
-    let small_font = FontId::proportional(11.0);
+    let body_font = FontId::proportional(15.0);
+    let small_font = FontId::proportional(10.0);
     let text_color = rgb(t.text_primary);
     let secondary = rgb(t.text_secondary);
     // WhatsApp mention color: light blue on dark, deeper blue on light.
@@ -743,7 +743,7 @@ pub(crate) fn message_bubble(
     let show_sender =
         layout.group_first && !mine && chat.kind == ChatKind::Group && msg.sender.is_some();
     let sender_w = if show_sender {
-        measure_text(ui, msg.sender.as_deref().unwrap_or(""), FontId::proportional(13.0))
+        measure_text(ui, msg.sender.as_deref().unwrap_or(""), FontId::proportional(12.0))
     } else {
         0.0
     };
@@ -798,7 +798,7 @@ pub(crate) fn message_bubble(
         );
         let desc =
             ellipsize_lines(ui, &p.description, FontId::proportional(INNER_BODY_SIZE), text_w, 2);
-        let site_g = layout_text(ui, &site, FontId::proportional(11.0), secondary, text_w);
+        let site_g = layout_text(ui, &site, FontId::proportional(10.0), secondary, text_w);
         let title_g =
             layout_text(ui, &title, crate::theme::semibold(INNER_TITLE_SIZE), text_color, text_w);
         let desc_g =
@@ -958,11 +958,11 @@ pub(crate) fn message_bubble(
             // document's body repeats its name (search names the
             // file) and is not painted twice.
             let col_w = (inner_max - DOC_DISC - DOC_GAP - doc_dl_w(mine)).max(80.0);
-            let name_g = layout_text(ui, name, crate::theme::semibold(14.0), text_color, col_w);
+            let name_g = layout_text(ui, name, crate::theme::semibold(15.0), text_color, col_w);
             let size_g = layout_text(
                 ui,
                 &doc_sub_line(*size_bytes, *page_count, media.view_once, media.view_once_opened),
-                FontId::proportional(12.5),
+                FontId::proportional(12.0),
                 secondary,
                 col_w,
             );
@@ -980,9 +980,9 @@ pub(crate) fn message_bubble(
             // and size. It is a file, not a voice note: no
             // waveform, no playback pill.
             let col_w = (inner_max - DOC_DISC - DOC_GAP - doc_dl_w(mine)).max(80.0);
-            let name_g = layout_text(ui, name, crate::theme::semibold(14.0), text_color, col_w);
+            let name_g = layout_text(ui, name, crate::theme::semibold(15.0), text_color, col_w);
             let sub = audio_sub_line(*secs, *size_bytes);
-            let size_g = layout_text(ui, &sub, FontId::proportional(12.5), secondary, col_w);
+            let size_g = layout_text(ui, &sub, FontId::proportional(12.0), secondary, col_w);
             body_galley = layout_text(ui, "", body_font.clone(), text_color, inner_max);
             let row_w = DOC_DISC + DOC_GAP + name_g.size().x.max(size_g.size().x) + doc_dl_w(mine);
             content_w = content_w.max(row_w.max(220.0).min(inner_max));
@@ -1015,7 +1015,7 @@ pub(crate) fn message_bubble(
         }
         MessageKind::Contact { name, phone } => {
             body_galley = layout_text(ui, name, body_font.clone(), text_color, inner_max);
-            let pw = measure_text(ui, phone, FontId::proportional(12.5));
+            let pw = measure_text(ui, phone, FontId::proportional(12.0));
             content_w = content_w.max((body_galley.size().x + 52.0).max(pw + 52.0));
             kind_h = 42.0;
         }
@@ -1222,7 +1222,7 @@ pub(crate) fn message_bubble(
         if show_sender {
             let name = msg.sender.as_deref().unwrap_or("");
             let name_color = media.sender_color.unwrap_or_else(|| sender_color(name, t));
-            let g = layout_text(ui, name, FontId::proportional(13.0), name_color, inner_w);
+            let g = layout_text(ui, name, FontId::proportional(12.0), name_color, inner_w);
             painter.galley(Pos2::new(x, y), g, name_color);
             y += sender_h;
         }
@@ -1299,13 +1299,13 @@ pub(crate) fn message_bubble(
                 let label = if opened { "Opened" } else { "Photo" };
                 let label_color = if opened { rgb(t.text_faint) } else { text_color };
                 let g =
-                    layout_text(ui, label, FontId::proportional(14.0), label_color, inner_w - 34.0);
+                    layout_text(ui, label, FontId::proportional(15.0), label_color, inner_w - 34.0);
                 painter.galley(Pos2::new(x + 32.0, y + 3.0), g, label_color);
                 if !opened {
                     let g = layout_text(
                         ui,
                         "View once",
-                        FontId::proportional(11.0),
+                        FontId::proportional(10.0),
                         rgb(t.text_faint),
                         inner_w - 34.0,
                     );
@@ -1368,7 +1368,7 @@ pub(crate) fn message_bubble(
                         let g = layout_text(
                             ui,
                             &crate::i18n::t("photo.unavailable"),
-                            FontId::proportional(11.0),
+                            FontId::proportional(10.0),
                             rgb(t.text_faint),
                             inner_w - 16.0,
                         );
@@ -1472,7 +1472,7 @@ pub(crate) fn message_bubble(
                     let g = layout_text(
                         ui,
                         label,
-                        FontId::proportional(14.0),
+                        FontId::proportional(15.0),
                         label_color,
                         inner_w - 34.0,
                     );
@@ -1481,7 +1481,7 @@ pub(crate) fn message_bubble(
                         let g = layout_text(
                             ui,
                             "View once",
-                            FontId::proportional(11.0),
+                            FontId::proportional(10.0),
                             rgb(t.text_faint),
                             inner_w - 34.0,
                         );
@@ -1521,7 +1521,7 @@ pub(crate) fn message_bubble(
                         rgb(t.accent),
                     );
                     let dur = format!("{}:{:02}", secs / 60, secs % 60);
-                    let g = layout_text(ui, &dur, FontId::proportional(11.0), text_color, 60.0);
+                    let g = layout_text(ui, &dur, FontId::proportional(10.0), text_color, 60.0);
                     painter.galley(Pos2::new(x + 8.0, y + tile_h - 24.0), g, rgb(t.text_secondary));
                     if media.video_gif {
                         // The badge rides the tile's top-left
@@ -1721,7 +1721,7 @@ pub(crate) fn message_bubble(
                     let g = layout_text(
                         ui,
                         label,
-                        FontId::proportional(11.5),
+                        FontId::proportional(12.0),
                         text_color,
                         VOICE_PILL_W,
                     );
@@ -1773,7 +1773,7 @@ pub(crate) fn message_bubble(
                 );
                 let col_x = x + DOC_DISC + DOC_GAP;
                 let col_w = (inner_w - DOC_DISC - DOC_GAP - doc_dl_w(mine)).max(60.0);
-                let name_g = layout_text(ui, name, crate::theme::semibold(14.0), text_color, col_w);
+                let name_g = layout_text(ui, name, crate::theme::semibold(15.0), text_color, col_w);
                 painter.galley(Pos2::new(col_x, row_y + 5.0), name_g.clone(), text_color);
                 let size_g = layout_text(
                     ui,
@@ -1783,7 +1783,7 @@ pub(crate) fn message_bubble(
                         media.view_once,
                         media.view_once_opened,
                     ),
-                    FontId::proportional(12.5),
+                    FontId::proportional(12.0),
                     secondary,
                     col_w,
                 );
@@ -1851,12 +1851,12 @@ pub(crate) fn message_bubble(
                 );
                 let col_x = x + DOC_DISC + DOC_GAP;
                 let col_w = (inner_w - DOC_DISC - DOC_GAP - doc_dl_w(mine)).max(60.0);
-                let name_g = layout_text(ui, name, crate::theme::semibold(14.0), text_color, col_w);
+                let name_g = layout_text(ui, name, crate::theme::semibold(15.0), text_color, col_w);
                 painter.galley(Pos2::new(col_x, y + 5.0), name_g.clone(), text_color);
                 let size_g = layout_text(
                     ui,
                     &audio_sub_line(*secs, *size_bytes),
-                    FontId::proportional(12.5),
+                    FontId::proportional(12.0),
                     secondary,
                     col_w,
                 );
@@ -1992,12 +1992,12 @@ pub(crate) fn message_bubble(
                 painter.circle_filled(Pos2::new(x + 15.0, cy), 13.0, rgb(t.accent));
                 let initial = name.chars().next().unwrap_or('?').to_uppercase().to_string();
                 let g =
-                    layout_text(ui, &initial, FontId::proportional(13.0), rgb(t.bg_panel), 26.0);
+                    layout_text(ui, &initial, FontId::proportional(12.0), rgb(t.bg_panel), 26.0);
                 painter.galley(Pos2::new(x + 10.0, cy - 8.0), g, rgb(t.bg_panel));
                 let g = layout_text(ui, name, body_font.clone(), text_color, inner_w - 40.0);
                 painter.galley(Pos2::new(x + 36.0, y + 2.0), g, text_color);
                 let g =
-                    layout_text(ui, phone, FontId::proportional(12.5), secondary, inner_w - 40.0);
+                    layout_text(ui, phone, FontId::proportional(12.0), secondary, inner_w - 40.0);
                 painter.galley(Pos2::new(x + 36.0, y + 22.0), g, secondary);
             }
             MessageKind::Carousel { body, cards } => {
@@ -2035,7 +2035,7 @@ pub(crate) fn message_bubble(
                         let g = layout_text(
                             ui,
                             &card.title,
-                            FontId::proportional(13.0),
+                            FontId::proportional(12.0),
                             text_color,
                             134.0,
                         );
@@ -2060,7 +2060,7 @@ pub(crate) fn message_bubble(
                         let g = layout_text(
                             ui,
                             button,
-                            FontId::proportional(11.5),
+                            FontId::proportional(12.0),
                             rgb(t.text_secondary),
                             118.0,
                         );
@@ -2183,7 +2183,7 @@ pub(crate) fn message_album(
         _ => None,
     });
     let caption_galley = caption.as_ref().map(|c| {
-        layout_text(ui, c, eframe::egui::FontId::proportional(13.5), rgb(t.text_primary), grid_w)
+        layout_text(ui, c, eframe::egui::FontId::proportional(15.0), rgb(t.text_primary), grid_w)
     });
     let card_h = grid_h + caption_galley.as_ref().map_or(0.0, |g| g.size().y + 8.0);
     let (alloc, _) = ui.allocate_exact_size(Vec2::new(grid_w, card_h), egui::Sense::hover());
@@ -2191,15 +2191,11 @@ pub(crate) fn message_album(
     let card = alloc;
     let bubble_fill = if mine { t.bubble_out } else { t.bubble_in };
     let bubble_color = rgb(bubble_fill);
-    painter
-        .add(crate::theme::bubble_shadow(t).as_shape(card, eframe::egui::CornerRadius::same(14)));
-    painter.rect_filled(card, eframe::egui::CornerRadius::same(14), bubble_color);
-    painter.rect_stroke(
-        card,
-        eframe::egui::CornerRadius::same(14),
-        Stroke::new(1.0_f32, rgb(core::theme::mix(bubble_fill, t.border, 0.45))),
-        egui::StrokeKind::Inside,
-    );
+    // Borderless like every bubble (design standard section
+    // 8): tone only, at the bubble radius. This album card kept
+    // a frame stroke and a shadow call after the Phase 1 purge
+    // because it paints through its own path.
+    painter.rect_filled(card, eframe::egui::CornerRadius::same(BUBBLE_RADIUS), bubble_color);
     for (i, item) in items.iter().take(shown).enumerate() {
         let row = (i / 2) as f32;
         let col = (i % 2) as f32;
@@ -2256,7 +2252,7 @@ pub(crate) fn message_album(
                 rect.center(),
                 egui::Align2::CENTER_CENTER,
                 format!("+{}", items.len() - shown),
-                eframe::egui::FontId::proportional(20.0),
+                eframe::egui::FontId::proportional(19.0),
                 Color32::WHITE,
             );
         }

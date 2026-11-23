@@ -226,11 +226,11 @@ impl App {
                     .inner_margin(Margin::symmetric(14, 12))
                     .show(ui, |ui| {
                         ui.label(
-                            RichText::new("GIF search needs a GIPHY API key").size(15.0).strong(),
+                            RichText::new(crate::i18n::t("pickers.gif_needs_key")).size(15.0).strong(),
                         );
                         if self.picker.giphy_rejected {
                             ui.label(
-                                RichText::new("The configured key was rejected by GIPHY.")
+                                RichText::new(crate::i18n::t("pickers.gif_key_rejected"))
                                     .size(12.0)
                                     .color(rgb(t.danger)),
                             );
@@ -369,7 +369,7 @@ impl App {
         let root = crate::extras::feature_state_dir().join("stickers");
         let packs = self.picker.sticker_packs.clone();
         if packs.is_empty() {
-            ui.label("No sticker packs yet, create one below.");
+            ui.label(crate::i18n::t("pickers.no_packs_yet"));
         }
         // Stickers with no texture yet, queued for the preview
         // worker after the draw. The draw path only binds
@@ -468,7 +468,7 @@ impl App {
         }
         self.request_sticker_previews(missing);
         ui.add_space(10.0);
-        ui.label(RichText::new("New pack name").size(12.0).color(rgb(t.text_secondary)));
+        ui.label(RichText::new(crate::i18n::t("pickers.new_pack_name")).size(12.0).color(rgb(t.text_secondary)));
         ui.horizontal(|ui| {
             crate::widgets::text_field(ui, t, &mut self.picker.sticker_new_pack, "", 220.0);
             if crate::widgets::button(ui, t, "New pack", crate::widgets::Btn::Secondary).clicked()
@@ -481,7 +481,7 @@ impl App {
                 }
             }
         });
-        ui.label(RichText::new("Text for a new sticker").size(12.0).color(rgb(t.text_secondary)));
+        ui.label(RichText::new(crate::i18n::t("pickers.new_sticker_text")).size(12.0).color(rgb(t.text_secondary)));
         ui.horizontal(|ui| {
             crate::widgets::text_field(ui, t, &mut self.picker.sticker_new_text, "", 220.0);
             if crate::widgets::button(ui, t, "Add text sticker", crate::widgets::Btn::Secondary)
@@ -499,7 +499,7 @@ impl App {
             }
         });
         ui.label(
-            RichText::new("Text stickers are added to the first pack.")
+            RichText::new(crate::i18n::t("pickers.text_stickers_first_pack"))
                 .size(10.0)
                 .color(rgb(self.tokens.text_faint)),
         );
@@ -623,7 +623,7 @@ impl App {
             return;
         }
         let Some(jid) = self.live_jid(self.selected_chat) else {
-            self.notice = Some(Notice::info("Open a live chat first.".to_owned()));
+            self.notice = Some(Notice::info(crate::i18n::t("attach.open_live_first")));
             return;
         };
         let bytes = match std::fs::read(path) {
@@ -670,7 +670,7 @@ impl App {
             return;
         }
         let Some(jid) = self.live_jid(self.selected_chat) else {
-            self.notice = Some(Notice::info("Open a live chat first.".to_owned()));
+            self.notice = Some(Notice::info(crate::i18n::t("attach.open_live_first")));
             return;
         };
         // One media download at a time: overwriting the slot would

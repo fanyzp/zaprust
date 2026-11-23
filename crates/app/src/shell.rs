@@ -391,7 +391,7 @@ impl App {
                                         Some(ui.ctx().cumulative_frame_nr());
                                 }
                             }
-                            resp.on_hover_text("Accounts");
+                            resp.on_hover_text(crate::i18n::t("nav.accounts"));
                         }
                         ui.add_space(6.0);
                         let settings_label = crate::i18n::t("nav.settings");

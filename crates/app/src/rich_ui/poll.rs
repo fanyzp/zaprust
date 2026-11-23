@@ -146,7 +146,7 @@ impl App {
                 }
                 show_popup(self.popup_frame(), self.tokens, ui, |ui| {
                     ui.set_width(300.0);
-                    ui.label(RichText::new("Create poll").size(15.0).strong());
+                    ui.label(RichText::new(crate::i18n::t("poll.create_title")).size(15.0).strong());
                     let draft = if exiting {
                         exit_draft.as_mut()
                     } else {
@@ -155,7 +155,7 @@ impl App {
                     if let Some(draft) = draft {
                         let field_w = (ui.available_width() - 20.0).max(120.0);
                         crate::widgets::text_field(ui, t, &mut draft.question, "Question", field_w)
-                            .on_hover_text("Question");
+                            .on_hover_text(crate::i18n::t("poll.question"));
                         for (i, opt) in draft.options.iter_mut().enumerate() {
                             ui.horizontal(|ui| {
                                 ui.label(format!("{}.", i + 1));

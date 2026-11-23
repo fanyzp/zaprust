@@ -480,7 +480,7 @@ impl App {
                                 }
                             });
                             ui.add_space(SP_2);
-                            ui.label(RichText::new("Name").size(12.0).color(rgb(t.text_secondary)));
+                            ui.label(RichText::new(crate::i18n::t("profile.name_label")).size(12.0).color(rgb(t.text_secondary)));
                             text_field(
                                 ui,
                                 t,
@@ -489,7 +489,7 @@ impl App {
                                 ui.available_width(),
                             );
                             ui.label(
-                                RichText::new("Description")
+                                RichText::new(crate::i18n::t("profile.description_label"))
                                     .size(12.0)
                                     .color(rgb(t.text_secondary)),
                             );

@@ -542,6 +542,22 @@ pub(crate) fn human_error(message: &str) -> String {
         "This poll cannot be voted on from Zaprust right now.".to_owned()
     } else if m.contains("timed out") || m.contains("timeout") || m.contains("network") {
         "The connection had a problem. Check your internet and try again.".to_owned()
+    } else if m.contains("connection closed") || m.contains("connection reset")
+        || m.contains("broken pipe") || m.contains("stream closed")
+    {
+        "The connection dropped. Check your internet and try again.".to_owned()
+    } else if m.contains("not authorized") || m.contains("forbidden") || m.contains("401")
+        || m.contains("403")
+    {
+        "WhatsApp refused that action for this account.".to_owned()
+    } else if m.contains("rate") && m.contains("limit") {
+        "WhatsApp is rate limiting this account. Wait a while and try again.".to_owned()
+    } else if m.contains("no call is in progress") || m.contains("no incoming call") {
+        "There is no call in progress.".to_owned()
+    } else if m.contains("not a group admin") || m.contains("admin") && m.contains("required") {
+        "That action needs a group admin.".to_owned()
+    } else if m.contains("item-not-found") || m.contains("not found") && m.contains("group") {
+        "That group could not be found. It may have been deleted or the link revoked.".to_owned()
     } else {
         message.trim().to_owned()
     }
@@ -593,8 +609,8 @@ pub(crate) fn fmt_day(timestamp: i64) -> String {
     let day = timestamp.div_euclid(86_400);
     let today = (crate::state::now_unix() / 86_400) as i64;
     match day - today {
-        0 => "Today".to_owned(),
-        -1 => "Yesterday".to_owned(),
+        0 => crate::i18n::t("time.today"),
+        -1 => crate::i18n::t("time.yesterday"),
         _ => {
             let (y, m, d) = civil_from_days(day);
             format!("{d} {} {y}", MONTH_NAMES[(m - 1) as usize])
@@ -3103,7 +3119,11 @@ impl crate::state::App {
                 // user can scroll away and back to retry. The
                 // failure is surfaced only when the chat is the
                 // one on screen; another chat's failed page is
-                // not worth a global notice.
+                // not worth a global notice. ACCEPTED as the
+                // standing behavior (audit P2-35, signed off in
+                // the v1.6.15 round): no per-chat failure marker
+                // is kept for unopened chats, by decision, not
+                // by omission.
                 let id = jid_id(&chat_jid);
                 if let Some(session) = &mut self.live {
                     session.history.remove(&id);

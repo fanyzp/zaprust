@@ -388,14 +388,14 @@ impl App {
     fn dispatch_staged_send(&mut self, engaged: &mut bool) {
         if self.staged_send.is_some() {
             self.notice = Some(Notice::info(
-                "Still sending the previous files; wait for those to finish.".to_owned(),
+                crate::i18n::t("attach.still_sending"),
             ));
             return;
         }
         let Some(jid) = self.live_jid(self.selected_chat) else {
             // Nothing is taken: the stage stays put for a retry
             // once a live chat is open.
-            self.notice = Some(Notice::info("Open a live chat first.".to_owned()));
+            self.notice = Some(Notice::info(crate::i18n::t("attach.open_live_first")));
             return;
         };
         let staged = std::mem::take(&mut self.composer.staged);
@@ -430,7 +430,7 @@ impl App {
         // send completes), the send reads as in flight instead
         // of as silence (audit S18). The completion in
         // poll_staged_send clears or replaces this.
-        self.notice = Some(Notice::busy("Sending…".to_owned()));
+        self.notice = Some(Notice::busy(crate::i18n::t("attach.sending")));
         // A failed spawn leaves the receiver disconnected, so
         // the poll reports every file as unreadable instead of
         // hanging or dropping the album silently.
@@ -602,7 +602,7 @@ impl App {
             let Some(jid) =
                 self.live.as_ref().and_then(|s| s.jids.get(&self.selected_chat).cloned())
             else {
-                self.notice = Some(Notice::info("Open a live chat first.".to_owned()));
+                self.notice = Some(Notice::info(crate::i18n::t("attach.open_live_first")));
                 return;
             };
             self.send_backend(backend::BackendCommand::SendLocation {
@@ -695,7 +695,7 @@ impl App {
                     let Some(jid) =
                         self.live.as_ref().and_then(|s| s.jids.get(&self.selected_chat).cloned())
                     else {
-                        self.notice = Some(Notice::info("Open a live chat first.".to_owned()));
+                        self.notice = Some(Notice::info(crate::i18n::t("attach.open_live_first")));
                         return;
                     };
                     self.send_backend(backend::BackendCommand::SendMedia {

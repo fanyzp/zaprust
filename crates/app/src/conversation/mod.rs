@@ -828,7 +828,7 @@ impl App {
                                             )
                                             .sense(Sense::click()),
                                         )
-                                        .on_hover_text("View profile")
+                                        .on_hover_text(crate::i18n::t("conversation.view_profile"))
                                         .clicked()
                                     {
                                         self.profile_open = true;
@@ -1038,7 +1038,7 @@ impl App {
             return;
         }
         if self.export_rx.is_some() {
-            self.notice = Some(Notice::info("An export is already in progress.".to_owned()));
+            self.notice = Some(Notice::info(crate::i18n::t("export.already_running").to_owned()));
             return;
         }
         let chat = self.selected().clone();
@@ -1063,7 +1063,7 @@ impl App {
                 // The write runs on its worker; until its result
                 // lands in the poll, the export reads as in
                 // flight instead of as silence (audit S49).
-                self.notice = Some(Notice::busy("Exporting chat…".to_owned()));
+                self.notice = Some(Notice::busy(crate::i18n::t("export.exporting").to_owned()));
             }
             Err(e) => self.notice = Some(Notice::error(format!("Export failed: {e}"))),
         }
@@ -1364,7 +1364,7 @@ fn header_avatar(
 ) -> bool {
     let (rect, response) = ui.allocate_exact_size(Vec2::splat(40.0), Sense::click());
     crate::widgets::paint_chat_avatar_photo(ui.painter(), rect.center(), 20.0, chat, photo);
-    response.on_hover_text("View profile").clicked()
+    response.on_hover_text(crate::i18n::t("conversation.view_profile")).clicked()
 }
 
 #[cfg(test)]

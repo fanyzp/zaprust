@@ -625,7 +625,7 @@ impl App {
                     None => crate::i18n::t("connect.waiting_code"),
                 }
             } else {
-                "Demo code. The real one comes from WhatsApp when you link.".to_owned()
+                crate::i18n::t("connect.demo_code")
             };
             let waiting_code =
                 self.live_mode && self.live.as_ref().and_then(|s| s.pair_code_at).is_none();

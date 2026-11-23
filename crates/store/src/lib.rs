@@ -2328,6 +2328,7 @@ fn kind_str(kind: LiveChatKind) -> &'static str {
         LiveChatKind::Dm => "dm",
         LiveChatKind::Group => "group",
         LiveChatKind::Channel => "channel",
+        LiveChatKind::Broadcast => "broadcast",
     }
 }
 
@@ -2335,6 +2336,7 @@ fn kind_of(s: &str) -> LiveChatKind {
     match s {
         "group" => LiveChatKind::Group,
         "channel" => LiveChatKind::Channel,
+        "broadcast" => LiveChatKind::Broadcast,
         _ => LiveChatKind::Dm,
     }
 }

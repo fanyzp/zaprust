@@ -121,14 +121,14 @@ impl App {
                     .color(rgb(t.text_secondary)),
             );
             if slots.is_empty() {
-                ui.label(RichText::new("No feature needs an API key.").size(12.0));
+                ui.label(RichText::new(crate::i18n::t("features.no_key_needed")).size(12.0));
             }
             for (owner, slot) in &slots {
                 divider(ui, t);
                 ui.label(RichText::new(format!("{} · {}", slot.label, owner)).size(12.0).strong());
                 let keys = self.credentials.keys_for(&slot.id);
                 if keys.is_empty() {
-                    ui.label(RichText::new("No keys yet.").size(12.0).color(rgb(t.text_faint)));
+                    ui.label(RichText::new(crate::i18n::t("features.no_keys_yet")).size(12.0).color(rgb(t.text_faint)));
                 }
                 let mut remove: Option<String> = None;
                 for key in &keys {

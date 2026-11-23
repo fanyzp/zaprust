@@ -542,11 +542,11 @@ impl App {
                     ui.horizontal(|ui| {
                         let half = (ui.available_width() - 12.0) / 2.0;
                         ui.vertical(|ui| {
-                            ui.label(RichText::new("Lat").font(crate::theme::medium(12.0)));
+                            ui.label(RichText::new(crate::i18n::t("attach.lat")).font(crate::theme::medium(12.0)));
                             crate::widgets::text_field(ui, t, &mut draft.latitude, "-6.2", half);
                         });
                         ui.vertical(|ui| {
-                            ui.label(RichText::new("Lon").font(crate::theme::medium(12.0)));
+                            ui.label(RichText::new(crate::i18n::t("attach.lon")).font(crate::theme::medium(12.0)));
                             crate::widgets::text_field(ui, t, &mut draft.longitude, "106.8", half);
                         });
                     });

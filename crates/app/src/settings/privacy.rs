@@ -102,7 +102,7 @@ impl App {
                     divider(ui, t);
                 }
                 ui.label(
-                    RichText::new("Changes are sent to WhatsApp immediately (live mode).")
+                    RichText::new(crate::i18n::t("privacy.live_note"))
                         .size(12.0)
                         .color(rgb(t.text_faint)),
                 );

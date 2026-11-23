@@ -346,7 +346,6 @@ pub(crate) fn search_pill(
             })
             .inner
         });
-    crate::theme::paint_glass_edge(ui.painter(), search_frame.response.rect, 20.0, t);
     if search_frame.inner.has_focus() {
         ui.painter().rect_stroke(
             search_frame.response.rect,

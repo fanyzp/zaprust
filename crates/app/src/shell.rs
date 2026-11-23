@@ -13,6 +13,7 @@ impl eframe::App for App {
         if ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::B)) {
             self.sidebar_collapsed = !self.sidebar_collapsed;
         }
+        self.step_theme_fade(&ctx);
         apply_visuals(&ctx, self.tokens);
         // The shared wash helpers read the Motion setting from
         // the frame (they are free functions without App access).

@@ -242,6 +242,36 @@ fn default_glow() -> bool {
 }
 
 impl Tokens {
+    /// Blends this token set toward `other` by `p` (0 = self,
+    /// 1 = other), field by field: the theme crossfade's
+    /// interpolation. The one non-color field switches at the
+    /// midpoint.
+    #[must_use]
+    pub fn blend(&self, other: &Self, p: f32) -> Self {
+        let m = |a: Rgb, b: Rgb| mix(a, b, p);
+        Self {
+            bg_app: m(self.bg_app, other.bg_app),
+            bg_panel: m(self.bg_panel, other.bg_panel),
+            bg_panel_alt: m(self.bg_panel_alt, other.bg_panel_alt),
+            bg_chat: m(self.bg_chat, other.bg_chat),
+            text_primary: m(self.text_primary, other.text_primary),
+            text_secondary: m(self.text_secondary, other.text_secondary),
+            text_faint: m(self.text_faint, other.text_faint),
+            accent: m(self.accent, other.accent),
+            bubble_in: m(self.bubble_in, other.bubble_in),
+            bubble_out: m(self.bubble_out, other.bubble_out),
+            badge_bg: m(self.badge_bg, other.badge_bg),
+            badge_text: m(self.badge_text, other.badge_text),
+            border: m(self.border, other.border),
+            system_chip: m(self.system_chip, other.system_chip),
+            doodle: m(self.doodle, other.doodle),
+            danger: m(self.danger, other.danger),
+            tick_read: m(self.tick_read, other.tick_read),
+            system_text: m(self.system_text, other.system_text),
+            glow: if p < 0.5 { self.glow } else { other.glow },
+        }
+    }
+
     /// Parses a full theme from its JSON document:
     /// `{ "name": "…", "tokens": { "bg_app": "#0B141A", … } }` with all
     /// 18 tokens present. This is the canonical file format for

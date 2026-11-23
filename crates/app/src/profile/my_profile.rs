@@ -473,7 +473,6 @@ pub fn draw_my_profile_panel(
             egui::Order::Foreground,
             egui::Id::unique("zaprust_glass_edge"),
         ));
-        crate::theme::paint_glass_edge(&painter, win.response.rect, 16.0, t);
     }
     if exiting {
         // The exit run only replays the panel; its intents are

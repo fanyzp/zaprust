@@ -69,43 +69,45 @@ impl MotionSetting {
 }
 
 /// Standard durations in milliseconds. Everything animated in the
-/// app picks one of these; surfaces do not invent their own. All
-/// values sit in the 90-300 ms band: shorter reads as a glitch,
-/// longer as lag. The press dip is the one deliberate exception
-/// below 100 ms, because direct manipulation must feel instant.
+/// app picks one of these; surfaces do not invent their own. The
+/// values snap to the canonical token set (design standard):
+/// 100 micro, 180 standard, 260 popover, 450 modal and theme
+/// crossfade, 600 page. Exits run shorter than entrances so
+/// closing feels decisive instead of lagging behind the pointer.
 pub(crate) mod dur {
     /// Modal and popup fade-ins.
-    pub(crate) const FADE: f64 = 160.0;
-    /// Popup and menu exits: about three quarters of the entrance,
-    /// so closing feels decisive instead of lagging behind the
-    /// pointer.
-    pub(crate) const EXIT: f64 = 120.0;
+    pub(crate) const FADE: f64 = 180.0;
+    /// Popup and menu exits: shorter than the entrance.
+    pub(crate) const EXIT: f64 = 100.0;
+    /// The theme crossfade: a scheme or accent change blends
+    /// over the canonical modal span.
+    pub(crate) const THEME: f64 = 450.0;
     /// The media picker rising into place.
     pub(crate) const SLIDE: f64 = 180.0;
     /// Conversation switch fade.
-    pub(crate) const SWITCH: f64 = 140.0;
+    pub(crate) const SWITCH: f64 = 180.0;
     /// The send button pulse.
     pub(crate) const PULSE: f64 = 180.0;
     /// A new message fading and rising into the stream.
     pub(crate) const ENTER: f64 = 180.0;
     /// Hover washes on rows and chips.
-    pub(crate) const HOVER: f64 = 130.0;
+    pub(crate) const HOVER: f64 = 100.0;
     /// Pressed washes (snappier than hover).
-    pub(crate) const PRESS: f64 = 90.0;
+    pub(crate) const PRESS: f64 = 100.0;
     /// The unread badge pop when its count changes.
-    pub(crate) const POP: f64 = 300.0;
+    pub(crate) const POP: f64 = 260.0;
     /// The bottom navigation icon pop on tab activation: a
     /// single short swell and settle, the restrained emphasis
     /// the native bars give the tab you just chose.
-    pub(crate) const TAB_POP: f64 = 160.0;
+    pub(crate) const TAB_POP: f64 = 180.0;
     /// The scroll-to-bottom button fading in or out.
-    pub(crate) const REVEAL: f64 = 150.0;
+    pub(crate) const REVEAL: f64 = 180.0;
     /// The photo viewer's reveal: a brief loading phase, then
     /// the photo crossfades in. It used to run 700 ms, far
     /// outside the band every other surface obeys; at this
     /// length the loading phase still reads, and the crossfade
     /// lands without feeling like lag.
-    pub(crate) const VIEWER: f64 = 280.0;
+    pub(crate) const VIEWER: f64 = 260.0;
 }
 
 /// Pulse rates for the continuous sine pulses: the multiplier on

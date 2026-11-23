@@ -138,7 +138,6 @@ impl App {
                                     );
                                 });
                             });
-                        crate::theme::paint_glass_edge(ui.painter(), banner.response.rect, 12.0, t);
                     });
                 if dismiss {
                     self.notice = None;
@@ -213,7 +212,6 @@ impl App {
                     }
                 });
             });
-        crate::theme::paint_glass_edge(ui.painter(), banner.response.rect, 12.0, t);
         match action {
             Some("report") => {
                 if let Some(report) = self.crash_report.clone() {
@@ -340,7 +338,6 @@ impl App {
                             }
                         });
                     });
-                crate::theme::paint_glass_edge(ui.painter(), modal.response.rect, 16.0, t);
             });
         crate::anim::popup_transform(
             root.ctx(),

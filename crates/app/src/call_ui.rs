@@ -500,7 +500,6 @@ impl App {
                             }
                         });
                     });
-                crate::theme::paint_glass_edge(ui.painter(), card.response.rect, 16.0, t);
             },
         );
         match action {

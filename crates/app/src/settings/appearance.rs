@@ -229,28 +229,6 @@ impl App {
             t,
         );
         ui.add_space(16.0);
-        group_label(ui, t, &crate::i18n::t("appearance.interface"));
-        settings_card(ui, t, |ui| {
-            let mut glow = self.glow;
-            row_hl(
-                ui,
-                &mut self.settings_highlight,
-                self.motion,
-                "appearance.glow",
-                t,
-                &crate::i18n::t("appearance.glow"),
-                "",
-                |ui| {
-                    switch(ui, &mut glow, t);
-                },
-            );
-            if glow != self.glow {
-                self.glow = glow;
-                self.apply_theme_choice(ui.ctx());
-                self.persist_settings();
-            }
-        });
-        ui.add_space(16.0);
         group_label(ui, t, &crate::i18n::t("appearance.motion"));
         let scoped = ui.scope(|ui| {
             settings_card(ui, t, |ui| {

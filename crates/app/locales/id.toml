@@ -304,7 +304,6 @@
 # ---- settings: appearance ----
 "appearance.theme" = "Tema"
 "appearance.dynamic_color" = "Warna dinamis"
-"appearance.glow" = "Glow"
 "appearance.motion" = "Gerakan"
 "appearance.motion_caption" = "Animasi untuk panel, pemilih media dan berpindah obrolan."
 "appearance.motion_full" = "Penuh"

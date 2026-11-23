@@ -799,7 +799,17 @@ fn voice_waveform_bars(wire: Option<&[u8]>) -> Vec<f32> {
     }
 }
 
-pub(crate) fn to_message_with_flags(live: &LiveMessage, flags: i64) -> Message {
+pub(crate) /// The backend delivery state for a core delivery value (the
+/// receipt handler's conversions run the other way).
+fn backend_delivery(d: Delivery) -> backend::DeliveryState {
+    match d {
+        Delivery::Sent => backend::DeliveryState::Sent,
+        Delivery::Delivered => backend::DeliveryState::Delivered,
+        Delivery::Read => backend::DeliveryState::Read,
+    }
+}
+
+fn to_message_with_flags(live: &LiveMessage, flags: i64) -> Message {
     let mut kind = to_kind(&live.kind);
     if let MessageKind::Voice { waveform, .. } = &mut kind {
         *waveform = voice_waveform_bars(live.voice_waveform.as_deref());
@@ -2063,12 +2073,29 @@ impl crate::state::App {
                     // read from the flag map as it stands now, so
                     // a star or revoke applied later in the batch
                     // is part of the stored row.
+                    // Delivery advances the batch applied after
+                    // an upsert (a receipt in the same burst)
+                    // live in the mirror, not in the upsert copy
+                    // the batch recorded; overlay them so the
+                    // flush cannot write a stale tick state over
+                    // the receipt's own store write.
+                    let mirror_delivery: HashMap<u64, backend::DeliveryState> = session
+                        .messages
+                        .values()
+                        .flat_map(|entry| entry.iter())
+                        .filter_map(|(_, m)| {
+                            m.delivery.map(|d| (m.id, backend_delivery(d)))
+                        })
+                        .collect();
                     let mut latest: HashMap<u64, (LiveMessage, i64)> = HashMap::new();
                     let mut order: Vec<u64> = Vec::new();
-                    for msg in batch.store_writes {
+                    for mut msg in batch.store_writes {
                         let mid = message_id(&msg.chat_jid, &msg.id);
                         if !latest.contains_key(&mid) {
                             order.push(mid);
+                        }
+                        if let Some(d) = mirror_delivery.get(&mid) {
+                            msg.delivery = backend::DeliveryState::max_opt(msg.delivery, Some(*d));
                         }
                         let flags = session.flags.get(&mid).copied().unwrap_or(0);
                         latest.insert(mid, (msg, flags));

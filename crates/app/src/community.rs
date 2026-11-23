@@ -1030,7 +1030,6 @@ impl App {
                         });
                     });
                 });
-                crate::theme::paint_glass_edge(ui.painter(), inner.response.rect, 14.0, t);
             });
         crate::anim::popup_transform(
             ctx,

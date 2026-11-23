@@ -3,72 +3,56 @@
 use core::theme::{Rgb, Tokens};
 use eframe::egui::{self, Color32, Stroke};
 
-/// Soft card shadow, in both schemes: floating surfaces must
-/// lift off what is under them instead of reading as flat
-/// rectangles (the depth pass). Dark surfaces get a soft black
-/// drop, light surfaces a softer grey one; fills stay flat, only
-/// the shadow adds depth.
-pub(crate) fn card_shadow(t: Tokens) -> egui::Shadow {
-    if t.is_light() {
-        egui::Shadow {
-            offset: [0, 2],
-            blur: 8,
-            spread: 0,
-            color: Color32::from_rgba_unmultiplied(17, 27, 33, 32),
-        }
-    } else {
-        egui::Shadow { offset: [0, 2], blur: 10, spread: 0, color: Color32::from_black_alpha(64) }
-    }
+/// Canonical corner radii (design standard, Rifan's system):
+/// panels and cards 20, small surfaces 12, micro surfaces 8,
+/// pills and avatars fully round. The message bubble keeps its
+/// own grid-locked radius (BUBBLE_RADIUS, 15) as a named
+/// exception.
+pub(crate) const RADIUS_PANEL: u8 = 20;
+pub(crate) const RADIUS_SMALL: u8 = 12;
+pub(crate) const RADIUS_MICRO: u8 = 8;
+
+/// Canonical type scale (design standard): 10 caption, 12
+/// label, 15 body, 19 heading, 23 title, 29 display. Hand-rolled
+/// text snaps to these steps.
+pub(crate) const TEXT_CAPTION: f32 = 10.0;
+pub(crate) const TEXT_LABEL: f32 = 12.0;
+pub(crate) const TEXT_BODY: f32 = 15.0;
+pub(crate) const TEXT_HEADING: f32 = 19.0;
+pub(crate) const TEXT_TITLE: f32 = 23.0;
+pub(crate) const TEXT_DISPLAY: f32 = 29.0;
+
+/// The shell fill (level 1): side panels and page shells sit on
+/// the panel tone over the app background.
+pub(crate) fn shell_fill(t: Tokens) -> Color32 {
+    rgb(t.bg_panel)
 }
 
-/// The depth under a message bubble: a short, soft drop (2 px
-/// offset, tight blur), so bubbles sit on the chat background
-/// instead of being pasted onto it. Present enough to read at a
-/// glance, still softer than a card's shadow; the bubble fill
-/// itself stays flat, and the hairline the bubble paints over
-/// the shadow does the rest of the separation.
-pub(crate) fn bubble_shadow(t: Tokens) -> egui::Shadow {
-    if t.is_light() {
-        egui::Shadow {
-            offset: [0, 2],
-            blur: 6,
-            spread: 0,
-            color: Color32::from_rgba_unmultiplied(17, 27, 33, 56),
-        }
-    } else {
-        egui::Shadow { offset: [0, 2], blur: 6, spread: 0, color: Color32::from_black_alpha(88) }
-    }
+/// The card fill (level 2): cards and rows sit on the alt panel
+/// tone over the shell.
+pub(crate) fn card_fill(t: Tokens) -> Color32 {
+    rgb(t.bg_panel_alt)
 }
 
-/// The float shadow tier, as the composer wears it: the middle
-/// of the three shadow tiers (bubble, float, modal). The
-/// composer is the conversation's floating layer, so it lifts
-/// further than a card, with a longer, softer drop than
-/// [`card_shadow`] gives it when the glow treatment is off.
-/// With glow on it keeps the glass recipe's own shadow, so the
-/// two treatments never stack.
-pub(crate) fn composer_shadow(t: Tokens) -> egui::Shadow {
-    if t.glow {
-        return glass_shadow(t);
-    }
-    if t.is_light() {
-        egui::Shadow {
-            offset: [0, 4],
-            blur: 14,
-            spread: 0,
-            color: Color32::from_rgba_unmultiplied(17, 27, 33, 52),
-        }
-    } else {
-        egui::Shadow { offset: [0, 4], blur: 16, spread: 0, color: Color32::from_black_alpha(96) }
-    }
+/// The card-soft fill: the canonical mid-step between shell and
+/// card, the alt tone mixed 52 percent over the panel tone, for
+/// an inner grouping that must read softer than a full card.
+pub(crate) fn card_soft(t: Tokens) -> Color32 {
+    rgb(core::theme::mix(t.bg_panel, t.bg_panel_alt, 0.52))
 }
 
-/// The modal shadow tier: the deepest of the three shadow tiers
-/// (bubble, float, modal). A modal sits over a dimmed app, so its
-/// drop is long and soft in both schemes and never degrades to
-/// the card shadow; the dim does the separating and the shadow
-/// grounds the sheet.
-pub(crate) fn modal_shadow(t: Tokens) -> egui::Shadow {
+/// The popup fill: floating surfaces (menus, popovers, modals)
+/// sit one elevated step above the panel they float over.
+pub(crate) fn popup_fill(t: Tokens) -> Color32 {
+    rgb(core::theme::elevated_step(t.bg_panel))
+}
+
+/// The one shadow in the system (design standard): floating
+/// surfaces only (menus, popovers, modals, banners, the call
+/// card, the portrait bar). Resting surfaces (cards, bubbles,
+/// the composer, list rows) cast no shadow; their depth is the
+/// tone ladder alone.
+pub(crate) fn overlay_shadow(t: Tokens) -> egui::Shadow {
     if t.is_light() {
         egui::Shadow {
             offset: [0, 12],
@@ -81,25 +65,46 @@ pub(crate) fn modal_shadow(t: Tokens) -> egui::Shadow {
     }
 }
 
-/// Paints the raised top edge of a solid raised surface: a 1 px
-/// line along the top of `rect`, inset by the corner radius so
-/// it stays on the flat span of the edge, in the core
-/// [`raised_edge`](core::theme::raised_edge) derivation for the
-/// surface's fill. Unlike [`paint_glass_edge`] it is not part of
-/// the glow treatment: solid surfaces (bubbles, the composer)
-/// wear it in both modes. A line, not a gradient.
-pub(crate) fn paint_raised_edge(
-    painter: &egui::Painter,
-    rect: egui::Rect,
-    radius: f32,
-    fill: Rgb,
-    t: Tokens,
-) {
-    let y = rect.top() + 0.5;
-    painter.line_segment(
-        [egui::Pos2::new(rect.left() + radius, y), egui::Pos2::new(rect.right() - radius, y)],
-        Stroke::new(1.0_f32, rgb(core::theme::raised_edge(fill, t.text_primary))),
-    );
+/// Soft card shadow, in both schemes: floating surfaces must
+/// lift off what is under them instead of reading as flat
+/// rectangles (the depth pass). Dark surfaces get a soft black
+/// drop, light surfaces a softer grey one; fills stay flat, only
+/// the shadow adds depth.
+pub(crate) fn card_shadow(t: Tokens) -> egui::Shadow {
+    overlay_shadow(t)
+}
+
+/// The depth under a message bubble: a short, soft drop (2 px
+/// offset, tight blur), so bubbles sit on the chat background
+/// instead of being pasted onto it. Present enough to read at a
+/// glance, still softer than a card's shadow; the bubble fill
+/// itself stays flat, and the hairline the bubble paints over
+/// the shadow does the rest of the separation.
+pub(crate) fn bubble_shadow(_t: Tokens) -> egui::Shadow {
+    // Bubbles are resting surfaces: no shadow (design standard).
+    egui::Shadow::default()
+}
+
+/// The float shadow tier, as the composer wears it: the middle
+/// of the three shadow tiers (bubble, float, modal). The
+/// composer is the conversation's floating layer, so it lifts
+/// further than a card, with a longer, softer drop than
+/// [`card_shadow`] gives it when the glow treatment is off.
+/// With glow on it keeps the glass recipe's own shadow, so the
+/// two treatments never stack.
+pub(crate) fn composer_shadow(_t: Tokens) -> egui::Shadow {
+    // The composer is a resting surface: no shadow (design
+    // standard); it separates by its alt-panel tone alone.
+    egui::Shadow::default()
+}
+
+/// The modal shadow tier: the deepest of the three shadow tiers
+/// (bubble, float, modal). A modal sits over a dimmed app, so its
+/// drop is long and soft in both schemes and never degrades to
+/// the card shadow; the dim does the separating and the shadow
+/// grounds the sheet.
+pub(crate) fn modal_shadow(t: Tokens) -> egui::Shadow {
+    overlay_shadow(t)
 }
 
 /// The one backdrop dim for modal surfaces (account modal,
@@ -165,16 +170,12 @@ pub(crate) fn glass_text_tint(t: Tokens, base: Rgb) -> Color32 {
     glass_tint_alpha(t, base, glass_text_alpha(t))
 }
 
-fn glass_tint_alpha(t: Tokens, base: Rgb, alpha: u8) -> Color32 {
-    if !t.glow {
-        // Glow off (the default): the surface is its solid base
-        // color, fully opaque and untinted, the flat mainstream
-        // look. Every glass fill funnels through here, so this
-        // one branch flattens them all.
-        return rgb(base);
-    }
-    let mixed = rgb(core::theme::mix(base, t.accent, GLASS_TINT));
-    Color32::from_rgba_unmultiplied(mixed.r(), mixed.g(), mixed.b(), alpha)
+fn glass_tint_alpha(_t: Tokens, base: Rgb, _alpha: u8) -> Color32 {
+    // Liquid Glass is retired (design standard): every surface
+    // is its solid base color, fully opaque and untinted. The
+    // helper names survive so call sites keep their intent; the
+    // fills are flat.
+    rgb(base)
 }
 
 /// The standard glass fill (panel-based).
@@ -191,12 +192,8 @@ pub(crate) fn glass_text_fill(t: Tokens) -> Color32 {
 /// rows (hover, press, selection): the base mixed toward the
 /// accent and painted translucently, so the surface beneath
 /// tints the state instead of a flat fill replacing it.
-pub(crate) fn glass_wash(t: Tokens, base: Rgb, alpha: u8) -> Color32 {
-    if !t.glow {
-        return Color32::from_rgba_unmultiplied(base.0, base.1, base.2, alpha);
-    }
-    let mixed = rgb(core::theme::mix(base, t.accent, GLASS_TINT));
-    Color32::from_rgba_unmultiplied(mixed.r(), mixed.g(), mixed.b(), alpha)
+pub(crate) fn glass_wash(_t: Tokens, base: Rgb, alpha: u8) -> Color32 {
+    Color32::from_rgba_unmultiplied(base.0, base.1, base.2, alpha)
 }
 
 /// The stacked-panel glass alpha: surfaces that float over the
@@ -250,7 +247,7 @@ pub(crate) fn glass_panel_frame(t: Tokens, radius: u8) -> egui::Frame {
     egui::Frame::new()
         .fill(glass_panel_fill(t))
         .corner_radius(egui::CornerRadius::same(radius))
-        .stroke(Stroke::new(1.0_f32, rgb(t.border)))
+        .stroke(Stroke::NONE)
         .shadow(glass_shadow(t))
 }
 
@@ -261,10 +258,7 @@ pub(crate) fn glass_panel_frame(t: Tokens, radius: u8) -> egui::Frame {
 /// fill it is what keeps stream text from bleeding through a
 /// floating panel in two readable layers.
 pub(crate) fn glass_underlay(t: Tokens) -> Color32 {
-    if !t.glow {
-        return rgb(t.bg_chat);
-    }
-    Color32::from_rgba_unmultiplied(t.bg_chat.0, t.bg_chat.1, t.bg_chat.2, 176)
+    rgb(t.bg_chat)
 }
 
 /// The muted unread-badge colours: the badge fill pulled most of
@@ -275,46 +269,22 @@ pub(crate) fn muted_badge(t: Tokens) -> (Color32, Color32) {
     (rgb(fill), rgb(core::theme::on_color(fill)))
 }
 
-/// The specular top-edge color: a dim white line in dark mode, a
-/// stronger white in light mode, where the bright fill needs more
-/// of it to register as an edge.
-pub(crate) fn glass_edge_color(t: Tokens) -> Color32 {
-    if t.is_light() {
-        Color32::from_white_alpha(150)
-    } else {
-        Color32::from_white_alpha(48)
-    }
-}
-
 /// The glass shadow: deeper than a card's (menus float over live
 /// content and must separate at a glance) and stretched a little
 /// longer and softer, so glass surfaces feel suspended rather
 /// than pasted.
 pub(crate) fn glass_shadow(t: Tokens) -> egui::Shadow {
-    if !t.glow {
-        return card_shadow(t);
-    }
-    if t.is_light() {
-        egui::Shadow {
-            offset: [0, 8],
-            blur: 22,
-            spread: 0,
-            color: Color32::from_rgba_unmultiplied(17, 27, 33, 64),
-        }
-    } else {
-        egui::Shadow { offset: [0, 8], blur: 22, spread: 0, color: Color32::from_black_alpha(110) }
-    }
+    overlay_shadow(t)
 }
 
-/// A ready-made glass frame: tinted translucent fill, hairline
-/// border, the modal shadow tier, the given corner radius.
-/// Callers paint the specular edge with [`paint_glass_edge`]
-/// once the frame's rect is known (after `Frame::show`).
+/// A ready-made floating frame: solid fill, no border
+/// (borderless, design standard), the one overlay shadow, the
+/// given corner radius.
 pub(crate) fn glass_frame(t: Tokens, radius: u8) -> egui::Frame {
     egui::Frame::new()
         .fill(glass_fill(t))
         .corner_radius(egui::CornerRadius::same(radius))
-        .stroke(Stroke::new(1.0_f32, rgb(t.border)))
+        .stroke(Stroke::NONE)
         .shadow(modal_shadow(t))
 }
 
@@ -325,22 +295,8 @@ pub(crate) fn glass_text_frame(t: Tokens, radius: u8) -> egui::Frame {
     egui::Frame::new()
         .fill(glass_text_fill(t))
         .corner_radius(egui::CornerRadius::same(radius))
-        .stroke(Stroke::new(1.0_f32, rgb(t.border)))
+        .stroke(Stroke::NONE)
         .shadow(card_shadow(t))
-}
-
-/// Paints the glass specular edge: a 1 px bright line along the
-/// top of `rect`, inset by the corner radius so it stays on the
-/// flat span of the edge. A line, not a gradient.
-pub(crate) fn paint_glass_edge(painter: &egui::Painter, rect: egui::Rect, radius: f32, t: Tokens) {
-    if !t.glow {
-        return;
-    }
-    let y = rect.top() + 0.5;
-    painter.line_segment(
-        [egui::Pos2::new(rect.left() + radius, y), egui::Pos2::new(rect.right() - radius, y)],
-        Stroke::new(1.0_f32, glass_edge_color(t)),
-    );
 }
 
 pub(crate) fn rgb(c: Rgb) -> Color32 {
@@ -369,9 +325,9 @@ pub(crate) fn apply_visuals(ctx: &egui::Context, t: Tokens) {
     // Every egui widget that can be clicked shows the pointing hand;
     // hand-drawn surfaces opt in per response (widgets.rs).
     visuals.interact_cursor = Some(egui::CursorIcon::PointingHand);
-    visuals.window_corner_radius = egui::CornerRadius::same(16);
+    visuals.window_corner_radius = egui::CornerRadius::same(RADIUS_PANEL);
     visuals.menu_corner_radius = egui::CornerRadius::same(12);
-    visuals.window_stroke = Stroke::new(1.0_f32, rgb(t.border));
+    visuals.window_stroke = Stroke::NONE;
     // Full widget state table. Before this pass only two fills were set
     // and hovered equalled inactive, so no stock widget ever reacted to
     // the pointer, radii stayed at the 2 px egui default and framed
@@ -392,17 +348,17 @@ pub(crate) fn apply_visuals(ctx: &egui::Context, t: Tokens) {
         fg_stroke: fg,
         expansion: 0.0,
     };
-    visuals.widgets.noninteractive = wv(t.bg_panel, t.bg_panel, border, 10);
-    visuals.widgets.inactive = wv(alt, field, border, 10);
+    visuals.widgets.noninteractive = wv(t.bg_panel, t.bg_panel, Stroke::NONE, 10);
+    visuals.widgets.inactive = wv(alt, field, Stroke::NONE, 10);
     visuals.widgets.hovered =
-        wv(core::theme::hover_step(alt), core::theme::hover_step(field), border, 10);
+        wv(core::theme::hover_step(alt), core::theme::hover_step(field), Stroke::NONE, 10);
     visuals.widgets.active = wv(
         core::theme::pressed_step(alt),
         core::theme::pressed_step(field),
         Stroke::new(1.0_f32, accent),
         10,
     );
-    visuals.widgets.open = wv(alt, field, border, 12);
+    visuals.widgets.open = wv(alt, field, Stroke::NONE, 12);
     ctx.set_visuals(visuals);
     ctx.global_style_mut(|style| {
         // Whisper-quiet floating scrollbars, everywhere. The
@@ -437,11 +393,11 @@ pub(crate) fn apply_visuals(ctx: &egui::Context, t: Tokens) {
         // One type scale for stock widgets instead of the egui defaults
         // (Body 13 regular everywhere): body 14, buttons in Medium,
         // headings in SemiBold, small 11.
-        style.text_styles.insert(egui::TextStyle::Body, egui::FontId::proportional(14.0));
-        style.text_styles.insert(egui::TextStyle::Button, medium(13.0));
-        style.text_styles.insert(egui::TextStyle::Heading, semibold(20.0));
-        style.text_styles.insert(egui::TextStyle::Small, egui::FontId::proportional(11.0));
-        style.text_styles.insert(egui::TextStyle::Monospace, egui::FontId::monospace(13.0));
+        style.text_styles.insert(egui::TextStyle::Body, egui::FontId::proportional(TEXT_BODY));
+        style.text_styles.insert(egui::TextStyle::Button, medium(TEXT_LABEL));
+        style.text_styles.insert(egui::TextStyle::Heading, semibold(TEXT_HEADING));
+        style.text_styles.insert(egui::TextStyle::Small, egui::FontId::proportional(TEXT_LABEL));
+        style.text_styles.insert(egui::TextStyle::Monospace, egui::FontId::monospace(TEXT_LABEL));
     });
 }
 

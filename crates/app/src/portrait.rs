@@ -182,7 +182,6 @@ impl App {
                 let radius = CornerRadius::same((NAV_BAR_H / 2.0) as u8);
                 painter.add(crate::theme::glass_shadow(t).as_shape(alloc, radius));
                 painter.rect_filled(alloc, radius, crate::theme::glass_bar_fill(t));
-                crate::theme::paint_glass_edge(painter, alloc, NAV_BAR_H / 2.0, t);
                 let chats_selected =
                     matches!(self.screen, Screen::Chats | Screen::Channels | Screen::Groups);
                 let tabs = [

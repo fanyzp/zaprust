@@ -1161,7 +1161,6 @@ fn paint_system_pill(ui: &egui::Ui, t: Tokens, rect: egui::Rect, kind: SystemPil
         egui::StrokeKind::Inside,
     );
     if kind == SystemPillKind::Date {
-        crate::theme::paint_glass_edge(painter, rect, radius as f32, t);
     }
     fill
 }

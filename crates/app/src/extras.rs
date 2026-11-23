@@ -238,9 +238,6 @@ impl App {
         if let Some(c) = v["contrast"].as_f64() {
             self.contrast = c as f32;
         }
-        if let Some(g) = v["glow"].as_bool() {
-            self.glow = g;
-        }
         if let Some(z) = v["zoom_percent"].as_u64() {
             // The same clamp the Appearance control
             // applies, so a hand-edited file cannot push
@@ -456,7 +453,6 @@ impl App {
             "link_previews": self.link_previews,
             "saturation": self.saturation,
             "contrast": self.contrast,
-            "glow": self.glow,
             "zoom_percent": self.zoom_percent,
             "theme": self.theme_choice,
             "drafts": self.drafts_document(),

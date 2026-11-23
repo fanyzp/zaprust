@@ -1226,6 +1226,12 @@ pub(crate) struct App {
     pub(crate) screen: Screen,
     pub(crate) theme_choice: ThemeId,
     pub(crate) tokens: Tokens,
+    /// Theme crossfade state: the token set the current one is
+    /// blending from, the target it is blending toward, and
+    /// when the blend started. All None at rest.
+    pub(crate) theme_fade_from: Option<Tokens>,
+    pub(crate) theme_fade_target: Option<Tokens>,
+    pub(crate) theme_fade_start: Option<std::time::Instant>,
     pub(crate) chats: Vec<Chat>,
     /// Placeholder returned by `selected()` when the chat list is
     /// empty (live mode before the first chat arrives).
@@ -1404,12 +1410,6 @@ pub(crate) struct App {
     pub(crate) saturation: f32,
     /// See `saturation`.
     pub(crate) contrast: f32,
-    /// The glow (Liquid Glass) treatment for floating surfaces
-    /// (Settings > Appearance > Glow). Off by default: surfaces
-    /// render flat and neutral, the mainstream chat-client look.
-    /// Stamped onto every token set the app builds via
-    /// `Tokens::with_glow`.
-    pub(crate) glow: bool,
     /// Seed color the whole dynamic palette is generated from.
     pub(crate) seed: Rgb,
     /// The central credential store (keyring or file backend,
@@ -1926,6 +1926,9 @@ impl App {
         let mut app = Self {
             screen: args.screen,
             theme_choice: args.theme,
+            theme_fade_from: None,
+            theme_fade_target: None,
+            theme_fade_start: None,
             tokens: Tokens::dynamic(args.seed, args.theme.resolve(true) == ThemeId::Dark)
                 .adjust(args.saturation, args.contrast)
                 .with_glow(false),
@@ -2107,7 +2110,6 @@ impl App {
             egui_ctx: Some(egui_ctx.clone()),
             saturation: args.saturation,
             contrast: args.contrast,
-            glow: false,
             seed: args.seed,
             credentials,
             credential_drafts: std::collections::HashMap::new(),
@@ -2269,7 +2271,7 @@ impl App {
         app.load_persisted_state();
         app.tokens = Tokens::dynamic(app.seed, app.theme_choice.resolve(true) == ThemeId::Dark)
             .adjust(app.saturation, app.contrast)
-            .with_glow(app.glow);
+            .with_glow(false);
         crate::update::cleanup_stale_backup();
         // Declare the native features' credential slots so the
         // Settings credentials area can manage their keys.
@@ -2602,10 +2604,47 @@ impl App {
 
     pub(crate) fn apply_theme_choice(&mut self, ctx: &egui::Context) {
         let dark = self.theme_choice.resolve(true) == ThemeId::Dark;
-        self.tokens = Tokens::dynamic(self.seed, dark)
+        let target = Tokens::dynamic(self.seed, dark)
             .adjust(self.saturation, self.contrast)
-            .with_glow(self.glow);
+            .with_glow(false);
+        // The change crossfades over the canonical theme span
+        // (design standard): the shell blends tokens from the
+        // current set to the target across frames. Motion Off
+        // snaps, as it does for every animation.
+        if self.motion == crate::motion::Motion::Off {
+            self.tokens = target;
+            self.theme_fade_from = None;
+            self.theme_fade_target = None;
+            self.theme_fade_start = None;
+        } else {
+            self.theme_fade_from = Some(self.tokens);
+            self.theme_fade_target = Some(target);
+            self.theme_fade_start = Some(std::time::Instant::now());
+            ctx.request_repaint();
+        }
         apply_visuals(ctx, self.tokens);
+    }
+
+    /// Advances the theme crossfade by one frame, called from
+    /// the shell before anything paints. Returns nothing; at
+    /// rest it is a no-op.
+    pub(crate) fn step_theme_fade(&mut self, ctx: &egui::Context) {
+        let (Some(from), Some(target), Some(start)) =
+            (self.theme_fade_from, self.theme_fade_target, self.theme_fade_start)
+        else {
+            return;
+        };
+        let span = crate::motion::dur::THEME / 1000.0;
+        let p = (start.elapsed().as_secs_f64() / span).clamp(0.0, 1.0) as f32;
+        if p >= 1.0 {
+            self.tokens = target;
+            self.theme_fade_from = None;
+            self.theme_fade_target = None;
+            self.theme_fade_start = None;
+        } else {
+            self.tokens = from.blend(&target, crate::motion::ease_out_cubic(f64::from(p)) as f32);
+            ctx.request_repaint();
+        }
     }
 
     pub(crate) fn selected(&self) -> &Chat {
@@ -3034,7 +3073,7 @@ mod tests {
             fresh.tokens,
             Tokens::dynamic(fresh.seed, false)
                 .adjust(fresh.saturation, fresh.contrast)
-                .with_glow(fresh.glow),
+                .with_glow(false),
             "the loaded choice resolves to the light token set at startup"
         );
     }

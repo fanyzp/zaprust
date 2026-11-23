@@ -1187,22 +1187,13 @@ pub(crate) fn message_bubble(
         let painter = &painter;
         let bubble_fill = if mine { t.bubble_out } else { t.bubble_in };
         let bubble_color = rgb(bubble_fill);
-        // Depth: the bubble shadow tier under the bubble, a
-        // hairline edge mixed from the theme border, and the
-        // raised top edge, so the flat fill still reads as a
-        // surface sitting on the chat background instead of a
-        // pasted rectangle.
+        // Depth is tone alone (design standard): the bubble
+        // fill steps off the chat background, with no shadow,
+        // no hairline, and no painted edge.
         painter.add(egui::Shape::Rect(
             crate::theme::bubble_shadow(t).as_shape(rect, CornerRadius::same(BUBBLE_RADIUS)),
         ));
         painter.rect_filled(rect, CornerRadius::same(BUBBLE_RADIUS), bubble_color);
-        painter.rect_stroke(
-            rect,
-            CornerRadius::same(BUBBLE_RADIUS),
-            Stroke::new(1.0_f32, rgb(core::theme::mix(bubble_fill, t.border, 0.45))),
-            egui::StrokeKind::Inside,
-        );
-        crate::theme::paint_raised_edge(painter, rect, BUBBLE_RADIUS as f32, bubble_fill, t);
 
         // Group sender avatar: the column is reserved for every
         // incoming bubble of the run, but the disc paints only
@@ -2209,7 +2200,6 @@ pub(crate) fn message_album(
         Stroke::new(1.0_f32, rgb(core::theme::mix(bubble_fill, t.border, 0.45))),
         egui::StrokeKind::Inside,
     );
-    crate::theme::paint_raised_edge(painter, card, 14.0, bubble_fill, t);
     for (i, item) in items.iter().take(shown).enumerate() {
         let row = (i / 2) as f32;
         let col = (i % 2) as f32;

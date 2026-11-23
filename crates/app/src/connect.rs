@@ -213,7 +213,6 @@ impl App {
                 // The country picker takes its width from this
                 // card, so it remembers the rect for next frame.
                 self.connect_card_rect = Some(card.response.rect);
-                crate::theme::paint_glass_edge(col.painter(), card.response.rect, 16.0, t);
                 col.add_space(18.0);
                 if !wide {
                     // The stepper doubles as the state slot: the
@@ -919,7 +918,6 @@ impl App {
                             },
                         );
                     });
-                crate::theme::paint_glass_edge(ui.painter(), frame.response.rect, 16.0, t);
             });
         if !exiting {
             if let Some(country) = chosen {
@@ -1198,7 +1196,6 @@ impl App {
                             }
                         }
                     });
-                crate::theme::paint_glass_edge(ui.painter(), modal.response.rect, 16.0, t);
             });
         crate::anim::popup_transform(
             &ctx,

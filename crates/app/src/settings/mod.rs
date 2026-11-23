@@ -82,13 +82,6 @@ const SETTINGS_REGISTRY: &[SettingEntry] = &[
         keywords: "color slider warna",
     },
     SettingEntry {
-        id: "appearance.glow",
-        tab: "Appearance",
-        title_en: "Glow",
-        title_id: "Glow",
-        keywords: "glass effect tinted surfaces kaca efek permukaan",
-    },
-    SettingEntry {
         id: "appearance.font_size",
         tab: "Appearance",
         title_en: "Font size",

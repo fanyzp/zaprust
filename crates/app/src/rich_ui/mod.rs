@@ -54,7 +54,6 @@ fn show_popup<R>(
     add: impl FnOnce(&mut egui::Ui) -> R,
 ) -> R {
     let inner = frame.show(ui, add);
-    crate::theme::paint_glass_edge(ui.painter(), inner.response.rect, 14.0, t);
     inner.inner
 }
 

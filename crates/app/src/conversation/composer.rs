@@ -567,17 +567,6 @@ impl App {
                             });
                         pill.response.rect
                     };
-                    // The raised top edge on the pill: the solid
-                    // surface's lift cue, worn in both glow modes
-                    // (the glass specular edge is a separate,
-                    // brighter line the floating menus paint).
-                    crate::theme::paint_raised_edge(
-                        ui.painter(),
-                        pill_rect,
-                        28.0,
-                        t.bg_panel_alt,
-                        t,
-                    );
                     // The morph button gets its own small Area in
                     // the reserved slot: bottom-aligned with the
                     // pill however tall the pill grows (reply
@@ -851,7 +840,6 @@ impl App {
                     if self.recorder.as_ref().is_some_and(crate::recorder::Recorder::capped) {
                         self.finish_recording(engaged);
                     }
-                    crate::theme::paint_glass_edge(ui.painter(), pill_rect, 28.0, t);
                     // Focus affordance: while the input
                     // holds the keyboard, the accent ring
                     // traces the pill, exactly the focus

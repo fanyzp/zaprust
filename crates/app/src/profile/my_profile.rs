@@ -418,7 +418,7 @@ pub fn draw_my_profile_panel(
                 intents.close = true;
             }
         });
-    let win = egui::Window::new("my_profile")
+    let _win = egui::Window::new("my_profile")
         .title_bar(false)
         .collapsible(false)
         .resizable(false)

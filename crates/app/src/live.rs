@@ -2501,8 +2501,18 @@ impl crate::state::App {
                 if let Some((_previous, subject)) = self.pending_group_info.remove(&chat_id) {
                     // The save landed: only now does the new
                     // title apply, and only now is it announced.
+                    // (Not apply_chat_renamed: that is the heal
+                    // path, which never overwrites a real name; a
+                    // confirmed rename replaces it outright.)
                     if let Some(subject) = subject {
-                        self.apply_chat_renamed(&chat_jid, &subject);
+                        if let Some(session) = &self.live {
+                            if let Some(store) = &session.store {
+                                let _ = store.rename_chat(&chat_jid, &subject);
+                            }
+                        }
+                        if let Some(chat) = self.chats.iter_mut().find(|c| c.id == chat_id) {
+                            chat.title = subject.clone();
+                        }
                     }
                     self.notice = Some(Notice::info("Group info saved.".to_owned()));
                 }

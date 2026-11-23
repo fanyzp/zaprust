@@ -1297,7 +1297,13 @@ pub(crate) fn write_zip_export(
     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     let path = unique_zip_path(dir, base, crate::state::now_unix());
     let file_name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    let tmp = dir.join(format!(".{file_name}.tmp"));
+    // The scratch name carries the process id and a sequence:
+    // two exports of the same chat started inside one second
+    // compute the same final path, and a shared scratch file
+    // would let one writer rename the other's half away.
+    static ZIP_TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = ZIP_TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = dir.join(format!(".{file_name}.{}-{seq}.tmp", std::process::id()));
     let result = (|| -> Result<(), String> {
         let file = std::fs::File::create(&tmp).map_err(|e| e.to_string())?;
         let mut zip = zip::ZipWriter::new(file);

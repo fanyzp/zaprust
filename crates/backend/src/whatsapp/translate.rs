@@ -190,17 +190,14 @@ pub(super) fn pairing_error_message(
     use whatsapp_rust::wacore::pair_code::PairCodeRejection;
     match &err.rejection {
         Some(PairCodeRejection::FeatureNotAvailable) => {
-            "Pairing by code is not available for this account. Use the QR code instead."
-                .to_owned()
+            "Pairing by code is not available for this account. Use the QR code instead.".to_owned()
         }
         Some(rejection) if rejection.is_throttled() => {
             let wait = err
                 .backoff
                 .map(|d| format!(" Wait about {} seconds before trying again.", d.as_secs()))
                 .unwrap_or_default();
-            format!(
-                "WhatsApp is limiting pairing attempts for this number right now.{wait}"
-            )
+            format!("WhatsApp is limiting pairing attempts for this number right now.{wait}")
         }
         Some(PairCodeRejection::InternalServerError) => {
             "WhatsApp's server could not complete the pairing. Try again in a little while."
@@ -209,10 +206,8 @@ pub(super) fn pairing_error_message(
         Some(_) => {
             "WhatsApp refused the pairing code. Request a new code and try again.".to_owned()
         }
-        None => {
-            "The pairing code request did not complete. Check your connection and try again."
-                .to_owned()
-        }
+        None => "The pairing code request did not complete. Check your connection and try again."
+            .to_owned(),
     }
 }
 
@@ -1095,8 +1090,7 @@ fn history_message(
     // History sync states the sender's verified business name
     // on the message itself when the sender is a verified
     // business; the app badges the chat from it.
-    msg.sender_verified_name =
-        info.verified_biz_name.clone().filter(|n| !n.trim().is_empty());
+    msg.sender_verified_name = info.verified_biz_name.clone().filter(|n| !n.trim().is_empty());
     msg.sender_jid = sender_jid;
     if matches!(msg.kind, LiveMessageKind::Poll { .. }) {
         if let Some((secret, _names)) = super::util::received_poll_secret(proto) {
@@ -2458,8 +2452,7 @@ mod presence_translate_tests {
 mod live_pairing_fix_tests {
     use super::{
         body_for, call_record_of, classify_message, pairing_error_message, structured_text,
-        translate_history_sync,
-        unhandled_label,
+        translate_history_sync, unhandled_label,
     };
     use crate::{BackendEvent, EventSink, LiveChatKind, LiveMessageKind, MediaKind};
     use whatsapp_rust::prelude::wa;
@@ -2987,7 +2980,9 @@ mod live_pairing_fix_tests {
         for ptt in [Some(false), None] {
             let (kind, _) = classify_message(&build(ptt));
             match kind {
-                LiveMessageKind::Media { media: crate::MediaKind::Audio, caption, seconds, .. } => {
+                LiveMessageKind::Media {
+                    media: crate::MediaKind::Audio, caption, seconds, ..
+                } => {
                     assert_eq!(caption, "MP3 audio file");
                     assert_eq!(seconds, 83);
                 }
@@ -3034,7 +3029,12 @@ mod live_pairing_fix_tests {
         msg.document_message = MessageField::some(document);
         let (kind, _) = classify_message(&msg);
         match kind {
-            LiveMessageKind::Media { media: crate::MediaKind::Document, caption, size_bytes, .. } => {
+            LiveMessageKind::Media {
+                media: crate::MediaKind::Document,
+                caption,
+                size_bytes,
+                ..
+            } => {
                 assert_eq!(caption, "the quarterly report");
                 assert_eq!(size_bytes, 54_321);
             }
@@ -3061,10 +3061,7 @@ mod live_pairing_fix_tests {
         msg.poll_result_snapshot_message = MessageField::some(snapshot);
         let (kind, _) = classify_message(&msg);
         assert!(matches!(&kind, LiveMessageKind::Other(label) if label == "Poll results"));
-        assert_eq!(
-            structured_text(&msg).as_deref(),
-            Some("Lunch?\nNasi Padang: 3\nSoto: 1")
-        );
+        assert_eq!(structured_text(&msg).as_deref(), Some("Lunch?\nNasi Padang: 3\nSoto: 1"));
 
         let mut added = wa::message::PollAddOptionMessage::default();
         let mut option = wa::message::poll_creation_message::Option::default();

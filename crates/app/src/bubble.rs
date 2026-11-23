@@ -1537,10 +1537,7 @@ pub(crate) fn message_bubble(
                         // (the duration owns the bottom-left): a
                         // short strip rect at the top makes the
                         // shared badge painter land there.
-                        let strip = Rect::from_min_size(
-                            Pos2::new(x, y),
-                            Vec2::new(inner_w, 26.0),
-                        );
+                        let strip = Rect::from_min_size(Pos2::new(x, y), Vec2::new(inner_w, 26.0));
                         paint_tile_badge(ui, painter, strip, "GIF", t);
                     }
                     if !caption.is_empty() {
@@ -1755,10 +1752,8 @@ pub(crate) fn message_bubble(
                 // the measure pass.
                 let mut row_y = y;
                 if let Some(tex) = media.document_thumb {
-                    let banner = Rect::from_min_size(
-                        Pos2::new(x, y),
-                        Vec2::new(inner_w, DOC_THUMB_H),
-                    );
+                    let banner =
+                        Rect::from_min_size(Pos2::new(x, y), Vec2::new(inner_w, DOC_THUMB_H));
                     painter.rect_filled(
                         banner,
                         CornerRadius::same(INNER_CARD_RADIUS),
@@ -1968,8 +1963,7 @@ pub(crate) fn message_bubble(
                 // arm is with the other bubble actions).
                 let mut row_y = y;
                 if let Some(tex) = media.location_thumb {
-                    let banner =
-                        Rect::from_min_size(Pos2::new(x, y), Vec2::new(inner_w, 100.0));
+                    let banner = Rect::from_min_size(Pos2::new(x, y), Vec2::new(inner_w, 100.0));
                     painter.rect_filled(
                         banner,
                         CornerRadius::same(INNER_CARD_RADIUS),

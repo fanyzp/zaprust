@@ -355,11 +355,9 @@ impl App {
             self.sent_counter += 1;
             let msg_id = 900 + self.sent_counter;
             let kind = match item.kind {
-                StagedKind::Document => MessageKind::Document {
-                    name: item.name.clone(),
-                    size_bytes,
-                    page_count: None,
-                },
+                StagedKind::Document => {
+                    MessageKind::Document { name: item.name.clone(), size_bytes, page_count: None }
+                }
                 _ => msg_kind,
             };
             let (stamp, expires_at) = self.demo_send_stamp();
@@ -775,9 +773,7 @@ fn staged_from_path(ctx: &egui::Context, path: &std::path::Path) -> StagedMedia 
 /// read (not an MP4, or damaged) honestly probes as 0: the send
 /// then states no duration rather than an invented one.
 fn probe_video_seconds(bytes: &[u8]) -> u32 {
-    crate::video::demux(bytes)
-        .map(|demuxed| demuxed.info.duration_secs.round() as u32)
-        .unwrap_or(0)
+    crate::video::demux(bytes).map(|demuxed| demuxed.info.duration_secs.round() as u32).unwrap_or(0)
 }
 
 fn waveform_from_levels(levels: &[f32]) -> Vec<f32> {

@@ -245,8 +245,7 @@ pub fn remove_download_for_message(
     // contract: a deleted message takes both its saved
     // download and its cached playback file.
     remove_downloads_matching(&data_dir.join("downloads"), &format!("{stem}."), true) > 0
-        || remove_downloads_matching(&data_dir.join("video-cache"), &format!("{stem}."), true)
-            > 0
+        || remove_downloads_matching(&data_dir.join("video-cache"), &format!("{stem}."), true) > 0
 }
 
 /// Removes every downloaded media file belonging to a chat,
@@ -3879,12 +3878,11 @@ mod tests {
         let stem = downloaded_media_stem("6281234567890@s.whatsapp.net", "VID1");
         std::fs::write(cache.join(format!("{stem}.mp4")), vec![0u8; 100]).unwrap();
         std::fs::write(cache.join("other-VID9.mp4"), vec![0u8; 100]).unwrap();
-        assert!(remove_download_for_message(
-            root.path(),
-            "6281234567890@s.whatsapp.net",
-            "VID1"
-        ));
-        assert!(!cache.join(format!("{stem}.mp4")).exists(), "the cached video goes with its message");
+        assert!(remove_download_for_message(root.path(), "6281234567890@s.whatsapp.net", "VID1"));
+        assert!(
+            !cache.join(format!("{stem}.mp4")).exists(),
+            "the cached video goes with its message"
+        );
         assert!(cache.join("other-VID9.mp4").exists(), "another chat's cache is untouched");
 
         // Eviction: three 100-byte files, cap 250, the newest

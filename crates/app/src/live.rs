@@ -83,9 +83,7 @@ impl LinkStatus {
                 crate::i18n::tf("connect.status_banned", "code", &code.to_string())
             }
             Self::Lost(reason) => reason.clone(),
-            Self::Crashed(summary) => {
-                crate::i18n::tf("connect.status_crashed", "summary", summary)
-            }
+            Self::Crashed(summary) => crate::i18n::tf("connect.status_crashed", "summary", summary),
             Self::Failed(message) => message.clone(),
         }
     }
@@ -1273,9 +1271,7 @@ impl crate::state::App {
                                     .insert(message_id(&m.chat_jid, &m.id), reference.clone());
                             }
                             if let (Some(w), Some(h)) = (m.video_width, m.video_height) {
-                                session
-                                    .video_dims
-                                    .insert(message_id(&m.chat_jid, &m.id), (w, h));
+                                session.video_dims.insert(message_id(&m.chat_jid, &m.id), (w, h));
                             }
                             // A sticker's reference and a
                             // photo's thumbnail are seeded the
@@ -1307,9 +1303,7 @@ impl crate::state::App {
                                     .insert(message_id(&m.chat_jid, &m.id), thumb.clone());
                             }
                             if m.gif_playback {
-                                session
-                                    .gif_videos
-                                    .insert(message_id(&m.chat_jid, &m.id));
+                                session.gif_videos.insert(message_id(&m.chat_jid, &m.id));
                             }
                             if m.sticker_animated || m.sticker_lottie {
                                 session.sticker_anim.insert(
@@ -1335,9 +1329,7 @@ impl crate::state::App {
                                     .insert(message_id(&m.chat_jid, &m.id), thumb.clone());
                             }
                             if m.view_once {
-                                session
-                                    .view_once_ids
-                                    .insert(message_id(&m.chat_jid, &m.id));
+                                session.view_once_ids.insert(message_id(&m.chat_jid, &m.id));
                             }
                             if !m.mentions.is_empty() {
                                 session
@@ -2882,11 +2874,7 @@ impl crate::state::App {
                         // session's viewing, like a view-once
                         // photo's pixels stay until the viewer
                         // closes.
-                        if self
-                            .live
-                            .as_ref()
-                            .is_some_and(|s| s.view_once_ids.contains(&mid))
-                        {
+                        if self.live.as_ref().is_some_and(|s| s.view_once_ids.contains(&mid)) {
                             self.mark_view_once_opened(mid);
                             self.drop_sticker_ref(mid);
                         }
@@ -3200,7 +3188,8 @@ impl crate::state::App {
                 // not decode are a failed fetch, never a reason
                 // to substitute another image.
                 let mid = message_id(&chat_jid, &pid);
-                if self.media.poster_fetch.get(&mid) != Some(&crate::state::PhotoFetchState::Loading)
+                if self.media.poster_fetch.get(&mid)
+                    != Some(&crate::state::PhotoFetchState::Loading)
                 {
                     // A poster nobody is waiting for (its fetch
                     // was superseded) is dropped, not landed.
@@ -3222,7 +3211,8 @@ impl crate::state::App {
                 // the photo arm). A failed poster is quiet: the
                 // tile stays neutral and the video itself still
                 // fetches on play.
-                if self.media.poster_fetch.get(&mid) == Some(&crate::state::PhotoFetchState::Loading)
+                if self.media.poster_fetch.get(&mid)
+                    == Some(&crate::state::PhotoFetchState::Loading)
                 {
                     self.media.poster_fetch.insert(mid, crate::state::PhotoFetchState::Failed);
                 }
@@ -4604,9 +4594,7 @@ impl crate::state::App {
                 session.gif_videos.insert(msg_id);
             }
             if live.sticker_animated || live.sticker_lottie {
-                session
-                    .sticker_anim
-                    .insert(msg_id, (live.sticker_animated, live.sticker_lottie));
+                session.sticker_anim.insert(msg_id, (live.sticker_animated, live.sticker_lottie));
             }
             if let Some(thumb) = &live.sticker_thumbnail {
                 session.sticker_thumbs.insert(msg_id, thumb.clone());
@@ -8880,17 +8868,20 @@ mod burst_drain_tests {
         })
         .unwrap();
         drain_all(&mut app, &ctx);
-        assert_eq!(
-            app.media.poster_fetch.get(&mid),
-            Some(&crate::state::PhotoFetchState::Failed)
-        );
+        assert_eq!(app.media.poster_fetch.get(&mid), Some(&crate::state::PhotoFetchState::Failed));
         assert_eq!(app.video_tile(mid), crate::media::VideoTile::Neutral);
         assert!(app.notice.is_none(), "a poster failure never raises a notice");
     }
 
     fn sticker_message(id: &str, view_once: bool) -> LiveMessage {
-        let mut live =
-            LiveMessage::text(id, CHAT_JID, Some("Sender".to_owned()), String::new(), BASE_TS, false);
+        let mut live = LiveMessage::text(
+            id,
+            CHAT_JID,
+            Some("Sender".to_owned()),
+            String::new(),
+            BASE_TS,
+            false,
+        );
         live.kind = backend::LiveMessageKind::Media {
             media: backend::MediaKind::Sticker,
             caption: String::new(),
@@ -9098,10 +9089,7 @@ mod burst_drain_tests {
         tx.send(BackendEvent::MessageUpsert(live)).unwrap();
         drain_all(&mut app, &ctx);
         let session = app.live.as_ref().unwrap();
-        assert_eq!(
-            session.verified_names.get(CHAT_JID).map(String::as_str),
-            Some("Toko Berkah")
-        );
+        assert_eq!(session.verified_names.get(CHAT_JID).map(String::as_str), Some("Toko Berkah"));
     }
 
     /// Item 111: view-once video bytes land in memory (never a

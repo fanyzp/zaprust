@@ -110,8 +110,7 @@ pub(super) async fn fetch_verified_name(client: &Client, jid: &Jid) -> Option<Op
 /// or no user at all).
 pub(super) fn verified_name_from_usync(response: &UsyncResponse) -> Option<String> {
     let user = response.users.first()?;
-    let UsyncProtocolResult::Business(outcome) = user.protocol(UsyncProtocolKind::Business)?
-    else {
+    let UsyncProtocolResult::Business(outcome) = user.protocol(UsyncProtocolKind::Business)? else {
         return None;
     };
     let UsyncOutcome::Value(result) = outcome else {

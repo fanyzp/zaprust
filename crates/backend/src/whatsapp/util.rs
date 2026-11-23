@@ -614,7 +614,9 @@ pub(super) fn video_thumbnail_of(proto: &whatsapp_rust::prelude::wa::Message) ->
 /// encrypted). The completeness rule is the photo one: every
 /// field the CDN download validates must be present and
 /// well-formed.
-pub(super) fn poster_ref_of(proto: &whatsapp_rust::prelude::wa::Message) -> Option<crate::PosterRef> {
+pub(super) fn poster_ref_of(
+    proto: &whatsapp_rust::prelude::wa::Message,
+) -> Option<crate::PosterRef> {
     let proto = unwrap_media_proto(proto);
     let video = proto.video_message.as_option().or_else(|| proto.ptv_message.as_option())?;
     let direct_path = video.thumbnail_direct_path.clone().filter(|p| !p.is_empty())?;
@@ -998,10 +1000,7 @@ pub(super) fn gif_playback_of(proto: &whatsapp_rust::prelude::wa::Message) -> bo
 pub(super) fn sticker_flags_of(proto: &whatsapp_rust::prelude::wa::Message) -> (bool, bool) {
     let base = unwrap_media_proto(proto);
     match base.sticker_message.as_option() {
-        Some(sticker) => (
-            sticker.is_animated.unwrap_or(false),
-            sticker.is_lottie.unwrap_or(false),
-        ),
+        Some(sticker) => (sticker.is_animated.unwrap_or(false), sticker.is_lottie.unwrap_or(false)),
         None => (false, false),
     }
 }
@@ -1012,10 +1011,7 @@ pub(super) fn sticker_flags_of(proto: &whatsapp_rust::prelude::wa::Message) -> (
 /// Same bound as the photo thumbnail.
 pub(super) fn sticker_thumbnail_of(proto: &whatsapp_rust::prelude::wa::Message) -> Option<Vec<u8>> {
     let sticker = unwrap_media_proto(proto).sticker_message.as_option()?;
-    sticker
-        .png_thumbnail
-        .clone()
-        .filter(|t| !t.is_empty() && t.len() <= MAX_PHOTO_THUMBNAIL_BYTES)
+    sticker.png_thumbnail.clone().filter(|t| !t.is_empty() && t.len() <= MAX_PHOTO_THUMBNAIL_BYTES)
 }
 
 /// Extracts the JPEG thumbnail a document payload embeds
@@ -1058,11 +1054,10 @@ pub(super) fn location_thumbnail_of(
     proto: &whatsapp_rust::prelude::wa::Message,
 ) -> Option<Vec<u8>> {
     let base = unwrap_media_proto(proto);
-    let thumb = base
-        .location_message
-        .as_option()
-        .and_then(|l| l.jpeg_thumbnail.clone())
-        .or_else(|| base.live_location_message.as_option().and_then(|l| l.jpeg_thumbnail.clone()));
+    let thumb =
+        base.location_message.as_option().and_then(|l| l.jpeg_thumbnail.clone()).or_else(|| {
+            base.live_location_message.as_option().and_then(|l| l.jpeg_thumbnail.clone())
+        });
     thumb.filter(|t| !t.is_empty() && t.len() <= MAX_PHOTO_THUMBNAIL_BYTES)
 }
 

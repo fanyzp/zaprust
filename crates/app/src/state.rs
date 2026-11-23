@@ -2075,7 +2075,9 @@ impl App {
                 voice_sink: crate::player::VoiceSink::Device,
                 voice_rates: std::collections::HashMap::new(),
                 video_textures: crate::extras::TextureCache::new(crate::extras::MAX_MEDIA_TEXTURES),
-                embedded_textures: crate::extras::TextureCache::new(crate::extras::MAX_MEDIA_TEXTURES),
+                embedded_textures: crate::extras::TextureCache::new(
+                    crate::extras::MAX_MEDIA_TEXTURES,
+                ),
                 video_fetch: std::collections::HashMap::new(),
                 poster_fetch: std::collections::HashMap::new(),
                 video_files: std::collections::HashMap::new(),

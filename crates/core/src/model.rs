@@ -1490,7 +1490,11 @@ mod tests {
             view_once: false,
         };
         let mut doc = Message::theirs(2, "Sarah", "", "10:01");
-        doc.kind = MessageKind::Document { name: "notes.pdf".to_owned(), size_bytes: 12 * 1024, page_count: None };
+        doc.kind = MessageKind::Document {
+            name: "notes.pdf".to_owned(),
+            size_bytes: 12 * 1024,
+            page_count: None,
+        };
         // A preview alone proves a link even when the body that
         // carried the URL is not the visible text.
         let mut preview_only = Message::theirs(3, "Sarah", "look at this", "10:02");
@@ -1788,7 +1792,11 @@ mod tests {
         let mut photo = Message::theirs(1, "Ana", "", "10:00");
         photo.kind = MessageKind::Image { caption: "cover".to_owned(), view_once: false };
         let mut doc = Message::theirs(2, "Ana", "", "10:01");
-        doc.kind = MessageKind::Document { name: "notes.pdf".to_owned(), size_bytes: 9 * 1024, page_count: None };
+        doc.kind = MessageKind::Document {
+            name: "notes.pdf".to_owned(),
+            size_bytes: 9 * 1024,
+            page_count: None,
+        };
         let linked = Message::theirs(3, "Ana", "see https://example.com/spec now", "10:02");
         let mut gone = Message::theirs(4, "Ana", "", "10:03");
         gone.kind = MessageKind::Image { caption: String::new(), view_once: false };

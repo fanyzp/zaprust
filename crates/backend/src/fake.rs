@@ -1985,40 +1985,35 @@ impl Backend for FakeBackend {
                 }
                 BackendCommand::DownloadMedia { .. } => {
                     events.emit(BackendEvent::Error {
-                        message: "That file is not available in the demo."
-                            .to_owned(),
+                        message: "That file is not available in the demo.".to_owned(),
                     });
                 }
                 BackendCommand::FetchPhoto { chat_jid, message_id, .. } => {
                     events.emit(BackendEvent::PhotoFetchFailed {
                         chat_jid,
                         message_id,
-                        message: "That media is not available in the demo."
-                            .to_owned(),
+                        message: "That media is not available in the demo.".to_owned(),
                     });
                 }
                 BackendCommand::FetchVoice { chat_jid, message_id, .. } => {
                     events.emit(BackendEvent::VoiceFetchFailed {
                         chat_jid,
                         message_id,
-                        message: "That media is not available in the demo."
-                            .to_owned(),
+                        message: "That media is not available in the demo.".to_owned(),
                     });
                 }
                 BackendCommand::FetchVideo { chat_jid, message_id, .. } => {
                     events.emit(BackendEvent::VideoFetchFailed {
                         chat_jid,
                         message_id,
-                        message: "That media is not available in the demo."
-                            .to_owned(),
+                        message: "That media is not available in the demo.".to_owned(),
                     });
                 }
                 BackendCommand::FetchVideoPoster { chat_jid, message_id, .. } => {
                     events.emit(BackendEvent::VideoPosterFetchFailed {
                         chat_jid,
                         message_id,
-                        message: "That media is not available in the demo."
-                            .to_owned(),
+                        message: "That media is not available in the demo.".to_owned(),
                     });
                 }
                 BackendCommand::FetchSticker { chat_jid, message_id, .. } => {

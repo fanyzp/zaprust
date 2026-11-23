@@ -76,10 +76,9 @@ impl fmt::Display for StoreError {
                 f,
                 "archive schema version {found} is newer than this build supports ({supported})"
             ),
-            Self::CorruptData { chat_jid, id } => write!(
-                f,
-                "archive message data is corrupt (chat {chat_jid}, message {id})"
-            ),
+            Self::CorruptData { chat_jid, id } => {
+                write!(f, "archive message data is corrupt (chat {chat_jid}, message {id})")
+            }
         }
     }
 }

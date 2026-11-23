@@ -98,7 +98,9 @@ impl CallUi {
             CallUiPhase::Ringing => crate::i18n::t("call.ringing"),
             CallUiPhase::Connecting => crate::i18n::t("connect.status_connecting"),
             CallUiPhase::Active => format_duration(self.seconds),
-            CallUiPhase::Ended => self.reason.clone().unwrap_or_else(|| crate::i18n::t("call.ended")),
+            CallUiPhase::Ended => {
+                self.reason.clone().unwrap_or_else(|| crate::i18n::t("call.ended"))
+            }
         }
     }
 }
@@ -451,7 +453,11 @@ impl App {
                                             mute_icon,
                                             rgb(t.bg_panel_alt),
                                             rgb(t.text_primary),
-                                            &if call.muted { crate::i18n::t("common.unmute") } else { crate::i18n::t("common.mute") },
+                                            &if call.muted {
+                                                crate::i18n::t("common.unmute")
+                                            } else {
+                                                crate::i18n::t("common.mute")
+                                            },
                                             t,
                                             call.action_pending,
                                         ) {

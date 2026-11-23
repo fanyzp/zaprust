@@ -462,9 +462,7 @@ impl App {
                         .chats
                         .iter()
                         .filter(|c| c.kind == ChatKind::Dm)
-                        .filter_map(|c| {
-                            self.live.as_ref().and_then(|s| s.jids.get(&c.id)).cloned()
-                        })
+                        .filter_map(|c| self.live.as_ref().and_then(|s| s.jids.get(&c.id)).cloned())
                         .collect();
                     for jid in &ask {
                         self.ensure_verified_name(jid);

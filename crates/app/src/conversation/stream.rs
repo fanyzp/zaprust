@@ -100,8 +100,11 @@ impl App {
                 let sender_photos: std::collections::HashMap<String, egui::TextureId> = {
                     let mut map = std::collections::HashMap::new();
                     if self.live.is_some() {
-                        let jids: std::collections::HashSet<String> =
-                            self.conversation.iter().filter_map(|m| self.sender_jids.get(&m.id).cloned()).collect();
+                        let jids: std::collections::HashSet<String> = self
+                            .conversation
+                            .iter()
+                            .filter_map(|m| self.sender_jids.get(&m.id).cloned())
+                            .collect();
                         for jid in jids {
                             self.ensure_avatar(ui.ctx(), &jid);
                             if let Some(tex) = self.live_avatar(&jid) {
@@ -157,8 +160,7 @@ impl App {
                     }
                     keys
                 };
-                let sender_colors =
-                    assign_sender_colors(color_keys.iter().map(String::as_str), t);
+                let sender_colors = assign_sender_colors(color_keys.iter().map(String::as_str), t);
                 let divider_before = |i: usize| {
                     divider.is_some_and(|d| d.first_unread_id == self.conversation[i].id)
                 };
@@ -434,10 +436,8 @@ impl App {
                         // payload's static frame: decode it into
                         // the texture cache the sticker tile
                         // paints, exactly like fetched bytes.
-                        let frame = self
-                            .live
-                            .as_ref()
-                            .and_then(|s| s.sticker_thumbs.get(&msg.id).cloned());
+                        let frame =
+                            self.live.as_ref().and_then(|s| s.sticker_thumbs.get(&msg.id).cloned());
                         if let Some(frame) = frame {
                             if let Some(tex) = crate::media::decode_photo(ui.ctx(), &frame) {
                                 self.media.textures.insert(msg.id, tex);
@@ -475,10 +475,8 @@ impl App {
                             None
                         };
                     let preview_thumb_pair = if msg.link_preview.is_some() {
-                        let bytes = self
-                            .live
-                            .as_ref()
-                            .and_then(|s| s.preview_thumbs.get(&msg.id).cloned());
+                        let bytes =
+                            self.live.as_ref().and_then(|s| s.preview_thumbs.get(&msg.id).cloned());
                         Self::embedded_thumb_texture(
                             &mut self.media,
                             ui.ctx(),
@@ -544,11 +542,9 @@ impl App {
                         } else {
                             None
                         },
-                        sender_color: key_of(msg)
-                            .and_then(|key| sender_colors.get(&key).copied()),
+                        sender_color: key_of(msg).and_then(|key| sender_colors.get(&key).copied()),
                         quoted_color: msg.quoted_sender.as_deref().and_then(|name| {
-                            let key =
-                                key_by_name.get(name).map(String::as_str).unwrap_or(name);
+                            let key = key_by_name.get(name).map(String::as_str).unwrap_or(name);
                             sender_colors.get(key).copied()
                         }),
                     };

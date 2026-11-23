@@ -919,6 +919,14 @@ pub enum BackendCommand {
         /// JID of the contact, group, or community.
         jid: String,
     },
+    /// Ask for one identity's verified business name (the
+    /// usync business query). Answered with
+    /// [`BackendEvent::VerifiedNameResult`]; a transport
+    /// failure emits nothing, so the caller may ask again.
+    FetchVerifiedName {
+        /// JID of the identity.
+        jid: String,
+    },
     /// Resolve the display titles of chats whose stored title is
     /// still a raw identifier (a group JID or a bare number).
     /// Sent by the app when the session connects, carrying every
@@ -1651,6 +1659,11 @@ pub struct LiveMessage {
     /// last-vote-wins replacements instead of double-counting a
     /// voter whose earlier ballot it has forgotten.
     pub poll_ballots: Vec<(String, Vec<usize>)>,
+    /// The sender's verified business name, when the payload
+    /// states one (history sync carries it per message). The
+    /// app treats its presence as proof the sender is a
+    /// verified business and badges the chat.
+    pub sender_verified_name: Option<String>,
 }
 
 impl LiveMessage {
@@ -1703,6 +1716,7 @@ impl LiveMessage {
             document_name: None,
             document_page_count: None,
             document_thumbnail: None,
+            sender_verified_name: None,
             location_thumbnail: None,
             poll_secret: None,
             poll_creator: None,
@@ -2537,6 +2551,15 @@ pub enum BackendEvent {
         chat_jid: String,
         /// Protocol ID of the sticker message.
         message_id: String,
+    },
+    /// The answer to [`BackendCommand::FetchVerifiedName`]:
+    /// the identity's verified business name, or `None` when
+    /// the identity is not a verified business.
+    VerifiedNameResult {
+        /// JID that was looked up.
+        jid: String,
+        /// The verified name, when the identity is verified.
+        name: Option<String>,
     },
     /// A profile picture's bytes, answering `FetchAvatar`.
     AvatarBytes {

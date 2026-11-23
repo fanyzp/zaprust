@@ -1057,6 +1057,11 @@ fn history_message(
     msg.sticker_ref = super::util::sticker_ref_of(proto);
     carry_media_extras(&mut msg, proto);
     msg.mentions = super::util::mentioned_jids_of(proto);
+    // History sync states the sender's verified business name
+    // on the message itself when the sender is a verified
+    // business; the app badges the chat from it.
+    msg.sender_verified_name =
+        info.verified_biz_name.clone().filter(|n| !n.trim().is_empty());
     msg.sender_jid = sender_jid;
     if matches!(msg.kind, LiveMessageKind::Poll { .. }) {
         if let Some((secret, _names)) = super::util::received_poll_secret(proto) {

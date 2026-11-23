@@ -453,6 +453,23 @@ impl App {
                 if searching {
                     self.refresh_global_search();
                 }
+                // Verified badges: settle the flags from the
+                // session's book, and ask (once per identity)
+                // for the DM roster's verified names.
+                self.apply_verified_badges();
+                if self.live.is_some() {
+                    let ask: Vec<String> = self
+                        .chats
+                        .iter()
+                        .filter(|c| c.kind == ChatKind::Dm)
+                        .filter_map(|c| {
+                            self.live.as_ref().and_then(|s| s.jids.get(&c.id)).cloned()
+                        })
+                        .collect();
+                    for jid in &ask {
+                        self.ensure_verified_name(jid);
+                    }
+                }
                 let visible = filter_chats(&self.chats, self.filter, &self.search);
                 let mut clicked: Option<u64> = None;
                 // A row context-menu pick (chat id, what it asks

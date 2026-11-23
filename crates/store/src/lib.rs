@@ -354,6 +354,10 @@ struct MessageData {
     /// ballot instead of counting twice.
     #[serde(default)]
     poll_ballots: Vec<(String, Vec<usize>)>,
+    /// The sender's verified business name, when the payload
+    /// stated one; the app badges the chat from it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    verified_name: Option<String>,
 }
 
 /// One stored profile picture row: (picture_id, bytes,
@@ -1152,6 +1156,7 @@ impl Store {
             document_page_count: msg.document_page_count,
             document_thumbnail: msg.document_thumbnail.clone(),
             location_thumbnail: msg.location_thumbnail.clone(),
+            verified_name: msg.sender_verified_name.clone(),
             poll_secret: msg
                 .poll_secret
                 .clone()
@@ -1933,6 +1938,7 @@ impl Store {
             msg.document_page_count = data.document_page_count;
             msg.document_thumbnail = data.document_thumbnail;
             msg.location_thumbnail = data.location_thumbnail;
+            msg.sender_verified_name = data.verified_name;
             msg.poll_secret = data.poll_secret;
             msg.poll_creator = data.poll_creator;
             msg.poll_ballots = data.poll_ballots;

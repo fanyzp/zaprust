@@ -1145,7 +1145,7 @@ pub(crate) fn message_bubble(
                         Some(BubbleAction::RetrySticker(msg.id))
                     }
                     MessageKind::Location { latitude, longitude, .. } => {
-                        Some(BubbleAction::OpenLocation(*latitude, *longitude))
+                        Some(BubbleAction::OpenLocation(latitude, longitude))
                     }
                     MessageKind::Image { view_once: true, .. }
                     | MessageKind::Video { view_once: true, .. }

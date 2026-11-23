@@ -648,6 +648,9 @@ impl App {
     }
 
     pub(crate) fn draw_conversation(&mut self, root: &mut egui::Ui) {
+        // The header badges from the same verified book as
+        // the chat list.
+        self.apply_verified_badges();
         let t = self.tokens();
         // Ctrl+F (Command+F on macOS, the house shortcut
         // modifier) opens the in-chat search strip (section 25).

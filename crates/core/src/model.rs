@@ -686,9 +686,9 @@ pub struct Chat {
     /// Avatar background hue seed (the UI derives a color from it).
     pub avatar_seed: u8,
     /// Verified account (business/contact/channel): the UI draws
-    /// the verified badge next to the name. The pinned protocol
-    /// library does not surface this flag, so live chats always
-    /// carry `false` today; demo data carries examples.
+    /// the verified badge next to the name. Live chats earn it
+    /// from the verified-name sources (history payloads and the
+    /// usync business query); demo data carries examples.
     pub verified: bool,
     /// The chat is Meta's AI assistant contact (in live data this
     /// is recognized by the exact chat title "Meta AI", the

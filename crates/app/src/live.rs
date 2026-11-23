@@ -328,6 +328,14 @@ pub(crate) struct LiveSession {
     /// flag of its own (voice notes, documents, stickers):
     /// the stream reads the message's sealed state from here.
     pub(crate) view_once_ids: std::collections::HashSet<u64>,
+    /// Verified business names by identity JID, from history
+    /// payloads and usync answers; presence is what badges a
+    /// chat.
+    pub(crate) verified_names: HashMap<String, String>,
+    /// Identity JIDs whose verified-name state is settled for
+    /// this session (answered, or asked and in flight), so the
+    /// lookup runs at most once per identity per session.
+    pub(crate) verified_checked: std::collections::HashSet<String>,
     /// Photo thumbnails (the wire JPEG bytes) per numeric
     /// message ID, seeded and extended exactly like
     /// `video_thumbs`, so a photo's tile can paint the photo
@@ -1116,13 +1124,15 @@ impl crate::state::App {
             poster_refs: HashMap::new(),
             video_dims: HashMap::new(),
             document_refs: HashMap::new(),
-            gif_videos: HashSet::new(),
+            gif_videos: std::collections::HashSet::new(),
             sticker_anim: HashMap::new(),
             sticker_thumbs: HashMap::new(),
             document_thumbs: HashMap::new(),
             location_thumbs: HashMap::new(),
             preview_thumbs: HashMap::new(),
-            view_once_ids: HashSet::new(),
+            view_once_ids: std::collections::HashSet::new(),
+            verified_names: HashMap::new(),
+            verified_checked: std::collections::HashSet::new(),
             sticker_refs: HashMap::new(),
             photo_thumbs: HashMap::new(),
             message_mentions: HashMap::new(),
@@ -2862,6 +2872,14 @@ impl crate::state::App {
                     self.media.sticker_fetch.insert(mid, crate::state::PhotoFetchState::Failed);
                 }
             }
+            BackendEvent::VerifiedNameResult { jid, name } => {
+                if let Some(session) = &mut self.live {
+                    session.verified_checked.insert(jid.clone());
+                    if let Some(name) = name {
+                        session.verified_names.insert(jid, name);
+                    }
+                }
+            }
             BackendEvent::AvatarBytes { jid, picture_id, bytes } => {
                 // The request is answered: the in-flight mark
                 // clears whatever the bytes turn out to be, or
@@ -4291,6 +4309,10 @@ impl crate::state::App {
             if row.view_once {
                 session.view_once_ids.insert(msg_id);
             }
+            if let (Some(jid), Some(name)) = (&row.sender_jid, &row.sender_verified_name) {
+                session.verified_names.insert(jid.clone(), name.clone());
+                session.verified_checked.insert(jid.clone());
+            }
             if !row.mentions.is_empty() {
                 session.message_mentions.insert(msg_id, row.mentions.clone());
             }
@@ -4560,6 +4582,10 @@ impl crate::state::App {
             }
             if live.view_once {
                 session.view_once_ids.insert(msg_id);
+            }
+            if let (Some(jid), Some(name)) = (&live.sender_jid, &live.sender_verified_name) {
+                session.verified_names.insert(jid.clone(), name.clone());
+                session.verified_checked.insert(jid.clone());
             }
             if !live.mentions.is_empty() {
                 session.message_mentions.insert(msg_id, live.mentions.clone());
@@ -5097,6 +5123,51 @@ impl crate::state::App {
     /// context exists), a fresh-enough negative, and finally a
     /// backend fetch, deduplicated per JID. In demo mode the
     /// demo portraits answer instead and no fetch is sent.
+    /// Asks the backend for one identity's verified business
+    /// name, once per identity per session: the answer (or a
+    /// history payload) is what badges the chat. Groups,
+    /// channels and system addresses are never businesses.
+    pub(crate) fn ensure_verified_name(&mut self, jid: &str) {
+        let Some(session) = &mut self.live else { return };
+        if session.fake
+            || jid.ends_with("@g.us")
+            || jid.ends_with("@newsletter")
+            || jid == "status@broadcast"
+            || session.verified_names.contains_key(jid)
+            || session.verified_checked.contains(jid)
+        {
+            return;
+        }
+        session.verified_checked.insert(jid.to_owned());
+        let _ = session
+            .channels
+            .commands
+            .send(backend::BackendCommand::FetchVerifiedName { jid: jid.to_owned() });
+    }
+
+    /// Brings the materialized chat list's verified flags in
+    /// line with the session's verified-name book, so a chat
+    /// badges as soon as any source (a history payload, a
+    /// usync answer) proves the identity is a verified
+    /// business.
+    pub(crate) fn apply_verified_badges(&mut self) {
+        let Some(session) = &self.live else { return };
+        let verified_ids: std::collections::HashSet<u64> = session
+            .jids
+            .iter()
+            .filter(|(_, jid)| session.verified_names.contains_key(*jid))
+            .map(|(id, _)| *id)
+            .collect();
+        if verified_ids.is_empty() {
+            return;
+        }
+        for chat in &mut self.chats {
+            if verified_ids.contains(&chat.id) {
+                chat.verified = true;
+            }
+        }
+    }
+
     pub(crate) fn ensure_avatar(&mut self, ctx: &egui::Context, jid: &str) {
         if self.live.is_none() {
             return;
@@ -7232,13 +7303,15 @@ mod burst_drain_tests {
             poster_refs: HashMap::new(),
             video_dims: HashMap::new(),
             document_refs: HashMap::new(),
-            gif_videos: HashSet::new(),
+            gif_videos: std::collections::HashSet::new(),
             sticker_anim: HashMap::new(),
             sticker_thumbs: HashMap::new(),
             document_thumbs: HashMap::new(),
             location_thumbs: HashMap::new(),
             preview_thumbs: HashMap::new(),
-            view_once_ids: HashSet::new(),
+            view_once_ids: std::collections::HashSet::new(),
+            verified_names: HashMap::new(),
+            verified_checked: std::collections::HashSet::new(),
             sticker_refs: HashMap::new(),
             photo_thumbs: HashMap::new(),
             message_mentions: HashMap::new(),
@@ -10091,13 +10164,15 @@ mod chat_state_routing_tests {
             poster_refs: HashMap::new(),
             video_dims: HashMap::new(),
             document_refs: HashMap::new(),
-            gif_videos: HashSet::new(),
+            gif_videos: std::collections::HashSet::new(),
             sticker_anim: HashMap::new(),
             sticker_thumbs: HashMap::new(),
             document_thumbs: HashMap::new(),
             location_thumbs: HashMap::new(),
             preview_thumbs: HashMap::new(),
-            view_once_ids: HashSet::new(),
+            view_once_ids: std::collections::HashSet::new(),
+            verified_names: HashMap::new(),
+            verified_checked: std::collections::HashSet::new(),
             sticker_refs: HashMap::new(),
             photo_thumbs: HashMap::new(),
             message_mentions: HashMap::new(),
@@ -11811,13 +11886,15 @@ mod mirror_pruning_tests {
             poster_refs: HashMap::new(),
             video_dims: HashMap::new(),
             document_refs: HashMap::new(),
-            gif_videos: HashSet::new(),
+            gif_videos: std::collections::HashSet::new(),
             sticker_anim: HashMap::new(),
             sticker_thumbs: HashMap::new(),
             document_thumbs: HashMap::new(),
             location_thumbs: HashMap::new(),
             preview_thumbs: HashMap::new(),
-            view_once_ids: HashSet::new(),
+            view_once_ids: std::collections::HashSet::new(),
+            verified_names: HashMap::new(),
+            verified_checked: std::collections::HashSet::new(),
             sticker_refs: HashMap::new(),
             photo_thumbs: HashMap::new(),
             message_mentions: HashMap::new(),
@@ -12375,13 +12452,15 @@ mod qr_gate_tests {
             poster_refs: HashMap::new(),
             video_dims: HashMap::new(),
             document_refs: HashMap::new(),
-            gif_videos: HashSet::new(),
+            gif_videos: std::collections::HashSet::new(),
             sticker_anim: HashMap::new(),
             sticker_thumbs: HashMap::new(),
             document_thumbs: HashMap::new(),
             location_thumbs: HashMap::new(),
             preview_thumbs: HashMap::new(),
-            view_once_ids: HashSet::new(),
+            view_once_ids: std::collections::HashSet::new(),
+            verified_names: HashMap::new(),
+            verified_checked: std::collections::HashSet::new(),
             sticker_refs: HashMap::new(),
             photo_thumbs: HashMap::new(),
             message_mentions: HashMap::new(),
@@ -12605,13 +12684,15 @@ mod logout_tests {
             poster_refs: HashMap::new(),
             video_dims: HashMap::new(),
             document_refs: HashMap::new(),
-            gif_videos: HashSet::new(),
+            gif_videos: std::collections::HashSet::new(),
             sticker_anim: HashMap::new(),
             sticker_thumbs: HashMap::new(),
             document_thumbs: HashMap::new(),
             location_thumbs: HashMap::new(),
             preview_thumbs: HashMap::new(),
-            view_once_ids: HashSet::new(),
+            view_once_ids: std::collections::HashSet::new(),
+            verified_names: HashMap::new(),
+            verified_checked: std::collections::HashSet::new(),
             sticker_refs: HashMap::new(),
             photo_thumbs: HashMap::new(),
             message_mentions: HashMap::new(),
@@ -12845,13 +12926,15 @@ mod reaction_tests {
             poster_refs: HashMap::new(),
             video_dims: HashMap::new(),
             document_refs: HashMap::new(),
-            gif_videos: HashSet::new(),
+            gif_videos: std::collections::HashSet::new(),
             sticker_anim: HashMap::new(),
             sticker_thumbs: HashMap::new(),
             document_thumbs: HashMap::new(),
             location_thumbs: HashMap::new(),
             preview_thumbs: HashMap::new(),
-            view_once_ids: HashSet::new(),
+            view_once_ids: std::collections::HashSet::new(),
+            verified_names: HashMap::new(),
+            verified_checked: std::collections::HashSet::new(),
             sticker_refs: HashMap::new(),
             photo_thumbs: HashMap::new(),
             message_mentions: HashMap::new(),
@@ -13187,13 +13270,15 @@ mod star_pin_tests {
             poster_refs: HashMap::new(),
             video_dims: HashMap::new(),
             document_refs: HashMap::new(),
-            gif_videos: HashSet::new(),
+            gif_videos: std::collections::HashSet::new(),
             sticker_anim: HashMap::new(),
             sticker_thumbs: HashMap::new(),
             document_thumbs: HashMap::new(),
             location_thumbs: HashMap::new(),
             preview_thumbs: HashMap::new(),
-            view_once_ids: HashSet::new(),
+            view_once_ids: std::collections::HashSet::new(),
+            verified_names: HashMap::new(),
+            verified_checked: std::collections::HashSet::new(),
             sticker_refs: HashMap::new(),
             photo_thumbs: HashMap::new(),
             message_mentions: HashMap::new(),

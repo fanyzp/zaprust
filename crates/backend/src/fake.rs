@@ -2029,6 +2029,11 @@ impl Backend for FakeBackend {
                         events.emit(BackendEvent::StickerFetchFailed { chat_jid, message_id });
                     }
                 }
+                BackendCommand::FetchVerifiedName { jid } => {
+                    // No identity in the fake roster is a
+                    // verified business.
+                    events.emit(BackendEvent::VerifiedNameResult { jid, name: None });
+                }
                 BackendCommand::FetchAvatar { jid } => {
                     // A group picture changed this session wins
                     // over the defaults below: it is the state

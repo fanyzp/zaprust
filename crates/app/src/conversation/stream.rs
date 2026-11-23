@@ -93,50 +93,72 @@ impl App {
                 // Group sender portraits, resolved up front: the
                 // divider closure below borrows the conversation
                 // for the whole loop, so textures load before it
-                // exists.
+                // exists. Sender identity is keyed by JID end to
+                // end in live mode (two people can share a
+                // display name; a JID cannot collide), and by
+                // name only in the demo, which has no JIDs.
                 let sender_photos: std::collections::HashMap<String, egui::TextureId> = {
-                    let names: std::collections::HashSet<String> =
-                        self.conversation.iter().filter_map(|m| m.sender.clone()).collect();
                     let mut map = std::collections::HashMap::new();
-                    for name in names {
-                        if let Some(tex) = self.demo_avatar(ui.ctx(), &name) {
-                            map.insert(name, tex);
-                        }
-                    }
-                    // Live senders wear their real pictures:
-                    // each message's author JID (kept by the
-                    // session beside the message) goes through
-                    // the avatar pipeline, keyed back to the
-                    // sender name the bubble paints.
                     if self.live.is_some() {
-                        let pairs: Vec<(String, String)> = self
-                            .conversation
-                            .iter()
-                            .filter_map(|m| {
-                                let name = m.sender.clone()?;
-                                let jid = self.sender_jids.get(&m.id).cloned()?;
-                                Some((name, jid))
-                            })
-                            .collect();
-                        for (name, jid) in pairs {
+                        let jids: std::collections::HashSet<String> =
+                            self.conversation.iter().filter_map(|m| self.sender_jids.get(&m.id).cloned()).collect();
+                        for jid in jids {
                             self.ensure_avatar(ui.ctx(), &jid);
                             if let Some(tex) = self.live_avatar(&jid) {
-                                map.insert(name, tex.id());
+                                map.insert(jid, tex.id());
+                            }
+                        }
+                    } else {
+                        let names: std::collections::HashSet<String> =
+                            self.conversation.iter().filter_map(|m| m.sender.clone()).collect();
+                        for name in names {
+                            if let Some(tex) = self.demo_avatar(ui.ctx(), &name) {
+                                map.insert(name, tex);
                             }
                         }
                     }
                     map
                 };
-                // Sender-name colors for this conversation,
-                // assigned without replacement (see
-                // assign_sender_colors), resolved up front for
-                // the same borrow reason as the photos above.
-                let sender_colors = assign_sender_colors(
-                    self.conversation.iter().flat_map(|m| {
-                        m.sender.iter().chain(m.quoted_sender.iter()).map(String::as_str)
-                    }),
-                    t,
-                );
+                // The identity key of one message's sender: the
+                // author JID in live mode, the display name in
+                // the demo.
+                let key_of = |m: &Message| -> Option<String> {
+                    if self.live.is_some() {
+                        if let Some(jid) = self.sender_jids.get(&m.id) {
+                            return Some(jid.clone());
+                        }
+                    }
+                    m.sender.clone()
+                };
+                // A quoted sender's name resolved into the same
+                // key space through this conversation's senders,
+                // so a quote chip wears its author's color even
+                // though the quote itself carries only a name.
+                let key_by_name: std::collections::HashMap<String, String> = self
+                    .conversation
+                    .iter()
+                    .filter_map(|m| Some((m.sender.clone()?, key_of(m)?)))
+                    .collect();
+                // Sender colors for this conversation, assigned
+                // without replacement (see assign_sender_colors)
+                // over identity keys, resolved up front for the
+                // same borrow reason as the photos above.
+                let color_keys: Vec<String> = {
+                    let mut keys: Vec<String> = Vec::new();
+                    for m in &self.conversation {
+                        if let Some(key) = key_of(m) {
+                            keys.push(key);
+                        }
+                        if let Some(quoted) = &m.quoted_sender {
+                            keys.push(
+                                key_by_name.get(quoted).cloned().unwrap_or_else(|| quoted.clone()),
+                            );
+                        }
+                    }
+                    keys
+                };
+                let sender_colors =
+                    assign_sender_colors(color_keys.iter().map(String::as_str), t);
                 let divider_before = |i: usize| {
                     divider.is_some_and(|d| d.first_unread_id == self.conversation[i].id)
                 };
@@ -150,9 +172,22 @@ impl App {
                 let display_bodies: std::collections::HashMap<u64, String> = {
                     let mut map = std::collections::HashMap::new();
                     if let Some(session) = &self.live {
+                        // The name directory keyed by both
+                        // twins: a mention written against the
+                        // LID resolves through the phone number's
+                        // entry and the other way around.
+                        let mut names = session.names.clone();
+                        for (lid, pn) in &session.lid_pn {
+                            if let Some(name) = session.names.get(pn) {
+                                names.entry(lid.clone()).or_insert_with(|| name.clone());
+                            }
+                            if let Some(name) = session.names.get(lid) {
+                                names.entry(pn.clone()).or_insert_with(|| name.clone());
+                            }
+                        }
                         for m in &self.conversation {
                             if let Some(mentions) = session.message_mentions.get(&m.id) {
-                                let body = substitute_mentions(&m.body, mentions, &session.names);
+                                let body = substitute_mentions(&m.body, mentions, &names);
                                 if body != m.body {
                                     map.insert(m.id, body);
                                 }
@@ -298,10 +333,12 @@ impl App {
                         idx += 1;
                         continue;
                     }
-                    let key = group_key(msg);
+                    let key = group_key(msg, key_of(msg).as_deref());
                     let group_first = sep_break
                         || match (key, idx.checked_sub(1).map(|i| &self.conversation[i])) {
-                            (Some(k), Some(prev)) => group_key(prev) != Some(k),
+                            (Some(k), Some(prev)) => {
+                                group_key(prev, key_of(prev).as_deref()) != Some(k)
+                            }
                             _ => true,
                         };
                     let next_sep_break = idx + 1 < total
@@ -309,7 +346,9 @@ impl App {
                             || divider_before(idx + 1));
                     let group_last = next_sep_break
                         || match (key, self.conversation.get(idx + 1)) {
-                            (Some(k), Some(next)) => group_key(next) != Some(k),
+                            (Some(k), Some(next)) => {
+                                group_key(next, key_of(next).as_deref()) != Some(k)
+                            }
                             _ => true,
                         };
                     // Group runs of incoming messages carry
@@ -502,18 +541,24 @@ impl App {
                                 .as_ref()
                                 .is_some_and(|s| s.view_once_ids.contains(&msg.id)),
                         sender_photo: if group_incoming {
-                            msg.sender.as_deref().and_then(|name| sender_photos.get(name).copied())
+                            // Live: the photo map is keyed by
+                            // author JID. Demo: by sender name.
+                            let photo_key = if self.live.is_some() {
+                                self.sender_jids.get(&msg.id)
+                            } else {
+                                msg.sender.as_ref()
+                            };
+                            photo_key.and_then(|key| sender_photos.get(key).copied())
                         } else {
                             None
                         },
-                        sender_color: msg
-                            .sender
-                            .as_deref()
-                            .and_then(|name| sender_colors.get(name).copied()),
-                        quoted_color: msg
-                            .quoted_sender
-                            .as_deref()
-                            .and_then(|name| sender_colors.get(name).copied()),
+                        sender_color: key_of(msg)
+                            .and_then(|key| sender_colors.get(&key).copied()),
+                        quoted_color: msg.quoted_sender.as_deref().and_then(|name| {
+                            let key =
+                                key_by_name.get(name).map(String::as_str).unwrap_or(name);
+                            sender_colors.get(key).copied()
+                        }),
                     };
                     // Entrance: a genuinely new arrival near
                     // the end of the stream fades in and
@@ -904,9 +949,10 @@ const REACTED_SPACE: f32 = 13.0;
 /// mention spans. Each mentioned JID's user part is what the
 /// body carries; the replacement is the name directory's name
 /// for that JID, else (for a phone-number JID) the formatted
-/// number, else the span is left as the wire wrote it. Longer
-/// user parts are replaced first, so one mention's number can
-/// never partially rewrite another's.
+/// number, else (for a LID the directory cannot name) a masked
+/// span: a raw LID is an internal identifier and never paints.
+/// Longer user parts are replaced first, so one mention's
+/// number can never partially rewrite another's.
 pub(crate) fn substitute_mentions(
     body: &str,
     mentions: &[String],
@@ -923,6 +969,7 @@ pub(crate) fn substitute_mentions(
         let replacement = match names.get(jid) {
             Some(name) if !name.is_empty() => format!("@{name}"),
             _ if jid.ends_with("@s.whatsapp.net") => format!("@+{user}"),
+            _ if jid.ends_with("@lid") => "@••••••".to_owned(),
             _ => continue,
         };
         out = out.replace(&format!("@{user}"), &replacement);
@@ -977,11 +1024,15 @@ fn time_chip_between(prev: &Message, msg: &Message) -> bool {
 /// messages belong to the same group when their keys match.
 /// System messages key to `None`, which matches nothing, so
 /// they break any group they sit in.
-fn group_key(m: &Message) -> Option<(bool, Option<&str>)> {
+/// The grouping identity of a message: mine-ness plus the
+/// sender's identity key (the author JID in live mode, the
+/// display name in the demo), so two group members who share
+/// a display name never pack into one run.
+fn group_key<'a>(m: &Message, key: Option<&'a str>) -> Option<(bool, Option<&'a str>)> {
     if m.kind == core::model::MessageKind::System {
         None
     } else {
-        Some((m.is_mine(), m.sender.as_deref()))
+        Some((m.is_mine(), key))
     }
 }
 
@@ -1234,8 +1285,9 @@ mod tests {
 
     /// Mentions render the person's name when the directory
     /// knows it, the formatted number for a phone-form mention
-    /// without a name, and stay raw only for an identity nothing
-    /// can name. A shorter mention never rewrites a longer one.
+    /// without a name, and a masked span for a LID nothing can
+    /// name: a raw LID never paints. A shorter mention never
+    /// rewrites a longer one.
     #[test]
     fn mentions_substitute_names_then_numbers() {
         let mut names = std::collections::HashMap::new();
@@ -1248,7 +1300,7 @@ mod tests {
         ];
         assert_eq!(
             substitute_mentions(body, &mentions, &names),
-            "halo @Bima Prasetyo dan @+6281234567890 cc @999"
+            "halo @Bima Prasetyo dan @+6281234567890 cc @••••••"
         );
         // Prefix safety: 6281 is a prefix of 6281234567890; the
         // longer span is replaced first and stays intact.

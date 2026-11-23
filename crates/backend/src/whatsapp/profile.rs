@@ -86,6 +86,40 @@ pub(super) fn about_from_usync(response: &UsyncResponse) -> String {
     result.status.as_ref().map(|s| s.to_string()).unwrap_or_default()
 }
 
+/// One identity's verified business name, read with a USync
+/// business query. The outer `None` is a transport failure
+/// (the caller may ask again); `Some(None)` is the definitive
+/// answer that the identity is not a verified business.
+pub(super) async fn fetch_verified_name(client: &Client, jid: &Jid) -> Option<Option<String>> {
+    let query = UsyncQuery::new(
+        UsyncMode::Query,
+        UsyncContext::Interactive,
+        vec![UsyncProtocol::BusinessVerifiedName],
+        vec![UsyncUser::from_jid(jid.clone())],
+    )
+    .ok()?;
+    match client.query_usync(query).await {
+        Ok(response) => Some(verified_name_from_usync(&response)),
+        Err(_) => None,
+    }
+}
+
+/// Extracts the verified name from a USync business response:
+/// the first user's verified name text, or `None` when the
+/// response carries none (not a business, an error outcome,
+/// or no user at all).
+pub(super) fn verified_name_from_usync(response: &UsyncResponse) -> Option<String> {
+    let user = response.users.first()?;
+    let UsyncProtocolResult::Business(outcome) = user.protocol(UsyncProtocolKind::Business)?
+    else {
+        return None;
+    };
+    let UsyncOutcome::Value(result) = outcome else {
+        return None;
+    };
+    result.verified_name.as_ref().and_then(|v| v.name.clone()).filter(|n| !n.is_empty())
+}
+
 /// The outcome of one [`fetch_avatar`] lookup, in the terms
 /// the app caches: bytes, a definitive negative (no picture, or
 /// privacy refuses), or a transport failure that must stay

@@ -1080,10 +1080,12 @@ pub(super) fn preview_thumbnail_of(proto: &whatsapp_rust::prelude::wa::Message) 
 }
 
 /// The JIDs a message mentions, from the context info of
-/// whichever sub-message carries the body (text, photo, video,
-/// document, audio, sticker). The wire lists them as full JID
-/// strings; the body text carries them as `@<user>` spans. Order
-/// is wire order, duplicates removed.
+/// every sub-message kind that carries one (text, photo,
+/// video, document, audio, sticker, buttons, list,
+/// interactive, location, contact, product, template, group
+/// invite, poll, event, album). The wire lists them as full
+/// JID strings; the body text carries them as `@<user>`
+/// spans. Order is wire order, duplicates removed.
 pub(super) fn mentioned_jids_of(proto: &whatsapp_rust::prelude::wa::Message) -> Vec<String> {
     let base = unwrap_media_proto(proto);
     let mut out: Vec<String> = Vec::new();
@@ -1112,6 +1114,45 @@ pub(super) fn mentioned_jids_of(proto: &whatsapp_rust::prelude::wa::Message) -> 
         push(m.context_info.as_option());
     }
     if let Some(m) = base.sticker_message.as_option() {
+        push(m.context_info.as_option());
+    }
+    if let Some(m) = base.buttons_message.as_option() {
+        push(m.context_info.as_option());
+    }
+    if let Some(m) = base.list_message.as_option() {
+        push(m.context_info.as_option());
+    }
+    if let Some(m) = base.interactive_message.as_option() {
+        push(m.context_info.as_option());
+    }
+    if let Some(m) = base.location_message.as_option() {
+        push(m.context_info.as_option());
+    }
+    if let Some(m) = base.live_location_message.as_option() {
+        push(m.context_info.as_option());
+    }
+    if let Some(m) = base.contact_message.as_option() {
+        push(m.context_info.as_option());
+    }
+    if let Some(m) = base.contacts_array_message.as_option() {
+        push(m.context_info.as_option());
+    }
+    if let Some(m) = base.product_message.as_option() {
+        push(m.context_info.as_option());
+    }
+    if let Some(m) = base.template_message.as_option() {
+        push(m.context_info.as_option());
+    }
+    if let Some(m) = base.group_invite_message.as_option() {
+        push(m.context_info.as_option());
+    }
+    if let Some(m) = base.poll_creation_message.as_option() {
+        push(m.context_info.as_option());
+    }
+    if let Some(m) = base.event_message.as_option() {
+        push(m.context_info.as_option());
+    }
+    if let Some(m) = base.album_message.as_option() {
         push(m.context_info.as_option());
     }
     out

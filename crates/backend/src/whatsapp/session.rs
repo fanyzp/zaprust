@@ -2935,6 +2935,26 @@ pub(super) async fn run_async(
                         }
                     });
                 }
+                BackendCommand::FetchVerifiedName { jid } => {
+                    // Verified-name lookup (see the command's
+                    // docs). Runs as its own task like the avatar
+                    // lookup; a transport failure emits nothing,
+                    // so the app's ask stays retryable.
+                    let client = client.clone();
+                    let events = events.clone();
+                    tokio::spawn(async move {
+                        let parsed = jid.parse::<Jid>();
+                        let answer = match &parsed {
+                            Ok(parsed_jid) => {
+                                super::profile::fetch_verified_name(&client, parsed_jid).await
+                            }
+                            Err(_) => Some(None),
+                        };
+                        if let Some(name) = answer {
+                            events.emit(BackendEvent::VerifiedNameResult { jid, name });
+                        }
+                    });
+                }
                 BackendCommand::ResolveTitles { jids } => {
                     heal_titles_with_retry(
                         client.clone(),

@@ -1262,7 +1262,7 @@ fn steps_stepper(ui: &mut egui::Ui, t: Tokens, items: &[String], complete: bool)
         painter.text(
             Pos2::new(center.x, rect.top() + 36.0),
             Align2::CENTER_CENTER,
-            *text,
+            text.as_str(),
             FontId::proportional(11.0),
             rgb(t.text_secondary),
         );
@@ -1300,7 +1300,7 @@ fn steps_column(ui: &mut egui::Ui, t: Tokens, items: &[String], complete: bool) 
         painter.text(
             Pos2::new(rect.left() + 30.0, center.y),
             Align2::LEFT_CENTER,
-            *text,
+            text.as_str(),
             FontId::proportional(12.0),
             rgb(t.text_secondary),
         );

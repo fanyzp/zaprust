@@ -2457,7 +2457,8 @@ mod presence_translate_tests {
 #[cfg(test)]
 mod live_pairing_fix_tests {
     use super::{
-        body_for, call_record_of, classify_message, structured_text, translate_history_sync,
+        body_for, call_record_of, classify_message, pairing_error_message, structured_text,
+        translate_history_sync,
         unhandled_label,
     };
     use crate::{BackendEvent, EventSink, LiveChatKind, LiveMessageKind, MediaKind};

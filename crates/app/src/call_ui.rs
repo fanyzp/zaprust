@@ -34,6 +34,11 @@ pub(crate) struct CallUi {
     pub phase: CallUiPhase,
     pub seconds: u32,
     pub muted: bool,
+    /// The (muted, speaker) pair from before the latest
+    /// optimistic toggle flip, kept until the backend's
+    /// CallAudioState confirmation lands; a failure in that
+    /// window restores this pair (P2-33).
+    pub audio_backup: Option<(bool, bool)>,
     pub speaker: bool,
     pub reason: Option<String>,
     pub ended_at: Option<std::time::Instant>,
@@ -178,6 +183,7 @@ impl App {
             phase: CallUiPhase::Incoming,
             seconds: 0,
             muted: false,
+            audio_backup: None,
             speaker: false,
             reason: None,
             ended_at: None,
@@ -259,6 +265,7 @@ impl App {
                 phase: CallUiPhase::Ringing,
                 seconds: 0,
                 muted: false,
+            audio_backup: None,
                 speaker: false,
                 reason: None,
                 ended_at: None,
@@ -525,6 +532,10 @@ impl App {
             Some("end") => self.end_active_call(),
             Some("mute") => {
                 if let Some(call) = &mut self.calls.active {
+                    // Optimistic flip with a backup: the
+                    // backend's CallAudioState confirms it, an
+                    // error reverts it (P2-33).
+                    call.audio_backup = Some((call.muted, call.speaker));
                     call.muted = !call.muted;
                     let muted = call.muted;
                     self.send_backend(BackendCommand::SetCallMuted { muted });
@@ -532,6 +543,7 @@ impl App {
             }
             Some("speaker") => {
                 if let Some(call) = &mut self.calls.active {
+                    call.audio_backup = Some((call.muted, call.speaker));
                     call.speaker = !call.speaker;
                     let speaker = call.speaker;
                     self.send_backend(BackendCommand::SetCallSpeaker { speaker });

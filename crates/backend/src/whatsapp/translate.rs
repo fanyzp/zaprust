@@ -1459,6 +1459,33 @@ pub(super) fn unhandled_label(msg: &whatsapp_rust::prelude::wa::Message) -> Stri
 /// formatted phone number), so live traffic shows the same names
 /// the history path resolved; the raw identifier is the last
 /// resort only.
+/// The phone number inside a vCard (P2-10): the value after
+/// the LAST colon of the first TEL line, with a `tel:` URI
+/// scheme stripped. Param-heavy lines
+/// (`TEL;VALUE=uri:tel:+62...`, `TEL;waid=123:+62...`) used to
+/// yield the literal word "tel" or the parameter text as the
+/// phone; taking the final segment reads every common shape.
+fn vcard_phone(card: &str) -> Option<String> {
+    card.lines().find_map(|line| {
+        let line = line.trim();
+        let rest = line.strip_prefix("TEL")?;
+        let value = rest.rsplit(':').next()?.trim();
+        let value = value.strip_prefix("tel:").unwrap_or(value).trim();
+        (!value.is_empty()).then(|| value.to_owned())
+    })
+}
+
+/// The display name inside a vCard's FN line, for cards whose
+/// message carries no display name of its own (P2-10).
+fn vcard_fn_name(card: &str) -> Option<String> {
+    card.lines().find_map(|line| {
+        let line = line.trim();
+        let rest = line.strip_prefix("FN")?;
+        let value = rest.split(':').nth(1)?.trim();
+        (!value.is_empty()).then(|| value.to_owned())
+    })
+}
+
 pub(super) fn translate_message(
     ctx: &MessageContext,
     book: &IdentityBook,
@@ -1708,22 +1735,15 @@ fn classify_unwrapped_deep(
         let phone = contact
             .vcard
             .as_deref()
-            .and_then(|card| {
-                card.lines().find_map(|line| {
-                    let line = line.trim();
-                    let rest = line.strip_prefix("TEL")?;
-                    rest.split(':').nth(1).map(str::to_owned)
-                })
-            })
-            .filter(|p| !p.is_empty())
+            .and_then(vcard_phone)
             .unwrap_or_else(|| "Contact card".to_owned());
-        return (
-            LiveMessageKind::Contact {
-                name: contact.display_name.clone().unwrap_or_default(),
-                phone,
-            },
-            false,
-        );
+        let name = contact
+            .display_name
+            .clone()
+            .filter(|n| !n.is_empty())
+            .or_else(|| contact.vcard.as_deref().and_then(vcard_fn_name))
+            .unwrap_or_default();
+        return (LiveMessageKind::Contact { name, phone }, false);
     }
     if let Some(interactive) = msg.interactive_message.as_option() {
         use whatsapp_rust::prelude::wa::__buffa::oneof::message::interactive_message::InteractiveMessage as InteractiveOneof;
@@ -1818,14 +1838,7 @@ fn classify_unwrapped_deep(
         } else {
             first
                 .and_then(|c| c.vcard.as_deref())
-                .and_then(|card| {
-                    card.lines().find_map(|line| {
-                        let line = line.trim();
-                        let rest = line.strip_prefix("TEL")?;
-                        rest.split(':').nth(1).map(str::to_owned)
-                    })
-                })
-                .filter(|p| !p.is_empty())
+                .and_then(vcard_phone)
                 .unwrap_or_else(|| "Contact card".to_owned())
         };
         return (LiveMessageKind::Contact { name, phone }, false);

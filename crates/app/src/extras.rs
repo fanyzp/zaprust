@@ -627,6 +627,12 @@ impl App {
                     Err(e) => self.notice = Some(Notice::error(format!("GIF: {e}"))),
                 }
             }
+            if disconnected && results.is_empty() {
+                // The worker died without reporting (P2-36):
+                // an error outcome, never a silent clear.
+                self.notice =
+                    Some(Notice::error("GIF: the fetch worker stopped.".to_owned()));
+            }
             if landed {
                 // The fetch landed: a success leaves no notice
                 // of its own, so the Busy marker from the send's

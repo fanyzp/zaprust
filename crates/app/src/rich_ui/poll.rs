@@ -86,6 +86,10 @@ impl App {
                     options: options.iter().map(|(o, _)| o.clone()).collect(),
                     multiple: draft.multiple,
                 });
+                // Busy while the create is in flight (P2-32);
+                // the poll's own upsert (or the failure event)
+                // replaces it.
+                self.notice = Some(Notice::busy(crate::i18n::t("notice.creating_poll")));
             }
             return;
         }

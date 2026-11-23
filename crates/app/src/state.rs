@@ -839,6 +839,11 @@ pub(crate) struct GroupsState {
     /// The invite link fetched for the group whose dock is open:
     /// (chat id, link). Cleared when the dock switches chats.
     pub(crate) invite_link: Option<(u64, String)>,
+    /// The add-participant address awaiting its outcome
+    /// (chat id, address as sent): the input keeps the text
+    /// until the refreshed member list lands (P2-37), so a
+    /// failed add never eats what the user typed.
+    pub(crate) participant_add_awaiting: Option<(u64, String)>,
     /// Per-group membership approval state as last reported by
     /// the backend (chat id -> approval required).
     pub(crate) approval: std::collections::HashMap<u64, bool>,
@@ -855,6 +860,11 @@ pub(crate) struct GroupsState {
     pub(crate) join_link_error: Option<String>,
     /// Create-group dialog state: open flag + form buffers.
     pub(crate) create_open: bool,
+    /// A live CreateGroup command is in flight: set at send,
+    /// cleared by the answering group upsert (which speaks the
+    /// Info outcome) or by the failure that replaces the Busy
+    /// notice.
+    pub(crate) create_pending: bool,
     pub(crate) create_error: Option<String>,
     /// Create-group form: the group name.
     pub(crate) create_name: String,
@@ -2152,6 +2162,8 @@ impl App {
                 join_link_error: None,
                 create_open: false,
                 create_error: None,
+                create_pending: false,
+                participant_add_awaiting: None,
                 create_name: String::new(),
                 create_members: String::new(),
             },

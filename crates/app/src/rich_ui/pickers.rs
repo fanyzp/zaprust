@@ -694,13 +694,21 @@ impl App {
         // reads as in flight instead of as silence. The poll
         // clears or replaces this.
         self.notice = Some(Notice::busy("Sending GIF…".to_owned()));
-        std::thread::Builder::new()
+        let spawned = std::thread::Builder::new()
             .name("zaprust-gif-send".to_owned())
             .spawn(move || {
                 let result = giphy::fetch_mp4(&mp4_url).map_err(|e| e.to_string());
                 let _ = tx.send(crate::extras::MediaFetchResult { jid, title, result });
-            })
-            .ok();
+            });
+        if spawned.is_err() {
+            // No worker, no result: the send did not happen
+            // (P2-36). Say so as an error and drop the channel,
+            // instead of leaving the Busy notice standing over
+            // a send that will never complete.
+            self.picker.media_fetch_rx = None;
+            self.notice =
+                Some(Notice::error("GIF: the fetch worker could not start.".to_owned()));
+        }
     }
 
     /// Finishes a live GIF send once its MP4 bytes are in: sends

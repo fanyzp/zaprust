@@ -2410,6 +2410,22 @@ pub enum BackendEvent {
     /// The current call changed phase. While `Active`, the
     /// backend re-emits this roughly once a second with the
     /// running duration in `seconds`.
+    /// An in-call audio toggle (mute, speaker) was applied by
+    /// the call engine: the confirmed state, answering
+    /// [`BackendCommand::SetCallMuted`] or
+    /// [`BackendCommand::SetCallSpeaker`]. The app flips its
+    /// toggles optimistically and confirms them from this
+    /// event; a failure answers with the generic error and the
+    /// app reverts the flip (P2-33). Before, the speaker toggle
+    /// had no outcome event at all.
+    CallAudioState {
+        /// The confirmed microphone mute state, when this
+        /// event answers the mute toggle.
+        muted: Option<bool>,
+        /// The confirmed speaker state, when this event
+        /// answers the speaker toggle.
+        speaker: Option<bool>,
+    },
     CallChanged {
         /// Call identifier.
         call_id: String,

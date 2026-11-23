@@ -1407,6 +1407,11 @@ pub(super) async fn run_async(
                                 events.emit(BackendEvent::Error {
                                     message: format!("Setting mute failed: {e}"),
                                 });
+                            } else {
+                                events.emit(BackendEvent::CallAudioState {
+                                    muted: Some(muted),
+                                    speaker: None,
+                                });
                             }
                         }
                         None => events.emit(BackendEvent::Error {
@@ -1419,7 +1424,13 @@ pub(super) async fn run_async(
                     let audio_speaker =
                         lock_cache(&call_active).as_ref().map(|a| a.audio.speaker.clone());
                     match audio_speaker {
-                        Some(flag) => flag.store(speaker, std::sync::atomic::Ordering::Relaxed),
+                        Some(flag) => {
+                            flag.store(speaker, std::sync::atomic::Ordering::Relaxed);
+                            events.emit(BackendEvent::CallAudioState {
+                                muted: None,
+                                speaker: Some(speaker),
+                            });
+                        }
                         None => events.emit(BackendEvent::Error {
                             message: "No call is in progress.".to_owned(),
                         }),

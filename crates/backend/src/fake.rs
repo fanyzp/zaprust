@@ -1283,6 +1283,11 @@ impl Backend for FakeBackend {
                         events.emit(BackendEvent::Error {
                             message: "No call is in progress.".to_owned(),
                         });
+                    } else {
+                        events.emit(BackendEvent::CallAudioState {
+                            muted: Some(muted),
+                            speaker: None,
+                        });
                     }
                 }
                 BackendCommand::SetCallSpeaker { speaker } => {
@@ -1296,6 +1301,11 @@ impl Backend for FakeBackend {
                     if state.current.is_none() {
                         events.emit(BackendEvent::Error {
                             message: "No call is in progress.".to_owned(),
+                        });
+                    } else {
+                        events.emit(BackendEvent::CallAudioState {
+                            muted: None,
+                            speaker: Some(speaker),
                         });
                     }
                 }

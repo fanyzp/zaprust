@@ -969,6 +969,10 @@ impl App {
                 message_id: pid,
                 to_chat_jid: to_jid,
             });
+            // The forward is in flight (P2-32): its upsert in
+            // the target chat (or the failure event) is the
+            // outcome; until then the Busy marker stands.
+            self.notice = Some(Notice::busy(crate::i18n::t("notice.forwarding")));
             // No optimistic copy: the forwarded message appears when
             // the backend confirms it with its own upsert. A local
             // copy used a synthetic id the real message never
@@ -1209,7 +1213,12 @@ impl App {
                 name: name.clone(),
                 participants,
             });
-            self.notice = Some(Notice::info(format!("Creating group \"{name}\"…")));
+            // Busy while the command is in flight (P2-31); the
+            // answering group upsert replaces it with the Info
+            // outcome, so the banner never reads "Creating…"
+            // after the group exists.
+            self.groups.create_pending = true;
+            self.notice = Some(Notice::busy(format!("Creating group \"{name}\"…")));
             return true;
         }
         // Demo: a local group entry at the top of the list.

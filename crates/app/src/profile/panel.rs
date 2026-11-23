@@ -1268,18 +1268,23 @@ impl App {
             self.notice = Some(Notice::info("Type a phone number or address first.".to_owned()));
             return;
         }
+        let is_add = matches!(op, backend::ParticipantOp::Add);
         self.send_backend(backend::BackendCommand::GroupParticipants {
             chat_jid: jid.clone(),
-            participants: vec![target],
+            participants: vec![target.clone()],
             op,
         });
-        if matches!(op, backend::ParticipantOp::Add) {
-            self.add_participant_input.clear();
+        if is_add {
+            // The input clears when the refreshed member list
+            // lands, not now (P2-37): at send time the outcome
+            // is unknown, and clearing here would eat the typed
+            // address of a failed add.
+            self.groups.participant_add_awaiting = Some((chat_id, target));
         }
         // Refresh the member list so the panel shows the result.
         self.groups.live_members.remove(&chat_id);
         self.send_backend(backend::BackendCommand::FetchGroupMembers { chat_jid: jid });
-        self.notice = Some(Notice::info("Sent. The member list will refresh.".to_owned()));
+        self.notice = Some(Notice::busy(crate::i18n::t("notice.updating_members")));
     }
 
     /// Leaves a live group and archives the local row. The

@@ -3336,6 +3336,19 @@ impl crate::state::App {
                 }
             }
             BackendEvent::GroupMembers { chat_jid, members, own_admin } => {
+                // A participant add's outcome refresh (P2-37):
+                // only now does the input clear, and only if it
+                // still holds the address that was sent.
+                if let Some((awaiting_chat, awaiting_addr)) =
+                    self.groups.participant_add_awaiting.take()
+                {
+                    if awaiting_chat == jid_id(&chat_jid)
+                        && self.add_participant_input.trim() == awaiting_addr
+                    {
+                        self.add_participant_input.clear();
+                    }
+                    self.clear_busy_notice();
+                }
                 self.groups.own_admin.insert(jid_id(&chat_jid), own_admin);
                 // Member names join the name directory before
                 // row resolution masks any of them: mentions of
@@ -3473,6 +3486,22 @@ impl crate::state::App {
                 }
             }
             BackendEvent::Error { message } => {
+                // A failed in-call audio toggle (P2-33): the
+                // optimistic flip goes back to its backup pair.
+                // The backup exists only in the window between
+                // a toggle click and its CallAudioState
+                // confirmation, so no other error can trip this.
+                if let Some(call) = &mut self.calls.active {
+                    if let Some((muted, speaker)) = call.audio_backup.take() {
+                        call.muted = muted;
+                        call.speaker = speaker;
+                    }
+                }
+                // A failure ends any in-flight create (P2-31):
+                // the error replaces the Busy notice below, and
+                // no stale pending flag may let a later unrelated
+                // group upsert claim the outcome.
+                self.groups.create_pending = false;
                 // Backend error text is largely library error
                 // Display output and can embed server-supplied
                 // strings and identifiers. Everything below
@@ -3587,6 +3616,20 @@ impl crate::state::App {
                         };
                         crate::notify::fire_os_notification(summary, body, settings.sound);
                     }
+                }
+            }
+            BackendEvent::CallAudioState { muted, speaker } => {
+                // Confirmation for an optimistic in-call toggle
+                // (P2-33): the confirmed dimension is applied
+                // and the backup is released.
+                if let Some(call) = &mut self.calls.active {
+                    if let Some(muted) = muted {
+                        call.muted = muted;
+                    }
+                    if let Some(speaker) = speaker {
+                        call.speaker = speaker;
+                    }
+                    call.audio_backup = None;
                 }
             }
             BackendEvent::CallChanged { call_id, chat_jid, phase, seconds, reason } => {
@@ -3720,6 +3763,13 @@ impl crate::state::App {
     }
 
     fn apply_chat_upsert(&mut self, live: &LiveChat) {
+        if self.groups.create_pending && live.kind == LiveChatKind::Group {
+            // The answering upsert for the in-flight CreateGroup
+            // (P2-31): the group exists now, so the Busy banner
+            // becomes the Info outcome.
+            self.groups.create_pending = false;
+            self.notice = Some(Notice::info(crate::i18n::t("notice.group_created")));
+        }
         if live.jid == "status@broadcast" {
             // The status broadcast address is not a chat (see
             // apply_message_upsert's guard): no source may
@@ -7049,6 +7099,8 @@ impl crate::state::App {
                     phone: phone.to_owned(),
                     ephemeral_secs,
                 });
+                // Busy while the send is in flight (P2-32).
+                self.notice = Some(Notice::busy(crate::i18n::t("notice.sending_contact")));
             }
         } else if !self.live_mode {
             // Demo mode: append the card locally, the shape the

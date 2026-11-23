@@ -133,7 +133,12 @@ pub(super) fn translate_special(ctx: &MessageContext, sink: &EventSink) -> bool 
 /// uses the same event for per-chat timers and for the
 /// account-wide default, told apart only by whose JID the
 /// change came from.
-pub(super) fn translate_event(event: &Event, sink: &EventSink, own_jids: &[String]) {
+pub(super) fn translate_event(
+    event: &Event,
+    sink: &EventSink,
+    own_jids: &[String],
+) -> Vec<(String, LiveChatKind)> {
+    let mut unresolved_titles: Vec<(String, LiveChatKind)> = Vec::new();
     match event {
         Event::Receipt(receipt) => {
             use whatsapp_rust::wacore::types::presence::ReceiptType;
@@ -339,7 +344,40 @@ pub(super) fn translate_event(event: &Event, sink: &EventSink, own_jids: &[Strin
             // happens to create. Progress rides the same event.
             sink.emit(BackendEvent::SyncProgress { percent: lazy.progress() });
             if let Some(sync) = lazy.get() {
-                translate_history_sync(sync, sink);
+                unresolved_titles = translate_history_sync(sync, sink);
+            }
+        }
+        Event::ContactUpdate(update) => {
+            // App-state sync reporting a saved contact's name
+            // (set or changed on any device, or delivered by a
+            // full sync). The action carries the name plus both
+            // of the contact's JID forms, so the resolution is
+            // broadcast for both: the host rewrites raw sender
+            // labels and a raw chat title wherever they are still
+            // stored, and its guards keep resolved names safe.
+            let action = &update.action;
+            let name = action
+                .full_name
+                .clone()
+                .filter(|n| !n.trim().is_empty())
+                .or_else(|| action.first_name.clone().filter(|n| !n.trim().is_empty()))
+                .or_else(|| action.username.clone().filter(|n| !n.trim().is_empty()));
+            if let Some(name) = name {
+                let mut jids = vec![update.jid.to_string()];
+                if let Some(lid) = &action.lid_jid {
+                    if !jids.contains(lid) {
+                        jids.push(lid.clone());
+                    }
+                }
+                if let Some(pn) = &action.pn_jid {
+                    if !jids.contains(pn) {
+                        jids.push(pn.clone());
+                    }
+                }
+                for jid in jids {
+                    sink.emit(BackendEvent::SenderNamed { sender_jid: jid.clone(), name: name.clone() });
+                    sink.emit(BackendEvent::ChatRenamed { chat_jid: jid, title: name.clone() });
+                }
             }
         }
         Event::OfflineSyncPreview(_) => {
@@ -350,6 +388,7 @@ pub(super) fn translate_event(event: &Event, sink: &EventSink, own_jids: &[Strin
         }
         _ => {}
     }
+    unresolved_titles
 }
 
 /// Translates one decoded history sync payload into chat and
@@ -357,52 +396,196 @@ pub(super) fn translate_event(event: &Event, sink: &EventSink, own_jids: &[Strin
 /// conversation's carried messages translated by the same
 /// classifier and body rules as live traffic, so history and live
 /// messages are indistinguishable downstream.
+///
+/// Every identity source the payload carries is gathered first
+/// into an [`IdentityBook`]: the saved contact names from the
+/// inline contacts, the push names, and the LID-to-phone-number
+/// mappings in both directions. Names resolve against all of
+/// them, never just one. The return value lists the chats whose
+/// titles still fell back to the raw identifier, so the session
+/// can heal them from the client's own stores (group metadata,
+/// the learned LID-to-phone cache).
 pub(super) fn translate_history_sync(
     sync: &whatsapp_rust::prelude::wa::HistorySync,
     sink: &EventSink,
-) {
-    let push_names: std::collections::HashMap<&str, &str> = sync
-        .pushnames
-        .iter()
-        .filter_map(|p| Some((p.id.as_deref()?, p.pushname.as_deref()?)))
-        .collect();
+) -> Vec<(String, LiveChatKind)> {
+    let book = IdentityBook::from_sync(sync);
+    let mut resolved_senders: Vec<(String, String)> = Vec::new();
+    let mut unresolved: Vec<(String, LiveChatKind)> = Vec::new();
     for conv in &sync.conversations {
-        translate_history_conversation(conv, &push_names, sink);
+        if let Some(item) =
+            translate_history_conversation(conv, &book, &mut resolved_senders, sink)
+        {
+            unresolved.push(item);
+        }
     }
+    // A name learned for a sender in this payload is valid in
+    // every chat, including ones other payloads delivered: tell
+    // the host, which rewrites any stored labels that still show
+    // the raw identifier. Resolved labels are never downgraded
+    // (the host's store guards enforce that), so broadcasting is
+    // safe.
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for (sender_jid, name) in &resolved_senders {
+        if seen.insert(sender_jid.as_str()) {
+            sink.emit(BackendEvent::SenderNamed { sender_jid: sender_jid.clone(), name: name.clone() });
+        }
+    }
+    unresolved
+}
+
+/// The identity sources one history payload carries, indexed for
+/// resolution. A person appears under two JID forms (phone number
+/// and LID); sources are keyed by whichever form they used, so
+/// every lookup tries the JID itself and its counterpart form.
+struct IdentityBook {
+    /// Saved contact names (inline contacts: full name, else
+    /// first name, else username), by JID in either form.
+    saved: std::collections::HashMap<String, String>,
+    /// Push names, by JID in either form.
+    push: std::collections::HashMap<String, String>,
+    /// LID JID to phone-number JID.
+    lid_to_pn: std::collections::HashMap<String, String>,
+    /// Phone-number JID to LID JID.
+    pn_to_lid: std::collections::HashMap<String, String>,
+}
+
+impl IdentityBook {
+    fn from_sync(sync: &whatsapp_rust::prelude::wa::HistorySync) -> Self {
+        let mut saved = std::collections::HashMap::new();
+        for contact in &sync.inline_contacts {
+            let name = contact
+                .full_name
+                .clone()
+                .filter(|n| !n.trim().is_empty())
+                .or_else(|| contact.first_name.clone().filter(|n| !n.trim().is_empty()))
+                .or_else(|| contact.username.clone().filter(|n| !n.trim().is_empty()));
+            if let Some(name) = name {
+                if let Some(pn) = &contact.pn_jid {
+                    saved.insert(pn.clone(), name.clone());
+                }
+                if let Some(lid) = &contact.lid_jid {
+                    saved.insert(lid.clone(), name);
+                }
+            }
+        }
+        let push: std::collections::HashMap<String, String> = sync
+            .pushnames
+            .iter()
+            .filter_map(|p| Some((p.id.clone()?, p.pushname.clone()?)))
+            .filter(|(_, name)| !name.trim().is_empty())
+            .collect();
+        let mut lid_to_pn = std::collections::HashMap::new();
+        let mut pn_to_lid = std::collections::HashMap::new();
+        for mapping in &sync.phone_number_to_lid_mappings {
+            if let (Some(pn), Some(lid)) = (&mapping.pn_jid, &mapping.lid_jid) {
+                lid_to_pn.insert(lid.clone(), pn.clone());
+                pn_to_lid.insert(pn.clone(), lid.clone());
+            }
+        }
+        Self { saved, push, lid_to_pn, pn_to_lid }
+    }
+
+    /// The same person's other JID form, when the payload's
+    /// mappings know it.
+    fn counterpart(&self, jid: &str) -> Option<&str> {
+        self.lid_to_pn.get(jid).or_else(|| self.pn_to_lid.get(jid)).map(String::as_str)
+    }
+
+    /// The best display name the payload knows for a JID: a saved
+    /// contact name first, then a push name, each tried under the
+    /// JID itself and under its counterpart form.
+    fn name_for(&self, jid: &str) -> Option<String> {
+        if let Some(name) = self.saved.get(jid) {
+            return Some(name.clone());
+        }
+        if let Some(other) = self.counterpart(jid) {
+            if let Some(name) = self.saved.get(other) {
+                return Some(name.clone());
+            }
+        }
+        if let Some(name) = self.push.get(jid) {
+            return Some(name.clone());
+        }
+        if let Some(other) = self.counterpart(jid) {
+            if let Some(name) = self.push.get(other) {
+                return Some(name.clone());
+            }
+        }
+        None
+    }
+
+    /// The person's phone number, formatted for display, when the
+    /// payload's mappings (or the JID itself, when it already is
+    /// a phone-number JID) provide one.
+    fn phone_for(&self, jid: &str) -> Option<String> {
+        let pn = if jid.ends_with("@lid") {
+            self.lid_to_pn.get(jid)?
+        } else if jid.ends_with("@s.whatsapp.net") {
+            jid
+        } else {
+            return None;
+        };
+        Some(format!("+{}", user_part(pn)))
+    }
+}
+
+/// Whether a display string is a raw identifier rather than a
+/// name: nine or more characters, all digits. LIDs, phone numbers
+/// and group ids all qualify; a person or group actually named
+/// with a long digit string would be misread, which is accepted:
+/// the cost is one unrenamed chat, never a wrong name.
+pub(super) fn is_raw_identifier(text: &str) -> bool {
+    text.len() >= 9 && text.bytes().all(|b| b.is_ascii_digit())
 }
 
 fn translate_history_conversation(
     conv: &whatsapp_rust::prelude::wa::Conversation,
-    push_names: &std::collections::HashMap<&str, &str>,
+    book: &IdentityBook,
+    resolved_senders: &mut Vec<(String, String)>,
     sink: &EventSink,
-) {
+) -> Option<(String, LiveChatKind)> {
     let chat_jid = conv.id.clone();
     if chat_jid.is_empty() {
-        return;
+        return None;
     }
     let kind = kind_of(&chat_jid);
     let mut messages: Vec<LiveMessage> = Vec::new();
     for entry in &conv.messages {
         if let Some(info) = entry.message.as_option() {
-            if let Some(msg) = history_message(&chat_jid, info) {
+            if let Some(msg) = history_message(&chat_jid, info, book, resolved_senders) {
                 messages.push(msg);
             }
         }
     }
     messages.sort_by_key(|m| m.timestamp);
     let last = messages.last();
-    let title = conv
+    // Title resolution, in the owner's order of preference: the
+    // conversation's own name (a group subject or a saved contact
+    // name), then the payload's saved/push names for this JID in
+    // either form, then (for a direct chat) the last sender's
+    // already-resolved name, then the formatted phone number from
+    // the LID-to-phone mapping. The raw identifier is the last
+    // resort, and the caller is told so it can heal the title
+    // from the client's stores.
+    let resolved_title = conv
         .name
         .clone()
         .filter(|n| !n.trim().is_empty())
         .or_else(|| conv.display_name.clone().filter(|n| !n.trim().is_empty()))
+        .or_else(|| book.name_for(&chat_jid))
         .or_else(|| match kind {
             LiveChatKind::Dm => last
                 .and_then(|m| m.sender.clone())
-                .or_else(|| push_names.get(chat_jid.as_str()).map(|s| (*s).to_owned())),
+                .filter(|name| !is_raw_identifier(name)),
             _ => None,
         })
-        .unwrap_or_else(|| user_part(&chat_jid));
+        .or_else(|| match kind {
+            LiveChatKind::Dm => book.phone_for(&chat_jid),
+            _ => None,
+        });
+    let title_unresolved = resolved_title.is_none();
+    let title = resolved_title.unwrap_or_else(|| user_part(&chat_jid));
     let timestamp = conv
         .last_msg_timestamp
         .map(|t| i64::try_from(t).unwrap_or(0))
@@ -431,14 +614,26 @@ fn translate_history_conversation(
     for msg in messages {
         sink.emit(BackendEvent::MessageUpsert(msg));
     }
+    if title_unresolved && matches!(kind, LiveChatKind::Dm | LiveChatKind::Group) {
+        Some((chat_jid, kind))
+    } else {
+        None
+    }
 }
 
 /// Translates one history-carried message. Stub entries and
 /// messages the phone marked to ignore carry no displayable
-/// payload and are skipped.
+/// payload and are skipped. Sender names resolve through the
+/// payload's identity book (saved contact name, then push name,
+/// then the formatted phone number from the LID-to-phone
+/// mapping); a name resolved from the book is reported back in
+/// `resolved_senders`, because it is valid for that sender in
+/// every chat, not only this one.
 fn history_message(
     chat_jid: &str,
     info: &whatsapp_rust::prelude::wa::WebMessageInfo,
+    book: &IdentityBook,
+    resolved_senders: &mut Vec<(String, String)>,
 ) -> Option<LiveMessage> {
     if info.ignore == Some(true) {
         return None;
@@ -458,10 +653,16 @@ fn history_message(
     let sender_name = if from_me {
         None
     } else {
-        info.push_name
-            .clone()
-            .filter(|n| !n.trim().is_empty())
-            .or_else(|| sender_jid.as_deref().map(user_part))
+        let own_push_name = info.push_name.clone().filter(|n| !n.trim().is_empty());
+        let resolved = own_push_name
+            .or_else(|| sender_jid.as_deref().and_then(|jid| book.name_for(jid)))
+            .or_else(|| sender_jid.as_deref().and_then(|jid| book.phone_for(jid)));
+        if let (Some(jid), Some(name)) = (&sender_jid, &resolved) {
+            if !is_raw_identifier(name) {
+                resolved_senders.push((jid.clone(), name.clone()));
+            }
+        }
+        resolved.or_else(|| sender_jid.as_deref().map(user_part))
     };
     let mut msg = LiveMessage::text(id, chat_jid.to_owned(), sender_name, body, timestamp, from_me);
     msg.kind = kind;
@@ -1403,5 +1604,122 @@ mod live_pairing_fix_tests {
             .collect();
         assert_eq!(bodies, vec!["hello there", "Photo"]);
         assert!(bodies.iter().all(|b| *b != "[non-text message]"));
+    }
+
+    /// Identity resolution across every source a payload carries:
+    /// a group sender keyed by LID resolves through the mapping
+    /// to the saved contact name (which beats the push name), a
+    /// LID direct chat with only a mapping gets the formatted
+    /// phone number, a push name filed under the phone-number form
+    /// names the LID chat, and a group with no subject anywhere is
+    /// reported unresolved so the session can heal it.
+    #[test]
+    fn history_sync_resolves_identities_from_every_payload_source() {
+        let mut text = wa::Message::default();
+        text.conversation = Some("halo semua".to_owned());
+        let mut key = wa::MessageKey::default();
+        key.id = Some("g1".to_owned());
+        key.from_me = Some(false);
+        key.participant = Some("57243458396358@lid".to_owned());
+        let mut info = wa::WebMessageInfo::default();
+        info.key = MessageField::some(key);
+        info.message = MessageField::some(text);
+        info.message_timestamp = Some(300);
+
+        let mut group = wa::Conversation::default();
+        group.id = "120363430176830545@g.us".to_owned();
+        group.messages = vec![{
+            let mut e = wa::HistorySyncMsg::default();
+            e.message = MessageField::some(info);
+            e
+        }];
+
+        let mut lid_dm = wa::Conversation::default();
+        lid_dm.id = "128815045062660@lid".to_owned();
+
+        let mut push_dm = wa::Conversation::default();
+        push_dm.id = "21750217740322@lid".to_owned();
+
+        let mut sync = wa::HistorySync::default();
+        sync.conversations = vec![group, lid_dm, push_dm];
+        sync.pushnames = vec![
+            {
+                let mut p = wa::Pushname::default();
+                p.id = Some("6281234567890@s.whatsapp.net".to_owned());
+                p.pushname = Some("Bima".to_owned());
+                p
+            },
+            {
+                let mut p = wa::Pushname::default();
+                p.id = Some("628111222333@s.whatsapp.net".to_owned());
+                p.pushname = Some("Sari".to_owned());
+                p
+            },
+        ];
+        sync.phone_number_to_lid_mappings = vec![
+            {
+                let mut m = wa::PhoneNumberToLidMapping::default();
+                m.pn_jid = Some("6281234567890@s.whatsapp.net".to_owned());
+                m.lid_jid = Some("57243458396358@lid".to_owned());
+                m
+            },
+            {
+                let mut m = wa::PhoneNumberToLidMapping::default();
+                m.pn_jid = Some("6289876543210@s.whatsapp.net".to_owned());
+                m.lid_jid = Some("128815045062660@lid".to_owned());
+                m
+            },
+            {
+                let mut m = wa::PhoneNumberToLidMapping::default();
+                m.pn_jid = Some("628111222333@s.whatsapp.net".to_owned());
+                m.lid_jid = Some("21750217740322@lid".to_owned());
+                m
+            },
+        ];
+        sync.inline_contacts = vec![{
+            let mut c = wa::InlineContact::default();
+            c.pn_jid = Some("6281234567890@s.whatsapp.net".to_owned());
+            c.lid_jid = Some("57243458396358@lid".to_owned());
+            c.full_name = Some("Bima Prasetyo".to_owned());
+            c
+        }];
+
+        let (tx, rx) = std::sync::mpsc::sync_channel(32);
+        let sink = EventSink { tx, wake: std::sync::Arc::new(|| {}) };
+        let unresolved = translate_history_sync(&sync, &sink);
+        let events: Vec<BackendEvent> = rx.try_iter().collect();
+
+        let title_of = |jid: &str| {
+            events.iter().find_map(|e| match e {
+                BackendEvent::ChatUpsert(c) if c.jid == jid => Some(c.title.clone()),
+                _ => None,
+            })
+        };
+        assert_eq!(title_of("128815045062660@lid").as_deref(), Some("+6289876543210"));
+        assert_eq!(title_of("21750217740322@lid").as_deref(), Some("Sari"));
+        assert_eq!(title_of("120363430176830545@g.us").as_deref(), Some("120363430176830545"));
+
+        let sender = events.iter().find_map(|e| match e {
+            BackendEvent::MessageUpsert(m) => m.sender.clone(),
+            _ => None,
+        });
+        assert_eq!(sender.as_deref(), Some("Bima Prasetyo"), "saved name beats push name");
+
+        let named: Vec<(&str, &str)> = events
+            .iter()
+            .filter_map(|e| match e {
+                BackendEvent::SenderNamed { sender_jid, name } => {
+                    Some((sender_jid.as_str(), name.as_str()))
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(named.contains(&("57243458396358@lid", "Bima Prasetyo")));
+
+        assert_eq!(
+            unresolved,
+            vec![("120363430176830545@g.us".to_owned(), LiveChatKind::Group)],
+            "only the subjectless group is reported unresolved"
+        );
     }
 }

@@ -1850,7 +1850,11 @@ pub enum BackendEvent {
     },
     /// Catch-up sync (history sync after pairing, offline sync on
     /// reconnect) is running. `percent` is the library's reported
-    /// progress when it provides one.
+    /// progress when it provides one; hosts should treat it as a
+    /// liveness signal, not a number to display: it is a per-chunk
+    /// stamp from the phone with no monotonicity and no
+    /// guaranteed final value, so a displayed percentage can sit
+    /// unchanged for minutes on a fully populated roster.
     SyncProgress {
         /// Progress 0 to 100, when the library reports it.
         percent: Option<u32>,
@@ -1858,6 +1862,30 @@ pub enum BackendEvent {
     /// The catch-up sync finished: the roster and recent history
     /// the phone sent are fully applied.
     SyncCompleted,
+    /// A better display name was resolved for a chat whose stored
+    /// title is still a raw identifier (a contact update arrived,
+    /// group metadata supplied the subject, or the LID-to-phone
+    /// mapping identified a direct chat). The host applies it only
+    /// where the current title is a raw identifier; a resolved
+    /// name is never downgraded by this event.
+    ChatRenamed {
+        /// The chat whose title improved.
+        chat_jid: String,
+        /// The resolved display name.
+        title: String,
+    },
+    /// A better display name was resolved for a message sender
+    /// (a contact update, group metadata, or a history payload's
+    /// identity data). The host rewrites stored sender labels that
+    /// still show the raw identifier for this sender, in every
+    /// chat; resolved labels are never downgraded.
+    SenderNamed {
+        /// The sender's JID, in whichever form the name source
+        /// used.
+        sender_jid: String,
+        /// The resolved display name.
+        name: String,
+    },
     /// The backend worker panicked and was contained by the
     /// supervisor. `restarted` says whether the single automatic
     /// restart was attempted after this crash.

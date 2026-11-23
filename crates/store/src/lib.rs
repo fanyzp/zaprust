@@ -739,7 +739,9 @@ impl Store {
             "INSERT INTO chats (jid, title, kind, preview, preview_sender, timestamp, unread, archived, pinned, ephemeral_secs, muted)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
              ON CONFLICT(jid) DO UPDATE SET
-                title = excluded.title,
+                title = CASE WHEN (length(excluded.title) >= 9 AND excluded.title NOT GLOB '*[^0-9]*')
+                                  AND NOT (length(chats.title) >= 9 AND chats.title NOT GLOB '*[^0-9]*')
+                             THEN chats.title ELSE excluded.title END,
                 kind = excluded.kind,
                 preview = excluded.preview,
                 preview_sender = excluded.preview_sender,
@@ -764,6 +766,54 @@ impl Store {
             ],
         )?;
         Ok(())
+    }
+
+    /// Applies a resolved display name to a chat whose stored
+    /// title is still a raw identifier (or empty). Returns whether
+    /// a row changed. A resolved title is never overwritten, and a
+    /// raw identifier is never accepted as the new title: renames
+    /// only ever move a title from identifier to name.
+    ///
+    /// # Errors
+    /// [`StoreError`] on SQLite failures.
+    pub fn rename_chat(&self, chat_jid: &str, title: &str) -> Result<bool, StoreError> {
+        if title.trim().is_empty() || is_raw_identifier(title) {
+            return Ok(false);
+        }
+        let changed = self.conn.execute(
+            "UPDATE chats SET title = ?2 WHERE jid = ?1
+             AND (title = '' OR (length(title) >= 9 AND title NOT GLOB '*[^0-9]*'))",
+            params![chat_jid, title],
+        )?;
+        Ok(changed > 0)
+    }
+
+    /// Applies a resolved display name to every stored message
+    /// whose sender label is still that sender's raw identifier,
+    /// across all chats, and to chat previews labelled with the
+    /// same raw identifier. Returns how many message rows changed.
+    /// Resolved labels are never overwritten, and a raw identifier
+    /// is never accepted as the new name.
+    ///
+    /// # Errors
+    /// [`StoreError`] on SQLite failures.
+    pub fn rename_sender(&self, sender_jid: &str, name: &str) -> Result<usize, StoreError> {
+        if name.trim().is_empty() || is_raw_identifier(name) {
+            return Ok(0);
+        }
+        let changed = self.conn.execute(
+            "UPDATE messages SET sender = ?2
+             WHERE json_extract(data, '$.sender_jid') = ?1
+             AND sender IS NOT NULL
+             AND length(sender) >= 9 AND sender NOT GLOB '*[^0-9]*'",
+            params![sender_jid, name],
+        )?;
+        let raw = sender_jid.split('@').next().unwrap_or(sender_jid);
+        self.conn.execute(
+            "UPDATE chats SET preview_sender = ?2 WHERE preview_sender = ?1",
+            params![raw, name],
+        )?;
+        Ok(changed)
     }
 
     /// Inserts or replaces a message row. `flags` is a bitfield of
@@ -905,7 +955,11 @@ impl Store {
             "INSERT INTO messages (chat_jid, id, sender, body, timestamp, from_me, data, flags, expires_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
              ON CONFLICT(chat_jid, id) DO UPDATE SET
-                sender = excluded.sender,
+                sender = CASE WHEN excluded.sender IS NOT NULL
+                                   AND (length(excluded.sender) >= 9 AND excluded.sender NOT GLOB '*[^0-9]*')
+                                   AND messages.sender IS NOT NULL
+                                   AND NOT (length(messages.sender) >= 9 AND messages.sender NOT GLOB '*[^0-9]*')
+                              THEN messages.sender ELSE excluded.sender END,
                 body = excluded.body,
                 timestamp = excluded.timestamp,
                 from_me = excluded.from_me,
@@ -1438,6 +1492,14 @@ impl Store {
         )?;
         Ok(())
     }
+}
+
+/// Whether a display string is a raw identifier rather than a
+/// name: nine or more characters, all digits. The SQL guards in
+/// this module express the same predicate with GLOB; the two must
+/// stay in step.
+fn is_raw_identifier(text: &str) -> bool {
+    text.len() >= 9 && text.bytes().all(|b| b.is_ascii_digit())
 }
 
 fn kind_str(kind: LiveChatKind) -> &'static str {
@@ -2623,5 +2685,105 @@ mod tests {
             panic!("the row reads back as a poll");
         };
         assert!(options.iter().all(|(_, v)| *v == 0), "a mismatched count list changes nothing");
+    }
+
+    fn titled_chat(jid: &str, title: &str) -> LiveChat {
+        LiveChat {
+            jid: jid.to_owned(),
+            title: title.to_owned(),
+            kind: backend::LiveChatKind::Group,
+            preview: String::new(),
+            preview_sender: None,
+            timestamp: 1_700_000_000,
+            unread: 0,
+            archived: false,
+            pinned: false,
+            ephemeral_secs: 0,
+            muted: false,
+        }
+    }
+
+    /// Identity monotonicity at the archive layer: a raw
+    /// identifier title may never overwrite a resolved name, a
+    /// resolved name always overwrites a raw identifier, and the
+    /// same rule holds for stored message sender labels.
+    #[test]
+    fn raw_identifiers_never_overwrite_resolved_names() {
+        let store = Store::open_in_memory().unwrap();
+        let group = "120363430176830545@g.us";
+        store.upsert_chat(&titled_chat(group, "Weekend Hikers")).unwrap();
+        store.upsert_chat(&titled_chat(group, "120363430176830545")).unwrap();
+        let chats = store.chats().unwrap();
+        assert_eq!(chats[0].title, "Weekend Hikers", "a live raw title cannot downgrade the subject");
+
+        let dm = "128815045062660@lid";
+        store.upsert_chat(&titled_chat(dm, "128815045062660")).unwrap();
+        store.upsert_chat(&titled_chat(dm, "Bima Prasetyo")).unwrap();
+        let chats = store.chats().unwrap();
+        let dm_row = chats.iter().find(|c| c.jid == dm).unwrap();
+        assert_eq!(dm_row.title, "Bima Prasetyo", "a resolved name replaces the raw title");
+
+        let mut msg = LiveMessage::text(
+            "m1",
+            group,
+            Some("Bima Prasetyo".to_owned()),
+            "halo",
+            1_700_000_100,
+            false,
+        );
+        msg.sender_jid = Some("57243458396358@lid".to_owned());
+        store.upsert_message(&msg, 0).unwrap();
+        let mut raw = msg.clone();
+        raw.sender = Some("57243458396358".to_owned());
+        store.upsert_message(&raw, 0).unwrap();
+        let rows = store.messages(group).unwrap();
+        assert_eq!(
+            rows[0].0.sender.as_deref(),
+            Some("Bima Prasetyo"),
+            "a raw sender label cannot downgrade a resolved one"
+        );
+    }
+
+    /// The rename paths heal exactly the raw rows: chat titles,
+    /// message sender labels (matched through the archived sender
+    /// JID), and previews, while resolved values and raw rename
+    /// inputs are refused.
+    #[test]
+    fn renames_heal_only_raw_labels() {
+        let store = Store::open_in_memory().unwrap();
+        let group = "120363430176830545@g.us";
+        store.upsert_chat(&titled_chat(group, "120363430176830545")).unwrap();
+        assert!(store.rename_chat(group, "Weekend Hikers").unwrap());
+        assert!(!store.rename_chat(group, "Other Name").unwrap(), "a resolved title is final");
+        assert!(!store.rename_chat(group, "120363430176830545").unwrap(), "a raw rename is refused");
+
+        let mut msg = LiveMessage::text(
+            "m1",
+            group,
+            Some("57243458396358".to_owned()),
+            "halo",
+            1_700_000_100,
+            false,
+        );
+        msg.sender_jid = Some("57243458396358@lid".to_owned());
+        store.upsert_message(&msg, 0).unwrap();
+        let mut named = msg.clone();
+        named.id = "m2".to_owned();
+        named.sender = Some("99999999999999".to_owned());
+        named.sender_jid = Some("99999999999999@lid".to_owned());
+        store.upsert_message(&named, 0).unwrap();
+
+        let changed = store.rename_sender("57243458396358@lid", "Bima Prasetyo").unwrap();
+        assert_eq!(changed, 1);
+        let rows = store.messages(group).unwrap();
+        let healed = rows.iter().find(|(m, _)| m.id == "m1").unwrap();
+        assert_eq!(healed.0.sender.as_deref(), Some("Bima Prasetyo"));
+        let other = rows.iter().find(|(m, _)| m.id != "m1").unwrap();
+        assert_eq!(
+            other.0.sender.as_deref(),
+            Some("99999999999999"),
+            "another sender's raw label is untouched by this rename"
+        );
+        assert_eq!(store.rename_sender("57243458396358@lid", "57243458396358").unwrap(), 0);
     }
 }

@@ -144,6 +144,84 @@ where
     }
 }
 
+/// Heals chat titles a history payload could not resolve from
+/// its own identity data, using the client's stores: a group's
+/// subject comes from its metadata (whose participant list also
+/// names senders whose stored labels are still raw), and a direct
+/// chat's phone number comes from the library's learned
+/// LID-to-phone cache. Each chat is attempted once per run
+/// (`attempts`), and every correction crosses as a rename event
+/// whose store guard makes it monotonic: a resolved name is never
+/// downgraded. Failures are silent by design: healing is a
+/// best-effort improvement pass over a roster that already works,
+/// and a title that stays raw is retried on the next run or when
+/// the chat's member list is fetched.
+fn heal_unresolved_titles(
+    client: std::sync::Arc<whatsapp_rust::Client>,
+    sink: crate::EventSink,
+    unresolved: Vec<(String, crate::LiveChatKind)>,
+    attempts: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+) {
+    let fresh: Vec<(String, crate::LiveChatKind)> = {
+        let mut guard = attempts.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        unresolved.into_iter().filter(|(jid, _)| guard.insert(jid.clone())).collect()
+    };
+    if fresh.is_empty() {
+        return;
+    }
+    tokio::spawn(async move {
+        for (jid, kind) in fresh {
+            match kind {
+                crate::LiveChatKind::Group => {
+                    if let Ok(parsed) = jid.parse::<Jid>() {
+                        if let Ok(meta) = client.groups().fetch_metadata(&parsed).await {
+                            if let Some(subject) =
+                                meta.subject.clone().filter(|s| !s.trim().is_empty())
+                            {
+                                sink.emit(BackendEvent::ChatRenamed {
+                                    chat_jid: jid.clone(),
+                                    title: subject,
+                                });
+                            }
+                            for participant in &meta.participants {
+                                let name = participant_name(participant);
+                                if !name.is_empty() {
+                                    sink.emit(BackendEvent::SenderNamed {
+                                        sender_jid: participant.jid.to_string(),
+                                        name,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+                crate::LiveChatKind::Dm => {
+                    if jid.ends_with("@s.whatsapp.net") {
+                        // The title is the phone number itself;
+                        // the formatted form is the improvement
+                        // the precedence order asks for, and it
+                        // needs no lookup.
+                        sink.emit(BackendEvent::ChatRenamed {
+                            chat_jid: jid.clone(),
+                            title: format!("+{}", super::translate::user_part(&jid)),
+                        });
+                    } else if let Ok(parsed) = jid.parse::<Jid>() {
+                        if let Ok(Some(entry)) = client.get_lid_pn_entry(&parsed).await {
+                            let phone = format!("+{}", entry.phone_number);
+                            sink.emit(BackendEvent::ChatRenamed {
+                                chat_jid: jid.clone(),
+                                title: phone.clone(),
+                            });
+                            sink.emit(BackendEvent::SenderNamed { sender_jid: jid.clone(), name: phone });
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    });
+}
+
 pub(super) async fn run_async(
     config: &BackendConfig,
     commands: Receiver<BackendCommand>,
@@ -256,6 +334,13 @@ pub(super) async fn run_async(
     let sink_out = events.clone();
     let sink_msg = events.clone();
     let sink_all = events.clone();
+    // Chat titles already sent to the identity healer this run,
+    // so repeated history chunks do not refetch the same group
+    // metadata or LID mapping.
+    let heal_attempts: std::sync::Arc<
+        std::sync::Mutex<std::collections::HashSet<String>>,
+    > = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
+    let heal_attempts_events = heal_attempts.clone();
     // The logout flag the caller wipes the account directory on:
     // set by the library's logged-out callback (this device was
     // unlinked, here or from the phone) and by the Disconnect
@@ -441,6 +526,7 @@ pub(super) async fn run_async(
         })
         .on_event(move |event: Arc<Event>, client| {
             let sink = sink_all.clone();
+            let heal_attempts = heal_attempts_events.clone();
             #[cfg(feature = "calls")]
             let incoming_slot = call_incoming_events.clone();
             async move {
@@ -455,7 +541,15 @@ pub(super) async fn run_async(
                     .flatten()
                     .map(|jid| jid.to_non_ad().to_string())
                     .collect();
-                translate_event(&event, &sink, &own_jids);
+                let unresolved = translate_event(&event, &sink, &own_jids);
+                if !unresolved.is_empty() {
+                    heal_unresolved_titles(
+                        client.clone(),
+                        sink.clone(),
+                        unresolved,
+                        heal_attempts.clone(),
+                    );
+                }
             }
         })
         .build()
@@ -1363,6 +1457,28 @@ pub(super) async fn run_async(
                                 chat_jid: chat_jid.clone(),
                                 members,
                             });
+                            // The same metadata is the group's
+                            // identity source: its subject heals a
+                            // raw group title, and its participant
+                            // names heal raw sender labels, under
+                            // the host's monotonic guards.
+                            if let Some(subject) =
+                                meta.subject.clone().filter(|s| !s.trim().is_empty())
+                            {
+                                events.emit(BackendEvent::ChatRenamed {
+                                    chat_jid: chat_jid.clone(),
+                                    title: subject,
+                                });
+                            }
+                            for participant in &meta.participants {
+                                let name = participant_name(participant);
+                                if !name.is_empty() {
+                                    events.emit(BackendEvent::SenderNamed {
+                                        sender_jid: participant.jid.to_string(),
+                                        name,
+                                    });
+                                }
+                            }
                             events.emit(BackendEvent::GroupApprovalState {
                                 chat_jid: chat_jid.clone(),
                                 enabled: meta.membership_approval,

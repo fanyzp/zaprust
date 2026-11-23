@@ -98,6 +98,12 @@ fn summarize(event: &BackendEvent) -> String {
             None => "SyncProgress".to_owned(),
         },
         BackendEvent::SyncCompleted => "SyncCompleted".to_owned(),
+        BackendEvent::ChatRenamed { chat_jid, title } => {
+            format!("ChatRenamed {chat_jid} -> {title}")
+        }
+        BackendEvent::SenderNamed { sender_jid, name } => {
+            format!("SenderNamed {sender_jid} -> {name}")
+        }
         BackendEvent::Crashed { summary, restarted } => {
             format!("Crashed restarted={restarted} {summary}")
         }

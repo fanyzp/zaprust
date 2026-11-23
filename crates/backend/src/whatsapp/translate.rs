@@ -1492,7 +1492,7 @@ mod presence_translate_tests {
 #[cfg(test)]
 mod live_pairing_fix_tests {
     use super::{body_for, classify_message, translate_history_sync};
-    use crate::{BackendEvent, EventSink, LiveMessageKind, MediaKind};
+    use crate::{BackendEvent, EventSink, LiveChatKind, LiveMessageKind, MediaKind};
     use whatsapp_rust::prelude::wa;
     use whatsapp_rust::prelude::MessageField;
 
@@ -1663,19 +1663,19 @@ mod live_pairing_fix_tests {
         ];
         sync.phone_number_to_lid_mappings = vec![
             {
-                let mut m = wa::PhoneNumberToLidMapping::default();
+                let mut m = wa::PhoneNumberToLIDMapping::default();
                 m.pn_jid = Some("6281234567890@s.whatsapp.net".to_owned());
                 m.lid_jid = Some("57243458396358@lid".to_owned());
                 m
             },
             {
-                let mut m = wa::PhoneNumberToLidMapping::default();
+                let mut m = wa::PhoneNumberToLIDMapping::default();
                 m.pn_jid = Some("6289876543210@s.whatsapp.net".to_owned());
                 m.lid_jid = Some("128815045062660@lid".to_owned());
                 m
             },
             {
-                let mut m = wa::PhoneNumberToLidMapping::default();
+                let mut m = wa::PhoneNumberToLIDMapping::default();
                 m.pn_jid = Some("628111222333@s.whatsapp.net".to_owned());
                 m.lid_jid = Some("21750217740322@lid".to_owned());
                 m

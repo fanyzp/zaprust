@@ -1560,7 +1560,7 @@ mod star_pin_tests {
     pub(super) fn failed_event_rsvp_restores_my_answer() {
         let (mut app, tx, ctx, _cmd_rx) = live_app();
         let mid = open_message(&mut app, &tx, &ctx, alice_event_message());
-        app.respond_event(mid, core::model::EventRsvp::Going, 0);
+        app.respond_event(mid, core::model::EventRsvp::Going, None);
         assert_eq!(
             view_event(&app, mid).0,
             Some(core::model::EventRsvp::Going),

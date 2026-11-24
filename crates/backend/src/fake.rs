@@ -4538,11 +4538,11 @@ mod tests {
             })
             .unwrap();
         let created = collect_until(&ch, &|e| {
-            matches!(e, BackendEvent::NewMessage { msg, .. }
+            matches!(e, BackendEvent::MessageUpsert(msg)
                 if matches!(&msg.kind, crate::LiveMessageKind::Event { name, .. } if name == "Team lunch"))
         });
         assert!(
-            matches!(&created[created.len() - 1], BackendEvent::NewMessage { msg, .. }
+            matches!(&created[created.len() - 1], BackendEvent::MessageUpsert(msg)
                 if msg.event_secret.is_some() && msg.event_creator.is_some()),
             "the created event carries its secret and creator: {created:?}"
         );

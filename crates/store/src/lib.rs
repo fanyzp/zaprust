@@ -1568,6 +1568,7 @@ impl Store {
     ///
     /// # Errors
     /// [`StoreError`] on SQLite failures.
+    #[allow(clippy::too_many_arguments)]
     pub fn set_event_tally(
         &self,
         chat_jid: &str,
@@ -1614,6 +1615,7 @@ impl Store {
     ///
     /// # Errors
     /// [`StoreError`] on SQLite failures.
+    #[allow(clippy::too_many_arguments)]
     pub fn set_event_fields(
         &self,
         chat_jid: &str,

@@ -162,7 +162,7 @@ impl From<std::io::Error> for StoreError {
 }
 
 /// The newest schema version this build migrates to.
-pub const SCHEMA_VERSION: i64 = 13;
+pub const SCHEMA_VERSION: i64 = 14;
 
 /// `store_meta` key recording that the one-time freelist purge
 /// (see [`Store::open`]) has run for this archive. The purge
@@ -2141,9 +2141,8 @@ impl Store {
     /// # Errors
     /// [`StoreError`] on SQLite failures.
     pub fn labels(&self) -> Result<Vec<backend::LiveLabel>, StoreError> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT id, name, color, predefined_id FROM labels ORDER BY id")?;
+        let mut stmt =
+            self.conn.prepare("SELECT id, name, color, predefined_id FROM labels ORDER BY id")?;
         let rows = stmt.query_map([], |row| {
             Ok(backend::LiveLabel {
                 id: row.get(0)?,
@@ -2194,7 +2193,8 @@ impl Store {
         let mut stmt = self
             .conn
             .prepare("SELECT label_id, chat_jid FROM chat_labels ORDER BY label_id, chat_jid")?;
-        let rows = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?;
+        let rows =
+            stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?;
         let mut out = Vec::new();
         for row in rows {
             out.push(row?);
@@ -2237,11 +2237,7 @@ impl Store {
              ORDER BY label_id, chat_jid, message_id",
         )?;
         let rows = stmt.query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-            ))
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
         })?;
         let mut out = Vec::new();
         for row in rows {
@@ -2283,9 +2279,9 @@ impl Store {
     /// # Errors
     /// [`StoreError`] on SQLite failures.
     pub fn quick_replies(&self) -> Result<Vec<backend::LiveQuickReply>, StoreError> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT id, shortcut, message, keywords, count FROM quick_replies ORDER BY id")?;
+        let mut stmt = self.conn.prepare(
+            "SELECT id, shortcut, message, keywords, count FROM quick_replies ORDER BY id",
+        )?;
         let rows = stmt.query_map([], |row| {
             let keywords_json: String = row.get(3)?;
             Ok(backend::LiveQuickReply {
@@ -2310,7 +2306,8 @@ impl Store {
     pub fn set_quick_reply(&self, reply: &backend::LiveQuickReply) -> Result<(), StoreError> {
         // Serializing a string list cannot fail in
         // practice; the fallback keeps the write total.
-        let keywords_json = serde_json::to_string(&reply.keywords).unwrap_or_else(|_| "[]".to_owned());
+        let keywords_json =
+            serde_json::to_string(&reply.keywords).unwrap_or_else(|_| "[]".to_owned());
         self.conn.execute(
             "INSERT INTO quick_replies (id, shortcut, message, keywords, count)
              VALUES (?1, ?2, ?3, ?4, ?5)

@@ -312,16 +312,19 @@ pub(crate) fn strip_edge_fades(
 
 /// The one horizontally scrolling chip strip: the scrollbar is
 /// always hidden, the wheel scrolls sideways, and the clipped
-/// edge(s) fade into the surface behind the strip (`bg`). The
-/// closure lays the chips out in a horizontal row and returns
+/// edge(s) fade into the surface behind the strip (the panel).
+/// The closure lays the chips out in a horizontal row and returns
 /// the selected chip's response; whenever `selected_key` changes
 /// (a screen is entered, the selection moves), the strip scrolls
 /// until the selected chip is fully inside the viewport, so the
-/// active chip is never the one cut off at the edge.
+/// active chip is never the one cut off at the edge. A clipped
+/// edge also carries a chevron disc: the fade alone read as a
+/// chip clipped by the panel instead of a strip that continues
+/// (VRF-06), so the continuation gets an explicit affordance.
 pub(crate) fn chip_scroll_row(
     ui: &mut egui::Ui,
     id_salt: &'static str,
-    bg: Rgb,
+    t: Tokens,
     selected_key: impl std::hash::Hash,
     add_contents: impl FnOnce(&mut egui::Ui) -> Option<egui::Response>,
 ) {
@@ -352,7 +355,31 @@ pub(crate) fn chip_scroll_row(
         });
     let offset = out.state.clamped_offset().x;
     let max_offset = (out.content_size.x - out.inner_rect.width()).max(0.0);
-    strip_edge_fades(ui.painter(), out.inner_rect, bg, offset > 0.5, offset < max_offset - 0.5);
+    let clipped_left = offset > 0.5;
+    let clipped_right = offset < max_offset - 0.5;
+    strip_edge_fades(ui.painter(), out.inner_rect, t.bg_panel, clipped_left, clipped_right);
+    // The continuation chevrons, one at each clipped edge: a
+    // small disc in the chip fill with the direction glyph.
+    let painter = ui.painter().clone();
+    let mid_y = out.inner_rect.center().y;
+    for (x, icon, clipped) in [
+        (out.inner_rect.left() + 13.0, crate::icons::Icon::ChevronLeft, clipped_left),
+        (out.inner_rect.right() - 13.0, crate::icons::Icon::ChevronRight, clipped_right),
+    ] {
+        if !clipped {
+            continue;
+        }
+        let center = egui::Pos2::new(x, mid_y);
+        painter.circle_filled(center, 11.0, rgb(t.bg_panel_alt));
+        crate::icons::draw(
+            &painter,
+            icon,
+            center,
+            crate::icons::SIZE_ROW,
+            rgb(t.text_secondary),
+            rgb(t.bg_panel_alt),
+        );
+    }
 }
 
 /// The one icon button: a square hit area with a circular hover

@@ -515,7 +515,7 @@ impl App {
 /// over the filter flag: the panels call it inside closures
 /// that already hold other pieces of the app state.
 fn calls_filter_chips(ui: &mut egui::Ui, t: core::theme::Tokens, missed_only: &mut bool) {
-    crate::widgets::chip_scroll_row(ui, "calls_filter_chips", t.bg_panel, *missed_only, |ui| {
+    crate::widgets::chip_scroll_row(ui, "calls_filter_chips", t, *missed_only, |ui| {
         let mut selected_resp = None;
         let all = crate::widgets::chip(ui, &crate::i18n::t("calls.all"), !*missed_only, t);
         if !*missed_only {

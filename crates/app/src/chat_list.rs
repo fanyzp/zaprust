@@ -349,7 +349,7 @@ impl App {
                     crate::widgets::chip_scroll_row(
                         ui,
                         "chat_filter_chips",
-                        t.bg_panel,
+                        t,
                         self.filter,
                         |ui| {
                             let mut selected_resp = None;

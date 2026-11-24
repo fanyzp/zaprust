@@ -3043,7 +3043,11 @@ impl Backend for FakeBackend {
                     }
                     let mut state =
                         call_state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                    if state.current.is_some() {
+                    if take_failure("StartGroupCall") {
+                        events.emit(BackendEvent::Error {
+                            message: "Starting the group call failed: connection lost".to_owned(),
+                        });
+                    } else if state.current.is_some() {
                         events.emit(BackendEvent::Error {
                             message: "A call is already in progress.".to_owned(),
                         });
@@ -4536,13 +4540,25 @@ impl Backend for FakeBackend {
                             .unwrap_or_else(std::sync::PoisonError::into_inner)
                             .push(format!("retry_history:{chat_jid}"));
                     }
-                    let report = match history_retry_state.remove(&chat_jid) {
-                        Some(messages) => crate::HistoryShareReport::Shared { messages },
-                        None => crate::HistoryShareReport::Failed {
-                            error: "the prepared share did not survive; add the members again to share history"
-                                .to_owned(),
-                            retryable: false,
-                        },
+                    let report = if take_failure("RetryGroupHistoryShare") {
+                        // An injected failure changes no fake
+                        // state, like a send that never reached a
+                        // server: the prepared share survives and
+                        // the answer is the retryable failure, so
+                        // a later retry can still land it.
+                        crate::HistoryShareReport::Failed {
+                            error: "sharing the history failed: connection lost".to_owned(),
+                            retryable: true,
+                        }
+                    } else {
+                        match history_retry_state.remove(&chat_jid) {
+                            Some(messages) => crate::HistoryShareReport::Shared { messages },
+                            None => crate::HistoryShareReport::Failed {
+                                error: "the prepared share did not survive; add the members again to share history"
+                                    .to_owned(),
+                                retryable: false,
+                            },
+                        }
                     };
                     events.emit(BackendEvent::GroupHistoryReported {
                         chat_jid,
@@ -6252,6 +6268,127 @@ mod tests {
                 BackendEvent::MessageUpsert(m) if m.body == "Yes" && m.from_me
             )),
             "the answer echoes as its text: {events:?}"
+        );
+        ch.commands.send(BackendCommand::Shutdown).unwrap();
+    }
+
+    /// Failure injection for the two arms the v1.6.23
+    /// verification found missing it (its D2): StartGroupCall
+    /// answers an injected failure with the same generic error
+    /// the live backend uses, starts no call, and succeeds on
+    /// the next attempt.
+    #[test]
+    fn injected_start_group_call_failure_then_success() {
+        let fake = FakeBackend {
+            fail_next: vec!["StartGroupCall"],
+            ..FakeBackend::auto()
+        };
+        let ch = start(fake);
+        linked(&ch);
+        ch.commands
+            .send(BackendCommand::StartGroupCall {
+                chat_jid: FAKE_GROUP_JID.to_owned(),
+                video: false,
+            })
+            .unwrap();
+        match next(&ch) {
+            BackendEvent::Error { message } => {
+                assert_eq!(message, "Starting the group call failed: connection lost");
+            }
+            other => panic!("expected the injected failure, got {other:?}"),
+        }
+        ch.commands
+            .send(BackendCommand::StartGroupCall {
+                chat_jid: FAKE_GROUP_JID.to_owned(),
+                video: false,
+            })
+            .unwrap();
+        let events = collect_until(&ch, &|e| {
+            matches!(e, BackendEvent::CallChanged { phase: crate::CallPhase::Ringing, .. })
+        });
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                BackendEvent::CallChanged { phase: crate::CallPhase::Ringing, .. }
+            )),
+            "the second attempt starts the call: {events:?}"
+        );
+        ch.commands.send(BackendCommand::Shutdown).unwrap();
+    }
+
+    /// The second D2 arm: an injected RetryGroupHistoryShare
+    /// failure answers the retryable failure and keeps the
+    /// prepared share, so the next retry still lands it.
+    #[test]
+    fn injected_history_retry_failure_keeps_the_share() {
+        let fake = FakeBackend {
+            fail_next: vec!["RetryGroupHistoryShare"],
+            ..FakeBackend::auto()
+        };
+        let ch = start(fake);
+        linked(&ch);
+        // A flaky add fails the share retryably and prepares
+        // the retry.
+        ch.commands
+            .send(BackendCommand::AddGroupParticipantsWithHistory {
+                chat_jid: FAKE_GROUP_JID.to_owned(),
+                participants: vec!["flaky1@s.whatsapp.net".to_owned()],
+                history: vec![crate::HistoryMessageRecord {
+                    id: "h1".to_owned(),
+                    author_jid: Some(FAKE_MEMBER2_JID.to_owned()),
+                    from_me: false,
+                    timestamp: 1_700_000_100,
+                    body: "first".to_owned(),
+                    mentions: Vec::new(),
+                    delivery: None,
+                }],
+            })
+            .unwrap();
+        let events =
+            collect_until(&ch, &|e| matches!(e, BackendEvent::GroupHistoryReported { .. }));
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                BackendEvent::GroupHistoryReported {
+                    report: crate::HistoryShareReport::Failed { retryable: true, .. },
+                    ..
+                }
+            )),
+            "the flaky share fails retryably: {events:?}"
+        );
+        // The injected retry failure: same retryable shape,
+        // and the prepared share survives it.
+        ch.commands
+            .send(BackendCommand::RetryGroupHistoryShare { chat_jid: FAKE_GROUP_JID.to_owned() })
+            .unwrap();
+        let events =
+            collect_until(&ch, &|e| matches!(e, BackendEvent::GroupHistoryReported { .. }));
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                BackendEvent::GroupHistoryReported {
+                    report: crate::HistoryShareReport::Failed { error, retryable: true },
+                    ..
+                } if error == "sharing the history failed: connection lost"
+            )),
+            "the injected retry failure answers retryably: {events:?}"
+        );
+        // The next retry lands the share: the injected failure
+        // consumed nothing.
+        ch.commands
+            .send(BackendCommand::RetryGroupHistoryShare { chat_jid: FAKE_GROUP_JID.to_owned() })
+            .unwrap();
+        let events =
+            collect_until(&ch, &|e| matches!(e, BackendEvent::GroupHistoryReported { .. }));
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                BackendEvent::GroupHistoryReported {
+                    report: crate::HistoryShareReport::Shared { messages: 1 },
+                    ..
+                }
+            )),
+            "the kept share lands on the next retry: {events:?}"
         );
         ch.commands.send(BackendCommand::Shutdown).unwrap();
     }

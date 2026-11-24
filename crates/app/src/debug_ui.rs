@@ -219,7 +219,7 @@ impl App {
                 ("backend", format!("JoinRequests {chat_jid}: {} pending", requests.len()), None)
             }
             BackendEvent::Error { message } => ("backend", format!("Error: {message}"), None),
-            BackendEvent::IncomingCall { call_id, chat_jid, video } => (
+            BackendEvent::IncomingCall { call_id, chat_jid, video, .. } => (
                 "backend",
                 format!("IncomingCall {call_id} from {chat_jid} (video: {video})"),
                 None,

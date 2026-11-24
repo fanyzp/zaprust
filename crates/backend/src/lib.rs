@@ -960,6 +960,101 @@ pub enum BackendCommand {
         /// True for the alternate (speaker) output device.
         speaker: bool,
     },
+    /// Start an outgoing group call bound to a group chat: the
+    /// group's current members are rung. Answered like
+    /// [`BackendCommand::StartCall`], with the call's phases on
+    /// [`BackendEvent::CallChanged`] and its roster on
+    /// [`BackendEvent::CallParticipants`].
+    StartGroupCall {
+        /// Group chat JID.
+        chat_jid: String,
+        /// Whether this is a video call.
+        video: bool,
+    },
+    /// Turn the local camera on or off in the current call. On a
+    /// call that started as voice this upgrades it to video.
+    /// The confirmed state answers on
+    /// [`BackendEvent::CallVideoState`]; a failure answers with
+    /// [`BackendEvent::CallControlFailed`].
+    SetCallVideo {
+        /// True to start sending video, false to stop.
+        on: bool,
+    },
+    /// Send an in-call reaction (an emoji shown against my name
+    /// for the other participants). An empty emoji clears it.
+    /// A failure answers with
+    /// [`BackendEvent::CallControlFailed`].
+    SendCallReaction {
+        /// The reaction emoji, or empty to clear.
+        emoji: String,
+    },
+    /// Raise or lower my hand in the current group or link
+    /// call. A failure answers with
+    /// [`BackendEvent::CallControlFailed`].
+    SetCallHandRaised {
+        /// True to raise, false to lower.
+        raised: bool,
+    },
+    /// Invite one more person into the current group call (and
+    /// ring them). A failure answers with
+    /// [`BackendEvent::CallControlFailed`].
+    InviteCallParticipant {
+        /// JID of the person to invite.
+        jid: String,
+    },
+    /// Create a call link others can join. Answered with
+    /// [`BackendEvent::CallLinkCreated`] or
+    /// [`BackendEvent::CallLinkFailed`].
+    CreateCallLink {
+        /// True for a video link, false for an audio link.
+        video: bool,
+    },
+    /// Read a call link's facts (creator, kind, waiting room)
+    /// before joining it. Answered with
+    /// [`BackendEvent::CallLinkPreview`] or
+    /// [`BackendEvent::CallLinkFailed`].
+    PreviewCallLink {
+        /// The link's URL or bare token.
+        link: String,
+    },
+    /// Join a call through a call link. The call then behaves
+    /// like a group call: phases on
+    /// [`BackendEvent::CallChanged`], roster on
+    /// [`BackendEvent::CallParticipants`]. When the link's
+    /// waiting room requires approval, the call sits in
+    /// Connecting until the host admits this device; a denial
+    /// or a join failure ends it with the reason on the Ended
+    /// phase change.
+    JoinCallLink {
+        /// The link's URL or bare token.
+        link: String,
+        /// The link's kind, as its preview reported it: a video
+        /// link must be joined with video endpoints, an audio
+        /// link without them.
+        video: bool,
+    },
+    /// Let one waiting person into the current call (host
+    /// side). A failure answers with
+    /// [`BackendEvent::CallControlFailed`].
+    AdmitWaitingUser {
+        /// JID of the waiting person.
+        jid: String,
+    },
+    /// Refuse one waiting person entry to the current call
+    /// (host side). A failure answers with
+    /// [`BackendEvent::CallControlFailed`].
+    DenyWaitingUser {
+        /// JID of the waiting person.
+        jid: String,
+    },
+    /// Turn the current call's waiting-room approval on or off
+    /// (host side). A failure answers with
+    /// [`BackendEvent::CallControlFailed`].
+    SetCallApproval {
+        /// True to require approval, false to let link guests
+        /// in directly.
+        enabled: bool,
+    },
     /// Create a poll in a chat.
     CreatePoll {
         /// Chat JID.
@@ -2009,6 +2104,36 @@ pub enum MediaKind {
     Document,
     /// Sticker.
     Sticker,
+}
+
+/// One participant in a group or call-link call, as the call
+/// engine's authoritative roster snapshot reports them. The
+/// backend re-sends the whole roster on every change
+/// ([`BackendEvent::CallParticipants`]); the app replaces its
+/// copy, never merges.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallParticipant {
+    /// The participant's JID.
+    pub jid: String,
+    /// The roster's state word for them ("connected",
+    /// "ringing", "left", ...), in the protocol's own terms;
+    /// empty when the roster carries none.
+    pub state: String,
+    /// Their hand is raised.
+    pub hand_raised: bool,
+    /// They are sharing their screen.
+    pub sharing: bool,
+}
+
+/// One person waiting in a call's waiting room for the host to
+/// let them in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallWaitingUser {
+    /// The waiting person's JID.
+    pub jid: String,
+    /// Their phone number, when the waiting-room snapshot
+    /// carries one alongside the JID.
+    pub phone: Option<String>,
 }
 
 /// Lifecycle of a voice/video call, in the terms the app renders.
@@ -3848,15 +3973,20 @@ pub enum BackendEvent {
     /// for blocks, and a client that only remembers its own
     /// toggles shows the wrong state after a restart.
     Blocklist(Vec<String>),
-    /// An incoming 1:1 call is ringing. Accept or reject it with
+    /// An incoming call is ringing. Accept or reject it with
     /// the matching commands; only one call exists at a time.
     IncomingCall {
         /// Call identifier (protocol call id).
         call_id: String,
-        /// Chat JID of the caller (the 1:1 chat with them).
+        /// Chat JID of the caller (the 1:1 chat with them). For
+        /// a group invitation this is the group's chat JID: the
+        /// call belongs to the group, whoever sent the invite.
         chat_jid: String,
         /// Whether the offer asks for video.
         video: bool,
+        /// The group this invitation belongs to, when it is a
+        /// group call invitation; None for a 1:1 call.
+        group_jid: Option<String>,
     },
     /// An in-call audio toggle (mute, speaker) was applied by
     /// the call engine: the confirmed state, answering
@@ -3946,6 +4076,128 @@ pub enum BackendEvent {
         /// When the call ended elsewhere, unix seconds (the
         /// protocol event's own timestamp).
         at: i64,
+    },
+    /// The current group or link call's roster, re-sent whole
+    /// on every change (someone joins, leaves, raises a hand,
+    /// starts or stops sharing). The app replaces its copy.
+    CallParticipants {
+        /// The roster, in the call engine's own order.
+        participants: Vec<CallParticipant>,
+    },
+    /// A participant's in-call reaction changed. Reactions ride
+    /// the same channel as the roster but arrive on their own
+    /// events: they are transient display state, not roster
+    /// facts.
+    CallReaction {
+        /// JID of the participant reacting.
+        jid: String,
+        /// Their current reaction, or None when it cleared.
+        emoji: Option<String>,
+    },
+    /// The current call's waiting room, re-sent whole on every
+    /// change. Only a call with a waiting room (a hosted call
+    /// link) produces these.
+    CallWaitingRoom {
+        /// This device hosts the call and may admit or deny.
+        is_admin: bool,
+        /// Joining currently requires the host's approval.
+        approval_required: bool,
+        /// The people waiting, in arrival order.
+        users: Vec<CallWaitingUser>,
+    },
+    /// The current call's video state, confirmed by the call
+    /// engine: answers [`BackendCommand::SetCallVideo`] and
+    /// reports the peer's side as it changes.
+    CallVideoState {
+        /// My camera is sending.
+        local_on: bool,
+        /// The other side's video is on (a peer's camera, or
+        /// any group participant's).
+        remote_on: bool,
+        /// Why local video cannot run, when it cannot (no
+        /// camera on this machine, the camera would not open),
+        /// in user words. None when local video works.
+        local_note: Option<String>,
+    },
+    /// One remote video frame (an encoded H.264 access unit)
+    /// for the call's video stage. Frames are the one event
+    /// kind the backend may drop under pressure (see
+    /// [`EventSink::try_emit`]): a stale frame is worthless
+    /// once the next one exists, and the decoder resyncs at
+    /// the next keyframe.
+    CallVideoAu {
+        /// JID of the participant sending these frames, in a
+        /// group or link call; None on a 1:1 call, where the
+        /// sender is the peer by definition.
+        sender: Option<String>,
+        /// The access unit, Annex-B start codes included.
+        data: Vec<u8>,
+        /// The unit carries a keyframe (a decoder can start
+        /// or resync from it).
+        keyframe: bool,
+        /// Frame rotation bits (0..3) from the stream's own
+        /// metadata.
+        orientation: u8,
+    },
+    /// The local camera's latest preview frame, already
+    /// decoded and downscaled by the capture side: RGBA
+    /// pixels for the call card's local tile. Dropped under
+    /// pressure like [`BackendEvent::CallVideoAu`]; only the
+    /// newest preview matters.
+    CallVideoFrame {
+        /// RGBA pixels, row-major, `width` by `height`.
+        rgba: Vec<u8>,
+        /// Frame width in pixels.
+        width: u32,
+        /// Frame height in pixels.
+        height: u32,
+    },
+    /// A call link was created: the answer to
+    /// [`BackendCommand::CreateCallLink`].
+    CallLinkCreated {
+        /// The link's URL, ready to share.
+        url: String,
+        /// True for a video link.
+        video: bool,
+    },
+    /// A call link's facts, read before joining: the answer to
+    /// [`BackendCommand::PreviewCallLink`].
+    CallLinkPreview {
+        /// The link's canonical URL.
+        url: String,
+        /// JID of the account that created the link.
+        creator_jid: String,
+        /// True for a video link.
+        video: bool,
+        /// Joining waits for the host to admit this device.
+        waiting_room: bool,
+    },
+    /// Creating or reading a call link failed: the answer to
+    /// [`BackendCommand::CreateCallLink`] and
+    /// [`BackendCommand::PreviewCallLink`]. Typed, like
+    /// [`BackendEvent::CallAudioFailed`], so the link dialog
+    /// can show the failure where the user is looking instead
+    /// of relying on the generic error path.
+    CallLinkFailed {
+        /// Why it failed, in user words.
+        message: String,
+    },
+    /// An in-call control other than the audio toggles failed:
+    /// the answer to [`BackendCommand::SetCallVideo`],
+    /// [`BackendCommand::SendCallReaction`],
+    /// [`BackendCommand::SetCallHandRaised`],
+    /// [`BackendCommand::InviteCallParticipant`],
+    /// [`BackendCommand::AdmitWaitingUser`],
+    /// [`BackendCommand::DenyWaitingUser`] or
+    /// [`BackendCommand::SetCallApproval`] when the call
+    /// engine refuses or no call is in progress. Typed for the
+    /// same reason [`BackendEvent::CallAudioFailed`] is: the
+    /// app flips the video and hand toggles optimistically and
+    /// must revert exactly those flips, and an unrelated
+    /// generic error must never trip that revert.
+    CallControlFailed {
+        /// Why the control failed, in user words.
+        message: String,
     },
     /// A media download finished; the file is on disk.
     MediaSaved {
@@ -4663,10 +4915,16 @@ pub enum BackendEvent {
 /// frame into its own queue, emptying a full channel in well
 /// under a second of frames. Past the capacity, `emit` blocks:
 /// backpressure paces the backend (and, behind it, the library's
-/// delivery worker) instead of dropping anything. No event kind
-/// is droppable (message upserts carry chat content, the *Changed
-/// events carry state assertions, receipts carry read state), so
-/// blocking is the only honest overflow behavior.
+/// delivery worker) instead of dropping anything. No state event
+/// kind is droppable (message upserts carry chat content, the
+/// *Changed events carry state assertions, receipts carry read
+/// state), so blocking is the only honest overflow behavior for
+/// them. The two call-video frame kinds are the single carved
+/// out exception: a video frame is worthless once its successor
+/// exists, so those go through [`EventSink::try_emit`] and may
+/// be dropped when the channel is full, exactly like a media
+/// pipeline dropping a frame it cannot use in time; the video
+/// decoder resyncs at the next keyframe.
 const EVENT_CHANNEL_CAPACITY: usize = 8192;
 
 /// The sending half of the event channel, with the wake hook attached.
@@ -4688,6 +4946,21 @@ impl EventSink {
     pub fn emit(&self, event: BackendEvent) {
         if self.tx.send(event).is_ok() {
             (self.wake)();
+        }
+    }
+
+    /// Queues an event only if the channel has room right now;
+    /// returns whether it was queued. Reserved for the two
+    /// call-video frame kinds ([`BackendEvent::CallVideoAu`],
+    /// [`BackendEvent::CallVideoFrame`]): media frames may be
+    /// dropped when the UI has stalled, state events may not,
+    /// so nothing else may call this.
+    pub fn try_emit(&self, event: BackendEvent) -> bool {
+        if self.tx.try_send(event).is_ok() {
+            (self.wake)();
+            true
+        } else {
+            false
         }
     }
 }

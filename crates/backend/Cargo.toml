@@ -22,7 +22,7 @@ whatsapp = ["dep:whatsapp-rust", "dep:diesel", "dep:tokio", "dep:tracing", "dep:
 # using the library's umbrella `voip` feature: the umbrella pulls
 # voip-libopus (a C library binding), while WhatsApp calls natively
 # speak MLOW and the PCM path needs no C codec.
-calls = ["whatsapp", "whatsapp-rust/voip-mlow", "whatsapp-rust/voip-relay-native", "dep:cpal"]
+calls = ["whatsapp", "whatsapp-rust/voip-mlow", "whatsapp-rust/voip-relay-native", "dep:cpal", "dep:openh264", "dep:v4l"]
 
 [dependencies]
 # Core for one shared piece of pure logic: the crash display
@@ -36,6 +36,18 @@ directories = "6"
 # Microphone/speaker I/O for calls (the `calls` feature). The same
 # major version the pinned library's voip example builds against.
 cpal = { version = "0.18", optional = true }
+# H.264 encode for the call camera (the `calls` feature): the same
+# vendored crate the app decodes chat video with, so one codec
+# implementation serves both directions. The protocol library
+# transports pre-encoded Annex-B access units and never touches
+# pixels, so the codec lives with the consumer: encode here, next
+# to the camera; decode in the app, next to the screen.
+openh264 = { version = "0.9", optional = true }
+# Camera capture for calls (the `calls` feature): pure-Rust
+# Video4Linux2, no C dependencies. A machine without a camera is
+# a normal case the call layer handles (receive-only video), not
+# a build variant.
+v4l = { version = "0.14", optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "time", "sync"], optional = true }
 tracing = { version = "0.1", optional = true }
 # HTTP client for one call in the whatsapp module: downloading

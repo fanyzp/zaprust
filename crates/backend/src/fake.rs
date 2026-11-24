@@ -4932,6 +4932,7 @@ fn emit_linked_script(
                 call_id,
                 chat_jid: FAKE_DM_JID.to_owned(),
                 video: false,
+                group_jid: None,
             });
         }
     }

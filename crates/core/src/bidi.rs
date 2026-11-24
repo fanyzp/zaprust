@@ -127,13 +127,10 @@ fn joining(cp: u32) -> Join {
 /// (isolated, final, initial, medial), zero where a form
 /// does not exist.
 fn letter_forms(cp: u32) -> Option<(u32, u32, u32, u32)> {
-    LETTER_FORMS
-        .binary_search_by_key(&cp, |e| e.0)
-        .ok()
-        .map(|i| {
-            let e = &LETTER_FORMS[i];
-            (e.2, e.3, e.4, e.5)
-        })
+    LETTER_FORMS.binary_search_by_key(&cp, |e| e.0).ok().map(|i| {
+        let e = &LETTER_FORMS[i];
+        (e.2, e.3, e.4, e.5)
+    })
 }
 
 /// Reshapes the Arabic letters of one paragraph (logical
@@ -196,10 +193,9 @@ fn reshape_arabic(text: &str) -> String {
             i += 1;
             continue;
         };
-        let back = matches!(prev_join(i), Join::D | Join::C)
-            && matches!(mine, Join::D | Join::R);
-        let fwd = matches!(mine, Join::D | Join::C)
-            && matches!(next_join(i + 1), Join::D | Join::R);
+        let back = matches!(prev_join(i), Join::D | Join::C) && matches!(mine, Join::D | Join::R);
+        let fwd =
+            matches!(mine, Join::D | Join::C) && matches!(next_join(i + 1), Join::D | Join::R);
         let form = match (back, fwd) {
             (true, true) if medial != 0 => medial,
             (true, _) => fin,
@@ -217,7 +213,6 @@ fn push_cp(out: &mut String, cp: u32) {
         out.push(c);
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -259,10 +254,7 @@ mod tests {
         // In السلام: isolated alef, initial lam, medial seen,
         // the lam-alef ligature in final form (the seen joins
         // into it), isolated meem; reversed for display.
-        assert_eq!(
-            display("السلام"),
-            "\u{FEE1}\u{FEFC}\u{FEB4}\u{FEDF}\u{FE8D}"
-        );
+        assert_eq!(display("السلام"), "\u{FEE1}\u{FEFC}\u{FEB4}\u{FEDF}\u{FE8D}");
     }
 
     #[test]
@@ -270,10 +262,7 @@ mod tests {
         // An LTR paragraph (first strong is Latin) keeps its
         // Latin order; the Arabic run inside is shaped and
         // reversed as one unit.
-        assert_eq!(
-            display("abc مرحبا def"),
-            "abc \u{FE8E}\u{FE92}\u{FEA3}\u{FEAE}\u{FEE3} def"
-        );
+        assert_eq!(display("abc مرحبا def"), "abc \u{FE8E}\u{FE92}\u{FEA3}\u{FEAE}\u{FEE3} def");
     }
 
     #[test]

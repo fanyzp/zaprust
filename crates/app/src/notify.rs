@@ -249,7 +249,11 @@ impl App {
             // chat: the whole drain folds into one generic
             // popup, whatever the preview toggle says.
             if !popups.is_empty() {
-                fire_os_notification("Zaprust".to_owned(), "New message".to_owned(), settings.sound);
+                fire_os_notification(
+                    "Zaprust".to_owned(),
+                    "New message".to_owned(),
+                    settings.sound,
+                );
             }
             return;
         }

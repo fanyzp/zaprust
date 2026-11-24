@@ -381,7 +381,9 @@ impl App {
                                     // exhaustiveness. The counted
                                     // filters exclude locked chats
                                     // like the lists they label do.
-                                    ChatFilter::All | ChatFilter::Archived | ChatFilter::Locked => 0,
+                                    ChatFilter::All | ChatFilter::Archived | ChatFilter::Locked => {
+                                        0
+                                    }
                                     ChatFilter::Unread => self
                                         .chats
                                         .iter()
@@ -390,7 +392,9 @@ impl App {
                                     ChatFilter::Private => self
                                         .chats
                                         .iter()
-                                        .filter(|c| !c.archived && !c.locked && c.kind == ChatKind::Dm)
+                                        .filter(|c| {
+                                            !c.archived && !c.locked && c.kind == ChatKind::Dm
+                                        })
                                         .count(),
                                     ChatFilter::Favorites => self
                                         .chats
@@ -400,12 +404,16 @@ impl App {
                                     ChatFilter::Groups => self
                                         .chats
                                         .iter()
-                                        .filter(|c| !c.archived && !c.locked && c.kind == ChatKind::Group)
+                                        .filter(|c| {
+                                            !c.archived && !c.locked && c.kind == ChatKind::Group
+                                        })
                                         .count(),
                                     ChatFilter::Channels => self
                                         .chats
                                         .iter()
-                                        .filter(|c| !c.archived && !c.locked && c.kind == ChatKind::Channel)
+                                        .filter(|c| {
+                                            !c.archived && !c.locked && c.kind == ChatKind::Channel
+                                        })
                                         .count(),
                                 };
                                 let name = crate::i18n::t(filter_label_key(f));
@@ -501,8 +509,7 @@ impl App {
                             Vec2::new(ui.available_width(), 48.0),
                             Sense::click(),
                         );
-                        let hov =
-                            crate::anim::hover_factor(ui, "locked_entry_row", resp.hovered());
+                        let hov = crate::anim::hover_factor(ui, "locked_entry_row", resp.hovered());
                         if hov > 0.001 {
                             ui.painter().rect_filled(
                                 rect,
@@ -674,8 +681,7 @@ impl App {
                             )
                             .clicked()
                             {
-                                row_action
-                                    .set(Some((chat.id, RowPick::SetLocked(!chat.locked))));
+                                row_action.set(Some((chat.id, RowPick::SetLocked(!chat.locked))));
                                 ui.close();
                             }
                             let fav_label = if chat.favorite {
@@ -892,11 +898,7 @@ impl App {
             if crate::widgets::button(
                 ui,
                 t,
-                &crate::i18n::t(if has_code {
-                    "locked.enter_code"
-                } else {
-                    "locked.create_code"
-                }),
+                &crate::i18n::t(if has_code { "locked.enter_code" } else { "locked.create_code" }),
                 crate::widgets::Btn::Primary,
             )
             .clicked()

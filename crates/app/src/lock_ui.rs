@@ -30,7 +30,8 @@ impl App {
             return;
         };
         let exiting = self.code_prompt.is_none();
-        let Some(prompt) = ctx.data(|d| d.get_temp::<CodePrompt>(egui::Id::unique("code_prompt_snap")))
+        let Some(prompt) =
+            ctx.data(|d| d.get_temp::<CodePrompt>(egui::Id::unique("code_prompt_snap")))
         else {
             return;
         };
@@ -71,10 +72,7 @@ impl App {
                                 crate::i18n::t("locked.create_body"),
                             )
                         } else {
-                            (
-                                crate::i18n::t("nav.locked"),
-                                crate::i18n::t("locked.prompt_body"),
-                            )
+                            (crate::i18n::t("nav.locked"), crate::i18n::t("locked.prompt_body"))
                         };
                         ui.label(RichText::new(title).size(15.0).strong());
                         ui.add_space(SP_1);
@@ -96,9 +94,7 @@ impl App {
                             // the code can be typed at once.
                             field.request_focus();
                         }
-                        if field.lost_focus()
-                            && ctx.input(|i| i.key_pressed(egui::Key::Enter))
-                        {
+                        if field.lost_focus() && ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
                             submit = true;
                         }
                         if create {
@@ -110,8 +106,7 @@ impl App {
                                 &crate::i18n::t("locked.repeat_hint"),
                                 280.0,
                             );
-                            if repeat.lost_focus()
-                                && ctx.input(|i| i.key_pressed(egui::Key::Enter))
+                            if repeat.lost_focus() && ctx.input(|i| i.key_pressed(egui::Key::Enter))
                             {
                                 submit = true;
                             }
@@ -163,7 +158,12 @@ impl App {
                     });
                 });
             });
-        crate::anim::popup_transform(ctx, egui::Id::unique("code_prompt"), ctx.content_rect().center(), p);
+        crate::anim::popup_transform(
+            ctx,
+            egui::Id::unique("code_prompt"),
+            ctx.content_rect().center(),
+            p,
+        );
         if cancel && !exiting {
             self.close_code_prompt();
         }
@@ -184,13 +184,12 @@ impl App {
     pub(crate) fn draw_lock_screen(&mut self, ui: &mut egui::Ui) {
         let t = self.tokens();
         let mut submit = false;
-        egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(rgb(t.bg_app)))
-            .show(ui, |ui| {
+        egui::CentralPanel::default().frame(egui::Frame::new().fill(rgb(t.bg_app))).show(
+            ui,
+            |ui| {
                 ui.vertical_centered(|ui| {
                     ui.add_space((ui.available_height() * 0.24).max(24.0));
-                    let (rect, _) =
-                        ui.allocate_exact_size(Vec2::splat(56.0), egui::Sense::hover());
+                    let (rect, _) = ui.allocate_exact_size(Vec2::splat(56.0), egui::Sense::hover());
                     crate::icons::draw(
                         ui.painter(),
                         crate::icons::Icon::Lock,
@@ -221,9 +220,7 @@ impl App {
                     if !field.has_focus() && self.code_error.is_none() {
                         field.request_focus();
                     }
-                    if field.lost_focus()
-                        && ui.ctx().input(|i| i.key_pressed(egui::Key::Enter))
-                    {
+                    if field.lost_focus() && ui.ctx().input(|i| i.key_pressed(egui::Key::Enter)) {
                         submit = true;
                     }
                     if let Some(error) = self.code_error {
@@ -281,7 +278,8 @@ impl App {
                         }
                     }
                 });
-            });
+            },
+        );
         if submit {
             if self.lock_code.as_ref().is_some_and(|c| c.verify(&self.code_entry)) {
                 self.app_locked_now = false;

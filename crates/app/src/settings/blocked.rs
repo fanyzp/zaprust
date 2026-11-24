@@ -83,8 +83,7 @@ impl App {
                     }
                     let chat = self.chats.iter().find(|c| c.id == *id);
                     ui.horizontal(|ui| {
-                        let (rect, _) =
-                            ui.allocate_exact_size(Vec2::splat(40.0), Sense::hover());
+                        let (rect, _) = ui.allocate_exact_size(Vec2::splat(40.0), Sense::hover());
                         match chat {
                             Some(chat) => {
                                 crate::widgets::paint_chat_avatar(
@@ -170,7 +169,9 @@ impl App {
             let candidates: Vec<(u64, String)> = self
                 .chats
                 .iter()
-                .filter(|c| c.kind == core::model::ChatKind::Dm && !self.blocked_chats.contains(&c.id))
+                .filter(|c| {
+                    c.kind == core::model::ChatKind::Dm && !self.blocked_chats.contains(&c.id)
+                })
                 .map(|c| (c.id, c.title.clone()))
                 .collect();
             settings_card(ui, t, |ui| {

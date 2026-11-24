@@ -48,11 +48,8 @@ fn report(ctx: &egui::Context, stack: &str) {
             );
             let galley = fonts.layout_job(job);
             for row in &galley.rows {
-                let seq: Vec<String> = row
-                    .glyphs
-                    .iter()
-                    .map(|g| format!("{}@{:.0}", g.chr, g.pos.x))
-                    .collect();
+                let seq: Vec<String> =
+                    row.glyphs.iter().map(|g| format!("{}@{:.0}", g.chr, g.pos.x)).collect();
                 println!("   row: {}", seq.join(" "));
             }
         }

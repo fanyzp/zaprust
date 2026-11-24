@@ -6288,8 +6288,7 @@ mod chat_state_routing_tests {
         assert!(chat_locked(&app), "the local flip applies at once");
         assert!(store_row(&app).locked, "the archive write-through carries the lock");
         assert!(app.pending_lock_actions.contains_key(&chat_id));
-        tx.send(BackendEvent::LockChanged { chat_jid: CHAT_JID.to_owned(), locked: true })
-            .unwrap();
+        tx.send(BackendEvent::LockChanged { chat_jid: CHAT_JID.to_owned(), locked: true }).unwrap();
         drain_all(&mut app, &ctx);
         assert!(app.pending_lock_actions.is_empty(), "the report settles the lock");
         assert!(chat_locked(&app));
@@ -6324,8 +6323,7 @@ mod chat_state_routing_tests {
     pub(super) fn lock_changed_from_elsewhere_lands() {
         let (mut app, tx, ctx, _cmd_rx) = live_app();
         seed_chat(&mut app, &tx, &ctx);
-        tx.send(BackendEvent::LockChanged { chat_jid: CHAT_JID.to_owned(), locked: true })
-            .unwrap();
+        tx.send(BackendEvent::LockChanged { chat_jid: CHAT_JID.to_owned(), locked: true }).unwrap();
         drain_all(&mut app, &ctx);
         assert!(chat_locked(&app));
         assert!(store_row(&app).locked);

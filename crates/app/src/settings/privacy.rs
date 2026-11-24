@@ -208,9 +208,7 @@ impl App {
             );
             if let Some(key) = self.lock_form_error {
                 ui.add_space(SP_1);
-                ui.label(
-                    RichText::new(crate::i18n::t(key)).size(12.0).color(rgb(t.danger)),
-                );
+                ui.label(RichText::new(crate::i18n::t(key)).size(12.0).color(rgb(t.danger)));
             }
             ui.add_space(SP_2);
             ui.horizontal(|ui| {
@@ -292,11 +290,7 @@ impl App {
                 }
             }
             Some("change") => {
-                if !self
-                    .lock_code
-                    .as_ref()
-                    .is_some_and(|c| c.verify(&self.lock_current_entry))
-                {
+                if !self.lock_code.as_ref().is_some_and(|c| c.verify(&self.lock_current_entry)) {
                     self.lock_form_error = Some("locked.wrong_code");
                 } else if self.lock_new_entry.chars().count() < core::lockcode::MIN_CODE_LEN {
                     self.lock_form_error = Some("locked.too_short");
@@ -311,11 +305,7 @@ impl App {
                 }
             }
             Some("remove") => {
-                if !self
-                    .lock_code
-                    .as_ref()
-                    .is_some_and(|c| c.verify(&self.lock_current_entry))
-                {
+                if !self.lock_code.as_ref().is_some_and(|c| c.verify(&self.lock_current_entry)) {
                     self.lock_form_error = Some("locked.wrong_code");
                 } else {
                     self.lock_code = None;

@@ -2614,11 +2614,7 @@ impl App {
             app_locked_now: false,
             lock_logout_armed: false,
             folder_unlocked: false,
-            code_prompt: if args.lock_prompt {
-                Some(CodePrompt::OpenFolder)
-            } else {
-                None
-            },
+            code_prompt: if args.lock_prompt { Some(CodePrompt::OpenFolder) } else { None },
             code_entry: String::new(),
             code_entry_repeat: String::new(),
             code_error: None,

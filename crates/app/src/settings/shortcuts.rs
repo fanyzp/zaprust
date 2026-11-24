@@ -25,20 +25,14 @@ impl App {
                     &crate::i18n::t(shortcut.label_key),
                     "",
                     |ui| {
-                        ui.label(
-                            RichText::new(chord)
-                                .size(13.0)
-                                .color(rgb(t.text_secondary)),
-                        );
+                        ui.label(RichText::new(chord).size(13.0).color(rgb(t.text_secondary)));
                     },
                 );
             }
         });
         ui.add_space(SP_2);
         ui.label(
-            RichText::new(crate::i18n::t("shortcuts.note"))
-                .size(12.0)
-                .color(rgb(t.text_faint)),
+            RichText::new(crate::i18n::t("shortcuts.note")).size(12.0).color(rgb(t.text_faint)),
         );
     }
 }

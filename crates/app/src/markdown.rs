@@ -304,11 +304,14 @@ pub(crate) fn galley_leading(
 ) -> Arc<Galley> {
     let mut layout = job(text, size, color, code_bg, mention_color, leading);
     layout.wrap.max_width = wrap;
-    // A single unbroken token (a long link, a pasted hash, a
-    // run of digits) must wrap inside the bubble instead of
-    // overflowing it: WhatsApp breaks such runs, and a bubble
-    // that clips its own text reads as a bug.
-    layout.wrap.break_anywhere = true;
+    // Rows break at word boundaries (then dashes, then
+    // punctuation), never inside a word that fits whole on a
+    // line of its own: a mid-word split with no hyphen reads
+    // as corruption. A single unbroken token longer than the
+    // wrap (a long link, a pasted hash) still breaks, through
+    // the break candidates' last-resort fallback, so it wraps
+    // inside the bubble instead of overflowing it.
+    layout.wrap.break_anywhere = false;
     ui.ctx().fonts_mut(|f| f.layout_job(layout))
 }
 
@@ -625,9 +628,9 @@ mod tests {
         assert_eq!(job_text(&plain), "plain\ntext");
     }
 
-    #[test]
-    fn probe_struck_row_mesh_quads() {
-        let body = showcase_body();
+    /// Lays out `body` the way a bubble paints it (same size,
+    /// same leading, same wrap) inside a throwaway pass.
+    fn bubble_galley(body: &str, wrap: f32) -> std::sync::Arc<eframe::egui::Galley> {
         let ctx = eframe::egui::Context::default();
         crate::theme::install_fonts(&ctx);
         let input = eframe::egui::RawInput {
@@ -637,42 +640,143 @@ mod tests {
             )),
             ..Default::default()
         };
+        let mut galley = None;
         let mut out = ctx.run_pass(input, |ctx| {
-            eframe::egui::Area::new(eframe::egui::Id::unique("probe")).show(ctx, |ui| {
-                let galley = super::galley_leading(
+            eframe::egui::Area::new(eframe::egui::Id::unique("wrap-test")).show(ctx, |ui| {
+                galley = Some(super::galley_leading(
                     ui,
-                    &body,
+                    body,
                     14.5,
                     eframe::egui::Color32::WHITE,
                     eframe::egui::Color32::from_gray(60),
                     eframe::egui::Color32::BLUE,
-                    602.0,
+                    wrap,
                     Some(14.5 * 1.5),
-                );
-                for (ri, row) in galley.rows.iter().enumerate() {
-                    let text: String = row.glyphs.iter().map(|g| g.chr).collect();
-                    // Textured quads: indices/6 in the row mesh
-                    // whose vertices have non-uniform uv (glyph
-                    // quads sample the atlas; solid triangles
-                    // share one uv).
-                    let mut quads = 0;
-                    for tri in row.visuals.mesh.indices.chunks_exact(3) {
-                        let vs: Vec<_> = tri
-                            .iter()
-                            .map(|&i| row.visuals.mesh.vertices[i as usize])
-                            .collect();
-                        if !(vs[0].uv == vs[1].uv && vs[1].uv == vs[2].uv) {
-                            quads += 1;
-                        }
-                    }
-                    eprintln!(
-                        "PROBE row {ri}: glyphs={} textured_tris={} text={text:?}",
-                        row.glyphs.len(),
-                        quads
-                    );
-                }
+                ));
             });
         });
         out.textures_delta.clear();
+        galley.expect("galley laid out")
+    }
+
+    /// VRF-01: the shipped bubble split "install" across rows
+    /// ("inst" / "all") because the wrap allowed a break at any
+    /// character. Rows must break at word boundaries: joining
+    /// the trailing fragment of one row with the leading
+    /// fragment of the next must never rebuild a word that
+    /// would have fitted whole inside the wrap.
+    #[test]
+    fn wrapping_never_splits_a_word_that_fits() {
+        let body = showcase_body();
+        for wrap in [602.0, 585.0, 300.0, 190.0] {
+            let galley = bubble_galley(&body, wrap);
+            let rows: Vec<String> =
+                galley.rows.iter().map(|r| r.glyphs.iter().map(|g| g.chr).collect()).collect();
+            assert!(rows.len() >= 2, "showcase wraps at {wrap}");
+            for pair in rows.windows(2) {
+                let tail: String =
+                    pair[0].chars().rev().take_while(|c| c.is_alphanumeric()).collect::<String>()
+                        .chars().rev().collect();
+                let head: String =
+                    pair[1].chars().take_while(|c| c.is_alphanumeric()).collect();
+                if tail.is_empty() || head.is_empty() {
+                    continue;
+                }
+                let rejoined = format!("{tail}{head}");
+                let width = bubble_galley(&rejoined, f32::INFINITY).size().x;
+                assert!(
+                    width > wrap,
+                    "rows split the word {rejoined:?} at wrap {wrap}: {:?} / {:?}",
+                    pair[0],
+                    pair[1]
+                );
+            }
+        }
+    }
+
+    /// The other half of the wrap contract: a token longer
+    /// than the bubble (a link, a hash) must still break
+    /// across rows instead of overflowing, and every row it
+    /// produces stays inside the wrap.
+    #[test]
+    fn overlong_token_still_breaks_inside_the_wrap() {
+        let token = "a".repeat(90);
+        let body = format!("see {token} end");
+        let galley = bubble_galley(&body, 200.0);
+        assert!(galley.rows.len() >= 4, "the token breaks across rows: {}", galley.rows.len());
+        for row in &galley.rows {
+            let width = row.glyphs.iter().map(|g| g.max_x()).fold(0.0_f32, f32::max);
+            assert!(width <= 200.5, "row stays inside the wrap, got {width}");
+        }
+    }
+
+    /// VRF-01 paint layer: the row mesh is what the tessellator
+    /// copies verbatim into the frame's triangles, so a glyph
+    /// that paints twice (the reported overlap) would show up
+    /// here as extra vertices. Every glyph of the showcase
+    /// body, styled or plain, owns exactly one textured quad
+    /// (four vertices) whose corners are its logical rect, and
+    /// spaces own none. Solid geometry (the mono background,
+    /// the strike band) tessellates as single-uv triangles and
+    /// is not counted as glyph paint.
+    #[test]
+    fn every_glyph_paints_as_exactly_one_quad() {
+        let body = showcase_body();
+        let galley = bubble_galley(&body, 585.0);
+        for row in &galley.rows {
+            let mesh = &row.visuals.mesh;
+            let textured_glyphs = row.glyphs.iter().filter(|g| g.chr != ' ').count();
+            let mut textured_tris = 0;
+            for tri in mesh.indices.chunks_exact(3) {
+                let vs: Vec<_> = tri.iter().map(|&i| mesh.vertices[i as usize]).collect();
+                if !(vs[0].uv == vs[1].uv && vs[1].uv == vs[2].uv) {
+                    textured_tris += 1;
+                }
+            }
+            assert_eq!(
+                textured_tris,
+                textured_glyphs * 2,
+                "one textured quad (two triangles) per glyph in row {:?}",
+                row.text()
+            );
+            for (i, glyph) in row.glyphs.iter().enumerate() {
+                let start = glyph.first_vertex as usize;
+                // The next glyph's first vertex bounds this
+                // glyph's range; the last glyph is followed
+                // only by solid geometry, so its own quad is
+                // the first four vertices of its range.
+                let end = row
+                    .glyphs
+                    .get(i + 1)
+                    .map(|n| n.first_vertex as usize)
+                    .unwrap_or(usize::MAX);
+                if glyph.chr == ' ' {
+                    assert_eq!(end, start, "a space paints no quad");
+                    continue;
+                }
+                let verts = &mesh.vertices[start..(start + 4).min(mesh.vertices.len())];
+                assert_eq!(verts.len(), 4, "glyph {:?} has a quad", glyph.chr);
+                if i + 1 < row.glyphs.len() {
+                    assert_eq!(end, start + 4, "glyph {:?} owns exactly four vertices", glyph.chr);
+                }
+                let rect = glyph.logical_rect();
+                let (mut min_x, mut min_y) = (f32::MAX, f32::MAX);
+                let (mut max_x, mut max_y) = (f32::MIN, f32::MIN);
+                for v in verts {
+                    min_x = min_x.min(v.pos.x);
+                    min_y = min_y.min(v.pos.y);
+                    max_x = max_x.max(v.pos.x);
+                    max_y = max_y.max(v.pos.y);
+                }
+                assert!(
+                    (min_x - rect.min.x).abs() <= 0.01
+                        && (min_y - rect.min.y).abs() <= 0.01
+                        && (max_x - rect.max.x).abs() <= 0.01
+                        && (max_y - rect.max.y).abs() <= 0.01,
+                    "glyph {:?} quad covers its logical rect",
+                    glyph.chr
+                );
+            }
+        }
     }
 }

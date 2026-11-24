@@ -26,7 +26,7 @@
 //! family, opened from a feed row or from My Status.
 
 use crate::state::{App, Notice, PhotoFetchState, StagedStatusMedia, StatusEntry, StatusViewer};
-use crate::theme::rgb;
+use crate::theme::{SP_1, SP_2, SP_3, SP_4, rgb};
 use eframe::egui::{self, Align2, CornerRadius, FontId, Margin, Pos2, RichText, Sense, Vec2};
 
 /// Height of the My Status row and of a feed row: avatar disc
@@ -105,7 +105,7 @@ impl App {
                 .font(crate::theme::semibold(19.0))
                 .color(rgb(t.text_primary)),
         );
-        ui.add_space(12.0);
+        ui.add_space(SP_3);
         // The My Status row: my avatar with the add badge, the
         // title, and the state subtitle. The badge zone opens
         // the composer; the rest of the row opens my statuses
@@ -174,8 +174,9 @@ impl App {
                 FontId::proportional(12.0),
                 rgb(t.text_secondary),
             );
+            let pointer_pos = resp.interact_pointer_pos();
             if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-                if let Some(pos) = resp.interact_pointer_pos() {
+                if let Some(pos) = pointer_pos {
                     if pos.x < rect.left() + 64.0 {
                         open_composer = true;
                     } else if self.updates.mine.is_empty() {
@@ -193,7 +194,7 @@ impl App {
         if open_mine {
             self.open_status_viewer(None, true, 0);
         }
-        ui.add_space(16.0);
+        ui.add_space(SP_4);
         // The feed, grouped by author. Recent holds the
         // authors with anything unviewed; Viewed the rest.
         let rows = self.feed_rows();
@@ -224,7 +225,7 @@ impl App {
         let mut viewed_header_shown = false;
         for row in rows.iter().filter(|r| r.unviewed == 0) {
             if !viewed_header_shown {
-                ui.add_space(12.0);
+                ui.add_space(SP_3);
                 ui.label(
                     RichText::new(crate::i18n::t("updates.viewed"))
                         .font(crate::theme::medium(12.0))
@@ -1240,10 +1241,10 @@ impl App {
                             );
                         }
                         if let Some(error) = &self.updates.error {
-                            ui.add_space(4.0);
+                            ui.add_space(SP_1);
                             ui.label(RichText::new(error.clone()).size(12.0).color(rgb(t.danger)));
                         }
-                        ui.add_space(8.0);
+                        ui.add_space(SP_2);
                         if self.updates.posting {
                             crate::widgets::loading_row(
                                 ui,
@@ -1251,7 +1252,7 @@ impl App {
                                 14.0,
                                 t.text_secondary,
                             );
-                            ui.add_space(8.0);
+                            ui.add_space(SP_2);
                         }
                         ui.horizontal(|ui| {
                             if crate::widgets::button(
@@ -1662,7 +1663,7 @@ impl App {
                                     .size(12.0)
                                     .color(crate::shell::VIEWER_TEXT_SECONDARY),
                             );
-                            ui.add_space(4.0);
+                            ui.add_space(SP_1);
                         }
                         if let Some(error) = &viewer.error {
                             ui.label(
@@ -1670,7 +1671,7 @@ impl App {
                                     .size(12.0)
                                     .color(rgb(self.tokens().danger)),
                             );
-                            ui.add_space(4.0);
+                            ui.add_space(SP_1);
                         }
                         if viewer.mine {
                             if viewer.deleting {
@@ -1709,10 +1710,11 @@ impl App {
                             ui.add_space(6.0);
                             ui.horizontal(|ui| {
                                 let field_w = (stage_w - 24.0 - 52.0).max(80.0);
+                                let t = self.tokens();
                                 if let Some(live_viewer) = &mut self.updates.viewer {
                                     crate::widgets::text_field(
                                         ui,
-                                        self.tokens(),
+                                        t,
                                         &mut live_viewer.reply,
                                         &crate::i18n::t("updates.reply_hint"),
                                         field_w,
@@ -1720,7 +1722,7 @@ impl App {
                                 }
                                 if crate::widgets::icon_button(
                                     ui,
-                                    self.tokens(),
+                                    t,
                                     crate::icons::Icon::Send,
                                     30.0,
                                     &crate::i18n::t("updates.reply_send"),
@@ -1864,9 +1866,10 @@ mod tests {
     /// frames through.
     fn updates_app(ctx: &egui::Context) -> App {
         crate::theme::install_fonts(ctx);
-        let mut args = Args::parse();
-        args.live = false;
-        let mut app = App::new(args, ctx);
+        // App::new may have attempted a real live start against
+        // this machine's data dir; the test owns the state from
+        // here (the calls tests' pattern).
+        let mut app = App::new(Args::parse(), ctx);
         app.live = None;
         app.screen = Screen::Updates;
         app
@@ -2065,7 +2068,7 @@ mod tests {
             media: backend::MediaKind::Photo,
             caption: String::new(),
             seconds: 0,
-            size_bytes: None,
+            size_bytes: 0,
         };
         assert_eq!(status_preview(&photo), "Photo");
         photo.body = "at the beach".to_owned();

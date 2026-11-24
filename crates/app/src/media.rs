@@ -232,7 +232,7 @@ pub(crate) fn jpeg_thumbnail(bytes: &[u8]) -> Vec<u8> {
 /// the same honest floor as a chat video without a thumbnail.
 pub(crate) fn video_poster_jpeg(bytes: &[u8]) -> Option<Vec<u8>> {
     let demuxed = crate::video::demux(bytes).ok()?;
-    let mut decoder = crate::video::VideoDecoder::new(&demuxed).ok()?;
+    let mut decoder = crate::video::DecodeSession::new(&demuxed).ok()?;
     let mut frame = None;
     for unit in &demuxed.units {
         let frames = decoder.decode_unit(unit);

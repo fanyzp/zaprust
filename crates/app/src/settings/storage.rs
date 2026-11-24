@@ -80,7 +80,7 @@ impl App {
                 });
             }
             divider(ui, t);
-            ui.add_space(4.0);
+            ui.add_space(SP_1);
             // Honest storage posture (security audit SEC-07): say
             // plainly how the local data is protected.
             ui.label(
@@ -93,9 +93,9 @@ impl App {
                 .size(12.0)
                 .color(rgb(t.text_secondary)),
             );
-            ui.add_space(4.0);
+            ui.add_space(SP_1);
         });
-        ui.add_space(16.0);
+        ui.add_space(SP_4);
         group_label(ui, t, &crate::i18n::t("storage.caches"));
         settings_card(ui, t, |ui| {
             if self.cache_cleared {

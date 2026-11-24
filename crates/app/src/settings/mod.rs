@@ -20,7 +20,7 @@ mod privacy;
 mod storage;
 
 use crate::state::{App, Notice};
-use crate::theme::rgb;
+use crate::theme::{SP_1, SP_2, SP_4, SP_SECTION, rgb};
 use crate::widgets::{
     avatar, chip, form_row, number_field, radio_row, select, switch, text_field_password,
     FORM_CONTROL_W,
@@ -531,7 +531,7 @@ impl App {
                             self.screen = crate::state::Screen::Chats;
                         }
                     }
-                    ui.add_space(4.0);
+                    ui.add_space(SP_1);
                     ui.label(
                         RichText::new(crate::i18n::t("settings.title"))
                             .font(crate::theme::semibold(19.0)),
@@ -565,7 +565,7 @@ impl App {
                                 self.settings_nav(ui, t);
                             },
                         );
-                        ui.add_space(20.0);
+                        ui.add_space(SP_SECTION);
                         self.settings_page(ui, t);
                     });
                 }
@@ -668,7 +668,7 @@ impl App {
                     activate = Some((tab, id));
                 }
             }
-            ui.add_space(8.0);
+            ui.add_space(SP_2);
         }
         if !any {
             ui.label(
@@ -763,7 +763,7 @@ fn tab_label(item: &str) -> String {
 /// title plus control, the native settings pattern.
 fn page_header(ui: &mut egui::Ui, title: &str) {
     ui.label(RichText::new(title).font(crate::theme::semibold(crate::theme::TEXT_TITLE)));
-    ui.add_space(16.0);
+    ui.add_space(SP_4);
 }
 
 /// Small caps group label above a card.
@@ -807,7 +807,7 @@ fn divider(ui: &mut egui::Ui, _t: core::theme::Tokens) {
 /// applies without a line, and is kept for the one call site
 /// that names it so its grouping rhythm is unchanged.
 fn divider_inset(ui: &mut egui::Ui, _t: core::theme::Tokens, _inset: f32) {
-    ui.add_space(16.0);
+    ui.add_space(SP_4);
 }
 
 /// A settings row: title + description on the left, control on

@@ -37,7 +37,7 @@ impl App {
                 self.set_typing_indicators(tp);
             }
         });
-        ui.add_space(16.0);
+        ui.add_space(SP_4);
         group_label(ui, t, &crate::i18n::t("privacy.default_timer"));
         let scoped = ui.scope(|ui| {
             settings_card(ui, t, |ui| {
@@ -46,7 +46,7 @@ impl App {
                         .size(12.0)
                         .color(rgb(t.text_secondary)),
                 );
-                ui.add_space(4.0);
+                ui.add_space(SP_1);
                 for secs in core::model::EPHEMERAL_OPTIONS {
                     let label = crate::extras::ephemeral_duration_label(secs);
                     if radio_row(ui, t, self.default_ephemeral_secs == secs, None, &label, "") {
@@ -71,7 +71,7 @@ impl App {
             scoped.response.rect,
             t,
         );
-        ui.add_space(16.0);
+        ui.add_space(SP_4);
         group_label(ui, t, &crate::i18n::t("privacy.account"));
         if self.live_mode && !self.privacy_state.is_empty() {
             // These genuinely round-trip to WhatsApp through the
@@ -123,7 +123,7 @@ impl App {
                 );
             });
         }
-        ui.add_space(16.0);
+        ui.add_space(SP_4);
         group_label(ui, t, "Security");
         settings_card(ui, t, |ui| {
             ui.label(

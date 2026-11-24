@@ -15,7 +15,7 @@ use core::model::{Message, MessageKind};
 use eframe::egui::{self, Align2, CornerRadius, Margin, RichText, Vec2};
 
 use crate::state::{App, Notice, UiConfirm};
-use crate::theme::rgb;
+use crate::theme::{SP_1, SP_2, rgb};
 
 /// The six quick reactions offered by the picker (WhatsApp's set).
 pub(crate) const QUICK_REACTIONS: [&str; 6] = ["👍", "❤️", "😂", "😮", "😢", "🙏"];
@@ -538,7 +538,7 @@ impl App {
                         &crate::i18n::t("attach.location_name_hint"),
                         ui.available_width(),
                     );
-                    ui.add_space(4.0);
+                    ui.add_space(SP_1);
                     ui.horizontal(|ui| {
                         let half = (ui.available_width() - 12.0) / 2.0;
                         ui.vertical(|ui| {
@@ -556,7 +556,7 @@ impl App {
                             crate::widgets::text_field(ui, t, &mut draft.longitude, "106.8", half);
                         });
                     });
-                    ui.add_space(8.0);
+                    ui.add_space(SP_2);
                     ui.horizontal(|ui| {
                         if crate::widgets::button(
                             ui,
@@ -791,7 +791,7 @@ impl App {
                     ui.set_width(320.0);
                     ui.add_enabled_ui(!exiting, |ui| {
                         ui.label(RichText::new(&title).size(15.0).strong());
-                        ui.add_space(4.0);
+                        ui.add_space(SP_1);
                         ui.label(RichText::new(&body).size(12.0).color(rgb(t.text_secondary)));
                         if matches!(confirm, UiConfirm::ClearChat { .. }) {
                             // The keep-starred choice the wire

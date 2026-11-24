@@ -12,7 +12,7 @@
 
 use crate::icons::Icon;
 use crate::state::GallerySection;
-use crate::theme::rgb;
+use crate::theme::{SP_2, rgb};
 use core::model::{Message, MessageKind};
 use core::theme::Tokens;
 use eframe::egui::{self, Color32, CornerRadius, Pos2, Rect, RichText, Sense, Vec2};
@@ -106,7 +106,7 @@ pub(super) fn profile_gallery_body(
                 .color(rgb(t.text_primary)),
         );
     });
-    ui.add_space(8.0);
+    ui.add_space(SP_2);
     // Section chips: the filter-chip component, one per
     // section, the active one selected.
     ui.horizontal(|ui| {

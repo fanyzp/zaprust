@@ -266,9 +266,9 @@ impl App {
                 },
             );
         });
-        ui.add_space(16.0);
+        ui.add_space(SP_4);
         self.updates_section(ui, t);
-        ui.add_space(16.0);
+        ui.add_space(SP_4);
         group_label(ui, t, "People");
         settings_card(ui, t, |ui| {
             row_hl(

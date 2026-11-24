@@ -45,7 +45,7 @@ impl App {
             scoped.response.rect,
             t,
         );
-        ui.add_space(16.0);
+        ui.add_space(SP_4);
         group_label(ui, t, &crate::i18n::t("appearance.dynamic_color"));
         let mut picked_seed: Option<core::theme::Rgb> = None;
         let scoped = ui.scope(|ui| {
@@ -100,7 +100,7 @@ impl App {
             self.apply_theme_choice(ui.ctx());
             self.persist_settings();
         }
-        ui.add_space(16.0);
+        ui.add_space(SP_4);
         // The saturation and contrast sliders are calibration
         // controls, not everyday settings: they live under an
         // Advanced disclosure, collapsed by default. Their
@@ -160,7 +160,7 @@ impl App {
                         );
                         changed |= resp.changed();
                     });
-                    ui.add_space(4.0);
+                    ui.add_space(SP_1);
                     if crate::widgets::button(
                         ui,
                         t,
@@ -196,7 +196,7 @@ impl App {
                 t,
             );
         }
-        ui.add_space(16.0);
+        ui.add_space(SP_4);
         group_label(ui, t, &crate::i18n::t("appearance.font_size"));
         let scoped = ui.scope(|ui| {
             settings_card(ui, t, |ui| {
@@ -228,7 +228,7 @@ impl App {
             scoped.response.rect,
             t,
         );
-        ui.add_space(16.0);
+        ui.add_space(SP_4);
         group_label(ui, t, &crate::i18n::t("appearance.motion"));
         let scoped = ui.scope(|ui| {
             settings_card(ui, t, |ui| {
@@ -260,7 +260,7 @@ impl App {
             scoped.response.rect,
             t,
         );
-        ui.add_space(16.0);
+        ui.add_space(SP_4);
         group_label(ui, t, &crate::i18n::t("appearance.language"));
         let scoped = ui.scope(|ui| {
             settings_card(ui, t, |ui| {

@@ -5,7 +5,7 @@
 
 use super::ProfileIntents;
 use crate::icons::Icon;
-use crate::theme::{medium, rgb};
+use crate::theme::{medium, rgb, SP_1, SP_2, SP_3, SP_SECTION};
 use crate::widgets::{chip, paint_chat_avatar_photo, verified_badge};
 use core::model::Chat;
 use core::theme::Tokens;
@@ -112,17 +112,6 @@ pub(super) const DOCK_ACTION_H: f32 = 66.0;
 
 /// Diameter of the disc behind an action cell's icon.
 pub(super) const DOCK_ACTION_DISC: f32 = 44.0;
-
-/// The dock spacing scale, a 4 px ladder. Every vertical gap in
-/// the dock is one of these, never an ad-hoc number.
-pub(super) const SP_1: f32 = 4.0;
-
-pub(super) const SP_2: f32 = 8.0;
-
-pub(super) const SP_3: f32 = 12.0;
-
-/// Gap above a section.
-pub(super) const SP_SECTION: f32 = 20.0;
 
 /// The resting fill rows paint their hover and pressed states
 /// from: the dock panel itself. Sections are flat, in the

@@ -5,7 +5,7 @@
 //! recorder wiring live here, since both are composer attachments.
 
 use super::*;
-use crate::theme::rgb;
+use crate::theme::{SP_2, SP_3, rgb};
 use core::model::{Message, MessageKind};
 use core::theme::Tokens;
 use eframe::egui::{Align, CornerRadius, Layout, Margin, Pos2, RichText, Sense, Stroke, Vec2};
@@ -981,7 +981,7 @@ impl App {
                             {
                                 rotate = true;
                             }
-                            ui.add_space(8.0);
+                            ui.add_space(SP_2);
                             let aspects = [
                                 (crate::i18n::t("editor.aspect_free"), state::CropAspect::Free),
                                 (
@@ -1015,7 +1015,7 @@ impl App {
                                 }
                             }
                         });
-                        ui.add_space(12.0);
+                        ui.add_space(SP_3);
                         ui.horizontal(|ui| {
                             if crate::widgets::button(
                                 ui,

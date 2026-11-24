@@ -8,7 +8,7 @@
 
 use crate::icons::{draw as draw_icon, Icon};
 use crate::state::{App, Notice, PairMode, Screen};
-use crate::theme::rgb;
+use crate::theme::{SP_2, SP_3, SP_4, SP_6, rgb};
 use crate::widgets::paint_avatar;
 use core::theme::Tokens;
 use eframe::egui::{
@@ -157,7 +157,7 @@ impl App {
                 // (crash_ui::draw_crash_banner).
                 if self.crash_report.is_some() {
                     self.draw_crash_banner(&mut col, col_w);
-                    col.add_space(16.0);
+                    col.add_space(SP_4);
                 }
                 // The steps both arrangements show, named by the
                 // pairing path the user is on.
@@ -197,7 +197,7 @@ impl App {
                                     ui.add_space(14.0);
                                     self.connect_status_line(ui, t, WIDE_STEPS_W);
                                 });
-                                ui.add_space(24.0);
+                                ui.add_space(SP_6);
                                 ui.allocate_ui_with_layout(
                                     Vec2::new(col_w - 40.0 - WIDE_STEPS_W - 24.0, 300.0),
                                     egui::Layout::top_down(egui::Align::Center),
@@ -219,7 +219,7 @@ impl App {
                     // status line under it names the current
                     // state, all in reserved space.
                     steps_stepper(&mut col, t, steps, complete);
-                    col.add_space(8.0);
+                    col.add_space(SP_2);
                     self.connect_status_line(&mut col, t, COL_W);
                     col.add_space(14.0);
                 }
@@ -276,7 +276,7 @@ impl App {
                     match self.connect_qr() {
                         crate::live::ConnectQr::Live(matrix) => {
                             draw_qr_matrix(ui.painter(), rect, matrix);
-                            ui.add_space(12.0);
+                            ui.add_space(SP_3);
                             let fake = self.live.as_ref().is_some_and(|s| s.fake);
                             ui.label(
                                 RichText::new(if fake {
@@ -457,7 +457,7 @@ impl App {
             Slot::Demo => {
                 slot.add_space(84.0);
                 slot.label(RichText::new(crate::i18n::t("connect.demo_title")).size(15.0).strong());
-                slot.add_space(8.0);
+                slot.add_space(SP_2);
                 slot.label(
                     RichText::new(crate::i18n::t("connect.demo_body"))
                         .size(12.0)
@@ -476,13 +476,13 @@ impl App {
     /// back in (a fresh link, which starts a new session).
     fn connect_logged_out_panel(&mut self, ui: &mut egui::Ui, t: Tokens) {
         ui.label(RichText::new(crate::i18n::t("connect.logged_out_title")).size(15.0).strong());
-        ui.add_space(8.0);
+        ui.add_space(SP_2);
         ui.label(
             RichText::new(crate::i18n::t("connect.logged_out_body"))
                 .size(12.0)
                 .color(rgb(t.text_secondary)),
         );
-        ui.add_space(12.0);
+        ui.add_space(SP_3);
         if crate::widgets::button(
             ui,
             t,
@@ -506,9 +506,9 @@ impl App {
     /// the same text is not repeated as a banner over it.
     fn connect_start_failed_panel(&mut self, ui: &mut egui::Ui, t: Tokens, message: &str) {
         ui.label(RichText::new(crate::i18n::t("connect.could_not_connect")).size(15.0).strong());
-        ui.add_space(8.0);
+        ui.add_space(SP_2);
         ui.label(RichText::new(message).size(12.0).color(rgb(t.text_secondary)));
-        ui.add_space(12.0);
+        ui.add_space(SP_3);
         ui.horizontal(|ui| {
             if crate::widgets::button(
                 ui,
@@ -556,7 +556,7 @@ impl App {
             ui.label(
                 RichText::new(crate::i18n::t("connect.enter_code_on_phone")).size(15.0).strong(),
             );
-            ui.add_space(12.0);
+            ui.add_space(SP_3);
             // The tiles show a code only when a real one
             // exists: while the flow is still waiting for one,
             // the tiles stay empty, because a dotted tile reads
@@ -650,7 +650,7 @@ impl App {
                     self.country_search.clear();
                 }
             }
-            ui.add_space(8.0);
+            ui.add_space(SP_2);
             // The number field: the selected dial code as a fixed
             // prefix slot inside the field, the national number
             // after it. Every edit recomposes `pair_phone`, the
@@ -660,7 +660,7 @@ impl App {
                 self.pair_phone =
                     crate::countries::compose_number(country.dial, &self.pair_national);
             }
-            ui.add_space(12.0);
+            ui.add_space(SP_3);
             // The shared primary button, stretched across the
             // form width (the same width as the fields above) by
             // a cross-justified layout.
@@ -861,7 +861,7 @@ impl App {
                             "Search country",
                             size.x - 48.0,
                         );
-                        ui.add_space(8.0);
+                        ui.add_space(SP_2);
                         // Only the visible rows are built
                         // (show_rows): building all ~225 rows
                         // every frame would lay out every flag

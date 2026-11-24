@@ -50,7 +50,7 @@ impl App {
     /// search), stored as the raw map `giphy::fetch_params`
     /// validates.
     fn section_gif(&mut self, ui: &mut egui::Ui, t: core::theme::Tokens) {
-        ui.add_space(16.0);
+        ui.add_space(SP_4);
         group_label(ui, t, "GIF search");
         let (limit, rating) = giphy::fetch_params(&self.giphy_prefs);
         let mut new_limit = limit;
@@ -99,7 +99,7 @@ impl App {
     /// OS keyring (or the 0600 fallback file), never in per-feature
     /// config files.
     pub(crate) fn section_credentials(&mut self, ui: &mut egui::Ui, t: core::theme::Tokens) {
-        ui.add_space(16.0);
+        ui.add_space(SP_4);
         group_label(ui, t, "API keys");
         let backend_name = self.credentials.backend_name();
         // A backend whose at-rest protection is weaker than its

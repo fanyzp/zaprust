@@ -2,7 +2,7 @@
 //! context menu (archiving lives here, on the left).
 
 use crate::state::App;
-use crate::theme::rgb;
+use crate::theme::{SP_1, SP_2, rgb};
 use crate::widgets::chip;
 use core::filter::{filter_chats, ChatFilter};
 use core::model::{Chat, ChatKind};
@@ -280,7 +280,7 @@ impl App {
                     &crate::i18n::t("chats.search_hint"),
                     &mut self.search,
                 );
-                ui.add_space(8.0);
+                ui.add_space(SP_2);
                 // Session state row (design standard section 14;
                 // audit S11/S12): while linked, the list says what
                 // the session is doing, so an empty or stale list
@@ -300,21 +300,21 @@ impl App {
                                 .size(12.0)
                                 .color(rgb(t.danger)),
                         );
-                        ui.add_space(8.0);
+                        ui.add_space(SP_2);
                     } else if matches!(session.status, crate::live::LinkStatus::Banned(_)) {
                         ui.label(
                             RichText::new(crate::i18n::t("chats.account_banned"))
                                 .size(12.0)
                                 .color(rgb(t.danger)),
                         );
-                        ui.add_space(8.0);
+                        ui.add_space(SP_2);
                     } else if matches!(session.status, crate::live::LinkStatus::Lost(_)) {
                         ui.label(
                             RichText::new(crate::i18n::t("chats.connection_lost"))
                                 .size(12.0)
                                 .color(rgb(t.text_secondary)),
                         );
-                        ui.add_space(8.0);
+                        ui.add_space(SP_2);
                     } else if session.syncing {
                         // Indeterminate on purpose: the library
                         // offers no honest percentage (its only
@@ -331,7 +331,7 @@ impl App {
                             14.0,
                             t.text_secondary,
                         );
-                        ui.add_space(8.0);
+                        ui.add_space(SP_2);
                     }
                 }
                 // The filter chips live on the shared scrolling
@@ -432,7 +432,7 @@ impl App {
                 {
                     let archived_count = self.chats.iter().filter(|c| c.archived).count();
                     if archived_count > 0 {
-                        ui.add_space(4.0);
+                        ui.add_space(SP_1);
                         let (rect, resp) = ui.allocate_exact_size(
                             Vec2::new(ui.available_width(), 48.0),
                             Sense::click(),
@@ -1386,7 +1386,7 @@ impl App {
                 .font(crate::theme::semibold(12.0))
                 .color(rgb(t.text_secondary)),
         );
-        ui.add_space(4.0);
+        ui.add_space(SP_1);
         if self.global_search.hits.is_empty() {
             ui.label(
                 RichText::new(crate::i18n::t("search.no_messages")).color(rgb(t.text_secondary)),
@@ -1471,7 +1471,7 @@ impl App {
             });
         self.global_search.hits = hits;
         if self.global_search.capped {
-            ui.add_space(4.0);
+            ui.add_space(SP_1);
             ui.label(
                 RichText::new(crate::i18n::tf("search.more", "count", "100"))
                     .size(12.0)

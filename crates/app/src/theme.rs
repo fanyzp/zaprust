@@ -12,6 +12,19 @@ pub(crate) const RADIUS_PANEL: u8 = 20;
 pub(crate) const RADIUS_SMALL: u8 = 12;
 pub(crate) const RADIUS_MICRO: u8 = 8;
 
+/// The spacing scale: a 4 px ladder, the one home every gap
+/// in the app snaps to (promoted from the profile dock, where
+/// the ladder was first named; audit P2-23). Steps are named
+/// by their rung, and SP_SECTION is the wider gap above a
+/// section. A gap that is not one of these values is a
+/// deliberate optical adjustment, not a step.
+pub(crate) const SP_1: f32 = 4.0;
+pub(crate) const SP_2: f32 = 8.0;
+pub(crate) const SP_3: f32 = 12.0;
+pub(crate) const SP_4: f32 = 16.0;
+pub(crate) const SP_6: f32 = 24.0;
+pub(crate) const SP_SECTION: f32 = 20.0;
+
 /// Canonical type scale (design standard): 10 caption, 12
 /// label, 15 body, 19 heading, 23 title, 29 display. Hand-rolled
 /// text snaps to these steps.

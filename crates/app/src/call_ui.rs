@@ -7,7 +7,7 @@ use eframe::egui::{self, Align2, Area, Id, Margin, RichText, Sense, Vec2};
 
 use crate::icons::{self, Icon};
 use crate::state::{App, Notice};
-use crate::theme::rgb;
+use crate::theme::{SP_3, SP_SECTION, rgb};
 
 /// Phases the overlay renders.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -411,7 +411,7 @@ impl App {
                                     (call.chat_id % 251) as u8,
                                 ),
                             }
-                            ui.add_space(12.0);
+                            ui.add_space(SP_3);
                             ui.label(
                                 RichText::new(&call.title)
                                     .font(crate::theme::semibold(19.0))
@@ -422,7 +422,7 @@ impl App {
                                     .size(12.0)
                                     .color(rgb(t.text_secondary)),
                             );
-                            ui.add_space(20.0);
+                            ui.add_space(SP_SECTION);
                             match call.phase {
                                 CallUiPhase::Incoming => {
                                     // Decline and Accept as a

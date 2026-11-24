@@ -138,7 +138,7 @@ impl App {
         if search.changed() {
             self.picker.emoji_search = self.picker.emoji_search.to_lowercase();
         }
-        ui.add_space(4.0);
+        ui.add_space(SP_1);
         let query = self.picker.emoji_search.trim().to_owned();
         let recents = self.picker.emoji_recents.clone();
         egui::ScrollArea::vertical().id_salt("emoji_grid").show(ui, |ui| {
@@ -555,7 +555,7 @@ impl App {
                         ui.label(
                             RichText::new(crate::i18n::t("forward.title")).size(12.0).strong(),
                         );
-                        ui.add_space(4.0);
+                        ui.add_space(SP_1);
                         egui::ScrollArea::vertical()
                             .max_height(320.0)
                             .auto_shrink([false, true])

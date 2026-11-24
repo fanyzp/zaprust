@@ -9,7 +9,7 @@
 //! asking the stream to scroll to and highlight that message.
 
 use crate::state::{App, Screen};
-use crate::theme::rgb;
+use crate::theme::{SP_2, rgb};
 use core::filter::ChatFilter;
 use core::model::{Chat, Message, MessageKind, PreviewMedia};
 use eframe::egui::{self, CornerRadius, FontId, Margin, Pos2, RichText, Sense, Vec2};
@@ -251,7 +251,7 @@ impl App {
                     &crate::i18n::t("chats.search_hint"),
                     &mut self.starred_search,
                 );
-                ui.add_space(8.0);
+                ui.add_space(SP_2);
                 if none_starred {
                     crate::widgets::empty_state(ui, t, &crate::i18n::t("starred.empty"));
                     return;

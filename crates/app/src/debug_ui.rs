@@ -10,6 +10,7 @@ use crate::state::{App, Notice, Screen};
 use backend::BackendEvent;
 use core::debug;
 use eframe::egui::{self, RichText};
+use crate::theme::{SP_2};
 
 impl App {
     /// Records one trace entry (no-op unless debug mode is on)
@@ -394,7 +395,7 @@ impl App {
         if shown == 0 {
             ui.label(RichText::new("(no entries yet)").size(10.0));
         }
-        ui.add_space(8.0);
+        ui.add_space(SP_2);
     }
 
     /// The export-bundle dialog: states exactly what is included,

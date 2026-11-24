@@ -23,7 +23,7 @@ impl App {
                 self.persist_settings();
             }
         });
-        ui.add_space(16.0);
+        ui.add_space(SP_4);
         group_label(ui, t, &crate::i18n::t("chats_page.archiving"));
         settings_card(ui, t, |ui| {
             let mut v = self.keep_archived;

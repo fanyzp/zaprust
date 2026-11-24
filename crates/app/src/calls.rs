@@ -31,7 +31,7 @@
 //! two never mix.
 
 use crate::state::{App, Screen};
-use crate::theme::rgb;
+use crate::theme::{SP_1, SP_2, SP_3, rgb};
 use core::filter::ChatFilter;
 use core::model::{CallDirection, CallEntry, CallKind, Chat, ChatKind};
 use eframe::egui::{
@@ -704,7 +704,7 @@ impl App {
                 // The All / Missed filter as a chip row, the
                 // same strip portrait uses.
                 calls_filter_chips(ui, t, &mut self.calls.missed_only);
-                ui.add_space(8.0);
+                ui.add_space(SP_2);
                 // Search pill, the shared list-panel component.
                 crate::widgets::search_pill(
                     ui,
@@ -749,7 +749,7 @@ impl App {
                                     .font(crate::theme::semibold(12.0))
                                     .color(rgb(t.text_faint)),
                             );
-                            ui.add_space(4.0);
+                            ui.add_space(SP_1);
                             egui::ScrollArea::vertical()
                                 .auto_shrink([false, false])
                                 .content_margin(egui::Margin {
@@ -863,7 +863,7 @@ impl App {
                     });
                 });
                 if self.calls.search_open {
-                    ui.add_space(8.0);
+                    ui.add_space(SP_2);
                     crate::widgets::search_pill(
                         ui,
                         t,
@@ -876,7 +876,7 @@ impl App {
                 // The All / Missed filter as a chip row, the
                 // same strip the desktop panel uses.
                 calls_filter_chips(ui, t, &mut self.calls.missed_only);
-                ui.add_space(12.0);
+                ui.add_space(SP_3);
                 // Shortcut circles, the same row the desktop
                 // panel carries at panel width.
                 let (picked, picker) = calls_shortcut_strip(
@@ -904,7 +904,7 @@ impl App {
                             .font(crate::theme::semibold(15.0))
                             .color(rgb(t.text_primary)),
                     );
-                    ui.add_space(4.0);
+                    ui.add_space(SP_1);
                     egui::ScrollArea::vertical()
                         .auto_shrink([false, false])
                         .content_margin(egui::Margin {

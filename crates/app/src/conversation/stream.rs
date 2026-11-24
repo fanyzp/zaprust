@@ -67,7 +67,7 @@ impl App {
                         14.0,
                         t.text_secondary,
                     );
-                    ui.add_space(8.0);
+                    ui.add_space(SP_2);
                 }
                 // An empty conversation still opens with
                 // the encryption notice (below, the loop
@@ -75,7 +75,7 @@ impl App {
                 // there are messages).
                 if self.conversation.is_empty() {
                     encryption_notice(ui, t);
-                    ui.add_space(8.0);
+                    ui.add_space(SP_2);
                 }
                 let mut actions: Vec<BubbleAction> = Vec::new();
                 crate::anim::begin_message_stream(ui, chat.id);
@@ -206,13 +206,13 @@ impl App {
                         idx == 0 || msg.day_label() != self.conversation[idx - 1].day_label();
                     if day_break {
                         day_chip(ui, t, msg.day_label());
-                        ui.add_space(8.0);
+                        ui.add_space(SP_2);
                     } else if idx > 0 && time_chip_between(&self.conversation[idx - 1], msg) {
                         // A centered time chip when a real pause
                         // separates the runs, the reference
                         // wireframe's "9:41 PM" separator.
                         day_chip(ui, t, &msg.time);
-                        ui.add_space(8.0);
+                        ui.add_space(SP_2);
                     }
                     // The encryption notice is a rendered
                     // row, never a stored message: it opens
@@ -223,13 +223,13 @@ impl App {
                     // scroll math never see it.
                     if idx == 0 {
                         encryption_notice(ui, t);
-                        ui.add_space(8.0);
+                        ui.add_space(SP_2);
                     }
                     if divider_before(idx) {
                         if let Some(d) = divider {
                             unread_divider_row(ui, t, d.count);
                         }
-                        ui.add_space(8.0);
+                        ui.add_space(SP_2);
                     }
                     let sep_break = day_break || divider_before(idx);
                     // Album: two or more consecutive photos or videos
@@ -670,7 +670,7 @@ impl App {
                 }
                 crate::anim::end_message_stream(ui, chat.id);
                 *pending_actions = actions;
-                ui.add_space(4.0);
+                ui.add_space(SP_1);
                 ui.add_space(composer_clearance);
                 // The scroll-to-bottom button's request:
                 // point the cursor at the very end of the

@@ -724,10 +724,10 @@ impl App {
                             );
                         }
                         if let Some(error) = &self.groups.create_error {
-                            ui.add_space(4.0);
+                            ui.add_space(SP_1);
                             ui.label(RichText::new(error.clone()).size(12.0).color(rgb(t.danger)));
                         }
-                        ui.add_space(8.0);
+                        ui.add_space(SP_2);
                         ui.horizontal(|ui| {
                             if crate::widgets::button(
                                 ui,
@@ -843,10 +843,10 @@ impl App {
                             );
                         }
                         if let Some(error) = &self.groups.join_link_error {
-                            ui.add_space(4.0);
+                            ui.add_space(SP_1);
                             ui.label(RichText::new(error.clone()).size(12.0).color(rgb(t.danger)));
                         }
-                        ui.add_space(8.0);
+                        ui.add_space(SP_2);
                         ui.horizontal(|ui| {
                             if crate::widgets::button(
                                 ui,
@@ -946,7 +946,7 @@ impl App {
                             );
                         }
                         if self.new_chat.checking.is_some() {
-                            ui.add_space(4.0);
+                            ui.add_space(SP_1);
                             crate::widgets::loading_row(
                                 ui,
                                 &crate::i18n::t("chats.checking_number"),
@@ -955,7 +955,7 @@ impl App {
                             );
                         }
                         if let Some(phone) = &self.new_chat.not_found {
-                            ui.add_space(4.0);
+                            ui.add_space(SP_1);
                             ui.label(
                                 RichText::new(crate::i18n::tf(
                                     "chats.not_on_whatsapp",
@@ -967,10 +967,10 @@ impl App {
                             );
                         }
                         if let Some(error) = &self.new_chat.error {
-                            ui.add_space(4.0);
+                            ui.add_space(SP_1);
                             ui.label(RichText::new(error.clone()).size(12.0).color(rgb(t.danger)));
                         }
-                        ui.add_space(8.0);
+                        ui.add_space(SP_2);
                         ui.horizontal(|ui| {
                             if crate::widgets::button(
                                 ui,

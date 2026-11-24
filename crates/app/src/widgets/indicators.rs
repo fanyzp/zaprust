@@ -1,7 +1,7 @@
 //! Feedback and text helpers: spinners, loading rows, empty states,
 //! text truncation and the panel edge seam.
 
-use crate::theme::rgb;
+use crate::theme::{SP_6, rgb};
 use core::theme::{Rgb, Tokens};
 use eframe::egui::{self, Color32, FontId, Pos2, RichText, Stroke};
 
@@ -104,7 +104,7 @@ fn is_regional_indicator(c: char) -> bool {
 /// The one empty state for list panels: a quiet secondary label
 /// set off from the panel header. Panels differ only in the text.
 pub(crate) fn empty_state(ui: &mut egui::Ui, t: Tokens, text: &str) {
-    ui.add_space(24.0);
+    ui.add_space(SP_6);
     ui.label(RichText::new(text).size(15.0).color(rgb(t.text_secondary)));
 }
 

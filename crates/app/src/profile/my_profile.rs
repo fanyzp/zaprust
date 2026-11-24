@@ -15,7 +15,7 @@
 //! the rest of demo mode does.
 
 use crate::icons::Icon;
-use crate::theme::rgb;
+use crate::theme::{SP_3, SP_4, rgb};
 use crate::widgets::{button, button_enabled, text_field, Btn};
 use core::theme::Tokens;
 use eframe::egui::{self, RichText, Stroke, Vec2};
@@ -439,7 +439,7 @@ pub fn draw_my_profile_panel(
                         .color(rgb(t.text_primary)),
                 );
             });
-            ui.add_space(12.0);
+            ui.add_space(SP_3);
             match mode {
                 MyProfileMode::NotLinked => {
                     ui.label(
@@ -447,7 +447,7 @@ pub fn draw_my_profile_panel(
                             .size(12.0)
                             .color(rgb(t.text_secondary)),
                     );
-                    ui.add_space(16.0);
+                    ui.add_space(SP_4);
                     ui.horizontal(|ui| {
                         if button(ui, t, "Close", Btn::Secondary).clicked() {
                             intents.close = true;
@@ -461,7 +461,7 @@ pub fn draw_my_profile_panel(
                         14.0,
                         t.text_secondary,
                     );
-                    ui.add_space(16.0);
+                    ui.add_space(SP_4);
                     ui.horizontal(|ui| {
                         if button(ui, t, "Close", Btn::Secondary).clicked() {
                             intents.close = true;
@@ -528,7 +528,7 @@ fn draw_editor_form(
             ui.label(RichText::new(state.about.clone()).size(12.0).color(rgb(t.text_secondary)));
         }
     });
-    ui.add_space(16.0);
+    ui.add_space(SP_4);
     // Editable fields: the shared form builder, so labels
     // and controls align with Settings. While a live save is
     // in flight the fields lock: the read-back that resolves
@@ -629,7 +629,7 @@ fn draw_editor_form(
             SavePhase::Idle => {}
         }
     }
-    ui.add_space(16.0);
+    ui.add_space(SP_4);
     // Dialog convention (the same one the agent confirm
     // spells out): the safe action first, the primary
     // action last. In live mode Save is offered only when

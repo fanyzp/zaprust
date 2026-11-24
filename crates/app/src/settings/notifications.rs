@@ -35,7 +35,7 @@ impl App {
             );
             self.notify_groups = v;
         });
-        ui.add_space(16.0);
+        ui.add_space(SP_4);
         group_label(ui, t, &crate::i18n::t("notifications.sound_preview"));
         settings_card(ui, t, |ui| {
             let mut v = self.notify_sound;

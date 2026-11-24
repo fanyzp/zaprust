@@ -2,7 +2,7 @@
 //! collapsed-sidebar strip.
 
 use crate::state::{effective_pixels_per_point, layout_mode_for_content, App, LayoutMode, Screen};
-use crate::theme::{apply_visuals, rgb};
+use crate::theme::{apply_visuals, rgb, SP_3};
 use crate::widgets::rail_button;
 use core::filter::total_unread;
 use eframe::egui::{self, Align, Layout, Margin, RichText, Sense, Vec2};
@@ -368,7 +368,7 @@ impl App {
                         ui.add_space(6.0);
                     }
                     ui.with_layout(Layout::bottom_up(Align::Center), |ui| {
-                        ui.add_space(12.0);
+                        ui.add_space(SP_3);
                         // Profile lives at the very bottom, like a desktop client should.
                         {
                             let (rect, resp) =

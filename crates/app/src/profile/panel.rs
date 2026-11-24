@@ -6,12 +6,12 @@
 use super::dock::{
     disappearing_section, dock_card, dock_card_section, dock_member_row, dock_prose, dock_row,
     dock_separator, profile_ai_body, profile_counts_section, profile_header, profile_user_body,
-    DOCK_LABEL_X, SP_1, SP_2, SP_3, SP_SECTION,
+    DOCK_LABEL_X,
 };
 use super::{profile_kind, MemberAction, ProfileIntents, ProfileKind};
 use crate::icons::Icon;
 use crate::state::{App, Notice, UiConfirm};
-use crate::theme::rgb;
+use crate::theme::{SP_1, SP_2, SP_3, SP_SECTION, rgb};
 use crate::widgets::{button, text_field, Btn};
 use core::model::ChatKind;
 use eframe::egui::{self, RichText};
@@ -906,7 +906,7 @@ impl App {
                                                 // text line at the soft
                                                 // alpha (design standard,
                                                 // hairline discipline).
-                                                ui.add_space(4.0);
+                                                ui.add_space(SP_1);
                                                 let (line, _) = ui.allocate_exact_size(
                                                     egui::vec2(ui.available_width(), 1.0),
                                                     egui::Sense::hover(),
@@ -928,7 +928,7 @@ impl App {
                                                         ),
                                                     ),
                                                 );
-                                                ui.add_space(4.0);
+                                                ui.add_space(SP_1);
                                                 if crate::widgets::menu_item_danger(
                                                     ui,
                                                     t,

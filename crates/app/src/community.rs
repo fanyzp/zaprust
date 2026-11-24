@@ -29,7 +29,7 @@
 //! `App::join_community_group`.
 
 use crate::state::{App, Notice};
-use crate::theme::rgb;
+use crate::theme::{SP_1, SP_2, SP_3, SP_6, SP_SECTION, rgb};
 use crate::widgets::icon_button;
 use core::model::{
     demo_announcement_chat, demo_announcement_messages, demo_communities,
@@ -37,14 +37,6 @@ use core::model::{
 };
 use core::theme::Tokens;
 use eframe::egui::{self, CornerRadius, FontId, Pos2, RichText, Sense, Vec2};
-
-// Spacing scale: the same four steps the info dock uses
-// (profile.rs is the scale's home; the values are mirrored here
-// so this page snaps to the same rhythm).
-const SP_1: f32 = 4.0;
-const SP_2: f32 = 8.0;
-const SP_3: f32 = 12.0;
-const SP_SECTION: f32 = 20.0;
 
 /// The center-crop UV rect for painting the demo photo (600x400)
 /// into a target rect of `target` size: the largest centered
@@ -735,7 +727,7 @@ impl App {
                             create_new = true;
                         }
                         if communities.is_empty() {
-                            ui.add_space(24.0);
+                            ui.add_space(SP_6);
                             ui.label(
                                 RichText::new(crate::i18n::t("communities.empty"))
                                     .size(15.0)
@@ -1033,10 +1025,10 @@ impl App {
                             );
                         }
                         if let Some(error) = &self.community_create_error {
-                            ui.add_space(4.0);
+                            ui.add_space(SP_1);
                             ui.label(RichText::new(error.clone()).size(12.0).color(rgb(t.danger)));
                         }
-                        ui.add_space(8.0);
+                        ui.add_space(SP_2);
                         ui.horizontal(|ui| {
                             if crate::widgets::button(
                                 ui,

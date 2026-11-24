@@ -46,7 +46,7 @@ pub(crate) fn scroll_bottom_button_top(full_bottom: f32, stack_h: f32, size: f32
 
 use crate::bubble::{message_bubble, BubbleAction, MediaCtx};
 use crate::state::{App, Notice};
-use crate::theme::rgb;
+use crate::theme::{SP_1, SP_2, rgb};
 use core::model::{Delivery, Message};
 use core::theme::Tokens;
 use eframe::egui::{
@@ -146,7 +146,7 @@ impl App {
                             &crate::i18n::t("conversation.view_profile"),
                             "profile",
                         );
-                        ui.add_space(4.0);
+                        ui.add_space(SP_1);
                         if export_active {
                             row(
                                 ui,
@@ -167,7 +167,7 @@ impl App {
                             crate::i18n::t("conversation.pin")
                         };
                         row(ui, crate::icons::Icon::Pin, &pin_label, "pinchat");
-                        ui.add_space(4.0);
+                        ui.add_space(SP_1);
                         if chat.muted {
                             row(
                                 ui,
@@ -217,7 +217,7 @@ impl App {
                             );
                         }
                         if chat.unread == 0 {
-                            ui.add_space(4.0);
+                            ui.add_space(SP_1);
                             row(
                                 ui,
                                 crate::icons::Icon::Chat,
@@ -225,7 +225,7 @@ impl App {
                                 "unread",
                             );
                         }
-                        ui.add_space(4.0);
+                        ui.add_space(SP_1);
                         // Destructive rows carry the danger
                         // colour on icon and label alike (design
                         // standard section 24); the neutral row
@@ -423,7 +423,7 @@ impl App {
                             step = if shift { -1 } else { 1 };
                         }
                     }
-                    ui.add_space(8.0);
+                    ui.add_space(SP_2);
                     if !self.chat_search.query.trim().is_empty() {
                         if self.chat_search.matches.is_empty() {
                             ui.label(

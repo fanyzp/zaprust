@@ -776,6 +776,7 @@ pub fn scripted_marathon_messages() -> Vec<LiveMessage> {
     out
 }
 
+/// The scripted DM conversation the fake serves on link.
 pub fn scripted_messages() -> Vec<LiveMessage> {
     // The poll sits after the three-photo album run: the archive
     // returns messages in timestamp order, so the scripted vector

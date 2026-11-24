@@ -36,6 +36,37 @@ impl App {
         // (see the clear after the closure), so a target that lives
         // in an album run or a system row can never wedge
         // stick-to-bottom off for this view.
+        // Cross-message selection (row 129): the previous
+        // frame's galley registry turns the stored selection
+        // into this frame's highlight ranges; the registry
+        // then restarts empty for this frame's paints. A chat
+        // switch clears the selection itself.
+        if self.selection_chat != Some(chat.id) {
+            if self.selection_chat.is_some() {
+                self.text_selection = None;
+                self.selection_drag = false;
+            }
+            self.selection_chat = Some(chat.id);
+        }
+        {
+            let ctx = ui.ctx().clone();
+            let previous = ctx
+                .data(|d| {
+                    d.get_temp::<crate::conversation::selection::GalleyRegistry>(
+                        crate::conversation::selection::registry_id(),
+                    )
+                })
+                .unwrap_or_default();
+            let highlights =
+                crate::conversation::selection::highlight_map(&previous, self.text_selection);
+            ctx.data_mut(|d| {
+                d.insert_temp(crate::conversation::selection::highlights_id(), highlights);
+                d.insert_temp(
+                    crate::conversation::selection::registry_id(),
+                    crate::conversation::selection::GalleyRegistry::new(),
+                );
+            });
+        }
         // Windowing state belongs to one chat: a switch drops
         // the heights and the anchor (they re-measure within
         // the first windowful of the new chat).
@@ -1063,6 +1094,9 @@ impl App {
                 BubbleAction::Vote(id, idx) => {
                     self.vote_poll(id, idx);
                 }
+                BubbleAction::InteractiveChoice(id, is_list, choice_id, choice_text) => {
+                    self.answer_interactive(id, is_list, choice_id, choice_text);
+                }
                 BubbleAction::Rsvp(id, response) => {
                     let guests = self.event_guests.get(&id).copied().unwrap_or(0);
                     self.respond_event(id, response, Some(guests));
@@ -1100,6 +1134,76 @@ impl App {
                 }
                 BubbleAction::ContextMenu(id) => {
                     self.bubble_menu = Some(id);
+                }
+            }
+        }
+        // Cross-message selection gestures (row 129), against
+        // this frame's registry: a press on a painted body
+        // anchors, a drag extends, a release with no movement
+        // clears (it was a click, and the bubble's own click
+        // handling already ran). Escape clears; Ctrl+C copies
+        // while no text field holds focus (a focused field's
+        // own copy wins, as everywhere else).
+        {
+            let ctx = ui.ctx().clone();
+            let registry = ctx
+                .data(|d| {
+                    d.get_temp::<crate::conversation::selection::GalleyRegistry>(
+                        crate::conversation::selection::registry_id(),
+                    )
+                })
+                .unwrap_or_default();
+            let (pressed, down, released, pointer_pos) = ctx.input(|i| {
+                (
+                    i.pointer.primary_pressed(),
+                    i.pointer.primary_down(),
+                    i.pointer.primary_released(),
+                    i.pointer.hover_pos(),
+                )
+            });
+            if pressed {
+                if let Some(pos) = pointer_pos {
+                    if full_rect.contains(pos) {
+                        if let Some(hit) = crate::conversation::selection::hit_test(&registry, pos)
+                        {
+                            self.text_selection =
+                                Some(crate::state::TextSelection { anchor: hit, focus: hit });
+                            self.selection_drag = true;
+                        }
+                    }
+                }
+            }
+            if self.selection_drag && down {
+                if let Some(pos) = pointer_pos {
+                    if let Some(hit) = crate::conversation::selection::hit_test(&registry, pos) {
+                        if let Some(selection) = &mut self.text_selection {
+                            selection.focus = hit;
+                        }
+                    }
+                }
+            }
+            if released && self.selection_drag {
+                self.selection_drag = false;
+                if let Some(selection) = self.text_selection {
+                    if selection.anchor == selection.focus {
+                        self.text_selection = None;
+                    }
+                }
+            }
+            if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+                self.text_selection = None;
+                self.selection_drag = false;
+            }
+            if self.text_selection.is_some()
+                && ctx.memory(|m| m.focused().is_none())
+                && ctx.input(|i| i.key_pressed(egui::Key::C) && i.modifiers.ctrl)
+            {
+                if let Some(selection) = self.text_selection {
+                    if let Some(text) =
+                        crate::conversation::selection::extract(&registry, selection)
+                    {
+                        ctx.copy_text(text);
+                    }
                 }
             }
         }
@@ -1420,6 +1524,10 @@ fn iter_estimate(conversation: &[Message], first: usize, len: usize) -> f32 {
         core::model::MessageKind::Contact { .. } => 66.0,
         core::model::MessageKind::Carousel { .. } => 210.0,
         core::model::MessageKind::Order { .. } => 92.0,
+        core::model::MessageKind::Buttons { buttons, .. } => 68.0 + 34.0 * buttons.len() as f32,
+        core::model::MessageKind::ListMsg { sections, .. } => {
+            90.0 + 30.0 * sections.iter().map(|s| s.rows.len()).sum::<usize>() as f32
+        }
         core::model::MessageKind::Text => 68.0,
     }
 }

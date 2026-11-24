@@ -7,6 +7,7 @@
 
 pub(crate) mod emoji;
 mod event;
+mod interactive;
 mod menus;
 mod pickers;
 mod poll;
@@ -502,6 +503,27 @@ impl App {
         });
     }
 
+    /// Sends the report-to-admins the confirmation modal
+    /// approved (row 65). The report names the message by its
+    /// protocol identity; a message this device cannot name
+    /// is refused with an honest notice, exactly like the
+    /// spam report. The outcome arrives as
+    /// MessageReportedToAdmins or ReportToAdminsFailed.
+    pub(crate) fn report_to_admins(&mut self, chat_id: u64, msg_id: u64) {
+        let Some(jid) = self.live_jid(chat_id) else {
+            self.notice = Some(Notice::error(crate::i18n::t("notice.report_needs_connection")));
+            return;
+        };
+        let Some(pid) = self.protocol_ids.get(&msg_id).cloned() else {
+            self.notice = Some(Notice::error(crate::i18n::t("notice.report_unavailable")));
+            return;
+        };
+        self.send_backend(backend::BackendCommand::ReportMessageToAdmins {
+            chat_jid: jid,
+            message_id: pid,
+        });
+    }
+
     /// The under-bubble strip: the flag lines (forwarded, pinned)
     /// and the small flag chip (retained after delete).
     /// Rendered by the conversation under each
@@ -594,6 +616,7 @@ impl App {
         self.draw_message_info(ctx);
         self.draw_rich_menu(ctx);
         self.draw_poll_builder(ctx);
+        self.draw_interactive_builder(ctx);
         self.draw_event_builder(ctx);
         self.draw_location_dialog(ctx);
         self.draw_contact_picker(ctx);
@@ -864,6 +887,11 @@ impl App {
                 crate::i18n::tf("chat.report_body", "name", name),
                 crate::i18n::t("chat.report_confirm"),
             ),
+            UiConfirm::ReportToAdmins { name, .. } => (
+                crate::i18n::t("group.report_admins_title"),
+                crate::i18n::tf("group.report_admins_body", "name", name),
+                crate::i18n::t("group.report_admins_confirm"),
+            ),
             UiConfirm::DeleteStickerPack { name, .. } => (
                 crate::i18n::t("stickers.delete_pack_title"),
                 crate::i18n::tf("stickers.delete_pack_body", "name", name),
@@ -1026,6 +1054,9 @@ impl App {
                 }
                 Some(UiConfirm::ReportSpam { chat_id, msg_id, .. }) => {
                     self.report_spam(chat_id, msg_id);
+                }
+                Some(UiConfirm::ReportToAdmins { chat_id, msg_id, .. }) => {
+                    self.report_to_admins(chat_id, msg_id);
                 }
                 Some(UiConfirm::DeleteStatus { message_id }) => {
                     self.delete_my_status(&message_id);

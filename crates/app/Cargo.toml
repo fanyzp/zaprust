@@ -36,6 +36,10 @@ egui = { version = "0.37", features = ["default_fonts"] }
 epaint = { version = "0.37", features = ["monochrome_emoji_fonts", "color_fonts"] }
 
 serde_json = "1"
+# Pure-Rust Hunspell engine for the composer's spell checker
+# (row 128), over the bundled en_US and id_ID dictionaries in
+# assets/dicts/ (see the NOTICE file there for their licenses).
+spellbook = "0.4.2"
 # Channel live-update counters key poll tallies by the
 # SHA-256 of the option name (the protocol's option hash);
 # the app matches them back to the options it renders.

@@ -71,6 +71,9 @@ impl App {
             .iter()
             .find(|c| c.id == self.selected_chat)
             .is_some_and(|c| c.kind == core::model::ChatKind::Channel);
+        // A live group chat, by its wire address: the
+        // report-to-admins item (row 65) exists only there.
+        let in_group = self.live_jid(self.selected_chat).is_some_and(|j| j.ends_with("@g.us"));
         // Admin delete (design standard section 24): in a group
         // where my account is an admin, another member's message
         // can be deleted for everyone. The role comes from the
@@ -364,6 +367,30 @@ impl App {
                                     .sender
                                     .clone()
                                     .unwrap_or_else(|| "this contact".to_owned()),
+                            });
+                            close = true;
+                        }
+                        if !mine
+                            && in_group
+                            && self.live.is_some()
+                            && crate::widgets::menu_item_icon(
+                                ui,
+                                t,
+                                Some(crate::icons::Icon::Shield),
+                                &crate::i18n::t("menu.report_to_admins"),
+                                None,
+                            )
+                            .clicked()
+                        {
+                            self.ui_confirm = Some(crate::state::UiConfirm::ReportToAdmins {
+                                chat_id: self.selected_chat,
+                                msg_id: msg.id,
+                                name: self
+                                    .chats
+                                    .iter()
+                                    .find(|c| c.id == self.selected_chat)
+                                    .map(|c| c.title.clone())
+                                    .unwrap_or_default(),
                             });
                             close = true;
                         }
@@ -739,6 +766,20 @@ impl App {
                                     multiple: false,
                                 });
                             }
+                            close = true;
+                        }
+                        if !in_channel
+                            && crate::widgets::menu_item_icon(
+                                ui,
+                                t,
+                                Some(crate::icons::Icon::Blocks),
+                                &crate::i18n::t("attach.interactive"),
+                                None,
+                            )
+                            .clicked()
+                        {
+                            self.composer.interactive_draft =
+                                Some(crate::state::InteractiveDraft::new());
                             close = true;
                         }
                         if !in_channel

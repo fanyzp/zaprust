@@ -513,14 +513,26 @@ impl App {
                                             // zeroed: egui's 64 px default
                                             // would floor a one-line
                                             // field at 64 px tall.
-                                            let response = egui::ScrollArea::vertical()
+                                            let edit_output = egui::ScrollArea::vertical()
                                                 .id_salt("composer_field")
                                                 .max_height(field_h)
                                                 .min_scrolled_height(0.0)
                                                 .auto_shrink([true, true])
-                                                .show(ui, |ui| ui.add(edit))
+                                                .show(ui, |ui| edit.show(ui))
                                                 .inner;
+                                            let response = edit_output.response.clone();
                                             input_focused = response.has_focus();
+                                            // Spell-check underlines
+                                            // (row 128): painted over
+                                            // the laid-out draft from
+                                            // the edit's own galley,
+                                            // clipped to the text
+                                            // rect, so they track
+                                            // wrapping and scrolling
+                                            // exactly.
+                                            if self.spell_check && !staged_active {
+                                                self.paint_spell_underlines(ui, &edit_output, t);
+                                            }
                                             // Read-by-action: focusing or
                                             // typing in the composer is a
                                             // real read action (see live.rs).

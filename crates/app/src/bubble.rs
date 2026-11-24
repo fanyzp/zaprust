@@ -94,6 +94,11 @@ pub(crate) enum BubbleAction {
     OpenOrder(u64),
     /// Vote for poll option `usize` in the poll message `u64`.
     Vote(u64, usize),
+    /// Answer an interactive message (row 19): the message
+    /// id, whether the choice came from a list's rows rather
+    /// than buttons, and the choice's wire id and display
+    /// text.
+    InteractiveChoice(u64, bool, String, String),
     /// Answer the event message `u64` with this response.
     Rsvp(u64, core::model::EventRsvp),
     /// Change my extra-guest count on the event message `u64`
@@ -104,6 +109,47 @@ pub(crate) enum BubbleAction {
     OpenJoinLink(String),
     /// Secondary click: open the message context menu.
     ContextMenu(u64),
+}
+
+/// Interactive message geometry (row 19), shared by the
+/// measure, paint and hit-test passes so the three can never
+/// disagree: a choice chip is 30 px tall with a 4 px gap, a
+/// list row is 26 px (36 with a description line), a section
+/// title and a footer each take an 18 px line.
+const INTERACTIVE_CHIP_H: f32 = 30.0;
+const INTERACTIVE_GAP: f32 = 4.0;
+const INTERACTIVE_LINE_H: f32 = 18.0;
+
+fn list_row_h(has_description: bool) -> f32 {
+    if has_description {
+        36.0
+    } else {
+        26.0
+    }
+}
+
+fn buttons_block_h(count: usize, footer: &str) -> f32 {
+    count as f32 * (INTERACTIVE_CHIP_H + INTERACTIVE_GAP)
+        + if footer.is_empty() { 0.0 } else { INTERACTIVE_LINE_H }
+}
+
+fn list_block_h(sections: &[core::model::MsgListSection], button_label: &str, footer: &str) -> f32 {
+    let mut h = 0.0;
+    if !button_label.is_empty() {
+        h += INTERACTIVE_LINE_H;
+    }
+    for section in sections {
+        if !section.title.is_empty() {
+            h += INTERACTIVE_LINE_H;
+        }
+        for row in &section.rows {
+            h += list_row_h(!row.description.is_empty());
+        }
+    }
+    if !footer.is_empty() {
+        h += INTERACTIVE_LINE_H;
+    }
+    h
 }
 
 /// Playback snapshot for one voice message: how far through it the
@@ -1300,6 +1346,34 @@ pub(crate) fn message_bubble(
             content_w = content_w.max(body_galley.size().x.max(row_w));
             kind_h = body_galley.size().y + if cards.is_empty() { 0.0 } else { 132.0 };
         }
+        MessageKind::Buttons { footer, buttons } => {
+            body_galley = layout_text(ui, body_text, body_font.clone(), text_color, inner_max);
+            let widest = buttons
+                .iter()
+                .map(|b| measure_text(ui, &b.text, FontId::proportional(13.0)))
+                .fold(0.0, f32::max);
+            content_w = content_w.max(body_galley.size().x.max((widest + 24.0).min(inner_max)));
+            kind_h = body_galley.size().y + 6.0 + buttons_block_h(buttons.len(), footer);
+        }
+        MessageKind::ListMsg { description, button_label, footer, sections } => {
+            body_galley = layout_text(ui, body_text, body_font.clone(), text_color, inner_max);
+            let desc_h = if description.is_empty() {
+                0.0
+            } else {
+                layout_text(ui, description, FontId::proportional(12.0), text_color, inner_max)
+                    .size()
+                    .y
+                    + 4.0
+            };
+            let widest = sections
+                .iter()
+                .flat_map(|s| &s.rows)
+                .map(|r| measure_text(ui, &r.title, FontId::proportional(13.0)))
+                .fold(0.0, f32::max);
+            content_w = content_w.max(body_galley.size().x.max((widest + 24.0).min(inner_max)));
+            kind_h =
+                body_galley.size().y + desc_h + 6.0 + list_block_h(sections, button_label, footer);
+        }
     }
 
     // WhatsApp puts the time inside the bubble's last text line when the
@@ -1442,6 +1516,98 @@ pub(crate) fn message_bubble(
                             } else {
                                 None
                             }
+                        })
+                    }
+                    MessageKind::Buttons { ref buttons, .. } if !mine => {
+                        // A tap on a choice chip answers the
+                        // message (row 19); the chip geometry is
+                        // the shared interactive layout above.
+                        response.interact_pointer_pos().and_then(|pos| {
+                            if pos.x < rect.left() + pad_x || pos.x > rect.right() - pad_x {
+                                return None;
+                            }
+                            let top = rect.top()
+                                + pad_top
+                                + sender_h
+                                + quote_h
+                                + body_galley.size().y
+                                + 6.0;
+                            if pos.y < top {
+                                return None;
+                            }
+                            let idx =
+                                ((pos.y - top) / (INTERACTIVE_CHIP_H + INTERACTIVE_GAP)) as usize;
+                            let within =
+                                pos.y - top - idx as f32 * (INTERACTIVE_CHIP_H + INTERACTIVE_GAP);
+                            if idx < buttons.len() && within <= INTERACTIVE_CHIP_H {
+                                let button = &buttons[idx];
+                                Some(BubbleAction::InteractiveChoice(
+                                    msg.id,
+                                    false,
+                                    button.id.clone(),
+                                    button.text.clone(),
+                                ))
+                            } else {
+                                None
+                            }
+                        })
+                    }
+                    MessageKind::ListMsg {
+                        ref description,
+                        ref button_label,
+                        ref sections,
+                        ..
+                    } if !mine => {
+                        // A tap on a row answers with that row
+                        // (row 19): walk the same stacked
+                        // geometry the paint pass lays out.
+                        response.interact_pointer_pos().and_then(|pos| {
+                            if pos.x < rect.left() + pad_x || pos.x > rect.right() - pad_x {
+                                return None;
+                            }
+                            let desc_h = if description.is_empty() {
+                                0.0
+                            } else {
+                                layout_text(
+                                    ui,
+                                    description,
+                                    FontId::proportional(12.0),
+                                    text_color,
+                                    inner_w,
+                                )
+                                .size()
+                                .y + 4.0
+                            };
+                            let mut y = rect.top()
+                                + pad_top
+                                + sender_h
+                                + quote_h
+                                + body_galley.size().y
+                                + desc_h
+                                + 6.0;
+                            // The button label line heads the
+                            // rows; it is not itself a choice.
+                            if !button_label.is_empty() {
+                                y += INTERACTIVE_LINE_H;
+                            }
+                            for section in sections {
+                                if !section.title.is_empty() {
+                                    y += INTERACTIVE_LINE_H;
+                                }
+                                for row in &section.rows {
+                                    let h = list_row_h(!row.description.is_empty());
+                                    if pos.y >= y && pos.y < y + h {
+                                        return Some(BubbleAction::InteractiveChoice(
+                                            msg.id,
+                                            true,
+                                            row.id.clone(),
+                                            row.title.clone(),
+                                        ));
+                                    }
+                                    y += h;
+                                }
+                            }
+                            None
                         })
                     }
                     MessageKind::Event {
@@ -1640,6 +1806,26 @@ pub(crate) fn message_bubble(
                     mention_color,
                     inner_w,
                     Some(14.5 * BODY_LEADING),
+                );
+                // Cross-message selection (row 129): the
+                // highlight paints under the text, and the
+                // galley registers for the stream's hit tests.
+                let highlights = crate::conversation::selection::highlights_for(ui, msg.id);
+                if !highlights.is_empty() {
+                    crate::conversation::selection::paint_highlight(
+                        painter,
+                        &g,
+                        Pos2::new(x, y),
+                        &highlights,
+                        rgb(t.accent).gamma_multiply(0.35),
+                    );
+                }
+                crate::conversation::selection::register(
+                    ui,
+                    msg.id,
+                    &g,
+                    Pos2::new(x, y),
+                    body_text,
                 );
                 painter.galley(Pos2::new(x, y), g, text_color);
             }
@@ -2688,6 +2874,184 @@ pub(crate) fn message_bubble(
                         by += 17.0;
                     }
                     cx += 158.0;
+                }
+            }
+            MessageKind::Buttons { footer, buttons } => {
+                // Body text, then one chip per button (row
+                // 19). On a received message the chips are the
+                // answer control, painted in the accent; on my
+                // own they are static labels, because there is
+                // nothing to answer.
+                let g = layout_text(ui, body_text, body_font.clone(), text_color, inner_w);
+                let body_h = g.size().y;
+                let highlights = crate::conversation::selection::highlights_for(ui, msg.id);
+                if !highlights.is_empty() {
+                    crate::conversation::selection::paint_highlight(
+                        painter,
+                        &g,
+                        Pos2::new(x, y),
+                        &highlights,
+                        rgb(t.accent).gamma_multiply(0.35),
+                    );
+                }
+                crate::conversation::selection::register(
+                    ui,
+                    msg.id,
+                    &g,
+                    Pos2::new(x, y),
+                    body_text,
+                );
+                painter.galley(Pos2::new(x, y), g, text_color);
+                let mut cy = y + body_h + 6.0;
+                for button in buttons {
+                    let chip = Rect::from_min_size(
+                        Pos2::new(x, cy),
+                        Vec2::new(inner_w, INTERACTIVE_CHIP_H),
+                    );
+                    if mine {
+                        painter.rect_stroke(
+                            chip,
+                            CornerRadius::same(6),
+                            Stroke::new(1.0_f32, rgb(t.border)),
+                            egui::StrokeKind::Inside,
+                        );
+                    } else {
+                        painter.rect_filled(chip, CornerRadius::same(6), inner_card_fill(t, mine));
+                        painter.rect_stroke(
+                            chip,
+                            CornerRadius::same(6),
+                            Stroke::new(1.0_f32, rgb(t.border)),
+                            egui::StrokeKind::Inside,
+                        );
+                    }
+                    let label_color = if mine { secondary } else { rgb(t.accent) };
+                    let g = layout_text(
+                        ui,
+                        &button.text,
+                        FontId::proportional(13.0),
+                        label_color,
+                        inner_w - 16.0,
+                    );
+                    let gx = x + ((inner_w - g.size().x) / 2.0).max(0.0);
+                    let gy = cy + ((INTERACTIVE_CHIP_H - g.size().y) / 2.0).max(0.0);
+                    painter.galley(Pos2::new(gx, gy), g, label_color);
+                    cy += INTERACTIVE_CHIP_H + INTERACTIVE_GAP;
+                }
+                if !footer.is_empty() {
+                    let g = layout_text(
+                        ui,
+                        footer,
+                        FontId::proportional(11.0),
+                        rgb(t.text_faint),
+                        inner_w,
+                    );
+                    painter.galley(Pos2::new(x, cy + 2.0), g, rgb(t.text_faint));
+                }
+            }
+            MessageKind::ListMsg { description, button_label, footer, sections } => {
+                // Title, description, then the sections of
+                // rows (row 19). On a received message the
+                // rows are the answer control; on my own they
+                // are static text.
+                let g = layout_text(ui, body_text, body_font.clone(), text_color, inner_w);
+                let body_h = g.size().y;
+                let highlights = crate::conversation::selection::highlights_for(ui, msg.id);
+                if !highlights.is_empty() {
+                    crate::conversation::selection::paint_highlight(
+                        painter,
+                        &g,
+                        Pos2::new(x, y),
+                        &highlights,
+                        rgb(t.accent).gamma_multiply(0.35),
+                    );
+                }
+                crate::conversation::selection::register(
+                    ui,
+                    msg.id,
+                    &g,
+                    Pos2::new(x, y),
+                    body_text,
+                );
+                painter.galley(Pos2::new(x, y), g, text_color);
+                let mut cy = y + body_h;
+                if !description.is_empty() {
+                    let g = layout_text(
+                        ui,
+                        description,
+                        FontId::proportional(12.0),
+                        secondary,
+                        inner_w,
+                    );
+                    let desc_h = g.size().y;
+                    cy += 4.0;
+                    painter.galley(Pos2::new(x, cy), g, secondary);
+                    cy += desc_h;
+                }
+                cy += 6.0;
+                if !button_label.is_empty() {
+                    let g = layout_text(
+                        ui,
+                        button_label,
+                        FontId::proportional(12.0),
+                        rgb(t.accent),
+                        inner_w,
+                    );
+                    painter.galley(Pos2::new(x, cy + 1.0), g, rgb(t.accent));
+                    cy += INTERACTIVE_LINE_H;
+                }
+                for section in sections {
+                    if !section.title.is_empty() {
+                        let g = layout_text(
+                            ui,
+                            &section.title,
+                            FontId::proportional(11.0),
+                            rgb(t.text_faint),
+                            inner_w,
+                        );
+                        painter.galley(Pos2::new(x, cy + 2.0), g, rgb(t.text_faint));
+                        cy += INTERACTIVE_LINE_H;
+                    }
+                    for row in &section.rows {
+                        let h = list_row_h(!row.description.is_empty());
+                        if !mine {
+                            let row_rect =
+                                Rect::from_min_size(Pos2::new(x, cy), Vec2::new(inner_w, h));
+                            painter.rect_filled(
+                                row_rect,
+                                CornerRadius::same(6),
+                                inner_card_fill(t, mine),
+                            );
+                        }
+                        let g = layout_text(
+                            ui,
+                            &row.title,
+                            FontId::proportional(13.0),
+                            text_color,
+                            inner_w - 16.0,
+                        );
+                        painter.galley(Pos2::new(x + 8.0, cy + 3.0), g, text_color);
+                        if !row.description.is_empty() {
+                            let g = layout_text(
+                                ui,
+                                &row.description,
+                                FontId::proportional(11.0),
+                                secondary,
+                                inner_w - 16.0,
+                            );
+                            painter.galley(Pos2::new(x + 8.0, cy + 19.0), g, secondary);
+                        }
+                        cy += h;
+                    }
+                }
+                if !footer.is_empty() {
+                    let g = layout_text(
+                        ui,
+                        footer,
+                        FontId::proportional(11.0),
+                        rgb(t.text_faint),
+                        inner_w,
+                    );
+                    painter.galley(Pos2::new(x, cy + 2.0), g, rgb(t.text_faint));
                 }
             }
         }

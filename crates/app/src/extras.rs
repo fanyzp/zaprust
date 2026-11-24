@@ -238,6 +238,12 @@ impl App {
         let mut had_giphy = false;
         self.read_receipts = v["read_receipts"].as_bool().unwrap_or(true);
         self.enter_sends = v["enter_sends"].as_bool().unwrap_or(true);
+        self.spell_check = v["spell_check"].as_bool().unwrap_or(true);
+        if let Some(words) = v["spell_personal"].as_array() {
+            self.spell_personal =
+                words.iter().filter_map(|w| w.as_str().map(ToOwned::to_owned)).collect();
+            self.spell_personal_text = self.spell_personal.join(", ");
+        }
         self.keep_archived = v["keep_archived"].as_bool().unwrap_or(true);
         self.default_ephemeral_secs = v["default_ephemeral_secs"].as_u64().unwrap_or(0) as u32;
         self.typing_indicators = v["typing_indicators"].as_bool().unwrap_or(true);
@@ -476,6 +482,8 @@ impl App {
         serde_json::json!({
             "read_receipts": self.read_receipts,
             "enter_sends": self.enter_sends,
+            "spell_check": self.spell_check,
+            "spell_personal": self.spell_personal,
             "keep_archived": self.keep_archived,
             "default_ephemeral_secs": self.default_ephemeral_secs,
             "typing_indicators": self.typing_indicators,

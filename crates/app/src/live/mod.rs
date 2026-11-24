@@ -936,6 +936,35 @@ pub(crate) fn to_kind(kind: &backend::LiveMessageKind) -> MessageKind {
                 })
                 .collect(),
         },
+        backend::LiveMessageKind::Buttons { footer, buttons } => MessageKind::Buttons {
+            footer: footer.clone(),
+            buttons: buttons
+                .iter()
+                .map(|b| core::model::MsgButton { id: b.id.clone(), text: b.text.clone() })
+                .collect(),
+        },
+        backend::LiveMessageKind::ListMsg { description, button_label, footer, sections } => {
+            MessageKind::ListMsg {
+                description: description.clone(),
+                button_label: button_label.clone(),
+                footer: footer.clone(),
+                sections: sections
+                    .iter()
+                    .map(|s| core::model::MsgListSection {
+                        title: s.title.clone(),
+                        rows: s
+                            .rows
+                            .iter()
+                            .map(|r| core::model::MsgListRow {
+                                id: r.id.clone(),
+                                title: r.title.clone(),
+                                description: r.description.clone(),
+                            })
+                            .collect(),
+                    })
+                    .collect(),
+            }
+        }
         backend::LiveMessageKind::Media { media, caption, seconds, size_bytes } => {
             use backend::MediaKind;
             match media {

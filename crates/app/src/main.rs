@@ -68,6 +68,7 @@ mod rich_ui;
 mod settings;
 mod shell;
 mod shortcuts;
+mod spell;
 mod starred;
 mod state;
 #[cfg(test)]

@@ -113,6 +113,13 @@ const SETTINGS_REGISTRY: &[SettingEntry] = &[
         keywords: "ctrl enter keyboard kirim",
     },
     SettingEntry {
+        id: "chats.spell_check",
+        tab: "Chats",
+        title_en: "Spell check",
+        title_id: "Pemeriksa ejaan",
+        keywords: "spelling dictionary underline misspelled ejaan kamus garis bawah salah eja",
+    },
+    SettingEntry {
         id: "chats.keep_archived",
         tab: "Chats",
         title_en: "Keep chats archived",

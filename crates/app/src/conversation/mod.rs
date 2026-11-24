@@ -4,6 +4,7 @@
 
 pub(crate) mod anchor;
 mod composer;
+pub(crate) mod selection;
 mod stream;
 
 /// The stream's centered system pill, shared with the bubble

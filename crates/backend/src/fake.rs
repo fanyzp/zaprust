@@ -1654,7 +1654,7 @@ impl Backend for FakeBackend {
                             jid: jid.clone(),
                             name: name.clone(),
                             description: description.clone(),
-                            followers: 1,
+                            followers: 0,
                             verified: false,
                             role: crate::LiveChannelRole::Owner,
                             muted: false,

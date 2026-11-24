@@ -2038,6 +2038,15 @@ fn classify_unwrapped_deep(
         if let Some(inner) = msg.comment_message.as_option().and_then(|c| c.message.as_option()) {
             return classify_unwrapped_deep(inner.get_base_message(), depth + 1);
         }
+        // An encrypted comment that reaches the classifier
+        // still sealed has no readable body on this device:
+        // the library decrypts the comments it can upstream
+        // and delivers those as plain comments. It keeps its
+        // truthful label here instead of falling through to
+        // the Text fallback (audit P0-09).
+        if msg.enc_comment_message.as_option().is_some() {
+            return (LiveMessageKind::Other("Channel comment".to_owned()), false);
+        }
         let envelope = msg
             .bot_invoke_message
             .as_option()

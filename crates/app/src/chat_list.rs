@@ -379,76 +379,69 @@ impl App {
                 if !filtered {
                     crate::widgets::chip_flow_row(ui, |ui| {
                         for f in [
-                                ChatFilter::All,
-                                ChatFilter::Unread,
-                                ChatFilter::Private,
-                                ChatFilter::Favorites,
-                                ChatFilter::Groups,
-                            ]
-                            .into_iter()
-                            .chain(
-                                self.chats
+                            ChatFilter::All,
+                            ChatFilter::Unread,
+                            ChatFilter::Private,
+                            ChatFilter::Favorites,
+                            ChatFilter::Groups,
+                        ]
+                        .into_iter()
+                        .chain(
+                            self.chats.iter().any(|c| c.archived).then_some(ChatFilter::Archived),
+                        ) {
+                            let selected = self.filter == f;
+                            // Filter chips carry their counts, the
+                            // way mainstream chat clients show them
+                            // (Unread 6, Groups 3, and so on).
+                            let count = match f {
+                                // Locked is never a chip (the
+                                // folder's entry row is its
+                                // way in); the arm exists for
+                                // exhaustiveness. The counted
+                                // filters exclude locked chats
+                                // like the lists they label do.
+                                ChatFilter::All | ChatFilter::Archived | ChatFilter::Locked => 0,
+                                ChatFilter::Unread => self
+                                    .chats
                                     .iter()
-                                    .any(|c| c.archived)
-                                    .then_some(ChatFilter::Archived),
-                            ) {
-                                let selected = self.filter == f;
-                                // Filter chips carry their counts, the
-                                // way mainstream chat clients show them
-                                // (Unread 6, Groups 3, and so on).
-                                let count = match f {
-                                    // Locked is never a chip (the
-                                    // folder's entry row is its
-                                    // way in); the arm exists for
-                                    // exhaustiveness. The counted
-                                    // filters exclude locked chats
-                                    // like the lists they label do.
-                                    ChatFilter::All | ChatFilter::Archived | ChatFilter::Locked => {
-                                        0
-                                    }
-                                    ChatFilter::Unread => self
-                                        .chats
-                                        .iter()
-                                        .filter(|c| !c.archived && !c.locked && c.unread > 0)
-                                        .count(),
-                                    ChatFilter::Private => self
-                                        .chats
-                                        .iter()
-                                        .filter(|c| {
-                                            !c.archived && !c.locked && c.kind == ChatKind::Dm
-                                        })
-                                        .count(),
-                                    ChatFilter::Favorites => self
-                                        .chats
-                                        .iter()
-                                        .filter(|c| !c.archived && !c.locked && c.favorite)
-                                        .count(),
-                                    ChatFilter::Groups => self
-                                        .chats
-                                        .iter()
-                                        .filter(|c| {
-                                            !c.archived && !c.locked && c.kind == ChatKind::Group
-                                        })
-                                        .count(),
-                                    ChatFilter::Channels => self
-                                        .chats
-                                        .iter()
-                                        .filter(|c| {
-                                            !c.archived && !c.locked && c.kind == ChatKind::Channel
-                                        })
-                                        .count(),
-                                };
-                                let name = crate::i18n::t(filter_label_key(f));
-                                let label = if count > 0 {
-                                    format!("{name} {}", core::filter::format_count(count as u64))
-                                } else {
-                                    name
-                                };
-                                let resp = chip(ui, &label, selected, t);
-                                if resp.clicked() {
-                                    self.filter = f;
-                                }
+                                    .filter(|c| !c.archived && !c.locked && c.unread > 0)
+                                    .count(),
+                                ChatFilter::Private => self
+                                    .chats
+                                    .iter()
+                                    .filter(|c| !c.archived && !c.locked && c.kind == ChatKind::Dm)
+                                    .count(),
+                                ChatFilter::Favorites => self
+                                    .chats
+                                    .iter()
+                                    .filter(|c| !c.archived && !c.locked && c.favorite)
+                                    .count(),
+                                ChatFilter::Groups => self
+                                    .chats
+                                    .iter()
+                                    .filter(|c| {
+                                        !c.archived && !c.locked && c.kind == ChatKind::Group
+                                    })
+                                    .count(),
+                                ChatFilter::Channels => self
+                                    .chats
+                                    .iter()
+                                    .filter(|c| {
+                                        !c.archived && !c.locked && c.kind == ChatKind::Channel
+                                    })
+                                    .count(),
+                            };
+                            let name = crate::i18n::t(filter_label_key(f));
+                            let label = if count > 0 {
+                                format!("{name} {}", core::filter::format_count(count as u64))
+                            } else {
+                                name
+                            };
+                            let resp = chip(ui, &label, selected, t);
+                            if resp.clicked() {
+                                self.filter = f;
                             }
+                        }
                     });
                 }
                 // The active label filter, as a chip under

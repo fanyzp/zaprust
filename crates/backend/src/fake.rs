@@ -6279,10 +6279,7 @@ mod tests {
     /// the next attempt.
     #[test]
     fn injected_start_group_call_failure_then_success() {
-        let fake = FakeBackend {
-            fail_next: vec!["StartGroupCall"],
-            ..FakeBackend::auto()
-        };
+        let fake = FakeBackend { fail_next: vec!["StartGroupCall"], ..FakeBackend::auto() };
         let ch = start(fake);
         linked(&ch);
         ch.commands
@@ -6321,10 +6318,7 @@ mod tests {
     /// prepared share, so the next retry still lands it.
     #[test]
     fn injected_history_retry_failure_keeps_the_share() {
-        let fake = FakeBackend {
-            fail_next: vec!["RetryGroupHistoryShare"],
-            ..FakeBackend::auto()
-        };
+        let fake = FakeBackend { fail_next: vec!["RetryGroupHistoryShare"], ..FakeBackend::auto() };
         let ch = start(fake);
         linked(&ch);
         // A flaky add fails the share retryably and prepares

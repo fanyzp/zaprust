@@ -1571,6 +1571,10 @@ pub(crate) struct App {
     pub(crate) unread_live: std::collections::HashMap<u64, Vec<String>>,
     /// Receipt history per app message ID: (kind, "HH:MM").
     pub(crate) receipt_log: std::collections::HashMap<u64, Vec<(backend::ReceiptKind, String)>>,
+    /// First-insertion order of `receipt_log`'s keys, so the
+    /// log's size cap can drop the oldest histories instead of
+    /// clearing the whole map (VRF-05).
+    pub(crate) receipt_log_order: std::collections::VecDeque<u64>,
     /// Live mode: chats whose peer is currently typing, mapped to
     /// the local time the last typing event arrived (the header
     /// shows "typing..." for a few seconds after it).
@@ -2271,6 +2275,7 @@ impl App {
             sender_jids: std::collections::HashMap::new(),
             unread_live: std::collections::HashMap::new(),
             receipt_log: std::collections::HashMap::new(),
+            receipt_log_order: std::collections::VecDeque::new(),
             live_typing: std::collections::HashMap::new(),
             live_presence: std::collections::HashMap::new(),
             presence_watch: None,

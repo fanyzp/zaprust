@@ -131,9 +131,9 @@ fn waiting_fixture_enabled() -> bool {
 
 /// JIDs of the scripted group call's other members and of the
 /// waiting-room guest.
-pub const FAKE_MEMBER2_JID: &str = "10000000011@s.whatsapp.net";
+pub const FAKE_MEMBER2_JID: &str = "10000000004@s.whatsapp.net";
 /// Third scripted group member.
-pub const FAKE_MEMBER3_JID: &str = "10000000012@s.whatsapp.net";
+pub const FAKE_MEMBER3_JID: &str = "10000000007@s.whatsapp.net";
 /// The waiting-room guest's JID.
 pub const FAKE_GUEST_JID: &str = "10000000013@s.whatsapp.net";
 

@@ -901,19 +901,32 @@ impl App {
                                     || call.video_remote
                                     || media_stage.is_some()
                                     || media_preview.is_some());
+                            // A group card also carries the
+                            // roster and the waiting room; the
+                            // stage shrinks so the whole card
+                            // still fits the window.
+                            let sections_on = call.group
+                                && (!call.participants.is_empty() || call.waiting.is_some());
                             if stage_on {
                                 let width = ui.available_width();
                                 let height = match media_stage {
                                     Some(ref tex) => {
                                         let (sw, sh) = self.calls.media.stage_size;
                                         if sw > 0 {
-                                            (width * sh as f32 / sw as f32).clamp(120.0, 224.0)
+                                            let cap = if sections_on { 128.0 } else { 224.0 };
+                                            (width * sh as f32 / sw as f32).clamp(110.0, cap)
                                         } else {
                                             let _ = tex;
                                             168.0
                                         }
                                     }
-                                    None => 168.0,
+                                    None => {
+                                        if sections_on {
+                                            128.0
+                                        } else {
+                                            168.0
+                                        }
+                                    }
                                 };
                                 let (rect, _) = ui
                                     .allocate_exact_size(Vec2::new(width, height), Sense::hover());
@@ -1430,26 +1443,28 @@ impl App {
                     ui.label(RichText::new(&participant.state).size(11.0).color(rgb(t.text_faint)));
                 }
                 if participant.sharing {
+                    let (rect, _) =
+                        ui.allocate_exact_size(Vec2::splat(18.0), egui::Sense::hover());
                     icons::draw(
                         ui.painter(),
                         Icon::ScreenShare,
-                        ui.cursor().min + Vec2::new(8.0, 8.0),
+                        rect.center(),
                         icons::SIZE_BADGE,
                         rgb(t.accent),
                         rgb(t.bg_panel),
                     );
-                    ui.add_space(16.0);
                 }
                 if participant.hand_raised {
+                    let (rect, _) =
+                        ui.allocate_exact_size(Vec2::splat(18.0), egui::Sense::hover());
                     icons::draw(
                         ui.painter(),
                         Icon::BackHand,
-                        ui.cursor().min + Vec2::new(8.0, 8.0),
+                        rect.center(),
                         icons::SIZE_BADGE,
                         rgb(t.accent),
                         rgb(t.bg_panel),
                     );
-                    ui.add_space(16.0);
                 }
                 if let Some(emoji) = call.reactions.get(&participant.jid) {
                     ui.label(RichText::new(emoji).size(14.0));

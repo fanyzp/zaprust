@@ -1728,6 +1728,11 @@ pub(crate) struct App {
     /// Lock now. While set, the shell draws only the lock
     /// screen and notifications carry no content.
     pub(crate) app_locked_now: bool,
+    /// The lock screen's log-out action is armed (its first
+    /// click landed): the recovery unlinks the device, so it
+    /// confirms inline with a second click, like the house
+    /// confirmation pattern, inside the locked surface.
+    pub(crate) lock_logout_armed: bool,
     /// Whether the locked-chats folder gate has been passed
     /// for the current visit to the Locked screen; cleared
     /// whenever the screen is left, so entering the folder
@@ -1760,14 +1765,15 @@ pub(crate) struct App {
     /// its window closes (Settings > Notifications; Linux
     /// only, and only while a tray host answers).
     pub(crate) tray_residence: bool,
-    /// A real quit was chosen (the tray menu's Quit, or the
-    /// app is already closing): window close stops hiding to
-    /// the tray and closes for real.
-    pub(crate) quit_requested: bool,
-    /// Commands from the tray thread (Open / Quit), drained
-    /// each frame; None until the tray starts.
-    pub(crate) tray_commands:
-        Option<std::sync::mpsc::Receiver<crate::tray::TrayCommand>>,
+    /// A real quit was chosen (the tray menu's Quit): window
+    /// close stops hiding to the tray and closes for real.
+    /// Shared with the tray thread, which sets it from the
+    /// tray menu.
+    pub(crate) quit_requested: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// The running tray service, while the tray setting is
+    /// on: its handle (title updates, shutdown) and the
+    /// watcher-liveness flag the close path consults.
+    pub(crate) tray: Option<crate::tray::TrayRuntime>,
     /// The unread count last pushed to the tray title, so the
     /// title only changes when the count does.
     pub(crate) tray_last_unread: u32,
@@ -2392,6 +2398,7 @@ impl App {
                 meta_ai: false,
                 community: None,
                 archived: false,
+                locked: false,
                 ephemeral_secs: 0,
                 messages: Vec::new(),
             },
@@ -2605,6 +2612,7 @@ impl App {
             lock_code: None,
             app_lock_enabled: false,
             app_locked_now: false,
+            lock_logout_armed: false,
             folder_unlocked: false,
             code_prompt: if args.lock_prompt {
                 Some(CodePrompt::OpenFolder)
@@ -2620,8 +2628,8 @@ impl App {
             settings_blocked_open: args.blocked_page,
             block_picker_open: false,
             tray_residence: false,
-            quit_requested: false,
-            tray_commands: None,
+            quit_requested: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            tray: None,
             tray_last_unread: 0,
             profile_form_for: None,
             ui_confirm: None,

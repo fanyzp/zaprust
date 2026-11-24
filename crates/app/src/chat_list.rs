@@ -33,6 +33,8 @@ pub(crate) const SNIPPET_DY: f32 = 43.0;
 enum RowPick {
     /// Set the chat's archived state.
     SetArchived(bool),
+    /// Set the chat's locked state.
+    SetLocked(bool),
     /// Set the chat's favorite state.
     SetFavorite(bool),
     /// Mark the chat as unread (section 24).
@@ -60,6 +62,7 @@ fn filter_label_key(f: ChatFilter) -> &'static str {
         ChatFilter::Groups => "chats.filter_groups",
         ChatFilter::Channels => "chats.filter_channels",
         ChatFilter::Archived => "chats.filter_archived",
+        ChatFilter::Locked => "nav.locked",
     }
 }
 
@@ -372,31 +375,37 @@ impl App {
                                 // way mainstream chat clients show them
                                 // (Unread 6, Groups 3, and so on).
                                 let count = match f {
-                                    ChatFilter::All | ChatFilter::Archived => 0,
+                                    // Locked is never a chip (the
+                                    // folder's entry row is its
+                                    // way in); the arm exists for
+                                    // exhaustiveness. The counted
+                                    // filters exclude locked chats
+                                    // like the lists they label do.
+                                    ChatFilter::All | ChatFilter::Archived | ChatFilter::Locked => 0,
                                     ChatFilter::Unread => self
                                         .chats
                                         .iter()
-                                        .filter(|c| !c.archived && c.unread > 0)
+                                        .filter(|c| !c.archived && !c.locked && c.unread > 0)
                                         .count(),
                                     ChatFilter::Private => self
                                         .chats
                                         .iter()
-                                        .filter(|c| !c.archived && c.kind == ChatKind::Dm)
+                                        .filter(|c| !c.archived && !c.locked && c.kind == ChatKind::Dm)
                                         .count(),
                                     ChatFilter::Favorites => self
                                         .chats
                                         .iter()
-                                        .filter(|c| !c.archived && c.favorite)
+                                        .filter(|c| !c.archived && !c.locked && c.favorite)
                                         .count(),
                                     ChatFilter::Groups => self
                                         .chats
                                         .iter()
-                                        .filter(|c| !c.archived && c.kind == ChatKind::Group)
+                                        .filter(|c| !c.archived && !c.locked && c.kind == ChatKind::Group)
                                         .count(),
                                     ChatFilter::Channels => self
                                         .chats
                                         .iter()
-                                        .filter(|c| !c.archived && c.kind == ChatKind::Channel)
+                                        .filter(|c| !c.archived && !c.locked && c.kind == ChatKind::Channel)
                                         .count(),
                                 };
                                 let name = crate::i18n::t(filter_label_key(f));
@@ -474,6 +483,60 @@ impl App {
                         }
                     }
                 }
+                // The locked-chats entry row, in every layout:
+                // shown on the unfiltered, unsearched list
+                // while locked chats exist or a lock code is
+                // set. It carries the locked count and never a
+                // preview: what is inside stays behind the code
+                // prompt its click raises. No rail entry exists
+                // for the folder; this row is the way in.
+                if self.screen != crate::state::Screen::Locked
+                    && self.filter == ChatFilter::All
+                    && self.search.trim().is_empty()
+                {
+                    let locked_count = core::filter::locked_count(&self.chats);
+                    if locked_count > 0 || self.lock_code.is_some() {
+                        ui.add_space(SP_1);
+                        let (rect, resp) = ui.allocate_exact_size(
+                            Vec2::new(ui.available_width(), 48.0),
+                            Sense::click(),
+                        );
+                        let hov =
+                            crate::anim::hover_factor(ui, "locked_entry_row", resp.hovered());
+                        if hov > 0.001 {
+                            ui.painter().rect_filled(
+                                rect,
+                                CornerRadius::same(10),
+                                crate::theme::glass_wash(t, t.bg_panel_alt, (hov * 115.0) as u8),
+                            );
+                        }
+                        crate::icons::draw(
+                            ui.painter(),
+                            crate::icons::Icon::Lock,
+                            Pos2::new(rect.left() + AVATAR_CX, rect.center().y),
+                            crate::icons::SIZE_CONTROL,
+                            rgb(t.text_secondary),
+                            rgb(t.bg_panel),
+                        );
+                        ui.painter().text(
+                            Pos2::new(rect.left() + TEXT_X, rect.center().y),
+                            egui::Align2::LEFT_CENTER,
+                            crate::i18n::t("nav.locked"),
+                            crate::theme::medium(15.0),
+                            rgb(t.text_primary),
+                        );
+                        ui.painter().text(
+                            Pos2::new(rect.right() - 6.0, rect.center().y),
+                            egui::Align2::RIGHT_CENTER,
+                            locked_count.to_string(),
+                            FontId::proportional(12.0),
+                            rgb(t.text_faint),
+                        );
+                        if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                            self.request_locked_folder();
+                        }
+                    }
+                }
                 let mut photos = self.demo_photos(ui.ctx());
                 if self.live.is_some() {
                     // Live rows wear their real profile
@@ -527,6 +590,14 @@ impl App {
                     for jid in &ask {
                         self.ensure_verified_name(jid);
                     }
+                }
+                // The locked folder's gate: until the code
+                // passes, the panel shows the gate state and
+                // none of the folder's rows (their titles and
+                // previews are exactly what the code protects).
+                if self.screen == crate::state::Screen::Locked && !self.folder_unlocked {
+                    self.draw_locked_gate(ui, t);
+                    return;
                 }
                 let visible = self.visible_chats();
                 let mut clicked: Option<u64> = None;
@@ -587,6 +658,24 @@ impl App {
                             {
                                 row_action
                                     .set(Some((chat.id, RowPick::SetArchived(!chat.archived))));
+                                ui.close();
+                            }
+                            let lock_label = if chat.locked {
+                                crate::i18n::t("conversation.unlock_chat")
+                            } else {
+                                crate::i18n::t("conversation.lock_chat")
+                            };
+                            if crate::widgets::menu_item_icon(
+                                ui,
+                                t,
+                                Some(crate::icons::Icon::Lock),
+                                &lock_label,
+                                None,
+                            )
+                            .clicked()
+                            {
+                                row_action
+                                    .set(Some((chat.id, RowPick::SetLocked(!chat.locked))));
                                 ui.close();
                             }
                             let fav_label = if chat.favorite {
@@ -717,6 +806,9 @@ impl App {
                                 self.apply_chat_action(id, target_archived, pinned, muted);
                             }
                         }
+                        RowPick::SetLocked(target_locked) => {
+                            self.request_lock_chat(id, target_locked);
+                        }
                         RowPick::SetFavorite(target) => {
                             self.apply_favorite(id, target);
                         }
@@ -762,6 +854,60 @@ impl App {
                 }
             });
         crate::widgets::soft_right_edge(root, panel.response.rect, t);
+    }
+
+    /// The locked folder's gate body: shown in place of the
+    /// folder's rows until the code prompt passes. It names
+    /// what the folder holds in count only and offers the one
+    /// action that opens it.
+    fn draw_locked_gate(&mut self, ui: &mut egui::Ui, t: Tokens) {
+        let has_code = self.lock_code.is_some();
+        ui.vertical_centered(|ui| {
+            ui.add_space(72.0);
+            let (rect, _) = ui.allocate_exact_size(Vec2::splat(48.0), Sense::hover());
+            crate::icons::draw(
+                ui.painter(),
+                crate::icons::Icon::Lock,
+                rect.center(),
+                40.0,
+                rgb(t.text_secondary),
+                rgb(t.bg_panel),
+            );
+            ui.add_space(16.0);
+            ui.label(
+                RichText::new(crate::i18n::t("nav.locked"))
+                    .font(crate::theme::medium(16.0))
+                    .color(rgb(t.text_primary)),
+            );
+            ui.add_space(6.0);
+            ui.label(
+                RichText::new(crate::i18n::t(if has_code {
+                    "locked.gate_body"
+                } else {
+                    "locked.gate_create_body"
+                }))
+                .color(rgb(t.text_secondary)),
+            );
+            ui.add_space(16.0);
+            if crate::widgets::button(
+                ui,
+                t,
+                &crate::i18n::t(if has_code {
+                    "locked.enter_code"
+                } else {
+                    "locked.create_code"
+                }),
+                crate::widgets::Btn::Primary,
+            )
+            .clicked()
+            {
+                self.open_code_prompt(if has_code {
+                    crate::state::CodePrompt::OpenFolder
+                } else {
+                    crate::state::CodePrompt::CreateThenFolder
+                });
+            }
+        });
     }
 }
 
@@ -1335,6 +1481,12 @@ impl App {
                 let Some(chat) = self.chats.iter().find(|c| c.id == chat_id) else {
                     continue;
                 };
+                // Locked chats are invisible to global search:
+                // their content sits behind the lock code, and
+                // a hit here would quote it outside the gate.
+                if chat.locked {
+                    continue;
+                }
                 self.global_search.hits.push(crate::state::GlobalHit {
                     chat_id,
                     msg_id: crate::live::message_id(&hit.chat_jid, &hit.message_id),
@@ -1348,6 +1500,11 @@ impl App {
         }
         let mut hits: Vec<crate::state::GlobalHit> = Vec::new();
         for chat in &self.chats {
+            // Locked chats are skipped here too (demo path):
+            // the same gate as the live search above.
+            if chat.locked {
+                continue;
+            }
             let messages: &[core::model::Message] =
                 if chat.id == self.selected_chat { &self.conversation } else { &chat.messages };
             for msg in messages.iter().rev() {

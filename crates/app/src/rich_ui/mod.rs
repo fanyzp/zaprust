@@ -1403,6 +1403,7 @@ impl App {
                 meta_ai: false,
                 community: None,
                 archived: false,
+                locked: false,
                 // The account default timer from Settings >
                 // Privacy applies to groups created here, the
                 // same rule WhatsApp applies to new chats.

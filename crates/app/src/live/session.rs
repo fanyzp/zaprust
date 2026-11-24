@@ -594,6 +594,18 @@ impl crate::state::App {
         self.calls.recorded_ids.clear();
         self.my_profile.forget_account();
         self.my_profile_open = false;
+        // The lock code goes with the session: it is the
+        // documented recovery for a forgotten code (log out to
+        // unlink), and a fresh link starts without one. The
+        // chats' lock state itself is account state and is
+        // untouched; only this device's local gate is removed.
+        if self.lock_code.is_some() || self.app_lock_enabled {
+            self.lock_code = None;
+            self.app_lock_enabled = false;
+            self.persist_settings();
+        }
+        self.app_locked_now = false;
+        self.lock_logout_armed = false;
         self.screen = crate::state::Screen::Connect;
     }
 

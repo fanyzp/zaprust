@@ -174,6 +174,19 @@ impl App {
                             crate::i18n::t("conversation.pin")
                         };
                         row(ui, crate::icons::Icon::Pin, &pin_label, "pinchat");
+                        if !is_channel {
+                            // Chat lock (row 103): the chat
+                            // moves into the locked folder, or
+                            // back out of it. Channels have no
+                            // lock on the platform, so the row
+                            // is not offered there.
+                            let lock_label = if chat.locked {
+                                crate::i18n::t("conversation.unlock_chat")
+                            } else {
+                                crate::i18n::t("conversation.lock_chat")
+                            };
+                            row(ui, crate::icons::Icon::Lock, &lock_label, "lockchat");
+                        }
                         ui.add_space(SP_1);
                         if is_channel {
                             let muted = channel_meta.as_ref().is_some_and(|m| m.muted);
@@ -353,6 +366,10 @@ impl App {
             }
             Some("pinchat") => {
                 self.apply_chat_action(chat.id, chat.archived, !chat.pinned, chat.muted);
+                close = true;
+            }
+            Some("lockchat") => {
+                self.request_lock_chat(chat.id, !chat.locked);
                 close = true;
             }
             Some("mute8h") => {

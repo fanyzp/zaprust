@@ -27,6 +27,7 @@ fn chat(jid: &str, title: &str) -> LiveChat {
         timestamp: 100,
         unread: 0,
         archived: false,
+        locked: false,
         pinned: false,
         ephemeral_secs: 0,
         muted: false,

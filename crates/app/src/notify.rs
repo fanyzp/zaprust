@@ -42,6 +42,11 @@ pub(crate) struct NotifyRequest {
     pub sender: Option<String>,
     /// Message body (used only when the preview toggle is on).
     pub body: String,
+    /// Whether the chat is locked: a locked chat's popup
+    /// carries no title, sender or text at all, whatever the
+    /// preview toggle says. The chat's existence behind the
+    /// lock code is itself protected content.
+    pub locked: bool,
 }
 
 /// The user's notification settings, copied out of App state.
@@ -74,6 +79,11 @@ pub(crate) fn should_notify(
 /// honoring the preview toggle: off means the message text never
 /// leaves the app.
 pub(crate) fn compose(settings: NotifySettings, req: &NotifyRequest) -> (String, String) {
+    if req.locked {
+        // A locked chat notifies without identifying itself:
+        // the app name and the plain body, nothing else.
+        return ("Zaprust".to_owned(), "New message".to_owned());
+    }
     let summary = match (&req.sender, req.kind) {
         (Some(sender), ChatKind::Group) => format!("{sender} in {}", req.title),
         _ => req.title.clone(),
@@ -154,6 +164,8 @@ pub(crate) fn plan_popups(
 fn popup_for(settings: NotifySettings, rep: &NotifyRequest, count: usize) -> (String, String) {
     if count == 1 {
         compose(settings, rep)
+    } else if rep.locked {
+        ("Zaprust".to_owned(), format!("{count} new messages"))
     } else {
         (rep.title.clone(), format!("{count} new messages"))
     }
@@ -231,7 +243,17 @@ impl App {
         let focused = ctx.input(|i| i.viewport().focused.unwrap_or(false));
         let looking_at = focused.then_some(self.selected_chat);
         let queued: Vec<NotifyRequest> = std::mem::take(&mut self.pending_notifications);
-        for (summary, body) in plan_popups(settings, &queued, looking_at) {
+        let popups = plan_popups(settings, &queued, looking_at);
+        if self.app_locked_now {
+            // While the app is locked, no popup identifies its
+            // chat: the whole drain folds into one generic
+            // popup, whatever the preview toggle says.
+            if !popups.is_empty() {
+                fire_os_notification("Zaprust".to_owned(), "New message".to_owned(), settings.sound);
+            }
+            return;
+        }
+        for (summary, body) in popups {
             fire_os_notification(summary, body, settings.sound);
         }
     }
@@ -250,6 +272,7 @@ mod tests {
             blocked: false,
             sender: None,
             body: "hello there".to_owned(),
+            locked: false,
         }
     }
 
@@ -297,6 +320,23 @@ mod tests {
         s.preview = false;
         let (_, body) = compose(s, &req(ChatKind::Dm));
         assert_eq!(body, "New message", "no message text leaves the app when preview is off");
+    }
+
+    #[test]
+    fn locked_chat_popup_identifies_nothing() {
+        let mut r = req(ChatKind::Dm);
+        r.locked = true;
+        // Preview on, a sender named, a body present: none of
+        // it may reach the popup.
+        let (summary, body) = compose(settings(), &r);
+        assert_eq!(summary, "Zaprust");
+        assert_eq!(body, "New message");
+        let popups = plan_popups(settings(), &[r.clone(), r], None);
+        assert_eq!(
+            popups,
+            vec![("Zaprust".to_owned(), "2 new messages".to_owned())],
+            "even the coalesced count popup hides the chat's title"
+        );
     }
 
     #[test]

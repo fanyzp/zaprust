@@ -205,6 +205,7 @@ impl crate::state::App {
     /// form, or the create form when no code exists yet).
     pub(crate) fn request_locked_folder(&mut self) {
         self.screen = crate::state::Screen::Locked;
+        self.filter = core::filter::ChatFilter::Locked;
         if !self.folder_unlocked {
             self.open_code_prompt(if self.lock_code.is_some() {
                 crate::state::CodePrompt::OpenFolder
@@ -265,6 +266,7 @@ impl crate::state::App {
         &mut self,
         chat_id: u64,
         archived: bool,
+        locked: false,
         pinned: bool,
         muted: bool,
     ) {
@@ -855,6 +857,7 @@ mod channel_tests {
             timestamp: 1_700_000_100,
             unread: 0,
             archived: false,
+            locked: false,
             pinned: false,
             ephemeral_secs: 0,
             muted: false,

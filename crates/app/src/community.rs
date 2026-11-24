@@ -1399,6 +1399,7 @@ impl App {
             meta_ai: false,
             community: Some(name.clone()),
             archived: false,
+            locked: false,
             ephemeral_secs: 0,
             messages: Vec::new(),
         });

@@ -44,6 +44,31 @@ impl eframe::App for App {
         self.drain_os_notifications(&ctx);
         self.tick_expiry();
 
+        // The locked folder's session unlock lasts only while
+        // the Locked screen is on screen: any frame spent
+        // elsewhere re-locks the gate. A locked chat left open
+        // in the conversation pane closes with the gate: its
+        // content is what the code protects, so it must not
+        // outlive the unlock that revealed it. (Archived chats
+        // deliberately do not do this; a locked chat is a
+        // privacy boundary, not a filing state.)
+        if self.screen != Screen::Locked && self.folder_unlocked {
+            self.folder_unlocked = false;
+            if self.chats.iter().any(|c| c.id == self.selected_chat && c.locked) {
+                self.conversation_open = false;
+            }
+        }
+        // The app lock: the polls above keep the session live,
+        // but the window shows only the lock screen until the
+        // code passes. No shortcut acts, no tray close
+        // intercepts, and nothing of the account paints.
+        if self.app_locked_now {
+            self.draw_lock_screen(ui);
+            return;
+        }
+        self.handle_shortcuts(&ctx);
+        self.tray_frame(&ctx);
+
         if self.debug.mode {
             self.draw_debug_banner(ui);
         }
@@ -128,6 +153,10 @@ impl eframe::App for App {
         self.draw_photo_editor(&ctx);
         self.draw_call_overlay(&ctx);
         self.draw_banners(ui);
+        // The lock code prompt rides above every screen: the
+        // folder gate is raised from the chat list, where no
+        // conversation popup pass runs.
+        self.draw_code_prompt(&ctx);
     }
 }
 

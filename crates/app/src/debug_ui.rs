@@ -549,6 +549,7 @@ mod tests {
             timestamp: 1_700_000_000,
             unread: 0,
             archived: false,
+            locked: false,
             pinned: false,
             ephemeral_secs: 0,
             muted: false,

@@ -70,3 +70,13 @@ symphonia-codec-aac = "0.5"
 # Bundled libopus: the voice-note encoder builds its own C sources so
 # no platform needs a system opus package.
 opusic-sys = { version = "0.7", features = ["bundled"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# System tray residence (StatusNotifierItem): a pure-Rust
+# D-Bus implementation, so no native appindicator library is
+# needed. Linux only: the tray hosts this speaks to are the
+# Linux desktops'.
+ksni = "0.2"
+# The session-bus client ksni rides on, used directly for
+# the tray-watcher liveness check.
+zbus = "4"

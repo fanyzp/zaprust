@@ -773,6 +773,7 @@ impl crate::state::App {
                 timestamp: live.timestamp,
                 unread: 0,
                 archived: false,
+                locked: false,
                 pinned: false,
                 ephemeral_secs: 0,
                 muted: false,
@@ -826,6 +827,7 @@ impl crate::state::App {
                     kind: chat.kind,
                     muted: chat.muted,
                     blocked,
+                    locked: chat.locked,
                     sender: live.sender.clone(),
                     // The queued body is the only text the popup
                     // planner can ever show, so a view-once
@@ -1410,6 +1412,7 @@ mod mirror_pruning_tests {
             timestamp: 1_060,
             unread: 0,
             archived: false,
+            locked: false,
             pinned: false,
             ephemeral_secs: 0,
             muted: false,

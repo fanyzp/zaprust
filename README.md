@@ -6,7 +6,7 @@
 
 ## Features
 
-- Chats, groups, and communities
+- Chats, groups, communities, and channels
 - Voice notes with playback speed and seek
 - Polls, reactions, replies, forwards
 - Quick replies

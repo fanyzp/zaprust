@@ -117,6 +117,13 @@ fn body_text(msg: &Message) -> String {
                 options.iter().map(|(label, votes)| format!("{label}, {votes}")).collect();
             format!("[poll] {question} ({})", opts.join(", "))
         }
+        MessageKind::Event { name, start_time, canceled, .. } => {
+            if *canceled {
+                format!("[event canceled] {name}")
+            } else {
+                format!("[event] {name} (starts {start_time})")
+            }
+        }
         MessageKind::Location { name, .. } => format!("[location: {name}]"),
         MessageKind::Contact { name, .. } => format!("[contact: {name}]"),
         MessageKind::Carousel { cards, .. } => format!("[carousel: {} cards]", cards.len()),

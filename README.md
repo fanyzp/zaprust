@@ -12,6 +12,8 @@
 - Quick replies
 - Themes generated from a single seed color, dark and light
 - Desktop notifications
+- Chat lock and app lock, a blocked contacts page, system tray residence, and keyboard shortcuts
+- Arabic and Hebrew text with proper shaping and reading order
 
 ## Install
 

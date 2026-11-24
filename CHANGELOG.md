@@ -4,6 +4,23 @@ All notable changes to Zaprust are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com), versions
 follow [SemVer](https://semver.org).
 
+## [1.6.16] - 2026-11-24
+
+### feat:
+
+- Status is complete. The Updates screen now carries a real feed: other people's text, photo and video statuses arrive and read in a viewer, grouped into Recent and Viewed, and expire after 24 hours like they should. Posting grows past text: the composer also sends photo and video statuses (a video shows its poster frame before it goes out). In the viewer you can reply to a status (the reply lands in the author's DM as a quoted message) and react to it, and your own statuses can be deleted from the same viewer, behind a confirmation.
+- Demo mode rehearses media end to end: the fake backend now serves real video bytes and answers downloads with fixture files, so playback and saving work in test mode instead of stopping at an honest error.
+
+### fix:
+
+- Message text wraps at word boundaries again. A long word no longer splits across lines in the middle ("inst / all"); only a token longer than the whole bubble (a link, a pasted hash) still breaks, and it breaks inside the bubble instead of overflowing it.
+- Settings > Appearance: the Dynamic Color card shows one color name at a time. Hovering the dots previews the hovered name in the card's own label; the old hover pill that duplicated the name and spilled past the card's bottom edge is gone.
+- Backend errors reach the screen as plain category sentences (a timeout says it timed out, a refused sign-in says so) instead of raw library wording, which could change under you and leak internals. The full error still goes to the log.
+- Call mute and speaker toggles only flip back when the call-audio change itself fails; an unrelated backend error can no longer flap a toggle.
+- Message info history no longer empties itself: the receipt log prunes its oldest entries past its cap instead of clearing everything.
+- Horizontally scrolling chip rows (chat filters, call filters) show a chevron at an edge that has more chips scrolled out of view, instead of a chip simply cut off at the panel edge.
+- Spacing inside screens sits on one shared scale kept in the theme, so the same gap is the same number everywhere it is used.
+
 ## [1.6.15] - 2026-11-24
 
 ### fix:

@@ -310,76 +310,31 @@ pub(crate) fn strip_edge_fades(
     }
 }
 
-/// The one horizontally scrolling chip strip: the scrollbar is
-/// always hidden, the wheel scrolls sideways, and the clipped
-/// edge(s) fade into the surface behind the strip (the panel).
-/// The closure lays the chips out in a horizontal row and returns
-/// the selected chip's response; whenever `selected_key` changes
-/// (a screen is entered, the selection moves), the strip scrolls
-/// until the selected chip is fully inside the viewport, so the
-/// active chip is never the one cut off at the edge. A clipped
-/// edge also carries a chevron disc: the fade alone read as a
-/// chip clipped by the panel instead of a strip that continues
-/// (VRF-06), so the continuation gets an explicit affordance.
-pub(crate) fn chip_scroll_row(
-    ui: &mut egui::Ui,
-    id_salt: &'static str,
-    t: Tokens,
-    selected_key: impl std::hash::Hash,
-    add_contents: impl FnOnce(&mut egui::Ui) -> Option<egui::Response>,
-) {
-    let key_id = ui.scope_id().with(("chip_strip_ensured", id_salt));
-    let key_hash = egui::util::hash(selected_key);
-    let ensured = ui.data(|d| d.get_temp::<u64>(key_id)) == Some(key_hash);
-    let out = egui::ScrollArea::horizontal()
-        .id_salt(id_salt)
-        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
-        .scroll_source(egui::scroll_area::ScrollSource::ALL)
-        .show(ui, |ui| {
-            let selected = ui.horizontal(|ui| add_contents(ui)).inner;
-            if !ensured {
-                if let Some(resp) = &selected {
-                    let clip = ui.clip_rect();
-                    if resp.rect.left() >= clip.left() - 0.5
-                        && resp.rect.right() <= clip.right() + 0.5
-                    {
-                        ui.data_mut(|d| d.insert_temp(key_id, key_hash));
-                    } else {
-                        resp.scroll_to_me(None);
-                    }
-                } else {
-                    ui.data_mut(|d| d.insert_temp(key_id, key_hash));
-                }
-            }
-            selected
-        });
-    let offset = out.state.clamped_offset().x;
-    let max_offset = (out.content_size.x - out.inner_rect.width()).max(0.0);
-    let clipped_left = offset > 0.5;
-    let clipped_right = offset < max_offset - 0.5;
-    strip_edge_fades(ui.painter(), out.inner_rect, t.bg_panel, clipped_left, clipped_right);
-    // The continuation chevrons, one at each clipped edge: a
-    // small disc in the chip fill with the direction glyph.
-    let painter = ui.painter().clone();
-    let mid_y = out.inner_rect.center().y;
-    for (x, icon, clipped) in [
-        (out.inner_rect.left() + 13.0, crate::icons::Icon::ChevronLeft, clipped_left),
-        (out.inner_rect.right() - 13.0, crate::icons::Icon::ChevronRight, clipped_right),
-    ] {
-        if !clipped {
-            continue;
-        }
-        let center = egui::Pos2::new(x, mid_y);
-        painter.circle_filled(center, 11.0, rgb(t.bg_panel_alt));
-        crate::icons::draw(
-            &painter,
-            icon,
-            center,
-            crate::icons::SIZE_ROW,
-            rgb(t.text_secondary),
-            rgb(t.bg_panel_alt),
-        );
-    }
+/// The one chip row: chips laid out left to right at their
+/// measured sizes, flowing onto a second row when the row is
+/// full, so every chip is fully visible at any panel width.
+/// A chip is never squeezed (each allocates its own measured
+/// size), so a label cannot break mid-word: that was the
+/// failure of the first wrapped row, whose chips were built
+/// from the global button padding and shrank with the layout.
+/// The scrolling strip that replaced it kept the last chip
+/// clipped in the strip's resting state, with a fade and a
+/// chevron disc advertising the continuation; two independent
+/// audits flagged that resting clip (the v1.6.15 audit's D6,
+/// the v1.6.23 verification), so v1.6.24 retires the scroll
+/// machinery, the fades and the chevrons for chip rows:
+/// flowing removes the clip by construction, and the selected
+/// chip needs no scrolling into view because it is never out
+/// of view. (The calls shortcut strip still scrolls and still
+/// uses `strip_edge_fades`; it is a row of contact circles,
+/// not chips, and its content is unbounded by design.)
+pub(crate) fn chip_flow_row(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui)) {
+    ui.scope(|ui| {
+        // The wrapped rows take the same gap as the chips in
+        // a row, so the flow reads as one grid.
+        ui.spacing_mut().item_spacing.y = ui.spacing().item_spacing.x;
+        ui.horizontal_wrapped(add_contents);
+    });
 }
 
 /// The one icon button: a square hit area with a circular hover

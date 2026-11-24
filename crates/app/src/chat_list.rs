@@ -367,26 +367,18 @@ impl App {
                         ui.add_space(SP_2);
                     }
                 }
-                // The filter chips live on the shared scrolling
-                // chip strip: a wrapped row squeezed the last chip
-                // until its label broke mid-word once the counts
-                // made the row too wide, and a plain clipped row
-                // could leave the selected chip itself cut off at
-                // the panel edge. The strip hides its scrollbar,
-                // fades the clipped edge, and scrolls the selected
-                // chip fully into view when the filter changes.
-                // Filtered destinations show no chip row at all:
-                // the destination itself is the filter, and its
+                // The filter chips live on the shared chip row:
+                // whole chips flow onto a second row when the
+                // panel is too narrow for one row, so every
+                // filter is fully visible at rest (the scrolling
+                // strip before v1.6.24 rested with the last chip
+                // clipped at the panel edge). Filtered
+                // destinations show no chip row at all: the
+                // destination itself is the filter, and its
                 // header above already says which one.
                 if !filtered {
-                    crate::widgets::chip_scroll_row(
-                        ui,
-                        "chat_filter_chips",
-                        t,
-                        self.filter,
-                        |ui| {
-                            let mut selected_resp = None;
-                            for f in [
+                    crate::widgets::chip_flow_row(ui, |ui| {
+                        for f in [
                                 ChatFilter::All,
                                 ChatFilter::Unread,
                                 ChatFilter::Private,
@@ -453,17 +445,11 @@ impl App {
                                     name
                                 };
                                 let resp = chip(ui, &label, selected, t);
-                                let clicked = resp.clicked();
-                                if selected {
-                                    selected_resp = Some(resp);
-                                }
-                                if clicked {
+                                if resp.clicked() {
                                     self.filter = f;
                                 }
                             }
-                            selected_resp
-                        },
-                    );
+                    });
                 }
                 // The active label filter, as a chip under
                 // the filter row: the label's name on a

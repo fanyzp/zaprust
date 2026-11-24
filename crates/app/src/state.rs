@@ -502,6 +502,21 @@ pub(crate) enum UiConfirm {
     /// following again needs the invite link, so it confirms
     /// like the other destructive actions.
     UnfollowChannel { chat_id: u64, name: String },
+    /// Unlink a group from its community: the group survives as
+    /// a standalone group, but the community tie is cut for
+    /// every member, so it confirms like the other destructive
+    /// actions. Carries the community's announcement chat id
+    /// (the parent) and the group's chat id.
+    UnlinkCommunityGroup { parent_id: u64, group_id: u64, name: String },
+    /// Remove a member from a community entirely: the parent
+    /// group and every linked subgroup lose them at once, so it
+    /// confirms like the other destructive actions.
+    RemoveCommunityMember { parent_id: u64, address: String, name: String },
+    /// Deactivate a community: the community and its
+    /// announcement group go away for every member; subgroups
+    /// survive as ordinary groups. Nothing about it is
+    /// recoverable from this client.
+    DeactivateCommunity { parent_id: u64, name: String },
     /// Report a message as spam (design standard section 24):
     /// the report goes to WhatsApp with the message's identity;
     /// confirming sends it. The chat and message are named so
@@ -1864,6 +1879,12 @@ pub(crate) struct App {
     pub(crate) community_create_name: String,
     /// The "New community" form's inline validation error.
     pub(crate) community_create_error: Option<String>,
+    /// Community home management state: whether the link-a-group
+    /// picker is expanded on the open community's home.
+    pub(crate) community_link_picker_open: bool,
+    /// Community home management state: the create-subgroup
+    /// form's name field on the open community's home.
+    pub(crate) community_subgroup_name: String,
     /// Communities created during this session, through the
     /// "New community" form: demo mode creates them locally, live
     /// mode appends them when the backend's CommunityCreated
@@ -2452,6 +2473,8 @@ impl App {
             community_create_open: false,
             community_create_name: String::new(),
             community_create_error: None,
+            community_link_picker_open: false,
+            community_subgroup_name: String::new(),
             session_communities: Vec::new(),
             chat_parents: std::collections::HashMap::new(),
             filter_memo: std::cell::RefCell::new(None),

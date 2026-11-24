@@ -516,6 +516,42 @@ impl crate::state::App {
             BackendEvent::CommunityCreated { jid, name } => {
                 self.register_created_community(&jid, &name);
             }
+            BackendEvent::CommunityGroupsLinked { failed, .. } => {
+                // The structure itself lands through the
+                // ChatCommunity events the backend emits per
+                // linked group; this arm only speaks for the
+                // groups the server refused.
+                if !failed.is_empty() {
+                    self.notice = Some(Notice::info(crate::i18n::tf(
+                        "community.link_failed",
+                        "count",
+                        &failed.len().to_string(),
+                    )));
+                }
+            }
+            BackendEvent::CommunityGroupsUnlinked { failed, .. } => {
+                if !failed.is_empty() {
+                    self.notice = Some(Notice::info(crate::i18n::tf(
+                        "community.unlink_failed",
+                        "count",
+                        &failed.len().to_string(),
+                    )));
+                }
+            }
+            BackendEvent::CommunitySubgroupCreated { group, .. } => {
+                // The roster entry carries its community parent,
+                // so the plain upsert path files it under the
+                // community like any healed subgroup.
+                self.apply_chat_upsert(&group);
+            }
+            BackendEvent::CommunityParticipantsRemoved { .. } => {
+                // The parent group's refreshed member list
+                // follows as a GroupMembers event and does the
+                // visible work; nothing else to apply.
+            }
+            BackendEvent::CommunityDeactivated { community_jid } => {
+                self.apply_community_deactivated(&community_jid);
+            }
             BackendEvent::MessageUpsert(msg) => {
                 // Applying an upsert never triggers a network
                 // fetch: a link preview renders only when the
@@ -1967,6 +2003,16 @@ impl crate::state::App {
                 if let Some(tag) = tag.filter(|t| !t.is_empty() && !is_raw_identifier(t)) {
                     if let Some(chat) = self.chats.iter_mut().find(|c| c.id == chat_id) {
                         chat.community = Some(tag);
+                    }
+                }
+                if !is_parent && parent_jid.is_none() {
+                    // A group reporting no community stands
+                    // alone: an unlink (or a deactivation the
+                    // server already applied) clears the mapping
+                    // and the tag an earlier link had set.
+                    self.chat_parents.remove(&chat_id);
+                    if let Some(chat) = self.chats.iter_mut().find(|c| c.id == chat_id) {
+                        chat.community = None;
                     }
                 }
             }
@@ -4789,6 +4835,57 @@ mod burst_drain_tests {
             vec![jid_id(backend::fake::FAKE_GROUP_JID)],
             "the linked group is its member"
         );
+    }
+
+    /// P6: a ChatCommunity report with no parent stands a
+    /// linked group alone again (the unlink answer's shape),
+    /// and a CommunityDeactivated answer removes the parent
+    /// chat while its subgroups keep their chats, unlinked.
+    #[test]
+    pub(super) fn community_unlink_and_deactivation_apply() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        for chat in backend::fake::scripted_chats() {
+            tx.send(BackendEvent::ChatUpsert(chat)).unwrap();
+        }
+        drain_all(&mut app, &ctx);
+        assert_eq!(app.communities().len(), 1, "the scripted community derives");
+        let group_id = jid_id(backend::fake::FAKE_GROUP_JID);
+        tx.send(BackendEvent::ChatCommunity {
+            chat_jid: backend::fake::FAKE_GROUP_JID.to_owned(),
+            parent_jid: None,
+            is_parent: false,
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(
+            app.chats.iter().find(|c| c.id == group_id).is_some_and(|c| c.community.is_none()),
+            "the unlinked group's tag clears"
+        );
+        assert_eq!(
+            app.communities()[0].group_chat_ids,
+            Vec::<u64>::new(),
+            "the community remains, with no linked groups"
+        );
+        tx.send(BackendEvent::ChatCommunity {
+            chat_jid: backend::fake::FAKE_GROUP_JID.to_owned(),
+            parent_jid: Some(backend::fake::FAKE_COMMUNITY_JID.to_owned()),
+            is_parent: false,
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(app.communities().len(), 1, "the re-linked community derives again");
+        tx.send(BackendEvent::CommunityDeactivated {
+            community_jid: backend::fake::FAKE_COMMUNITY_JID.to_owned(),
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        let parent_id = jid_id(backend::fake::FAKE_COMMUNITY_JID);
+        assert!(!app.chats.iter().any(|c| c.id == parent_id), "the parent chat is removed");
+        assert!(
+            app.chats.iter().find(|c| c.id == group_id).is_some_and(|c| c.community.is_none()),
+            "the subgroup survives, unlinked"
+        );
+        assert_eq!(app.communities().len(), 0, "no community remains");
     }
 
     /// The message-info popover renders exactly what the

@@ -70,6 +70,55 @@ pub struct CommunityIntents {
     pub join_group: Option<u64>,
     /// Toggle the description between collapsed and expanded.
     pub toggle_desc: bool,
+    /// Fetch the community invite link.
+    pub fetch_invite: bool,
+    /// Reset the community invite link (invalidates the old one).
+    pub reset_invite: bool,
+    /// Copy the community invite link to the clipboard.
+    pub copy_invite: bool,
+    /// Toggle the link-a-group picker.
+    pub toggle_link_picker: bool,
+    /// Link this group into the community.
+    pub link_group: Option<u64>,
+    /// Unlink this group from the community (the caller
+    /// confirms first).
+    pub unlink_group: Option<u64>,
+    /// Create a subgroup with the drafted name.
+    pub create_subgroup: bool,
+    /// Promote or demote this member of the parent group:
+    /// (address, operation).
+    pub member_op: Option<(String, backend::ParticipantOp)>,
+    /// Remove this member from the whole community (the caller
+    /// confirms first): (address, display name).
+    pub remove_member: Option<(String, String)>,
+    /// Deactivate the community (the caller confirms first).
+    pub deactivate: bool,
+}
+
+/// The live data behind the community home's member and
+/// management sections, resolved by the caller from the live
+/// stores. Absent in demo mode: the sections render only
+/// against a live (or fake) backend, where the parent group's
+/// member list, the account's own role and the invite link are
+/// real reported state rather than layout inventions.
+pub struct CommunityAdmin<'a> {
+    /// The parent (announcement) group's member rows.
+    pub members: &'a [crate::state::MemberRow],
+    /// Avatar photos aligned with `members`.
+    pub member_photos: Vec<Option<egui::TextureId>>,
+    /// Whether my account admins the community. Gates every
+    /// management control; the member list itself is visible to
+    /// members, with no menus, when this is false.
+    pub own_admin: bool,
+    /// The community invite link, once fetched.
+    pub invite_link: Option<&'a str>,
+    /// Groups that could be linked into this community: my
+    /// admin groups carrying no community of their own.
+    pub link_candidates: Vec<&'a Chat>,
+    /// Whether the link-a-group picker is expanded.
+    pub link_picker_open: bool,
+    /// The create-subgroup form's name draft.
+    pub subgroup_name: &'a mut String,
 }
 
 /// A section caption on the community home ("Announcements",
@@ -107,7 +156,7 @@ fn collapsed_description(desc: &str) -> String {
 /// Join pill. The pill is its own interactive target and the
 /// ONLY way to join: returns true when the pill was clicked;
 /// clicking the row itself does nothing.
-fn other_group_row(ui: &mut egui::Ui, chat: &Chat, t: Tokens) -> bool {
+fn other_group_row(ui: &mut egui::Ui, chat: &Chat, t: Tokens, pill_key: &str) -> bool {
     let (rect, response) = ui.allocate_exact_size(
         Vec2::new(ui.available_width(), crate::chat_list::ROW_H),
         Sense::hover(),
@@ -125,7 +174,7 @@ fn other_group_row(ui: &mut egui::Ui, chat: &Chat, t: Tokens) -> bool {
     crate::widgets::paint_chat_avatar(painter, center, crate::chat_list::AVATAR_R, chat);
     // The Join pill occupies a right slot; the title and snippet
     // are ellipsized to the width left of it.
-    let join_label = crate::i18n::t("community.join");
+    let join_label = crate::i18n::t(pill_key);
     let join_font = crate::theme::medium(12.0);
     let join_w = ui.ctx().fonts_mut(|f| {
         f.layout_no_wrap(join_label.clone(), join_font.clone(), rgb(t.badge_text)).size().x
@@ -185,6 +234,304 @@ fn other_group_row(ui: &mut egui::Ui, chat: &Chat, t: Tokens) -> bool {
     pill_resp.clicked()
 }
 
+/// What a managed group row asked for.
+enum ManagedGroupAction {
+    None,
+    Open,
+    Unlink,
+}
+
+/// One linked-group row for community admins: the shared row
+/// metrics and avatar/title/snippet anatomy of
+/// `other_group_row`, plus a kebab at the right edge whose menu
+/// carries the unlink action (per-row actions live behind
+/// kebabs, never as buttons in the row). The row's own click
+/// target stops short of the kebab, so the two never compete.
+fn managed_group_row(ui: &mut egui::Ui, t: Tokens, chat: &Chat) -> ManagedGroupAction {
+    let mut action = ManagedGroupAction::None;
+    let (rect, response) = ui.allocate_exact_size(
+        Vec2::new(ui.available_width(), crate::chat_list::ROW_H),
+        Sense::hover(),
+    );
+    let hov = crate::anim::hover_factor(ui, ("managed_group_row", chat.id), response.hovered());
+    if hov > 0.001 {
+        ui.painter().rect_filled(
+            rect,
+            CornerRadius::same(10),
+            crate::theme::glass_wash(t, t.bg_panel_alt, (hov * 115.0) as u8),
+        );
+    }
+    let painter = ui.painter();
+    let center = Pos2::new(rect.left() + crate::chat_list::AVATAR_CX, rect.center().y);
+    crate::widgets::paint_chat_avatar(painter, center, crate::chat_list::AVATAR_R, chat);
+    let kebab_rect = egui::Rect::from_center_size(
+        Pos2::new(rect.right() - 22.0, rect.center().y),
+        Vec2::splat(30.0),
+    );
+    let text_left = rect.left() + crate::chat_list::TEXT_X;
+    let budget = (kebab_rect.left() - 10.0 - text_left).max(0.0);
+    let title_font = crate::theme::medium(15.0);
+    let title = crate::widgets::ellipsize(ui, &chat.title, title_font.clone(), budget);
+    painter.text(
+        Pos2::new(text_left, rect.top() + crate::chat_list::TITLE_DY),
+        egui::Align2::LEFT_CENTER,
+        title,
+        title_font,
+        rgb(t.text_primary),
+    );
+    let preview = crate::chat_list::chat_preview_line(chat);
+    let snippet_font = FontId::proportional(12.0);
+    let preview = crate::widgets::ellipsize(ui, &preview, snippet_font.clone(), budget);
+    if !preview.is_empty() {
+        painter.text(
+            Pos2::new(text_left, rect.top() + crate::chat_list::SNIPPET_DY),
+            egui::Align2::LEFT_CENTER,
+            preview,
+            snippet_font,
+            rgb(t.text_secondary),
+        );
+    }
+    let open_rect = egui::Rect::from_min_max(rect.min, Pos2::new(kebab_rect.left(), rect.bottom()));
+    if ui
+        .interact(open_rect, egui::Id::unique(("managed_group_open", chat.id)), Sense::click())
+        .clicked()
+    {
+        action = ManagedGroupAction::Open;
+    }
+    let kebab = ui
+        .interact(kebab_rect, egui::Id::unique(("managed_group_kebab", chat.id)), Sense::click())
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    crate::icons::draw(
+        painter,
+        crate::icons::Icon::MoreVert,
+        kebab_rect.center(),
+        18.0,
+        rgb(t.text_secondary),
+        rgb(t.bg_panel),
+    );
+    egui::Popup::menu(&kebab)
+        .frame(crate::theme::glass_panel_frame(t, crate::theme::RADIUS_PANEL))
+        .width(208.0)
+        .show(|ui| {
+            if crate::widgets::menu_item_danger(
+                ui,
+                t,
+                crate::icons::Icon::Delete,
+                &crate::i18n::t("community.unlink_group"),
+            )
+            .clicked()
+            {
+                action = ManagedGroupAction::Unlink;
+                ui.close();
+            }
+        });
+    action
+}
+
+/// The menu hairline before a danger item, in the standard
+/// soft form (design standard, hairline discipline): inset to
+/// the item text line at the soft alpha.
+fn menu_hairline(ui: &mut egui::Ui, t: Tokens) {
+    ui.add_space(SP_1);
+    let (line, _) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), 1.0), egui::Sense::hover());
+    let inset = crate::theme::LIST_PANEL_INSET_X as f32;
+    let c = rgb(t.border);
+    ui.painter().hline(
+        (line.left() + inset)..=(line.right() - inset),
+        line.center().y,
+        egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), 100)),
+    );
+    ui.add_space(SP_1);
+}
+
+/// The community home's member and management sections
+/// (parity P6): the member list for every member, and for
+/// admins the invite link, the group management (link picker
+/// and create-subgroup form) and the deactivate action. Pure
+/// rendering: every action leaves as a `CommunityIntents`
+/// field, and the destructive ones are confirmed by the
+/// caller, never executed here.
+fn draw_community_admin_sections(
+    ui: &mut egui::Ui,
+    t: Tokens,
+    admin: &mut CommunityAdmin<'_>,
+    intents: &mut CommunityIntents,
+) {
+    if !admin.members.is_empty() {
+        ui.add_space(SP_SECTION);
+        section_label(
+            ui,
+            t,
+            &format!("{} ({})", crate::i18n::t("profile.members"), admin.members.len()),
+        );
+        const MEMBER_LIST_CAP: usize = 200;
+        let shown = admin.members.len().min(MEMBER_LIST_CAP);
+        for (row, photo) in admin.members.iter().take(shown).zip(admin.member_photos.iter()) {
+            let kebab = crate::profile::dock::dock_member_row(
+                ui,
+                t,
+                &row.label,
+                row.detail.as_deref(),
+                row.admin,
+                admin.own_admin,
+                *photo,
+            );
+            if let Some(kebab) = kebab {
+                egui::Popup::menu(&kebab)
+                    .frame(crate::theme::glass_panel_frame(t, crate::theme::RADIUS_PANEL))
+                    .width(208.0)
+                    .show(|ui| {
+                        let (label_key, op) = if row.admin {
+                            ("profile.remove_admin", backend::ParticipantOp::Demote)
+                        } else {
+                            ("profile.make_admin", backend::ParticipantOp::Promote)
+                        };
+                        if crate::widgets::menu_item_icon(
+                            ui,
+                            t,
+                            Some(crate::icons::Icon::Shield),
+                            &crate::i18n::t(label_key),
+                            None,
+                        )
+                        .clicked()
+                        {
+                            intents.member_op = Some((row.address.clone(), op));
+                            ui.close();
+                        }
+                        menu_hairline(ui, t);
+                        if crate::widgets::menu_item_danger(
+                            ui,
+                            t,
+                            crate::icons::Icon::Delete,
+                            &crate::i18n::t("community.remove_from_community"),
+                        )
+                        .clicked()
+                        {
+                            intents.remove_member = Some((row.address.clone(), row.label.clone()));
+                            ui.close();
+                        }
+                    });
+            }
+            ui.add_space(SP_1);
+        }
+        if admin.members.len() > shown {
+            ui.label(
+                RichText::new(format!("... and {} more", admin.members.len() - shown))
+                    .size(12.0)
+                    .color(rgb(t.text_faint)),
+            );
+        }
+    }
+    if !admin.own_admin {
+        return;
+    }
+    // Invite link: fetched on demand, like the group dock's;
+    // copy and reset act on the last reported link.
+    ui.add_space(SP_SECTION);
+    section_label(ui, t, &crate::i18n::t("community.invite"));
+    match admin.invite_link {
+        Some(link) => {
+            ui.label(RichText::new(link).size(10.0).color(rgb(t.text_faint)));
+            ui.horizontal(|ui| {
+                if crate::widgets::button(
+                    ui,
+                    t,
+                    &crate::i18n::t("profile.copy_link"),
+                    crate::widgets::Btn::Secondary,
+                )
+                .clicked()
+                {
+                    intents.copy_invite = true;
+                }
+                if crate::widgets::button(
+                    ui,
+                    t,
+                    &crate::i18n::t("profile.reset_link"),
+                    crate::widgets::Btn::Secondary,
+                )
+                .clicked()
+                {
+                    intents.reset_invite = true;
+                }
+            });
+        }
+        None => {
+            if crate::widgets::button(
+                ui,
+                t,
+                &crate::i18n::t("profile.show_link"),
+                crate::widgets::Btn::Secondary,
+            )
+            .clicked()
+            {
+                intents.fetch_invite = true;
+            }
+        }
+    }
+    // Group management: the link picker and the
+    // create-subgroup form.
+    ui.add_space(SP_SECTION);
+    section_label(ui, t, &crate::i18n::t("community.manage_groups"));
+    if crate::widgets::button(
+        ui,
+        t,
+        &crate::i18n::t("community.link_group"),
+        crate::widgets::Btn::Secondary,
+    )
+    .clicked()
+    {
+        intents.toggle_link_picker = true;
+    }
+    if admin.link_picker_open {
+        ui.add_space(SP_2);
+        if admin.link_candidates.is_empty() {
+            ui.label(
+                RichText::new(crate::i18n::t("community.no_link_candidates"))
+                    .size(12.0)
+                    .color(rgb(t.text_faint)),
+            );
+        }
+        for cand in &admin.link_candidates {
+            if other_group_row(ui, cand, t, "community.link") {
+                intents.link_group = Some(cand.id);
+            }
+        }
+    }
+    ui.add_space(SP_3);
+    ui.label(
+        RichText::new(crate::i18n::t("community.new_subgroup"))
+            .size(12.0)
+            .color(rgb(t.text_secondary)),
+    );
+    ui.horizontal(|ui| {
+        let w = (ui.available_width() - 110.0).max(120.0);
+        crate::widgets::text_field(ui, t, admin.subgroup_name, "", w);
+        if crate::widgets::button(
+            ui,
+            t,
+            &crate::i18n::t("community.create_subgroup"),
+            crate::widgets::Btn::Secondary,
+        )
+        .clicked()
+        {
+            intents.create_subgroup = true;
+        }
+    });
+    // Danger zone: deactivation is confirmed by the caller.
+    ui.add_space(SP_SECTION);
+    if crate::widgets::button(
+        ui,
+        t,
+        &crate::i18n::t("community.deactivate"),
+        crate::widgets::Btn::Danger,
+    )
+    .clicked()
+    {
+        intents.deactivate = true;
+    }
+}
+
 /// Draws the community home into `ui` (the shell gives it the
 /// content area next to the rail). `announcement` is the
 /// community's announcement chat, `groups` the groups the user
@@ -203,6 +550,7 @@ pub fn community_home(
     cover: Option<&egui::TextureHandle>,
     scroll_offset: f32,
     community_photo: Option<egui::TextureId>,
+    admin: Option<CommunityAdmin<'_>>,
 ) -> CommunityIntents {
     let mut intents = CommunityIntents::default();
     let total_groups = community.group_chat_ids.len() + community.other_group_ids.len();
@@ -367,21 +715,38 @@ pub fn community_home(
                     intents.open_chat = Some(announcement.id);
                 }
                 ui.add_space(SP_SECTION);
-                // The groups the user is in.
+                // The groups the user is in. Admins get the
+                // managed row (same metrics, a kebab at the right
+                // edge carrying the unlink action); everyone else
+                // gets the plain shared row.
                 section_label(ui, t, &crate::i18n::t("community.your_groups"));
+                let admin_view = admin.as_ref().is_some_and(|a| a.own_admin);
                 for group in groups {
-                    if crate::chat_list::chat_row(ui, group, false, false, t, None, None, None)
-                        .clicked()
+                    if admin_view {
+                        match managed_group_row(ui, t, group) {
+                            ManagedGroupAction::Open => intents.open_chat = Some(group.id),
+                            ManagedGroupAction::Unlink => {
+                                intents.unlink_group = Some(group.id);
+                            }
+                            ManagedGroupAction::None => {}
+                        }
+                    } else if crate::chat_list::chat_row(
+                        ui, group, false, false, t, None, None, None,
+                    )
+                    .clicked()
                     {
                         intents.open_chat = Some(group.id);
                     }
+                }
+                if let Some(mut admin) = admin {
+                    draw_community_admin_sections(ui, t, &mut admin, &mut intents);
                 }
                 // Groups of this community the user has not joined yet.
                 if !other_groups.is_empty() {
                     ui.add_space(SP_SECTION);
                     section_label(ui, t, &crate::i18n::t("community.other_groups"));
                     for group in other_groups {
-                        if other_group_row(ui, group, t) {
+                        if other_group_row(ui, group, t, "community.join") {
                             intents.join_group = Some(group.id);
                         }
                     }
@@ -551,6 +916,70 @@ impl App {
         let other_groups: Vec<&Chat> = other_owned.iter().collect();
         let desc_expanded = self.community_desc_expanded == Some(community.id);
         let cover = if self.live_mode { None } else { self.media.photo_texture.clone() };
+        // Live member and management data (parity P6): the
+        // parent group's member list is fetched once per home
+        // session, the way the profile dock fetches it per
+        // opening. While the link picker is open, the own-admin
+        // role of every unlinked group is learned the same way:
+        // the picker can only list groups this account admins,
+        // and the role exists only once a group's members were
+        // fetched.
+        let announcement_id = community.announcement_chat_id;
+        if self.live_mode && !self.groups.members_requested.contains(&announcement_id) {
+            self.groups.members_requested.insert(announcement_id);
+            if let Some(jid) = self.live_jid(announcement_id) {
+                self.send_backend(backend::BackendCommand::FetchGroupMembers { chat_jid: jid });
+            }
+        }
+        if self.live_mode && self.community_link_picker_open {
+            let unknown: Vec<u64> = self
+                .chats
+                .iter()
+                .filter(|c| {
+                    c.kind == ChatKind::Group
+                        && c.community.is_none()
+                        && !self.groups.members_requested.contains(&c.id)
+                })
+                .map(|c| c.id)
+                .collect();
+            for id in unknown {
+                self.groups.members_requested.insert(id);
+                if let Some(jid) = self.live_jid(id) {
+                    self.send_backend(backend::BackendCommand::FetchGroupMembers { chat_jid: jid });
+                }
+            }
+        }
+        let ctx = root.ctx().clone();
+        let members_owned: Vec<crate::state::MemberRow> = if self.live_mode {
+            self.groups.live_members.get(&announcement_id).cloned().unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        let member_photos: Vec<Option<egui::TextureId>> = members_owned
+            .iter()
+            .map(|row| self.member_avatar_photo(&ctx, &row.address, &row.label))
+            .collect();
+        let own_admin = self.groups.own_admin.get(&announcement_id).copied().unwrap_or(false);
+        let invite_owned: Option<String> = self
+            .groups
+            .invite_link
+            .as_ref()
+            .filter(|(id, _)| *id == announcement_id)
+            .map(|(_, link)| link.clone());
+        let candidates_owned: Vec<Chat> = if self.live_mode {
+            self.chats
+                .iter()
+                .filter(|c| {
+                    c.kind == ChatKind::Group
+                        && c.community.is_none()
+                        && c.id != announcement_id
+                        && self.groups.own_admin.get(&c.id).copied().unwrap_or(false)
+                })
+                .cloned()
+                .collect()
+        } else {
+            Vec::new()
+        };
         // The community's own picture (P1-31): the announcement
         // chat IS the parent group, so its JID drives the shared
         // avatar pipeline; the decoded texture (when one exists)
@@ -582,6 +1011,19 @@ impl App {
                     cover.as_ref(),
                     self.qa_community_scroll,
                     community_photo,
+                    if self.live_mode {
+                        Some(CommunityAdmin {
+                            members: &members_owned,
+                            member_photos: member_photos.clone(),
+                            own_admin,
+                            invite_link: invite_owned.as_deref(),
+                            link_candidates: candidates_owned.iter().collect(),
+                            link_picker_open: self.community_link_picker_open,
+                            subgroup_name: &mut self.community_subgroup_name,
+                        })
+                    } else {
+                        None
+                    },
                 );
             },
         );
@@ -612,6 +1054,59 @@ impl App {
         }
         if let Some(id) = intents.open_chat {
             self.open_community_chat(id);
+        }
+        // Management intents (parity P6). Destructive ones park
+        // a confirmation; the rest send their command at once.
+        if intents.fetch_invite || intents.reset_invite {
+            if let Some(jid) = self.live_jid(announcement_id) {
+                self.send_backend(backend::BackendCommand::FetchGroupInviteLink {
+                    chat_jid: jid,
+                    reset: intents.reset_invite,
+                });
+            }
+        }
+        if intents.copy_invite {
+            if let Some(link) = &invite_owned {
+                root.ctx().copy_text(link.clone());
+                self.notice = Some(Notice::info(crate::i18n::t("profile.link_copied")));
+            }
+        }
+        if intents.toggle_link_picker {
+            self.community_link_picker_open = !self.community_link_picker_open;
+        }
+        if let Some(id) = intents.link_group {
+            self.link_community_group(announcement_id, id);
+        }
+        if let Some(id) = intents.unlink_group {
+            let name = groups_owned
+                .iter()
+                .find(|c| c.id == id)
+                .map(|c| c.title.clone())
+                .unwrap_or_default();
+            self.ui_confirm = Some(crate::state::UiConfirm::UnlinkCommunityGroup {
+                parent_id: announcement_id,
+                group_id: id,
+                name,
+            });
+        }
+        if intents.create_subgroup {
+            self.create_community_subgroup(announcement_id);
+        }
+        if let Some((address, op)) = intents.member_op {
+            self.group_participant_op(announcement_id, Some(address), op);
+        }
+        if let Some((address, name)) = intents.remove_member {
+            self.ui_confirm = Some(crate::state::UiConfirm::RemoveCommunityMember {
+                parent_id: announcement_id,
+                address,
+                name,
+            });
+        }
+        if intents.deactivate {
+            self.ui_confirm = Some(crate::state::UiConfirm::DeactivateCommunity {
+                parent_id: announcement_id,
+                name: community.name.clone(),
+            });
         }
     }
 
@@ -933,6 +1428,120 @@ impl App {
         }
         self.add_session_community(name.to_owned(), chat_id);
         self.notice = Some(Notice::info(crate::i18n::tf("community.created_notice", "name", name)));
+    }
+
+    /// Links one group into a community (the home's link
+    /// picker). The backend's per-group ChatCommunity answer
+    /// files the group under the community; a refusal lands as
+    /// the CommunityGroupsLinked failure notice.
+    pub(crate) fn link_community_group(&mut self, parent_id: u64, group_id: u64) {
+        let (Some(parent_jid), Some(group_jid)) =
+            (self.live_jid(parent_id), self.live_jid(group_id))
+        else {
+            return;
+        };
+        self.send_backend(backend::BackendCommand::LinkCommunityGroups {
+            community_jid: parent_jid,
+            group_jids: vec![group_jid],
+        });
+        self.community_link_picker_open = false;
+        self.notice = Some(Notice::busy(crate::i18n::t("community.linking")));
+    }
+
+    /// Unlinks one group from its community, after the
+    /// confirmation modal. The group survives as a standalone
+    /// group; the backend's ChatCommunity answer clears its
+    /// parent locally.
+    pub(crate) fn unlink_community_group(&mut self, parent_id: u64, group_id: u64) {
+        let (Some(parent_jid), Some(group_jid)) =
+            (self.live_jid(parent_id), self.live_jid(group_id))
+        else {
+            return;
+        };
+        self.send_backend(backend::BackendCommand::UnlinkCommunityGroups {
+            community_jid: parent_jid,
+            group_jids: vec![group_jid],
+        });
+        self.notice = Some(Notice::busy(crate::i18n::t("community.unlinking")));
+    }
+
+    /// Creates a subgroup in the community from the home's
+    /// name draft. An empty name is spoken as a validation
+    /// notice, never a silent no-op.
+    pub(crate) fn create_community_subgroup(&mut self, parent_id: u64) {
+        let name = self.community_subgroup_name.trim().to_owned();
+        if name.is_empty() {
+            self.notice = Some(Notice::info(crate::i18n::t("community.name_required")));
+            return;
+        }
+        let Some(parent_jid) = self.live_jid(parent_id) else {
+            return;
+        };
+        self.community_subgroup_name.clear();
+        self.send_backend(backend::BackendCommand::CreateCommunitySubgroup {
+            community_jid: parent_jid,
+            name,
+        });
+        self.notice = Some(Notice::busy(crate::i18n::t("community.creating_subgroup")));
+    }
+
+    /// Removes one member from the whole community, after the
+    /// confirmation modal: the parent group and every linked
+    /// subgroup lose them at once. The refreshed parent member
+    /// list is the backend's answer.
+    pub(crate) fn remove_community_member(&mut self, parent_id: u64, address: String) {
+        let Some(parent_jid) = self.live_jid(parent_id) else {
+            return;
+        };
+        self.send_backend(backend::BackendCommand::RemoveCommunityParticipants {
+            community_jid: parent_jid,
+            participants: vec![address],
+        });
+        self.notice = Some(Notice::busy(crate::i18n::t("notice.updating_members")));
+    }
+
+    /// Deactivates the community, after the confirmation
+    /// modal. The local removal waits for the backend's
+    /// CommunityDeactivated answer.
+    pub(crate) fn deactivate_community(&mut self, parent_id: u64) {
+        let Some(parent_jid) = self.live_jid(parent_id) else {
+            return;
+        };
+        self.send_backend(backend::BackendCommand::DeactivateCommunity {
+            community_jid: parent_jid,
+        });
+        self.notice = Some(Notice::busy(crate::i18n::t("community.deactivating")));
+    }
+
+    /// Applies the backend's CommunityDeactivated answer: the
+    /// subgroups keep their chats and lose the parent tag, a
+    /// session-created registration under the same name goes,
+    /// and the parent chat is deleted like any deleted chat.
+    /// An open home for the community closes.
+    pub(crate) fn apply_community_deactivated(&mut self, community_jid: &str) {
+        let parent_id = crate::live::jid_id(community_jid);
+        let children: Vec<u64> = self
+            .chat_parents
+            .iter()
+            .filter(|(_, p)| **p == parent_id)
+            .map(|(c, _)| *c)
+            .filter(|c| *c != parent_id)
+            .collect();
+        for child in children {
+            self.chat_parents.remove(&child);
+            if let Some(chat) = self.chats.iter_mut().find(|c| c.id == child) {
+                chat.community = None;
+            }
+        }
+        self.chat_parents.remove(&parent_id);
+        if let Some(parent) = self.chats.iter().find(|c| c.id == parent_id) {
+            let name = parent.title.clone();
+            self.session_communities.retain(|c| c.name != name);
+        }
+        self.apply_chat_deleted(parent_id, community_jid);
+        self.open_community = None;
+        self.community_home_from_overview = false;
+        self.notice = Some(Notice::info(crate::i18n::t("community.deactivated")));
     }
 
     /// Executes the "New community" form. Returns false when

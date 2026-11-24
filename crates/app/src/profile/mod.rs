@@ -17,7 +17,7 @@
 
 use core::model::{Chat, ChatKind};
 
-mod dock;
+pub(crate) mod dock;
 mod gallery;
 mod my_profile;
 mod panel;

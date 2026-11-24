@@ -385,7 +385,7 @@ pub(super) fn dock_action_row(
 /// kebab's response so the caller can anchor the menu to it;
 /// rows without actions (demo lists) pass `kebab: false` and
 /// get `None`.
-pub(super) fn dock_member_row(
+pub(crate) fn dock_member_row(
     ui: &mut egui::Ui,
     t: Tokens,
     name: &str,

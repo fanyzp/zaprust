@@ -842,6 +842,21 @@ impl App {
                 crate::i18n::tf("channels.unfollow_body", "name", name),
                 crate::i18n::t("channels.unfollow_confirm"),
             ),
+            UiConfirm::UnlinkCommunityGroup { name, .. } => (
+                crate::i18n::t("community.unlink_title"),
+                crate::i18n::tf("community.unlink_body", "name", name),
+                crate::i18n::t("community.unlink_confirm"),
+            ),
+            UiConfirm::RemoveCommunityMember { name, .. } => (
+                crate::i18n::t("community.remove_member_title"),
+                crate::i18n::tf("community.remove_member_body", "name", name),
+                crate::i18n::t("common.remove"),
+            ),
+            UiConfirm::DeactivateCommunity { name, .. } => (
+                crate::i18n::t("community.deactivate_title"),
+                crate::i18n::tf("community.deactivate_body", "name", name),
+                crate::i18n::t("community.deactivate"),
+            ),
             UiConfirm::ReportSpam { name, .. } => (
                 crate::i18n::t("chat.report_title"),
                 crate::i18n::tf("chat.report_body", "name", name),
@@ -982,6 +997,15 @@ impl App {
                 }
                 Some(UiConfirm::UnfollowChannel { chat_id, .. }) => {
                     self.unfollow_channel(chat_id);
+                }
+                Some(UiConfirm::UnlinkCommunityGroup { parent_id, group_id, .. }) => {
+                    self.unlink_community_group(parent_id, group_id);
+                }
+                Some(UiConfirm::RemoveCommunityMember { parent_id, address, .. }) => {
+                    self.remove_community_member(parent_id, address);
+                }
+                Some(UiConfirm::DeactivateCommunity { parent_id, .. }) => {
+                    self.deactivate_community(parent_id);
                 }
                 Some(UiConfirm::ReportSpam { chat_id, msg_id, .. }) => {
                     self.report_spam(chat_id, msg_id);

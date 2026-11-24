@@ -589,6 +589,11 @@ impl App {
                                 group_first,
                                 avatar_column: group_incoming,
                                 show_avatar: group_incoming && group_last,
+                                event_guests: self
+                                    .event_guests
+                                    .get(&bubble_msg.id)
+                                    .copied()
+                                    .unwrap_or(0),
                             },
                         )
                     });
@@ -754,6 +759,25 @@ impl App {
                 }
                 BubbleAction::Vote(id, idx) => {
                     self.vote_poll(id, idx);
+                }
+                BubbleAction::Rsvp(id, response) => {
+                    let guests = self.event_guests.get(&id).copied().unwrap_or(0);
+                    self.respond_event(id, response, Some(guests));
+                }
+                BubbleAction::EventGuests(id, delta) => {
+                    // The stepper re-sends my Going answer with
+                    // the new count (the wire carries the count
+                    // with the response, there is no separate
+                    // guest update).
+                    let next = (self.event_guests.get(&id).copied().unwrap_or(0) + delta).max(0);
+                    self.event_guests.insert(id, next);
+                    self.respond_event(id, core::model::EventRsvp::Going, Some(next));
+                }
+                BubbleAction::OpenJoinLink(url) => {
+                    // The event's join link opens in the system
+                    // browser, on the user's own click only (the
+                    // same route the location card takes).
+                    let _ = open::that(url);
                 }
                 BubbleAction::RetrySticker(id) => {
                     self.retry_sticker_fetch(id);

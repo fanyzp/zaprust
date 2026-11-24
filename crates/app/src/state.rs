@@ -513,6 +513,11 @@ pub(crate) enum UiConfirm {
     /// following again needs the invite link, so it confirms
     /// like the other destructive actions.
     UnfollowChannel { chat_id: u64, name: String },
+    /// Cancel one of my events (P7 row 50): every member sees
+    /// the event as canceled, and this client cannot un-cancel
+    /// it, so it confirms like the other destructive actions.
+    /// Carries the event's chat, message and name.
+    CancelEvent { chat_id: u64, msg_id: u64, name: String },
     /// Unlink a group from its community: the group survives as
     /// a standalone group, but the community tie is cut for
     /// every member, so it confirms like the other destructive
@@ -1123,6 +1128,7 @@ pub(crate) struct ParkedComposer {
     pub(crate) editing_id: Option<u64>,
     pub(crate) poll_draft: Option<PollDraft>,
     pub(crate) location_draft: Option<LocationDraft>,
+    pub(crate) event_draft: Option<EventDraft>,
 }
 
 impl ParkedComposer {
@@ -1133,6 +1139,7 @@ impl ParkedComposer {
             && self.editing_id.is_none()
             && self.poll_draft.is_none()
             && self.location_draft.is_none()
+            && self.event_draft.is_none()
     }
 }
 
@@ -1166,6 +1173,8 @@ pub(crate) struct ComposerState {
     pub(crate) rich_menu_open: bool,
     /// The poll builder draft, when open.
     pub(crate) poll_draft: Option<PollDraft>,
+    /// The event builder draft, when open (attach menu).
+    pub(crate) event_draft: Option<EventDraft>,
     /// Files staged in the composer (attach menu), sent together.
     pub(crate) staged: Vec<StagedMedia>,
     /// Caption typed for the staged media (applies to the first
@@ -1730,6 +1739,15 @@ pub(crate) struct App {
     /// back).
     pub(crate) pending_event_edits:
         std::collections::HashMap<u64, core::model::MessageKind>,
+    /// The event edit form, when open: the chat and message it
+    /// targets plus the draft pre-filled from the event. Bound
+    /// to the message, not the open chat, so a chat switch
+    /// mid-edit can never retarget the submit.
+    pub(crate) event_edit_draft: Option<(u64, u64, EventDraft)>,
+    /// Extra-guest counts chosen on event cards, per event
+    /// message ID: the stepper's value rides with my Going
+    /// answer when it changes.
+    pub(crate) event_guests: std::collections::HashMap<u64, i32>,
     /// Live mode: a chat's (archived, pinned, muted, mute_until)
     /// before a chat action the backend has not yet settled,
     /// keyed by chat ID and the action's field group ("archive",
@@ -1993,6 +2011,36 @@ pub(crate) struct PollDraft {
     pub(crate) multiple: bool,
 }
 
+/// The event builder's draft: the create form's fields, and the
+/// edit form's (the same shape; an edit pre-fills it from the
+/// event). Date and times are strict text (`YYYY-MM-DD`,
+/// `HH:MM`, on the app's UTC display grid) because the app has
+/// no date-picker widget; they are parsed and validated whole
+/// at send, with the error kept in the form.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct EventDraft {
+    /// Event name (required).
+    pub(crate) name: String,
+    /// Description (optional).
+    pub(crate) description: String,
+    /// Start date, `YYYY-MM-DD`.
+    pub(crate) date: String,
+    /// Start time, `HH:MM`.
+    pub(crate) start_time: String,
+    /// End time, `HH:MM` (optional; same day as the start).
+    pub(crate) end_time: String,
+    /// Location label (optional).
+    pub(crate) location: String,
+    /// Join link (optional).
+    pub(crate) link: String,
+    /// The event is a scheduled call.
+    pub(crate) scheduled_call: bool,
+    /// Guests may bring extra guests.
+    pub(crate) extra_guests: bool,
+    /// The last validation error, shown inside the form.
+    pub(crate) error: Option<String>,
+}
+
 /// Which attach-menu flow staged a file: the kind decides the
 /// backend media kind, the mime sniffing and the preview shape.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2246,6 +2294,7 @@ impl App {
                 stack_h: 84.0,
                 rich_menu_open: false,
                 poll_draft: None,
+                event_draft: None,
                 staged: Vec::new(),
                 staged_caption: String::new(),
                 location_draft: None,
@@ -2429,6 +2478,8 @@ impl App {
             pending_poll_votes: std::collections::HashMap::new(),
             pending_event_rsvps: std::collections::HashMap::new(),
             pending_event_edits: std::collections::HashMap::new(),
+            event_edit_draft: None,
+            event_guests: std::collections::HashMap::new(),
             pending_chat_actions: std::collections::HashMap::new(),
             pending_unread: std::collections::HashMap::new(),
             pending_blocks: std::collections::HashMap::new(),
@@ -2751,6 +2802,7 @@ impl App {
             editing_id: self.composer.editing_id.take(),
             poll_draft: self.composer.poll_draft.take(),
             location_draft: self.composer.location_draft.take(),
+            event_draft: self.composer.event_draft.take(),
         };
         self.composer.staged_chat = None;
         if parked.is_empty() {
@@ -2765,6 +2817,7 @@ impl App {
             self.composer.editing_id = parked.editing_id;
             self.composer.poll_draft = parked.poll_draft;
             self.composer.location_draft = parked.location_draft;
+            self.composer.event_draft = parked.event_draft;
             if !self.composer.staged.is_empty() {
                 self.composer.staged_chat = Some(next);
             }

@@ -8,6 +8,7 @@
 pub(crate) mod emoji;
 mod menus;
 mod pickers;
+mod event;
 mod poll;
 
 use backend::BackendCommand;
@@ -593,6 +594,7 @@ impl App {
         self.draw_message_info(ctx);
         self.draw_rich_menu(ctx);
         self.draw_poll_builder(ctx);
+        self.draw_event_builder(ctx);
         self.draw_location_dialog(ctx);
         self.draw_contact_picker(ctx);
         self.draw_picker(ctx);
@@ -872,6 +874,11 @@ impl App {
                 crate::i18n::t("updates.delete_body"),
                 crate::i18n::t("common.delete"),
             ),
+            UiConfirm::CancelEvent { name, .. } => (
+                crate::i18n::t("event.cancel_title"),
+                crate::i18n::tf("event.cancel_body", "name", name),
+                crate::i18n::t("event.cancel_confirm"),
+            ),
         };
         let mut decision: Option<bool> = None;
         if !exiting && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
@@ -1012,6 +1019,9 @@ impl App {
                 }
                 Some(UiConfirm::DeleteStatus { message_id }) => {
                     self.delete_my_status(&message_id);
+                }
+                Some(UiConfirm::CancelEvent { chat_id, msg_id, .. }) => {
+                    self.cancel_event(chat_id, msg_id);
                 }
                 Some(UiConfirm::DeleteStickerPack { dir, .. }) => {
                     // The result is spoken either way: a pack

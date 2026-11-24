@@ -1864,7 +1864,7 @@ pub(super) async fn run_async(
                                 .to_owned(),
                         ),
                         (_, Err(e)) => {
-                            fail(format!("Invalid chat address: {}", error_words(e)));
+                            fail(format!("Invalid chat address: {}", error_words(&e)));
                         }
                     }
                 }

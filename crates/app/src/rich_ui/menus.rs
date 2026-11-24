@@ -52,6 +52,13 @@ impl App {
         };
         let mine = msg.sender.is_none();
         let is_text = msg.kind == MessageKind::Text;
+        // An event message carries its own actions (edit and
+        // cancel for its creator) below; a canceled event
+        // offers neither, it can only be read.
+        let event_state = match &msg.kind {
+            MessageKind::Event { name, canceled, .. } => Some((name.clone(), *canceled)),
+            _ => None,
+        };
         // A channel update's menu is the subset the channel
         // contract backs: react, copy, and (for the channel's
         // own posts) edit and delete for everyone, plus media
@@ -148,6 +155,38 @@ impl App {
                         {
                             self.start_edit(msg.id);
                             close = true;
+                        }
+                        if mine && !in_channel {
+                            if let Some((event_name, false)) = &event_state {
+                                if crate::widgets::menu_item_icon(
+                                    ui,
+                                    t,
+                                    Some(crate::icons::Icon::Edit),
+                                    "Edit event",
+                                    None,
+                                )
+                                .clicked()
+                                {
+                                    self.open_event_edit(msg.id);
+                                    close = true;
+                                }
+                                if crate::widgets::menu_item_danger(
+                                    ui,
+                                    t,
+                                    crate::icons::Icon::CalendarMonth,
+                                    "Cancel event",
+                                )
+                                .clicked()
+                                {
+                                    self.ui_confirm =
+                                        Some(crate::state::UiConfirm::CancelEvent {
+                                            chat_id: self.selected_chat,
+                                            msg_id: msg.id,
+                                            name: event_name.clone(),
+                                        });
+                                    close = true;
+                                }
+                            }
                         }
                         if (mine || admin_can_delete)
                             && crate::widgets::menu_item_danger(
@@ -683,6 +722,27 @@ impl App {
                                     multiple: false,
                                 });
                             }
+                            close = true;
+                        }
+                        if !in_channel
+                            && crate::widgets::menu_item_icon(
+                                ui,
+                                t,
+                                Some(crate::icons::Icon::CalendarMonth),
+                                &crate::i18n::t("attach.event"),
+                                None,
+                            )
+                            .clicked()
+                        {
+                            // Events live in DM and group chats;
+                            // channels have no library event
+                            // support, so the item is not offered
+                            // there (no dead controls).
+                            self.composer.event_draft = Some(crate::state::EventDraft {
+                                date: crate::state::today_string(),
+                                start_time: "19:00".to_owned(),
+                                ..Default::default()
+                            });
                             close = true;
                         }
                         crate::widgets::soft_separator(ui, t);

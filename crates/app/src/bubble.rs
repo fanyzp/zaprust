@@ -92,6 +92,14 @@ pub(crate) enum BubbleAction {
     OpenLocation(f64, f64),
     /// Vote for poll option `usize` in the poll message `u64`.
     Vote(u64, usize),
+    /// Answer the event message `u64` with this response.
+    Rsvp(u64, core::model::EventRsvp),
+    /// Change my extra-guest count on the event message `u64`
+    /// by this delta (the card's stepper).
+    EventGuests(u64, i32),
+    /// Open this event's join link externally (the system
+    /// browser), on the user's own click only.
+    OpenJoinLink(String),
     /// Secondary click: open the message context menu.
     ContextMenu(u64),
 }
@@ -118,6 +126,94 @@ pub(crate) struct VoiceSnap {
 /// clamped so a sliver or a tower never breaks the stream.
 /// Without a known aspect the tile keeps the long-standing
 /// 300 by 200 card proportion.
+/// One metadata line of the event card (when, location,
+/// link, tallies): 12.5 px text on an 18 px row.
+pub(crate) const EVENT_LINE_H: f32 = 18.0;
+/// The event card's RSVP button row height.
+pub(crate) const EVENT_RSVP_H: f32 = 32.0;
+/// The event card's guest stepper row height.
+pub(crate) const EVENT_GUESTS_H: f32 = 24.0;
+
+/// Height of an event description laid out at the card's
+/// inner width, capped at three lines (the paint pass clips
+/// to the same height, so the two passes agree by
+/// construction). Zero for an empty description.
+pub(crate) fn event_desc_h(ui: &egui::Ui, description: &str, w: f32, color: Color32) -> f32 {
+    if description.trim().is_empty() {
+        return 0.0;
+    }
+    let g = layout_text(ui, description, FontId::proportional(INNER_BODY_SIZE), color, w);
+    let rows = g.rows.len().max(1);
+    if rows <= 3 {
+        g.size().y
+    } else {
+        g.size().y / rows as f32 * 3.0
+    }
+}
+
+/// Whether the event card shows the guest stepper: the event
+/// allows extra guests, I am going, and it is not canceled.
+pub(crate) fn event_show_guests(
+    extra_guests: bool,
+    my_rsvp: Option<core::model::EventRsvp>,
+    canceled: bool,
+) -> bool {
+    extra_guests && my_rsvp == Some(core::model::EventRsvp::Going) && !canceled
+}
+
+/// The event card's total content height from its parts, the
+/// single formula the measure, click and paint passes share:
+/// name, when line, optional location line, optional
+/// description, optional link line, tally line, the RSVP row
+/// (unless canceled) and the guest row (when shown).
+pub(crate) fn event_card_h(
+    name_h: f32,
+    desc_h: f32,
+    has_location: bool,
+    has_link: bool,
+    canceled: bool,
+    show_guests: bool,
+) -> f32 {
+    let mut h = name_h + 6.0 + EVENT_LINE_H;
+    if has_location {
+        h += 2.0 + EVENT_LINE_H;
+    }
+    if desc_h > 0.0 {
+        h += 6.0 + desc_h;
+    }
+    if has_link {
+        h += 2.0 + EVENT_LINE_H;
+    }
+    h += 8.0 + EVENT_LINE_H;
+    if !canceled {
+        h += 8.0 + EVENT_RSVP_H;
+    }
+    if show_guests {
+        h += 6.0 + EVENT_GUESTS_H;
+    }
+    h
+}
+
+/// The event card's tally line: the nonzero counts in Going /
+/// Maybe / Not going order, or the no-responses label.
+pub(crate) fn event_tally_line(going: u32, maybe: u32, not_going: u32) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if going > 0 {
+        parts.push(crate::i18n::tf("event.count_going", "count", &going.to_string()));
+    }
+    if maybe > 0 {
+        parts.push(crate::i18n::tf("event.count_maybe", "count", &maybe.to_string()));
+    }
+    if not_going > 0 {
+        parts.push(crate::i18n::tf("event.count_not_going", "count", &not_going.to_string()));
+    }
+    if parts.is_empty() {
+        crate::i18n::t("event.no_responses")
+    } else {
+        parts.join(" · ")
+    }
+}
+
 pub(crate) fn photo_tile_h(aspect: Option<f32>, w: f32) -> f32 {
     match aspect {
         Some(a) if a > 0.05 && a < 20.0 => (w / a).clamp(90.0, 340.0),
@@ -464,6 +560,9 @@ pub(crate) struct BubbleLayout {
     /// Paint the sender's avatar in the reserved column: the
     /// last message of an incoming group run.
     pub(crate) show_avatar: bool,
+    /// Extra guests I am bringing to this message's event (the
+    /// card's stepper value; only read for event messages).
+    pub(crate) event_guests: i32,
 }
 
 /// Width of the group sender-avatar column reserved at the left
@@ -1001,6 +1100,31 @@ pub(crate) fn message_bubble(
             content_w = content_w.max(w.max(250.0));
             kind_h = body_galley.size().y + 8.0 + options.len() as f32 * 36.0;
         }
+        MessageKind::Event {
+            name,
+            description,
+            location,
+            join_link,
+            extra_guests,
+            canceled,
+            my_rsvp,
+            ..
+        } => {
+            body_galley = layout_text(ui, name, body_font.clone(), text_color, inner_max);
+            let desc_h = event_desc_h(ui, description, inner_max, text_color);
+            let show_guests = event_show_guests(*extra_guests, *my_rsvp, *canceled);
+            // The RSVP row needs room for three buttons; the
+            // card never goes narrower than that.
+            content_w = content_w.max(body_galley.size().x).max(if *canceled { 0.0 } else { 280.0 });
+            kind_h = event_card_h(
+                body_galley.size().y,
+                desc_h,
+                location.is_some(),
+                join_link.is_some(),
+                *canceled,
+                show_guests,
+            );
+        }
         MessageKind::Location { name, latitude, longitude } => {
             let title = if name.is_empty() { "Location" } else { name.as_str() };
             body_galley = layout_text(ui, title, body_font.clone(), text_color, inner_max);
@@ -1173,6 +1297,81 @@ pub(crate) fn message_bubble(
                             } else {
                                 None
                             }
+                        })
+                    }
+                    MessageKind::Event {
+                        ref description,
+                        ref location,
+                        ref join_link,
+                        canceled,
+                        extra_guests,
+                        my_rsvp,
+                        ..
+                    } => {
+                        // The card's zones, in paint order (the
+                        // shared layout formula): the join link
+                        // row opens the link, the three RSVP
+                        // buttons answer, and the guest stepper
+                        // adjusts my extra guests.
+                        response.interact_pointer_pos().and_then(|pos| {
+                            let content_top = rect.top() + pad_top + sender_h + quote_h;
+                            let content_x = rect.left() + pad_x;
+                            let desc_h = event_desc_h(ui, description, inner_w, text_color);
+                            let show_guests = event_show_guests(*extra_guests, *my_rsvp, *canceled);
+                            let mut y = content_top + body_galley.size().y + 6.0 + EVENT_LINE_H;
+                            if location.is_some() {
+                                y += 2.0 + EVENT_LINE_H;
+                            }
+                            if desc_h > 0.0 {
+                                y += 6.0 + desc_h;
+                            }
+                            if let Some(link) = join_link {
+                                let link_top = y + 2.0;
+                                if pos.y >= link_top
+                                    && pos.y < link_top + EVENT_LINE_H
+                                    && pos.x >= content_x
+                                {
+                                    return Some(BubbleAction::OpenJoinLink(link.clone()));
+                                }
+                                y += 2.0 + EVENT_LINE_H;
+                            }
+                            if *canceled {
+                                return None;
+                            }
+                            let btn_top = y + 8.0 + EVENT_LINE_H + 8.0;
+                            if pos.y >= btn_top && pos.y < btn_top + EVENT_RSVP_H {
+                                let bw = (inner_w - 12.0) / 3.0;
+                                let rel = pos.x - content_x;
+                                if rel >= 0.0 {
+                                    let idx = (rel / (bw + 6.0)) as i32;
+                                    let within = rel - idx as f32 * (bw + 6.0);
+                                    if (0..3).contains(&idx) && within <= bw {
+                                        return Some(BubbleAction::Rsvp(
+                                            msg.id,
+                                            [
+                                                core::model::EventRsvp::Going,
+                                                core::model::EventRsvp::Maybe,
+                                                core::model::EventRsvp::NotGoing,
+                                            ][idx as usize],
+                                        ));
+                                    }
+                                }
+                                return None;
+                            }
+                            if show_guests {
+                                let g_top = btn_top + EVENT_RSVP_H + 6.0;
+                                if pos.y >= g_top && pos.y < g_top + EVENT_GUESTS_H {
+                                    if pos.x >= content_x && pos.x < content_x + 26.0 {
+                                        return Some(BubbleAction::EventGuests(msg.id, -1));
+                                    }
+                                    if pos.x >= content_x + inner_w - 26.0
+                                        && pos.x < content_x + inner_w
+                                    {
+                                        return Some(BubbleAction::EventGuests(msg.id, 1));
+                                    }
+                                }
+                            }
+                            None
                         })
                     }
                     _ => None,
@@ -1945,6 +2144,209 @@ pub(crate) fn message_bubble(
                     fill.set_width(bar.width() * (*votes as f32 / total as f32));
                     painter.rect_filled(fill, CornerRadius::same(2), rgb(t.accent));
                     oy += 36.0;
+                }
+            }
+            MessageKind::Event {
+                name,
+                description,
+                start_time,
+                end_time,
+                location,
+                join_link,
+                scheduled_call,
+                extra_guests,
+                canceled,
+                my_rsvp,
+                going,
+                maybe,
+                not_going,
+            } => {
+                // Event card: name, when, where, description,
+                // join link, tallies, then the RSVP row (my
+                // answer is the card's primary action, like a
+                // poll's options) and the guest stepper when the
+                // event allows extra guests and I am going. A
+                // canceled event paints its state instead of the
+                // controls. All offsets follow the shared
+                // layout formula in `event_card_h`.
+                let g = layout_text(ui, name, body_font.clone(), text_color, inner_w);
+                painter.galley(Pos2::new(x, y), g, text_color);
+                let mut cy = y + body_galley.size().y + 6.0;
+                crate::icons::draw(
+                    painter,
+                    crate::icons::Icon::CalendarMonth,
+                    Pos2::new(x + 7.0, cy + 9.0),
+                    crate::icons::SIZE_BADGE,
+                    secondary,
+                    bubble_color,
+                );
+                let when = crate::live::fmt_event_when(*start_time, *end_time);
+                let g =
+                    layout_text(ui, &when, FontId::proportional(INNER_BODY_SIZE), secondary, inner_w - 20.0);
+                painter.galley(Pos2::new(x + 20.0, cy + 2.0), g, secondary);
+                cy += EVENT_LINE_H;
+                if let Some(loc) = location {
+                    cy += 2.0;
+                    crate::icons::draw(
+                        painter,
+                        crate::icons::Icon::LocationOn,
+                        Pos2::new(x + 7.0, cy + 9.0),
+                        crate::icons::SIZE_BADGE,
+                        secondary,
+                        bubble_color,
+                    );
+                    let g = layout_text(
+                        ui,
+                        loc,
+                        FontId::proportional(INNER_BODY_SIZE),
+                        secondary,
+                        inner_w - 20.0,
+                    );
+                    painter.galley(Pos2::new(x + 20.0, cy + 2.0), g, secondary);
+                    cy += EVENT_LINE_H;
+                }
+                let desc_h = event_desc_h(ui, description, inner_w, text_color);
+                if desc_h > 0.0 {
+                    cy += 6.0;
+                    let g = layout_text(
+                        ui,
+                        description,
+                        FontId::proportional(INNER_BODY_SIZE),
+                        text_color,
+                        inner_w,
+                    );
+                    let clip = Rect::from_min_size(Pos2::new(x, cy), Vec2::new(inner_w, desc_h));
+                    painter.with_clip_rect(clip, |p| {
+                        p.galley(Pos2::new(x, cy), g, text_color);
+                    });
+                    cy += desc_h;
+                }
+                if let Some(link) = join_link {
+                    cy += 2.0;
+                    let (icon, label) = if *scheduled_call {
+                        (crate::icons::Icon::Videocam, crate::i18n::t("event.join_call"))
+                    } else {
+                        (crate::icons::Icon::Link, link.clone())
+                    };
+                    crate::icons::draw(
+                        painter,
+                        icon,
+                        Pos2::new(x + 7.0, cy + 9.0),
+                        crate::icons::SIZE_BADGE,
+                        rgb(t.accent),
+                        bubble_color,
+                    );
+                    let g = layout_text(
+                        ui,
+                        &label,
+                        FontId::proportional(INNER_BODY_SIZE),
+                        rgb(t.accent),
+                        inner_w - 20.0,
+                    );
+                    painter.galley(Pos2::new(x + 20.0, cy + 2.0), g, rgb(t.accent));
+                    cy += EVENT_LINE_H;
+                }
+                cy += 8.0;
+                if *canceled {
+                    let label = crate::i18n::t("event.canceled");
+                    let g = layout_text(
+                        ui,
+                        &label,
+                        FontId::proportional(INNER_BODY_SIZE),
+                        rgb(t.danger),
+                        inner_w,
+                    );
+                    painter.galley(Pos2::new(x, cy + 2.0), g, rgb(t.danger));
+                } else {
+                    let line = event_tally_line(*going, *maybe, *not_going);
+                    let g = layout_text(
+                        ui,
+                        &line,
+                        FontId::proportional(INNER_BODY_SIZE),
+                        secondary,
+                        inner_w,
+                    );
+                    painter.galley(Pos2::new(x, cy + 2.0), g, secondary);
+                }
+                cy += EVENT_LINE_H;
+                if !*canceled {
+                    cy += 8.0;
+                    let bw = (inner_w - 12.0) / 3.0;
+                    for (i, (label, value)) in [
+                        (crate::i18n::t("event.going"), core::model::EventRsvp::Going),
+                        (crate::i18n::t("event.maybe"), core::model::EventRsvp::Maybe),
+                        (crate::i18n::t("event.not_going"), core::model::EventRsvp::NotGoing),
+                    ]
+                    .iter()
+                    .enumerate()
+                    {
+                        let bx = x + i as f32 * (bw + 6.0);
+                        let btn =
+                            Rect::from_min_size(Pos2::new(bx, cy), Vec2::new(bw, EVENT_RSVP_H));
+                        let selected = *my_rsvp == Some(*value);
+                        let (fill, fg) = if selected {
+                            (rgb(t.accent), rgb(t.bg_panel))
+                        } else {
+                            (inner_card_fill(t, mine), text_color)
+                        };
+                        painter.rect_filled(btn, CornerRadius::same(INNER_CARD_RADIUS), fill);
+                        let g = layout_text(ui, label, FontId::proportional(13.0), fg, bw);
+                        painter.galley(
+                            Pos2::new(
+                                bx + (bw - g.size().x) / 2.0,
+                                cy + (EVENT_RSVP_H - g.size().y) / 2.0,
+                            ),
+                            g,
+                            fg,
+                        );
+                    }
+                    cy += EVENT_RSVP_H;
+                    if event_show_guests(*extra_guests, *my_rsvp, *canceled) {
+                        cy += 6.0;
+                        // Guest stepper: minus disc at the
+                        // left edge, plus disc at the right
+                        // (the click zones match), label and
+                        // count between them.
+                        painter.circle_filled(
+                            Pos2::new(x + 13.0, cy + 12.0),
+                            13.0,
+                            inner_card_fill(t, mine),
+                        );
+                        crate::icons::draw(
+                            painter,
+                            crate::icons::Icon::Minus,
+                            Pos2::new(x + 13.0, cy + 12.0),
+                            crate::icons::SIZE_ROW,
+                            text_color,
+                            inner_card_fill(t, mine),
+                        );
+                        let label = crate::i18n::t("event.guests");
+                        let g = layout_text(
+                            ui,
+                            &label,
+                            FontId::proportional(INNER_BODY_SIZE),
+                            secondary,
+                            90.0,
+                        );
+                        painter.galley(Pos2::new(x + 34.0, cy + 3.0), g, secondary);
+                        let count = format!("{}", layout.event_guests);
+                        let cw = measure_text(ui, &count, FontId::proportional(13.0));
+                        let g = layout_text(ui, &count, FontId::proportional(13.0), text_color, 30.0);
+                        painter.galley(Pos2::new(x + inner_w - 34.0 - cw, cy + 3.0), g, text_color);
+                        painter.circle_filled(
+                            Pos2::new(x + inner_w - 13.0, cy + 12.0),
+                            13.0,
+                            inner_card_fill(t, mine),
+                        );
+                        crate::icons::draw(
+                            painter,
+                            crate::icons::Icon::Plus,
+                            Pos2::new(x + inner_w - 13.0, cy + 12.0),
+                            crate::icons::SIZE_ROW,
+                            text_color,
+                            inner_card_fill(t, mine),
+                        );
+                    }
                 }
             }
             MessageKind::Location { name, latitude, longitude } => {

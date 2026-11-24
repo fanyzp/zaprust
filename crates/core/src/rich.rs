@@ -188,6 +188,49 @@ pub fn retract_event_response(ballots: &[(String, crate::model::EventRsvp)]) -> 
     EventTally { going, maybe, not_going, my_rsvp: None, ballots: ballots.to_vec() }
 }
 
+/// Days since the unix epoch for a civil date (Howard
+/// Hinnant's days-from-civil, the inverse of the civil-from-
+/// days conversion the app displays with).
+fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y.rem_euclid(400);
+    let mp = if m > 2 { m - 3 } else { m + 9 } as i64;
+    let doy = (153 * mp + 2) / 5 + (d - 1) as i64;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
+/// Parses the event form's strict date and time text
+/// (`YYYY-MM-DD`, `HH:MM`) into unix seconds on the UTC grid
+/// the whole app displays on. Anything malformed, out of
+/// range, or not a real calendar day (31 February, month 13)
+/// is None: the form keeps the draft and shows the error
+/// instead of sending a guessed instant.
+#[must_use]
+pub fn parse_event_datetime(date: &str, time: &str) -> Option<i64> {
+    let mut dparts = date.split('-');
+    let year: i64 = dparts.next()?.parse().ok()?;
+    let month: u32 = dparts.next()?.parse().ok()?;
+    let day: u32 = dparts.next()?.parse().ok()?;
+    if dparts.next().is_some() || !(1..=12).contains(&month) || day == 0 {
+        return None;
+    }
+    let leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+    let month_len = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+        [(month - 1) as usize];
+    if day > month_len {
+        return None;
+    }
+    let mut tparts = time.split(':');
+    let hour: i64 = tparts.next()?.parse().ok()?;
+    let minute: i64 = tparts.next()?.parse().ok()?;
+    if tparts.next().is_some() || !(0..24).contains(&hour) || !(0..60).contains(&minute) {
+        return None;
+    }
+    Some(days_from_civil(year, month, day) * 86_400 + hour * 3600 + minute * 60)
+}
+
 /// Percentage (0–100, rounded) of the total vote for each option.
 #[must_use]
 pub fn poll_percents(options: &[(String, u32)]) -> Vec<u32> {

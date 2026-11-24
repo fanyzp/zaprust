@@ -20,6 +20,9 @@ pub(crate) enum Icon {
     Sliders,
     Search,
     Plus,
+    Minus,
+    Videocam,
+    Link,
     Smile,
     Mic,
     MicOff,
@@ -118,6 +121,9 @@ pub(crate) fn glyph(icon: Icon) -> char {
         Icon::Sliders => '\u{e429}',       // tune
         Icon::Search => '\u{ef7a}',        // search
         Icon::Plus => '\u{e145}',          // add
+        Icon::Minus => '\u{e15b}',         // remove
+        Icon::Videocam => '\u{e04b}',      // videocam
+        Icon::Link => '\u{e157}',          // link
         Icon::Smile => '\u{e813}',         // sentiment_satisfied
         Icon::Mic => '\u{e31d}',           // mic
         Icon::MicOff => '\u{e02b}',        // mic_off

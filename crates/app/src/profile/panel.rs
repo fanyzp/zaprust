@@ -61,6 +61,14 @@ impl App {
                 self.send_backend(backend::BackendCommand::FetchGroupMembers { chat_jid: jid });
             }
         }
+        // Live contact: fetch the business profile once per
+        // opening (parity P10, row 130). A contact with no
+        // business profile answers None and gets no section.
+        if kind == ProfileKind::User {
+            if let Some(jid) = self.live_jid(chat.id) {
+                self.ensure_business_profile(&jid);
+            }
+        }
         if self.profile_form_for != Some(chat.id) {
             // The gallery belongs to the chat it was opened
             // from; switching chats starts back at the profile.
@@ -90,6 +98,10 @@ impl App {
         // Gallery clicks (section 25), applied after the draw
         // like the intents.
         let mut gallery_actions = super::gallery::GalleryActions::default();
+        // Backend commands the business surfaces queue during
+        // the draw (the scroll closure cannot reach the
+        // session); sent when the draw is done.
+        let mut dock_commands: Vec<backend::BackendCommand> = Vec::new();
         // Whether demo fixtures may stand in as content in the
         // gallery's tiles (the one predicate every fixture
         // lookup gates on).
@@ -262,7 +274,9 @@ impl App {
             // With the gallery open, Escape steps back to the
             // profile first; only the profile's Escape closes
             // the dock.
-            if self.gallery_section.is_some() {
+            if self.business.catalog_open_for.is_some() {
+                self.business.catalog_open_for = None;
+            } else if self.gallery_section.is_some() {
                 self.gallery_section = None;
             } else {
                 close = true;
@@ -274,6 +288,23 @@ impl App {
         // member rows stay reachable (the old centered window
         // needed an explicit height clamp for the same reason).
         egui::ScrollArea::vertical().id_salt("profile_dock_scroll").show(ui, |ui| {
+            // The catalog (parity P10) takes the dock body over
+            // while it is open for this chat, like the gallery.
+            if kind == ProfileKind::User {
+                if let Some(jid) = &user_id_line {
+                    if self.business.catalog_open_for.as_deref() == Some(jid.as_str()) {
+                        let jid = jid.clone();
+                        super::business::catalog_body(
+                            ui,
+                            t,
+                            &mut self.business,
+                            &jid,
+                            &mut dock_commands,
+                        );
+                        return;
+                    }
+                }
+            }
             if let Some(section) = self.gallery_section {
                 // The gallery (section 25) takes the dock body
                 // over from the counts rows that opened it; the
@@ -331,6 +362,16 @@ impl App {
                         chat.ephemeral_secs,
                         &mut intents,
                     );
+                    if let Some(jid) = &user_id_line {
+                        let jid = jid.clone();
+                        super::business::business_section(
+                            ui,
+                            t,
+                            &mut self.business,
+                            &jid,
+                            &mut dock_commands,
+                        );
+                    }
                 }
                 ProfileKind::Group | ProfileKind::Channel => {
                     // Export is a row on the shared grid (groups
@@ -1188,8 +1229,12 @@ impl App {
         if intents.start_call {
             self.start_call_from_header();
         }
+        for cmd in dock_commands {
+            self.send_backend(cmd);
+        }
         if close || intents.close {
             self.profile_open = false;
+            self.business.catalog_open_for = None;
             self.gallery_section = None;
             self.profile_form_for = None;
             self.groups.members_requested.remove(&chat.id);

@@ -354,6 +354,7 @@ pub(crate) enum Screen {
     Starred,
     Archived,
     Locked,
+    Labels,
     Updates,
     Settings,
     Connect,
@@ -371,6 +372,7 @@ impl Screen {
             "starred" => Some(Self::Starred),
             "archived" => Some(Self::Archived),
             "locked" => Some(Self::Locked),
+            "labels" => Some(Self::Labels),
             "updates" | "status" => Some(Self::Updates),
             "settings" => Some(Self::Settings),
             "connect" | "link" => Some(Self::Connect),
@@ -426,6 +428,7 @@ impl Screen {
                 | Self::Starred
                 | Self::Calls
                 | Self::Communities
+                | Self::Labels
         )
     }
 }
@@ -625,6 +628,15 @@ pub(crate) enum UiConfirm {
     /// sends the backend's disconnect command; the local chats
     /// stay in the archive on this computer.
     LogOut,
+    /// Delete a synced label: the label and every chat and
+    /// message association go, on every device, and this
+    /// client cannot restore them, so it confirms like the
+    /// other destructive actions.
+    DeleteLabel { label_id: String, name: String },
+    /// Delete a synced quick reply: it stops expanding on
+    /// every device, so it confirms like the other
+    /// destructive actions.
+    DeleteQuickReply { id: String, shortcut: String },
     /// Start fresh after an unlock failure: the databases and
     /// the key file are set aside into a backup folder and a
     /// normal live start runs from zero. Destructive in effect
@@ -1107,6 +1119,247 @@ pub(crate) struct NewChatState {
     pub(crate) not_found: Option<String>,
     /// The lookup failed, in user words, shown inline.
     pub(crate) error: Option<String>,
+}
+
+/// The label editor's draft (Labels panel and Settings):
+/// `id` is `None` for a label being created.
+pub(crate) struct LabelForm {
+    /// Label id being edited; `None` creates a new label.
+    pub(crate) id: Option<String>,
+    /// Name as typed.
+    pub(crate) name: String,
+    /// Color index into the label palette.
+    pub(crate) color: i32,
+}
+
+/// The quick reply editor's draft (Settings > Business):
+/// `id` is `None` for a reply being created.
+pub(crate) struct QuickReplyForm {
+    /// Quick reply id being edited; `None` creates one.
+    pub(crate) id: Option<String>,
+    /// The `/`-typed trigger, without the slash.
+    pub(crate) shortcut: String,
+    /// The expanded message text.
+    pub(crate) message: String,
+    /// Extra search terms, comma-separated as typed.
+    pub(crate) keywords: String,
+}
+
+/// One day's row in the own business profile form.
+#[derive(Clone)]
+pub(crate) struct OwnBusinessDayForm {
+    /// Wire spelling of the day (`mon`, `tue`, ...).
+    pub(crate) day: &'static str,
+    /// `closed`, or the wire mode spelling (`open_24h`,
+    /// `specific_hours`, `appointment_only`).
+    pub(crate) mode: String,
+    /// Opening time as typed, `HH:MM` (specific hours only).
+    pub(crate) open: String,
+    /// Closing time as typed, `HH:MM` (specific hours only).
+    pub(crate) close: String,
+}
+
+/// The own business profile editor's draft (Settings >
+/// Business), built from the fetched profile when the page
+/// opens and turned back into a delta on save.
+#[derive(Clone)]
+pub(crate) struct OwnBusinessForm {
+    /// Description as typed (empty clears it).
+    pub(crate) description: String,
+    /// Email as typed (empty clears it).
+    pub(crate) email: String,
+    /// Address as typed (empty clears it).
+    pub(crate) address: String,
+    /// Websites as typed, one per line (an empty field
+    /// clears them).
+    pub(crate) websites: String,
+    /// Ids of the profile's current categories still kept.
+    /// The library offers no categories directory, so the
+    /// form can keep or drop these but never add new ones.
+    pub(crate) kept_categories: Vec<String>,
+    /// IANA timezone as typed.
+    pub(crate) timezone: String,
+    /// The seven day rows, Monday first.
+    pub(crate) days: Vec<OwnBusinessDayForm>,
+}
+
+/// One business's catalog as the dock's catalog view shows
+/// it: the flat pages loaded so far, the collections answer
+/// and the paging state.
+pub(crate) struct CatalogState {
+    /// Products loaded so far, in catalog order (hidden
+    /// products filtered out at apply time).
+    pub(crate) products: Vec<backend::LiveProduct>,
+    /// Cursor for the next page; `None` ends the catalog.
+    pub(crate) after: Option<String>,
+    /// A page fetch is in flight.
+    pub(crate) loading: bool,
+    /// The last page fetch's failure, in user words.
+    pub(crate) failed: Option<String>,
+    /// Collections, once fetched (`None` until then).
+    pub(crate) collections: Option<Vec<backend::LiveCollection>>,
+    /// The collections fetch's failure, in user words.
+    pub(crate) collections_failed: Option<String>,
+}
+
+/// A product image's fetch state, by image URL.
+pub(crate) enum ProductImageState {
+    /// The fetch is in flight.
+    Loading,
+    /// The decoded texture.
+    Ready(eframe::egui::TextureHandle),
+    /// The fetch or the decode failed; the tile shows its
+    /// placeholder and does not retry on its own.
+    Failed,
+}
+
+/// The order details dialog's load state.
+#[derive(Clone)]
+pub(crate) enum OrderDialogState {
+    /// The details fetch is in flight.
+    Loading,
+    /// The order's line items and totals.
+    Loaded(backend::LiveOrder),
+    /// The fetch failed, in user words.
+    Failed(String),
+}
+
+/// The open order details dialog: which order, in which
+/// chat, and where its fetch stands.
+pub(crate) struct OrderDialog {
+    /// The chat's JID (the fetch's address).
+    pub(crate) chat_jid: String,
+    /// The order's id.
+    pub(crate) order_id: String,
+    /// Item count the message payload states.
+    pub(crate) item_count: u32,
+    /// Total the message payload states, in thousandths.
+    pub(crate) total_amount_1000: i64,
+    /// Currency code of that total.
+    pub(crate) currency: String,
+    /// Status the message payload states, wire spelling.
+    pub(crate) status: String,
+    /// Load state.
+    pub(crate) state: OrderDialogState,
+}
+
+/// What the label checklist popup is tagging: a whole chat
+/// or one message in a chat.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LabelPickerTarget {
+    /// A chat, by app chat id.
+    Chat(u64),
+    /// One message: (chat id, message id).
+    Message(u64, u64),
+}
+
+/// Business state (parity P10): synced labels and quick
+/// replies, business profiles and catalogs, and the editors
+/// over them. Live data arrives through the backend's sync
+/// events and typed fetch answers; the archive tables are
+/// the launch seed and the write-through target.
+pub(crate) struct BusinessState {
+    /// Synced label definitions, in arrival order (the
+    /// surfaces sort by name).
+    pub(crate) labels: Vec<backend::LiveLabel>,
+    /// Chat JID -> label ids on that chat.
+    pub(crate) chat_labels: std::collections::HashMap<String, std::collections::HashSet<String>>,
+    /// (chat JID, protocol message id) -> label ids on that
+    /// message.
+    pub(crate) message_labels:
+        std::collections::HashMap<(String, String), std::collections::HashSet<String>>,
+    /// Synced quick replies, in arrival order.
+    pub(crate) quick_replies: Vec<backend::LiveQuickReply>,
+    /// The chat list's active label filter (a label id).
+    pub(crate) label_filter: Option<String>,
+    /// Label saves in flight: label id -> the definition
+    /// before the save (rollback snapshot).
+    pub(crate) pending_label_saves: std::collections::HashMap<String, Option<backend::LiveLabel>>,
+    /// Chat-label toggles in flight: (label id, chat JID)
+    /// -> whether the chat carried the label before.
+    pub(crate) pending_chat_labels: std::collections::HashMap<(String, String), bool>,
+    /// Message-label toggles in flight: (label id, chat JID,
+    /// message id) -> whether the message carried it before.
+    pub(crate) pending_message_labels: std::collections::HashMap<(String, String, String), bool>,
+    /// Quick reply saves in flight: id -> the reply before
+    /// the save (rollback snapshot).
+    pub(crate) pending_quick_saves:
+        std::collections::HashMap<String, Option<backend::LiveQuickReply>>,
+    /// The label checklist popup's target, when open.
+    pub(crate) label_picker: Option<LabelPickerTarget>,
+    /// The label editor's draft, when open.
+    pub(crate) label_editor: Option<LabelForm>,
+    /// The label editor's inline failure.
+    pub(crate) label_editor_error: Option<String>,
+    /// The quick reply editor's draft, when open.
+    pub(crate) quick_editor: Option<QuickReplyForm>,
+    /// The quick reply editor's inline failure.
+    pub(crate) quick_editor_error: Option<String>,
+    /// Business profiles by chat JID, once fetched (`Some`
+    /// key with a `None` value is a fetched non-business).
+    pub(crate) profiles: std::collections::HashMap<String, Option<backend::LiveBusinessProfile>>,
+    /// Profile fetch failures by chat JID, in user words.
+    pub(crate) profiles_failed: std::collections::HashMap<String, String>,
+    /// Profile fetches in flight, by chat JID.
+    pub(crate) profile_fetching: std::collections::HashSet<String>,
+    /// Catalogs by business JID.
+    pub(crate) catalogs: std::collections::HashMap<String, CatalogState>,
+    /// Product images by URL.
+    pub(crate) product_images: std::collections::HashMap<String, ProductImageState>,
+    /// The JID whose catalog the profile dock is showing
+    /// instead of the profile sections.
+    pub(crate) catalog_open_for: Option<String>,
+    /// The open order details dialog.
+    pub(crate) order_dialog: Option<OrderDialog>,
+    /// The account's own business profile: outer `None`
+    /// until fetched, inner `None` for a non-business
+    /// account.
+    pub(crate) own_profile: Option<Option<backend::LiveBusinessProfile>>,
+    /// The own profile fetch's failure, in user words.
+    pub(crate) own_profile_failed: Option<String>,
+    /// The own profile editor's draft, when open.
+    pub(crate) own_form: Option<OwnBusinessForm>,
+    /// An own profile save is in flight.
+    pub(crate) own_saving: bool,
+    /// The own profile editor's inline failure.
+    pub(crate) own_error: Option<String>,
+    /// Per-session counter for generated label and quick
+    /// reply ids.
+    pub(crate) id_counter: u64,
+}
+
+impl BusinessState {
+    fn new() -> Self {
+        Self {
+            labels: Vec::new(),
+            chat_labels: std::collections::HashMap::new(),
+            message_labels: std::collections::HashMap::new(),
+            quick_replies: Vec::new(),
+            label_filter: None,
+            pending_label_saves: std::collections::HashMap::new(),
+            pending_chat_labels: std::collections::HashMap::new(),
+            pending_message_labels: std::collections::HashMap::new(),
+            pending_quick_saves: std::collections::HashMap::new(),
+            label_picker: None,
+            label_editor: None,
+            label_editor_error: None,
+            quick_editor: None,
+            quick_editor_error: None,
+            profiles: std::collections::HashMap::new(),
+            profiles_failed: std::collections::HashMap::new(),
+            profile_fetching: std::collections::HashSet::new(),
+            catalogs: std::collections::HashMap::new(),
+            product_images: std::collections::HashMap::new(),
+            catalog_open_for: None,
+            order_dialog: None,
+            own_profile: None,
+            own_profile_failed: None,
+            own_form: None,
+            own_saving: false,
+            own_error: None,
+            id_counter: 0,
+        }
+    }
 }
 
 /// Self-update state (see update.rs): the phase, the release on offer, worker results and check bookkeeping.
@@ -1714,6 +1967,9 @@ pub(crate) struct App {
     pub(crate) groups: GroupsState,
     /// New-chat-by-number dialog state (see NewChatState).
     pub(crate) new_chat: NewChatState,
+    /// Business state: labels, quick replies, business
+    /// profiles and catalogs (see BusinessState).
+    pub(crate) business: BusinessState,
     /// Contacts blocked from this client (live: also sent to the
     /// backend; demo: local state with an honest caption).
     /// Persisted in the encrypted archive store (privacy audit
@@ -2495,6 +2751,7 @@ impl App {
                 Some("privacy") => "Privacy & Security",
                 Some("shortcuts") => "Shortcuts",
                 Some("features") => "Features",
+                Some("business") => "Business",
                 Some("storage") => "Data & Storage",
                 Some("about") => "About",
                 _ => "Appearance",
@@ -2617,6 +2874,7 @@ impl App {
                 not_found: None,
                 error: None,
             },
+            business: BusinessState::new(),
             blocked_chats: std::collections::HashSet::new(),
             lock_code: None,
             app_lock_enabled: false,

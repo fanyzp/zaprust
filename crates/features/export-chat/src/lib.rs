@@ -127,6 +127,7 @@ fn body_text(msg: &Message) -> String {
         MessageKind::Location { name, .. } => format!("[location: {name}]"),
         MessageKind::Contact { name, .. } => format!("[contact: {name}]"),
         MessageKind::Carousel { cards, .. } => format!("[carousel: {} cards]", cards.len()),
+        MessageKind::Order { item_count, .. } => format!("[order: {item_count} items]"),
         MessageKind::Sticker => "[sticker]".to_string(),
     };
     if msg.edited {

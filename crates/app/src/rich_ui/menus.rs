@@ -290,6 +290,24 @@ impl App {
                             self.toggle_keep_message(msg.id);
                             close = true;
                         }
+                        if !in_channel
+                            && self.live.is_some()
+                            && crate::widgets::menu_item_icon(
+                                ui,
+                                t,
+                                Some(crate::icons::Icon::Label),
+                                &crate::i18n::t("labels.menu"),
+                                None,
+                            )
+                            .clicked()
+                        {
+                            self.business.label_picker =
+                                Some(crate::state::LabelPickerTarget::Message(
+                                    self.selected_chat,
+                                    msg.id,
+                                ));
+                            close = true;
+                        }
                         if !in_channel && msg.pinned {
                             if crate::widgets::menu_item_icon(
                                 ui,

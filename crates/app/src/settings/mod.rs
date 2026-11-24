@@ -14,6 +14,7 @@
 mod about;
 mod appearance;
 mod blocked;
+mod business;
 mod chats;
 mod features;
 mod notifications;
@@ -511,6 +512,7 @@ fn settings_tab_icon(item: &str) -> crate::icons::Icon {
         "Privacy & Security" => crate::icons::Icon::Shield,
         "Shortcuts" => crate::icons::Icon::Keyboard,
         "Features" => crate::icons::Icon::Blocks,
+        "Business" => crate::icons::Icon::Storefront,
         "Data & Storage" => crate::icons::Icon::Database,
         _ => crate::icons::Icon::Info,
     }
@@ -697,6 +699,7 @@ impl App {
                         "Privacy & Security" => self.page_privacy(ui, t),
                         "Shortcuts" => self.page_shortcuts(ui, t),
                         "Features" => self.page_features(ui, t),
+                        "Business" => self.page_business(ui, t),
                         "Data & Storage" => self.page_storage(ui, t),
                         _ => self.page_about(ui, t),
                     }
@@ -860,6 +863,7 @@ fn tab_label(item: &str) -> String {
         "Privacy & Security" => crate::i18n::t("settings.privacy"),
         "Shortcuts" => crate::i18n::t("settings.shortcuts"),
         "Features" => crate::i18n::t("settings.features"),
+        "Business" => crate::i18n::t("business.settings_title"),
         "Data & Storage" => crate::i18n::t("settings.storage"),
         "About" => crate::i18n::t("settings.about"),
         // Anything else is already a display string.
@@ -1014,6 +1018,7 @@ pub(crate) fn panel_items(title: &str) -> Vec<&'static str> {
             "Privacy & Security",
             "Shortcuts",
             "Features",
+            "Business",
             "Data & Storage",
             "About",
         ],

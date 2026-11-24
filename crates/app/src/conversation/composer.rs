@@ -723,9 +723,11 @@ impl App {
                         } else {
                             let raw = self.composer.draft.trim().trim_end_matches('\n').to_owned();
                             if !raw.is_empty() {
-                                // Quick Replies expansion
-                                // runs through the feature
-                                // guard (see state.rs).
+                                // Quick replies expand in
+                                // the composer popup while
+                                // typing (below), never
+                                // invisibly at send time: what
+                                // sends is the visible text.
                                 let body = raw;
                                 // The reply target is honored only
                                 // while its message is in the open
@@ -873,6 +875,75 @@ impl App {
             let secs = (self.motion.duration(120.0) / 1000.0) as f32;
             self.composer.stack_h =
                 crate::anim::scalar(ui, "composer_stack_h", measured_stack_h, secs);
+        }
+
+        // The quick-reply popup (parity P10, row 132): while
+        // the draft is a slash token and the account has
+        // synced replies, the matches float above the
+        // composer. Picking one replaces the draft with the
+        // reply's text; nothing expands invisibly at send
+        // time.
+        if self.live.is_some() && !self.business.quick_replies.is_empty() {
+            let matches = crate::live::quick_reply_matches(
+                &self.business.quick_replies,
+                &self.composer.draft,
+            );
+            if !matches.is_empty() {
+                let mut picked: Option<String> = None;
+                egui::Area::new(egui::Id::unique("qr_popup"))
+                    .fixed_pos(Pos2::new(
+                        full_rect.left() + fmargin,
+                        full_rect.bottom() - COMPOSER_LIFT - self.composer.stack_h - 8.0,
+                    ))
+                    .pivot(egui::Align2::LEFT_BOTTOM)
+                    .order(egui::Order::Foreground)
+                    .show(ui.ctx(), |ui| {
+                        egui::Frame::new()
+                            .fill(rgb(t.bg_panel))
+                            .corner_radius(CornerRadius::same(14))
+                            .stroke(Stroke::new(1.0_f32, rgb(t.border)))
+                            .shadow(crate::theme::composer_shadow(t))
+                            .inner_margin(Margin::symmetric(8, 6))
+                            .show(ui, |ui| {
+                                ui.set_width((full_rect.width() - fmargin * 2.0 - 90.0).max(200.0));
+                                for reply in &matches {
+                                    let preview = if reply.message.chars().count() <= 48 {
+                                        reply.message.clone()
+                                    } else {
+                                        crate::widgets::ellipsize_fit(&reply.message, |p| {
+                                            p.chars().count() <= 48
+                                        })
+                                    };
+                                    let label = format!("/{}  {}", reply.shortcut, preview);
+                                    let row = ui.horizontal(|ui| {
+                                        let (slot, _) = ui.allocate_exact_size(
+                                            egui::vec2(16.0, 16.0),
+                                            egui::Sense::hover(),
+                                        );
+                                        crate::icons::draw(
+                                            ui.painter(),
+                                            crate::icons::Icon::Bolt,
+                                            slot.center(),
+                                            13.0,
+                                            rgb(t.accent),
+                                            rgb(t.bg_panel),
+                                        );
+                                        ui.add(
+                                            egui::Label::new(RichText::new(label).size(13.0))
+                                                .sense(egui::Sense::click()),
+                                        )
+                                        .clicked()
+                                    });
+                                    if row.inner {
+                                        picked = Some(reply.message.clone());
+                                    }
+                                }
+                            });
+                    });
+                if let Some(text) = picked {
+                    self.composer.draft = text;
+                }
+            }
         }
     }
 }

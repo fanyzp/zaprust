@@ -186,6 +186,15 @@ impl App {
                                 crate::i18n::t("conversation.lock_chat")
                             };
                             row(ui, crate::icons::Icon::Lock, &lock_label, "lockchat");
+                            // Labels for this chat: the
+                            // checklist popup the row opens
+                            // (parity P10, row 131).
+                            row(
+                                ui,
+                                crate::icons::Icon::Label,
+                                &crate::i18n::t("labels.menu"),
+                                "labels",
+                            );
                         }
                         ui.add_space(SP_1);
                         if is_channel {
@@ -367,6 +376,10 @@ impl App {
             Some("pinchat") => {
                 self.apply_chat_action(chat.id, chat.archived, !chat.pinned, chat.muted);
                 close = true;
+            }
+            Some("labels") => {
+                self.business.label_picker =
+                    Some(crate::state::LabelPickerTarget::Chat(self.selected_chat));
             }
             Some("lockchat") => {
                 self.request_lock_chat(chat.id, !chat.locked);

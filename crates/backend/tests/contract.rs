@@ -1824,3 +1824,64 @@ fn mark_unread_mute_until_contact_and_spam_commands() {
     assert!(log.iter().any(|l| l.starts_with("send_contact:")), "log: {log:?}");
     assert!(log.iter().any(|l| l.starts_with("report_spam:")), "log: {log:?}");
 }
+
+/// Parity P10 (rows 131 and 132): the label and quick reply
+/// commands are answered with the typed echo events the app
+/// settles its optimistic state on, in the fake exactly as
+/// the live backend's server echoes settle it.
+#[test]
+fn label_and_quick_reply_commands_echo_through_the_fake() {
+    let ch = spawn(FakeBackend::auto());
+    ch.commands.send(BackendCommand::ConnectQr).unwrap();
+    let _ = collect_until(&ch.events, 10, |e| matches!(e, BackendEvent::Connected { .. }));
+
+    ch.commands
+        .send(BackendCommand::SaveLabel {
+            label_id: "l1".to_owned(),
+            name: "Urgent".to_owned(),
+            color: 3,
+        })
+        .unwrap();
+    let ev = collect_until(&ch.events, 10, |e| matches!(e, BackendEvent::LabelEdited { .. }));
+    assert!(
+        ev.iter().any(|e| matches!(e, BackendEvent::LabelEdited { label_id, name: Some(n), color: Some(3), deleted: false, .. } if label_id == "l1" && n == "Urgent")),
+        "events: {ev:?}"
+    );
+
+    ch.commands
+        .send(BackendCommand::SetChatLabel {
+            label_id: "l1".to_owned(),
+            chat_jid: "10000000001@s.whatsapp.net".to_owned(),
+            labeled: true,
+        })
+        .unwrap();
+    let ev = collect_until(&ch.events, 10, |e| matches!(e, BackendEvent::ChatLabelChanged { .. }));
+    assert!(
+        ev.iter().any(|e| matches!(e, BackendEvent::ChatLabelChanged { label_id, labeled: true, .. } if label_id == "l1")),
+        "events: {ev:?}"
+    );
+
+    ch.commands
+        .send(BackendCommand::SaveQuickReply {
+            id: "q1".to_owned(),
+            shortcut: "hours".to_owned(),
+            message: "We open 8 to 21.".to_owned(),
+            keywords: vec!["open".to_owned()],
+            count: 0,
+        })
+        .unwrap();
+    let ev = collect_until(&ch.events, 10, |e| matches!(e, BackendEvent::QuickReplyEdited { .. }));
+    assert!(
+        ev.iter().any(|e| matches!(e, BackendEvent::QuickReplyEdited { id, shortcut, deleted: false, .. } if id == "q1" && shortcut == "hours")),
+        "events: {ev:?}"
+    );
+
+    ch.commands.send(BackendCommand::DeleteQuickReply { id: "q1".to_owned() }).unwrap();
+    let ev = collect_until(&ch.events, 10, |e| matches!(e, BackendEvent::QuickReplyDeleted { .. }));
+    assert!(
+        ev.iter().any(|e| matches!(e, BackendEvent::QuickReplyDeleted { id } if id == "q1")),
+        "events: {ev:?}"
+    );
+
+    ch.commands.send(BackendCommand::Shutdown).unwrap();
+}

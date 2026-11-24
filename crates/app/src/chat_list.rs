@@ -43,6 +43,8 @@ enum RowPick {
     ClearChat,
     /// Open the delete-chat confirmation for the chat.
     DeleteChat,
+    /// Open the label checklist for the chat.
+    LabelPicker,
 }
 
 /// The chat row's preview line: in a group the sender's name
@@ -124,6 +126,16 @@ impl App {
         };
         mix(self.search.as_bytes());
         mix(&[self.filter as u8]);
+        // The label filter reads the business state, so it is
+        // folded in too: the filtered label's id and how many
+        // chats carry it (association changes re-run the
+        // filter, definition-only changes do not need to).
+        if let Some(label_id) = &self.business.label_filter {
+            mix(label_id.as_bytes());
+            let tagged =
+                self.business.chat_labels.values().filter(|set| set.contains(label_id)).count();
+            mix(&tagged.to_le_bytes());
+        }
         mix(&self.chats.len().to_le_bytes());
         for c in &self.chats {
             mix(&c.id.to_le_bytes());
@@ -141,7 +153,25 @@ impl App {
                 return indices.iter().filter_map(|i| self.chats.get(*i)).collect();
             }
         }
-        let filtered = filter_chats(&self.chats, self.filter, &self.search);
+        let mut filtered = filter_chats(&self.chats, self.filter, &self.search);
+        if let Some(label_id) = &self.business.label_filter {
+            // The label filter narrows the list to the chats
+            // carrying the label, resolved through the live
+            // session's JID book.
+            let tagged_jids: std::collections::HashSet<&str> = self
+                .business
+                .chat_labels
+                .iter()
+                .filter(|(_, set)| set.contains(label_id))
+                .map(|(jid, _)| jid.as_str())
+                .collect();
+            let jids: std::collections::HashMap<u64, &str> = self
+                .live
+                .as_ref()
+                .map(|session| session.jids.iter().map(|(id, jid)| (*id, jid.as_str())).collect())
+                .unwrap_or_default();
+            filtered.retain(|c| jids.get(&c.id).is_some_and(|jid| tagged_jids.contains(jid)));
+        }
         let base = self.chats.as_ptr() as usize;
         let indices: Vec<usize> = filtered
             .iter()
@@ -435,6 +465,29 @@ impl App {
                         },
                     );
                 }
+                // The active label filter, as a chip under
+                // the filter row: the label's name on a
+                // selected chip; clicking it clears the
+                // filter. Shown whenever a filter is set, so
+                // it can always be undone from here.
+                if let Some(label_id) = self.business.label_filter.clone() {
+                    if let Some(label) =
+                        self.business.labels.iter().find(|l| l.id == label_id).cloned()
+                    {
+                        ui.add_space(SP_1);
+                        ui.horizontal(|ui| {
+                            let resp = chip(ui, &label.name, true, t);
+                            if resp.clicked() {
+                                self.business.label_filter = None;
+                            }
+                            ui.label(
+                                RichText::new(crate::i18n::t("labels.clear_filter"))
+                                    .size(11.5)
+                                    .color(rgb(t.text_faint)),
+                            );
+                        });
+                    }
+                }
                 // Portrait: the archived entry row under the
                 // chips (the phone pattern), shown on the
                 // unfiltered, unsearched list while archived
@@ -544,6 +597,52 @@ impl App {
                         }
                     }
                 }
+                // The labels entry row, beside the locked
+                // folder's: shown on the unfiltered, unsearched
+                // list while the account has labels. It carries
+                // the label count; the panel it opens is the
+                // way to manage them and to filter by one.
+                if self.filter == ChatFilter::All
+                    && self.search.trim().is_empty()
+                    && !self.business.labels.is_empty()
+                {
+                    ui.add_space(SP_1);
+                    let (rect, resp) = ui
+                        .allocate_exact_size(Vec2::new(ui.available_width(), 48.0), Sense::click());
+                    let hov = crate::anim::hover_factor(ui, "labels_entry_row", resp.hovered());
+                    if hov > 0.001 {
+                        ui.painter().rect_filled(
+                            rect,
+                            CornerRadius::same(10),
+                            crate::theme::glass_wash(t, t.bg_panel_alt, (hov * 115.0) as u8),
+                        );
+                    }
+                    crate::icons::draw(
+                        ui.painter(),
+                        crate::icons::Icon::Label,
+                        Pos2::new(rect.left() + AVATAR_CX, rect.center().y),
+                        crate::icons::SIZE_CONTROL,
+                        rgb(t.text_secondary),
+                        rgb(t.bg_panel),
+                    );
+                    ui.painter().text(
+                        Pos2::new(rect.left() + TEXT_X, rect.center().y),
+                        egui::Align2::LEFT_CENTER,
+                        crate::i18n::t("nav.labels"),
+                        crate::theme::medium(15.0),
+                        rgb(t.text_primary),
+                    );
+                    ui.painter().text(
+                        Pos2::new(rect.right() - 6.0, rect.center().y),
+                        egui::Align2::RIGHT_CENTER,
+                        self.business.labels.len().to_string(),
+                        FontId::proportional(12.0),
+                        rgb(t.text_faint),
+                    );
+                    if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                        self.screen = crate::state::Screen::Labels;
+                    }
+                }
                 let mut photos = self.demo_photos(ui.ctx());
                 if self.live.is_some() {
                     // Live rows wear their real profile
@@ -634,6 +733,7 @@ impl App {
                     for idx in range {
                         let chat = visible[idx];
                         let state = self.row_state_for(chat);
+                        let tags = self.chat_tags(chat.id);
                         let resp = chat_row(
                             ui,
                             chat,
@@ -643,6 +743,7 @@ impl App {
                             state,
                             None,
                             photos.get(&chat.id).copied(),
+                            &tags,
                         );
                         if resp.clicked() {
                             clicked = Some(chat.id);
@@ -700,6 +801,18 @@ impl App {
                             {
                                 row_action
                                     .set(Some((chat.id, RowPick::SetFavorite(!chat.favorite))));
+                                ui.close();
+                            }
+                            if crate::widgets::menu_item_icon(
+                                ui,
+                                t,
+                                Some(crate::icons::Icon::Label),
+                                &crate::i18n::t("labels.menu"),
+                                None,
+                            )
+                            .clicked()
+                            {
+                                row_action.set(Some((chat.id, RowPick::LabelPicker)));
                                 ui.close();
                             }
                             if chat.unread == 0
@@ -829,6 +942,10 @@ impl App {
                                     name: c.title.clone(),
                                 });
                             }
+                        }
+                        RowPick::LabelPicker => {
+                            self.business.label_picker =
+                                Some(crate::state::LabelPickerTarget::Chat(id));
                         }
                         RowPick::DeleteChat => {
                             if let Some(c) = self.chats.iter().find(|c| c.id == id) {
@@ -1091,6 +1208,7 @@ pub(crate) fn chat_row(
     row_state: Option<RowState>,
     avatar_icon: Option<crate::icons::Icon>,
     photo: Option<egui::TextureId>,
+    tags: &[crate::labels::ChatTag],
 ) -> egui::Response {
     let (rect, response) =
         ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_H), Sense::click());
@@ -1352,6 +1470,17 @@ pub(crate) fn chat_row(
                 }
             }
             None => {}
+        }
+    }
+    // Label tags lead the snippet line (up to two, in name
+    // order): small chips in the label's own color, ahead of
+    // the preview text, which ellipsizes into what is left.
+    if row_state.is_none() {
+        for tag in tags.iter() {
+            if x + 60.0 > right_limit {
+                break;
+            }
+            x = crate::labels::paint_label_tag(painter, ui, x, line_y, tag, t.bg_panel) + 6.0;
         }
     }
     // The preview segment is composed whole (label included,

@@ -1580,6 +1580,81 @@ impl crate::state::App {
             BackendEvent::OwnProfileSaveFailed { message } => {
                 self.apply_own_profile_save_failed(message);
             }
+            BackendEvent::LabelEdited { label_id, name, color, predefined_id, deleted } => {
+                self.apply_label_edited(label_id, name, color, predefined_id, deleted);
+            }
+            BackendEvent::ChatLabelChanged { label_id, chat_jid, labeled } => {
+                self.apply_chat_label_changed(label_id, chat_jid, labeled);
+            }
+            BackendEvent::MessageLabelChanged { label_id, chat_jid, message_id, labeled } => {
+                self.apply_message_label_changed(label_id, chat_jid, message_id, labeled);
+            }
+            BackendEvent::LabelActionFailed { action, message } => {
+                self.apply_label_action_failed(action, message);
+            }
+            BackendEvent::LabelDeleted { label_id } => {
+                self.apply_label_deleted(label_id);
+            }
+            BackendEvent::LabelDeleteFailed { message, .. } => {
+                self.apply_label_delete_failed(message);
+            }
+            BackendEvent::QuickReplyEdited { id, shortcut, message, keywords, count, deleted } => {
+                self.apply_quick_reply_edited(
+                    backend::LiveQuickReply { id, shortcut, message, keywords, count },
+                    deleted,
+                );
+            }
+            BackendEvent::QuickReplyFailed { id, message } => {
+                self.apply_quick_reply_failed(id, message);
+            }
+            BackendEvent::QuickReplyDeleted { id } => {
+                self.apply_quick_reply_deleted(id);
+            }
+            BackendEvent::QuickReplyDeleteFailed { message, .. } => {
+                self.apply_quick_reply_delete_failed(message);
+            }
+            BackendEvent::BusinessProfileFetched { chat_jid, profile } => {
+                self.apply_business_profile_fetched(chat_jid, profile);
+            }
+            BackendEvent::BusinessProfileFetchFailed { chat_jid, message } => {
+                self.apply_business_profile_fetch_failed(chat_jid, message);
+            }
+            BackendEvent::CatalogFetched { chat_jid, products, after_cursor } => {
+                self.apply_catalog_fetched(chat_jid, products, after_cursor);
+            }
+            BackendEvent::CatalogFetchFailed { chat_jid, message } => {
+                self.apply_catalog_fetch_failed(chat_jid, message);
+            }
+            BackendEvent::CollectionsFetched { chat_jid, collections } => {
+                self.apply_collections_fetched(chat_jid, collections);
+            }
+            BackendEvent::CollectionsFetchFailed { chat_jid, message } => {
+                self.apply_collections_fetch_failed(chat_jid, message);
+            }
+            BackendEvent::ProductImageBytes { url, bytes } => {
+                self.apply_product_image_bytes(ctx, url, bytes);
+            }
+            BackendEvent::ProductImageFetchFailed { url } => {
+                self.apply_product_image_fetch_failed(url);
+            }
+            BackendEvent::OrderDetailsFetched { chat_jid, order_id, order } => {
+                self.apply_order_details_fetched(chat_jid, order_id, order);
+            }
+            BackendEvent::OrderDetailsFetchFailed { chat_jid, order_id, message } => {
+                self.apply_order_details_fetch_failed(chat_jid, order_id, message);
+            }
+            BackendEvent::OwnBusinessProfileFetched { profile } => {
+                self.apply_own_business_fetched(profile);
+            }
+            BackendEvent::OwnBusinessProfileFetchFailed { message } => {
+                self.apply_own_business_fetch_failed(message);
+            }
+            BackendEvent::OwnBusinessProfileSaved => {
+                self.apply_own_business_saved();
+            }
+            BackendEvent::OwnBusinessProfileSaveFailed { message } => {
+                self.apply_own_business_save_failed(message);
+            }
             BackendEvent::Blocklist(jids) => {
                 // The server's list is the source of truth for
                 // blocks: adopt it wholesale, replacing the

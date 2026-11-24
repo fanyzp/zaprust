@@ -36,6 +36,7 @@
 mod anim;
 mod attach;
 mod bubble;
+mod business;
 mod call_ui;
 mod calls;
 mod channels;
@@ -52,6 +53,7 @@ mod emoji_font;
 mod extras;
 mod i18n;
 mod icons;
+mod labels;
 mod live;
 mod lock_ui;
 mod markdown;

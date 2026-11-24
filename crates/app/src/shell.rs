@@ -108,6 +108,7 @@ impl eframe::App for App {
             if show_list {
                 match self.screen {
                     Screen::Starred => self.draw_starred_panel(ui),
+                    Screen::Labels => self.draw_labels_panel(ui),
                     Screen::Calls => self.draw_calls_panel(ui),
                     Screen::Channels => self.draw_channels_panel(ui),
                     Screen::Communities => self.draw_communities_panel(ui),
@@ -146,6 +147,8 @@ impl eframe::App for App {
         let profile_mode = self.my_profile_mode();
         crate::profile::my_profile_sync_photo(&ctx, &mut self.my_profile, profile_mode);
         self.draw_account_menu(ui);
+        self.draw_label_picker(&ctx);
+        self.draw_order_dialog(&ctx);
         self.draw_my_profile(&ctx);
         self.draw_status_composer(&ctx);
         self.draw_status_viewer(&ctx);

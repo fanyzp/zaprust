@@ -101,6 +101,10 @@ WANTED = [
     ("Keyboard", ["keyboard"]),
     ("Done", ["done"]),
     ("DoneAll", ["done_all"]),
+    ("Label", ["label"]),
+    ("Storefront", ["storefront"]),
+    ("Bolt", ["bolt"]),
+    ("Receipt", ["receipt_long", "receipt"]),
 ]
 
 # Variable font axes pinned for the Rounded route.

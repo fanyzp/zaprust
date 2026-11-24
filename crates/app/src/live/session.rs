@@ -106,6 +106,10 @@ impl crate::state::App {
                 }
                 _ => {}
             }
+            // The label and quick-reply sets' persisted home is
+            // the same archive: the stored sets are the launch
+            // seed the backend's sync events then correct.
+            self.load_business_archive(store);
         }
         let repaint_ctx = ctx.clone();
         let wake: backend::WakeFn = std::sync::Arc::new(move || repaint_ctx.request_repaint());

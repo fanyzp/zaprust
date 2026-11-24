@@ -3731,7 +3731,7 @@ mod live_pairing_fix_tests {
         order.order_id = Some("ORDER-9".to_owned());
         order.token = Some("tok-9".to_owned());
         order.item_count = Some(3);
-        order.total_amount_1000 = Some(45_500);
+        order.total_amount1000 = Some(45_500);
         order.total_currency_code = Some("USD".to_owned());
         order.status = Some(wa::message::order_message::OrderStatus::Accepted);
         order.order_title = Some("Order #9".to_owned());
@@ -3739,7 +3739,14 @@ mod live_pairing_fix_tests {
         msg.order_message = MessageField::some(order);
         let (kind, _) = classify_message(&msg);
         match kind {
-            LiveMessageKind::Order { order_id, token, item_count, total_amount_1000, currency, status } => {
+            LiveMessageKind::Order {
+                order_id,
+                token,
+                item_count,
+                total_amount_1000,
+                currency,
+                status,
+            } => {
                 assert_eq!(order_id, "ORDER-9");
                 assert_eq!(token, "tok-9");
                 assert_eq!(item_count, 3);

@@ -90,6 +90,8 @@ pub(crate) enum BubbleAction {
     /// Open this location's coordinates externally (the system
     /// browser at the map).
     OpenLocation(f64, f64),
+    /// Open the order details dialog for this order message.
+    OpenOrder(u64),
     /// Vote for poll option `usize` in the poll message `u64`.
     Vote(u64, usize),
     /// Answer the event message `u64` with this response.
@@ -287,7 +289,7 @@ pub(crate) fn sticker_dims(aspect: Option<f32>) -> (f32, f32) {
 
 /// Media state a bubble needs from the app: the demo photo texture and
 /// this message's voice playback snapshot.
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Default)]
 pub(crate) struct MediaCtx {
     /// Demo photo texture id, once created.
     pub(crate) photo: Option<egui::TextureId>,
@@ -371,6 +373,10 @@ pub(crate) struct MediaCtx {
     /// documents, stickers): the card says so and offers no
     /// save path.
     pub(crate) view_once: bool,
+    /// This message's label tags (parity P10): painted as a
+    /// strip under the bubble's content. Empty for the
+    /// overwhelming majority of messages.
+    pub(crate) tags: Vec<crate::labels::ChatTag>,
 }
 
 /// Playback rates the speed pill cycles through, in order.
@@ -818,6 +824,28 @@ fn paint_embed(
 /// exactly what made earlier versions look off. Returns an
 /// action when the bubble was clicked (voice notes and
 /// view-once photos are interactive).
+/// The order card's summary line: the item count, the
+/// total, and the status word when the payload stated one.
+/// Shared by the measure and paint passes so the two can
+/// never disagree about the card's width.
+fn order_summary_line(
+    item_count: u32,
+    total_amount_1000: i64,
+    currency: &str,
+    status: &str,
+) -> String {
+    let mut line = format!(
+        "{} \u{b7} {}",
+        crate::business::order_items_text(item_count),
+        crate::live::format_money(total_amount_1000, currency),
+    );
+    if let Some(word) = crate::business::order_status_word(status) {
+        line.push_str(" \u{b7} ");
+        line.push_str(&word);
+    }
+    line
+}
+
 pub(crate) fn message_bubble(
     ui: &mut egui::Ui,
     msg: &Message,
@@ -1246,6 +1274,17 @@ pub(crate) fn message_bubble(
             content_w = content_w.max((body_galley.size().x + 52.0).max(pw + 52.0));
             kind_h = 42.0;
         }
+        MessageKind::Order { item_count, total_amount_1000, currency, status, .. } => {
+            // The order card: a receipt disc, the title, and
+            // the summary line (items, total, status). The
+            // width follows the summary's measure so a long
+            // total never wraps.
+            body_galley = layout_text(ui, "", body_font.clone(), text_color, inner_max);
+            let summary = order_summary_line(*item_count, *total_amount_1000, currency, status);
+            let sw = measure_text(ui, &summary, FontId::proportional(12.0));
+            content_w = content_w.max((sw + 52.0).max(190.0));
+            kind_h = 42.0;
+        }
         MessageKind::Carousel { body, cards } => {
             body_galley = crate::markdown::galley_leading(
                 ui,
@@ -1281,7 +1320,10 @@ pub(crate) fn message_bubble(
 
     let sender_h = if show_sender { 20.0 } else { 0.0 };
     let meta_h = if meta_inline { 3.0 } else { 16.0 };
-    let bubble_h = pad_top + sender_h + quote_h + kind_h + meta_h + pad_bottom;
+    // The label strip rides under the content, above the
+    // meta row: 20 px when the message carries tags.
+    let strip_h = if media.tags.is_empty() { 0.0 } else { 20.0 };
+    let bubble_h = pad_top + sender_h + quote_h + kind_h + strip_h + meta_h + pad_bottom;
 
     let align_layout =
         if mine { Layout::right_to_left(Align::Min) } else { Layout::left_to_right(Align::Min) };
@@ -1383,6 +1425,7 @@ pub(crate) fn message_bubble(
                     MessageKind::Image { view_once: false, .. } => {
                         Some(BubbleAction::OpenPhoto(msg.id))
                     }
+                    MessageKind::Order { .. } => Some(BubbleAction::OpenOrder(msg.id)),
                     MessageKind::Poll { ref options, .. } => {
                         // Rows start below the question galley; each row
                         // is 36px tall (matches the paint pass).
@@ -1573,6 +1616,11 @@ pub(crate) fn message_bubble(
             painter.galley(Pos2::new(x + 10.0, y + 4.0 + name_h), body_g2, secondary);
             y += quote_h;
         }
+
+        // The tag strip paints after the kind content; the
+        // embed paint below may consume `media`, so the tags
+        // are cloned out first.
+        let msg_tags = media.tags.clone();
 
         match &msg.kind {
             MessageKind::Text | MessageKind::System => {
@@ -2530,6 +2578,40 @@ pub(crate) fn message_bubble(
                     layout_text(ui, phone, FontId::proportional(12.0), secondary, inner_w - 40.0);
                 painter.galley(Pos2::new(x + 36.0, y + 22.0), g, secondary);
             }
+            MessageKind::Order { item_count, total_amount_1000, currency, status, .. } => {
+                // The order card, mirroring the contact card's
+                // anatomy: a disc with the receipt glyph, the
+                // title, and the summary line under it. The
+                // whole bubble is the click target (the click
+                // pass opens the details dialog).
+                let cy = y + 21.0;
+                painter.circle_filled(Pos2::new(x + 15.0, cy), 13.0, rgb(t.accent));
+                crate::icons::draw(
+                    painter,
+                    crate::icons::Icon::Receipt,
+                    Pos2::new(x + 15.0, cy),
+                    14.0,
+                    rgb(t.bg_panel),
+                    rgb(t.accent),
+                );
+                let g = layout_text(
+                    ui,
+                    &crate::i18n::t("business.order"),
+                    body_font.clone(),
+                    text_color,
+                    inner_w - 40.0,
+                );
+                painter.galley(Pos2::new(x + 36.0, y + 2.0), g, text_color);
+                let summary = order_summary_line(*item_count, *total_amount_1000, currency, status);
+                let g = layout_text(
+                    ui,
+                    &summary,
+                    FontId::proportional(12.0),
+                    secondary,
+                    inner_w - 40.0,
+                );
+                painter.galley(Pos2::new(x + 36.0, y + 22.0), g, secondary);
+            }
             MessageKind::Carousel { body, cards } => {
                 // Render-only carousel: body text, then a row of
                 // cards (title, body, up to two static button
@@ -2607,6 +2689,18 @@ pub(crate) fn message_bubble(
                     }
                     cx += 158.0;
                 }
+            }
+        }
+
+        // The label strip: the message's tags as chips on
+        // their own line under the content (the measure pass
+        // reserved the height whenever tags exist).
+        if !msg_tags.is_empty() {
+            let strip_y = rect.top() + pad_top + sender_h + quote_h + kind_h + 10.0;
+            let mut tx = rect.left() + pad_x;
+            for tag in &msg_tags {
+                tx =
+                    crate::labels::paint_label_tag(painter, ui, tx, strip_y, tag, t.bg_panel) + 6.0;
             }
         }
 

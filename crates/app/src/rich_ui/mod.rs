@@ -874,6 +874,16 @@ impl App {
                 crate::i18n::t("updates.delete_body"),
                 crate::i18n::t("common.delete"),
             ),
+            UiConfirm::DeleteLabel { name, .. } => (
+                crate::i18n::t("labels.delete_title"),
+                crate::i18n::tf("labels.delete_body", "name", name),
+                crate::i18n::t("common.delete"),
+            ),
+            UiConfirm::DeleteQuickReply { shortcut, .. } => (
+                crate::i18n::t("business.quick_delete_title"),
+                crate::i18n::tf("business.quick_delete_body", "name", shortcut),
+                crate::i18n::t("common.delete"),
+            ),
             UiConfirm::CancelEvent { name, .. } => (
                 crate::i18n::t("event.cancel_title"),
                 crate::i18n::tf("event.cancel_body", "name", name),
@@ -1019,6 +1029,12 @@ impl App {
                 }
                 Some(UiConfirm::DeleteStatus { message_id }) => {
                     self.delete_my_status(&message_id);
+                }
+                Some(UiConfirm::DeleteLabel { label_id, .. }) => {
+                    self.delete_label_confirmed(&label_id);
+                }
+                Some(UiConfirm::DeleteQuickReply { id, .. }) => {
+                    self.delete_quick_reply_confirmed(&id);
                 }
                 Some(UiConfirm::CancelEvent { chat_id, msg_id, .. }) => {
                     self.cancel_event(chat_id, msg_id);

@@ -168,6 +168,27 @@ pub enum MessageKind {
         /// The cards, in order.
         cards: Vec<CarouselCard>,
     },
+    /// An order placed with a business: a summary card whose
+    /// line items load on demand through the order-details
+    /// fetch the id and token authorize.
+    Order {
+        /// Order id from the payload.
+        order_id: String,
+        /// Per-order token from the payload (may be empty;
+        /// the details fetch then has nothing to authorize
+        /// with and the card offers no fetch).
+        token: String,
+        /// Number of items the payload states.
+        item_count: u32,
+        /// Total in thousandths of the currency unit, as the
+        /// payload states it (0 when it states none).
+        total_amount_1000: i64,
+        /// ISO 4217 currency code of the total.
+        currency: String,
+        /// Order status, wire spelling (`INQUIRY`,
+        /// `ACCEPTED`, `DECLINED`; empty when unstated).
+        status: String,
+    },
     /// A sticker: a small square image rendered at sticker
     /// size inside the bubble, never as a photo card. Its bytes
     /// are fetched on demand like a photo's, through the sticker

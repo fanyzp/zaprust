@@ -201,6 +201,7 @@ impl App {
                             state,
                             None,
                             None,
+                            &[],
                         );
                         if resp.clicked() {
                             clicked = Some(chat.id);

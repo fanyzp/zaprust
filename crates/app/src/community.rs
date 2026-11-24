@@ -709,6 +709,7 @@ pub fn community_home(
                     None,
                     Some(crate::icons::Icon::Megaphone),
                     None,
+                    &[],
                 )
                 .clicked()
                 {
@@ -731,7 +732,15 @@ pub fn community_home(
                             ManagedGroupAction::None => {}
                         }
                     } else if crate::chat_list::chat_row(
-                        ui, group, false, false, t, None, None, None,
+                        ui,
+                        group,
+                        false,
+                        false,
+                        t,
+                        None,
+                        None,
+                        None,
+                        &[],
                     )
                     .clicked()
                     {

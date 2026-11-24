@@ -17,6 +17,7 @@
 
 use core::model::{Chat, ChatKind};
 
+pub(crate) mod business;
 pub(crate) mod dock;
 mod gallery;
 mod my_profile;

@@ -7,6 +7,7 @@
 //! write-through of every upsert into the archive.
 
 mod actions;
+mod business;
 mod changed;
 mod events;
 mod media;
@@ -15,6 +16,7 @@ mod profile;
 mod session;
 mod zip;
 
+pub(crate) use business::{format_money, label_color, quick_reply_matches};
 pub(crate) use zip::{ZipGather, ZipItem, ZipItemState, ZipPayload};
 
 use std::collections::HashMap;
@@ -907,6 +909,21 @@ pub(crate) fn to_kind(kind: &backend::LiveMessageKind) -> MessageKind {
         backend::LiveMessageKind::Contact { name, phone } => {
             MessageKind::Contact { name: name.clone(), phone: phone.clone() }
         }
+        backend::LiveMessageKind::Order {
+            order_id,
+            token,
+            item_count,
+            total_amount_1000,
+            currency,
+            status,
+        } => MessageKind::Order {
+            order_id: order_id.clone(),
+            token: token.clone(),
+            item_count: *item_count,
+            total_amount_1000: *total_amount_1000,
+            currency: currency.clone(),
+            status: status.clone(),
+        },
         backend::LiveMessageKind::Carousel { body, cards } => MessageKind::Carousel {
             body: body.clone(),
             cards: cards

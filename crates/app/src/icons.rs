@@ -79,6 +79,10 @@ pub(crate) enum Icon {
     Keyboard,
     Done,
     DoneAll,
+    Label,
+    Storefront,
+    Bolt,
+    Receipt,
 }
 
 /// The icon size grid (design standard, icon discipline):
@@ -181,6 +185,10 @@ pub(crate) fn glyph(icon: Icon) -> char {
         Icon::Keyboard => '\u{e312}',      // keyboard
         Icon::Done => '\u{e876}',          // done
         Icon::DoneAll => '\u{e877}',       // done_all
+        Icon::Label => '\u{e893}',         // label
+        Icon::Storefront => '\u{ea12}',    // storefront
+        Icon::Bolt => '\u{ea0b}',          // bolt
+        Icon::Receipt => '\u{ef6e}',       // receipt_long
     }
 }
 

@@ -786,6 +786,7 @@ impl App {
                         location_thumb: location_thumb_pair.map(|(id, _)| id),
                         document_thumb: document_thumb_pair.map(|(id, _)| id),
                         preview_thumb: preview_thumb_pair.map(|(id, _)| id),
+                        tags: self.message_tags(self.selected_chat, msg.id),
                         view_once: msg.is_view_once()
                             || self
                                 .live
@@ -1080,6 +1081,9 @@ impl App {
                     // browser, on the user's own click only (the
                     // same route the location card takes).
                     let _ = open::that(url);
+                }
+                BubbleAction::OpenOrder(id) => {
+                    self.open_order_dialog(self.selected_chat, id);
                 }
                 BubbleAction::RetrySticker(id) => {
                     self.retry_sticker_fetch(id);
@@ -1415,6 +1419,7 @@ fn iter_estimate(conversation: &[Message], first: usize, len: usize) -> f32 {
         core::model::MessageKind::Location { .. } => 130.0,
         core::model::MessageKind::Contact { .. } => 66.0,
         core::model::MessageKind::Carousel { .. } => 210.0,
+        core::model::MessageKind::Order { .. } => 92.0,
         core::model::MessageKind::Text => 68.0,
     }
 }

@@ -927,7 +927,6 @@ pub fn scripted_marathon_messages() -> Vec<LiveMessage> {
     out
 }
 
-/// The scripted DM conversation the fake serves on link.
 /// The scripted business's profile (business-fixture gate
 /// only): a coffee roastery with hours, categories and a
 /// website, shaped like the library's read.
@@ -1010,15 +1009,39 @@ fn fixture_catalog_page(after: Option<&str>) -> (Vec<crate::LiveProduct>, Option
     match after {
         None => (
             vec![
-                fixture_product("beans-arabica", "Arabica Beans 200g", Some(85_000_000), None, Some("IN_STOCK")),
-                fixture_product("beans-robusta", "Robusta Beans 200g", Some(65_000_000), None, Some("IN_STOCK")),
-                fixture_product("cold-brew", "Cold Brew Bottle 250ml", Some(35_000_000), Some(28_000_000), Some("IN_STOCK")),
+                fixture_product(
+                    "beans-arabica",
+                    "Arabica Beans 200g",
+                    Some(85_000_000),
+                    None,
+                    Some("IN_STOCK"),
+                ),
+                fixture_product(
+                    "beans-robusta",
+                    "Robusta Beans 200g",
+                    Some(65_000_000),
+                    None,
+                    Some("IN_STOCK"),
+                ),
+                fixture_product(
+                    "cold-brew",
+                    "Cold Brew Bottle 250ml",
+                    Some(35_000_000),
+                    Some(28_000_000),
+                    Some("IN_STOCK"),
+                ),
             ],
             Some("page-2".to_owned()),
         ),
         Some(_) => (
             vec![
-                fixture_product("drip-set", "Drip Coffee Set", Some(240_000_000), None, Some("OUT_OF_STOCK")),
+                fixture_product(
+                    "drip-set",
+                    "Drip Coffee Set",
+                    Some(240_000_000),
+                    None,
+                    Some("OUT_OF_STOCK"),
+                ),
                 fixture_product("gift-card", "Gift Card", None, None, None),
             ],
             None,
@@ -1032,8 +1055,20 @@ fn fixture_collections() -> Vec<crate::LiveCollection> {
         id: Some("starter-kits".to_owned()),
         name: Some("Starter kits".to_owned()),
         products: vec![
-            fixture_product("drip-set", "Drip Coffee Set", Some(240_000_000), None, Some("OUT_OF_STOCK")),
-            fixture_product("beans-arabica", "Arabica Beans 200g", Some(85_000_000), None, Some("IN_STOCK")),
+            fixture_product(
+                "drip-set",
+                "Drip Coffee Set",
+                Some(240_000_000),
+                None,
+                Some("OUT_OF_STOCK"),
+            ),
+            fixture_product(
+                "beans-arabica",
+                "Arabica Beans 200g",
+                Some(85_000_000),
+                None,
+                Some("IN_STOCK"),
+            ),
         ],
     }]
 }
@@ -1049,7 +1084,10 @@ fn fixture_order() -> crate::LiveOrder {
         variant: Vec::new(),
     };
     crate::LiveOrder {
-        items: vec![item("Arabica Beans 200g", 85_000_000, 2), item("Cold Brew Bottle 250ml", 35_000_000, 1)],
+        items: vec![
+            item("Arabica Beans 200g", 85_000_000, 2),
+            item("Cold Brew Bottle 250ml", 35_000_000, 1),
+        ],
         subtotal_amount_1000: Some(205_000_000),
         total_amount_1000: Some(205_000_000),
         currency: Some("IDR".to_owned()),
@@ -1096,6 +1134,7 @@ pub fn scripted_business_messages() -> Vec<LiveMessage> {
     ]
 }
 
+/// The scripted DM conversation the fake serves on link.
 pub fn scripted_messages() -> Vec<LiveMessage> {
     // The poll sits after the three-photo album run: the archive
     // returns messages in timestamp order, so the scripted vector
@@ -4242,7 +4281,11 @@ impl Backend for FakeBackend {
                         });
                     } else if business_fixture_enabled() && chat_jid == FAKE_BIZ_JID {
                         let (products, after_cursor) = fixture_catalog_page(after.as_deref());
-                        events.emit(BackendEvent::CatalogFetched { chat_jid, products, after_cursor });
+                        events.emit(BackendEvent::CatalogFetched {
+                            chat_jid,
+                            products,
+                            after_cursor,
+                        });
                     } else {
                         events.emit(BackendEvent::CatalogFetched {
                             chat_jid,
@@ -4258,7 +4301,8 @@ impl Backend for FakeBackend {
                             message: "Could not load the collections: connection lost".to_owned(),
                         });
                     } else {
-                        let collections = if business_fixture_enabled() && chat_jid == FAKE_BIZ_JID {
+                        let collections = if business_fixture_enabled() && chat_jid == FAKE_BIZ_JID
+                        {
                             fixture_collections()
                         } else {
                             Vec::new()

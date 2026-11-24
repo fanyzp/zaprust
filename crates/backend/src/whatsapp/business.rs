@@ -76,10 +76,9 @@ fn map_product(product: &Product) -> LiveProduct {
         price_currency,
         availability: product.availability.as_ref().map(|a| a.as_str().to_owned()),
         hidden: product.is_hidden.unwrap_or(false),
-        image_url: product
-            .images
-            .first()
-            .and_then(|img| img.request_image_url.clone().or_else(|| img.original_image_url.clone())),
+        image_url: product.images.first().and_then(|img| {
+            img.request_image_url.clone().or_else(|| img.original_image_url.clone())
+        }),
     }
 }
 
@@ -205,7 +204,8 @@ pub(super) async fn update_own_business_profile(
     let mut delta = BusinessProfileUpdate::default();
     // Text fields: Some("") is the wire's clear, exactly
     // what the contract's Some(None) means.
-    let text = |field: &Option<Option<String>>| field.as_ref().map(|v| v.clone().unwrap_or_default());
+    let text =
+        |field: &Option<Option<String>>| field.as_ref().map(|v| v.clone().unwrap_or_default());
     delta.description = text(&update.description);
     delta.email = text(&update.email);
     delta.address = text(&update.address);

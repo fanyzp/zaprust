@@ -4162,10 +4162,12 @@ pub(super) async fn run_async(
                                     chat_jid,
                                     profile,
                                 }),
-                                Err(message) => events.emit(BackendEvent::BusinessProfileFetchFailed {
-                                    chat_jid,
-                                    message,
-                                }),
+                                Err(message) => {
+                                    events.emit(BackendEvent::BusinessProfileFetchFailed {
+                                        chat_jid,
+                                        message,
+                                    })
+                                }
                             }
                         }
                         Err(e) => events.emit(BackendEvent::BusinessProfileFetchFailed {
@@ -4174,35 +4176,29 @@ pub(super) async fn run_async(
                         }),
                     }
                 }
-                BackendCommand::FetchCatalog { chat_jid, after } => {
-                    match chat_jid.parse::<Jid>() {
-                        Ok(jid) => match super::business::fetch_catalog(&client, &jid, after).await {
-                            Ok((products, after_cursor)) => {
-                                events.emit(BackendEvent::CatalogFetched {
-                                    chat_jid,
-                                    products,
-                                    after_cursor,
-                                })
-                            }
-                            Err(message) => {
-                                events.emit(BackendEvent::CatalogFetchFailed { chat_jid, message })
-                            }
-                        },
-                        Err(e) => events.emit(BackendEvent::CatalogFetchFailed {
+                BackendCommand::FetchCatalog { chat_jid, after } => match chat_jid.parse::<Jid>() {
+                    Ok(jid) => match super::business::fetch_catalog(&client, &jid, after).await {
+                        Ok((products, after_cursor)) => events.emit(BackendEvent::CatalogFetched {
                             chat_jid,
-                            message: format!("Invalid address: {}", error_words(&e)),
+                            products,
+                            after_cursor,
                         }),
-                    }
-                }
+                        Err(message) => {
+                            events.emit(BackendEvent::CatalogFetchFailed { chat_jid, message })
+                        }
+                    },
+                    Err(e) => events.emit(BackendEvent::CatalogFetchFailed {
+                        chat_jid,
+                        message: format!("Invalid address: {}", error_words(&e)),
+                    }),
+                },
                 BackendCommand::FetchCollections { chat_jid } => {
                     match chat_jid.parse::<Jid>() {
                         Ok(jid) => match super::business::fetch_collections(&client, &jid).await {
-                            Ok(collections) => {
-                                events.emit(BackendEvent::CollectionsFetched { chat_jid, collections })
-                            }
-                            Err(message) => {
-                                events.emit(BackendEvent::CollectionsFetchFailed { chat_jid, message })
-                            }
+                            Ok(collections) => events
+                                .emit(BackendEvent::CollectionsFetched { chat_jid, collections }),
+                            Err(message) => events
+                                .emit(BackendEvent::CollectionsFetchFailed { chat_jid, message }),
                         },
                         Err(e) => events.emit(BackendEvent::CollectionsFetchFailed {
                             chat_jid,
@@ -4226,17 +4222,21 @@ pub(super) async fn run_async(
                 BackendCommand::FetchOrderDetails { chat_jid, order_id, token } => {
                     match chat_jid.parse::<Jid>() {
                         Ok(jid) => {
-                            match super::business::fetch_order(&client, &jid, &order_id, &token).await {
+                            match super::business::fetch_order(&client, &jid, &order_id, &token)
+                                .await
+                            {
                                 Ok(order) => events.emit(BackendEvent::OrderDetailsFetched {
                                     chat_jid,
                                     order_id,
                                     order,
                                 }),
-                                Err(message) => events.emit(BackendEvent::OrderDetailsFetchFailed {
-                                    chat_jid,
-                                    order_id,
-                                    message,
-                                }),
+                                Err(message) => {
+                                    events.emit(BackendEvent::OrderDetailsFetchFailed {
+                                        chat_jid,
+                                        order_id,
+                                        message,
+                                    })
+                                }
                             }
                         }
                         Err(e) => events.emit(BackendEvent::OrderDetailsFetchFailed {
@@ -4257,9 +4257,8 @@ pub(super) async fn run_async(
                                 Ok(profile) => {
                                     events.emit(BackendEvent::OwnBusinessProfileFetched { profile })
                                 }
-                                Err(message) => {
-                                    events.emit(BackendEvent::OwnBusinessProfileFetchFailed { message })
-                                }
+                                Err(message) => events
+                                    .emit(BackendEvent::OwnBusinessProfileFetchFailed { message }),
                             }
                         }
                         None => events.emit(BackendEvent::OwnBusinessProfileFetchFailed {
@@ -4301,9 +4300,10 @@ pub(super) async fn run_async(
                                 client.labels().remove_chat_label(&label_id, &jid).await
                             }
                         }
-                        Err(e) => Err(whatsapp_rust::AppStateError::InvalidRequest(
-                            format!("invalid chat address: {}", error_words(&e)),
-                        )),
+                        Err(e) => Err(whatsapp_rust::AppStateError::InvalidRequest(format!(
+                            "invalid chat address: {}",
+                            error_words(&e)
+                        ))),
                     };
                     if let Err(e) = result {
                         events.emit(BackendEvent::LabelActionFailed {

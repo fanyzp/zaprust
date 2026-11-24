@@ -736,10 +736,36 @@ pub(crate) struct CallsState {
     /// so without this the adopted call UI would always claim
     /// the call is a voice call.
     pub(crate) outgoing_video: bool,
+    /// The outgoing call most recently started from the app is
+    /// a call-link join, remembered until its first phase event
+    /// adopts it: a link join's first event is Connecting (not
+    /// Ringing) and carries no chat, so adoption needs this
+    /// flag to tell it apart from an unrelated phase report.
+    pub(crate) outgoing_link: bool,
     /// The new call picker's own search text.
     pub(crate) picker_search: String,
     /// The one live call's UI state, if any (see call_ui.rs).
     pub(crate) active: Option<crate::call_ui::CallUi>,
+    /// The call-link create dialog is open.
+    pub(crate) link_create_open: bool,
+    /// The kind the create dialog will make (video or audio).
+    pub(crate) link_create_video: bool,
+    /// The created link's URL and kind, shown in the create
+    /// dialog once the backend answers.
+    pub(crate) link_created: Option<(String, bool)>,
+    /// The call-link join dialog is open.
+    pub(crate) link_join_open: bool,
+    /// The join dialog's link text field.
+    pub(crate) link_input: String,
+    /// The join dialog's preview, once the backend answers.
+    pub(crate) link_preview: Option<crate::call_ui::LinkPreviewUi>,
+    /// A link create or preview is in flight.
+    pub(crate) link_busy: bool,
+    /// The in-call Add people picker is open.
+    pub(crate) invite_open: bool,
+    /// Decoded call video: the stage and preview textures and
+    /// the decoder behind them (see call_ui.rs).
+    pub(crate) media: crate::call_ui::CallMediaState,
 }
 
 /// Media state: decoded photo textures, the photo viewer and view-once tracking, and voice-note playback.
@@ -2699,8 +2725,18 @@ impl App {
                 search_open: false,
                 picker_open: args.calls_picker,
                 outgoing_video: false,
+                outgoing_link: false,
                 picker_search: String::new(),
                 active: None,
+                link_create_open: false,
+                link_create_video: true,
+                link_created: None,
+                link_join_open: false,
+                link_input: String::new(),
+                link_preview: None,
+                link_busy: false,
+                invite_open: false,
+                media: crate::call_ui::CallMediaState::default(),
             },
             updates: UpdatesState {
                 feed: Vec::new(),

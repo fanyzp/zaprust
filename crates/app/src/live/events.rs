@@ -2358,9 +2358,9 @@ impl crate::state::App {
                         .to_owned(),
                 ));
             }
-            BackendEvent::IncomingCall { call_id, chat_jid, video } => {
+            BackendEvent::IncomingCall { call_id, chat_jid, video, group_jid } => {
                 let chat_id = jid_id(&chat_jid);
-                self.on_incoming_call(&call_id, chat_id, video);
+                self.on_incoming_call(&call_id, chat_id, video, group_jid.is_some());
                 // When the window is not in front of the user,
                 // the ring needs an OS popup like a message gets:
                 // the overlay alone rings to an empty room. The
@@ -2453,8 +2453,71 @@ impl crate::state::App {
                 let ended = phase == backend::CallPhase::Ended;
                 self.on_call_changed(&call_id, chat_id, phase, seconds, reason);
                 if ended {
-                    self.record_ended_call(&call_id, &chat_jid, seconds);
+                    // A call-link call has no chat behind it:
+                    // it leaves no chat-bound history record.
+                    let link_call = self
+                        .calls
+                        .active
+                        .as_ref()
+                        .is_some_and(|call| call.link);
+                    if !link_call {
+                        self.record_ended_call(&call_id, &chat_jid, seconds);
+                    }
                 }
+            }
+            BackendEvent::CallParticipants { participants } => {
+                self.on_call_participants(participants);
+            }
+            BackendEvent::CallReaction { jid, emoji } => {
+                self.on_call_reaction(&jid, emoji);
+            }
+            BackendEvent::CallWaitingRoom { is_admin, approval_required, users } => {
+                self.on_call_waiting_room(crate::call_ui::WaitingRoomUi {
+                    is_admin,
+                    approval_required,
+                    users,
+                });
+            }
+            BackendEvent::CallVideoState { local_on, remote_on, local_note } => {
+                self.on_call_video_state(local_on, remote_on, local_note);
+            }
+            BackendEvent::CallVideoAu { sender, data, keyframe, orientation: _ } => {
+                // Frame orientation is not applied when
+                // painting: desktop peers send orientation 0,
+                // and rotating a decoded frame needs a texture
+                // pass this stage does not have yet (recorded
+                // on parity row 91).
+                self.on_call_video_au(ctx, sender, &data, keyframe);
+            }
+            BackendEvent::CallVideoFrame { rgba, width, height } => {
+                self.on_call_video_frame(ctx, rgba, width, height);
+            }
+            BackendEvent::CallLinkCreated { url, video } => {
+                self.calls.link_busy = false;
+                self.calls.link_created = Some((url, video));
+            }
+            BackendEvent::CallLinkPreview { url, creator_jid, video, waiting_room } => {
+                self.calls.link_busy = false;
+                self.calls.link_preview = Some(crate::call_ui::LinkPreviewUi {
+                    url,
+                    creator_jid,
+                    video,
+                    waiting_room,
+                });
+            }
+            BackendEvent::CallLinkFailed { message } => {
+                self.calls.link_busy = false;
+                let message = core::crash::scrub_for_display(&message);
+                self.notice = Some(Notice::error(human_error(&message)));
+            }
+            BackendEvent::CallControlFailed { message } => {
+                // Same discipline as CallAudioFailed: the
+                // optimistic flips revert on this typed event,
+                // never on the generic error path (VRF-04).
+                let message = core::crash::scrub_for_display(&message);
+                tracing::warn!("call control failed: {message}");
+                self.on_call_control_failed();
+                self.notice = Some(Notice::error(human_error(&message)));
             }
             BackendEvent::CallMissed { call_id, chat_jid, at } => {
                 self.record_missed_call(&call_id, &chat_jid, at);
@@ -3345,6 +3408,7 @@ mod burst_drain_tests {
             call_id: "call-3".to_owned(),
             chat_jid: CHAT_JID.to_owned(),
             video: false,
+                group_jid: None,
         })
         .unwrap();
         tx.send(call_changed("call-3", backend::CallPhase::Ended, 0, Some("Missed call"))).unwrap();
@@ -3371,6 +3435,7 @@ mod burst_drain_tests {
             call_id: "call-4".to_owned(),
             chat_jid: CHAT_JID.to_owned(),
             video: false,
+                group_jid: None,
         })
         .unwrap();
         drain_all(&mut app, &ctx);
@@ -3488,6 +3553,7 @@ mod burst_drain_tests {
             call_id: "call-7".to_owned(),
             chat_jid: CHAT_JID.to_owned(),
             video: false,
+                group_jid: None,
         })
         .unwrap();
         drain_all(&mut app, &ctx);
@@ -3525,6 +3591,7 @@ mod burst_drain_tests {
             call_id: "call-8".to_owned(),
             chat_jid: CHAT_JID.to_owned(),
             video: false,
+                group_jid: None,
         })
         .unwrap();
         drain_all(&mut app, &ctx);
@@ -3585,6 +3652,7 @@ mod burst_drain_tests {
             call_id: "call-10".to_owned(),
             chat_jid: CHAT_JID.to_owned(),
             video: false,
+                group_jid: None,
         })
         .unwrap();
         tx.send(BackendEvent::CallEndedElsewhere {

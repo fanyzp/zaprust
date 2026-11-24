@@ -155,6 +155,8 @@ impl eframe::App for App {
         self.draw_photo_viewer(ui);
         self.draw_photo_editor(&ctx);
         self.draw_call_overlay(&ctx);
+        self.draw_invite_picker(&ctx);
+        self.draw_link_dialogs(&ctx);
         self.draw_banners(ui);
         // The lock code prompt rides above every screen: the
         // folder gate is raised from the chat list, where no

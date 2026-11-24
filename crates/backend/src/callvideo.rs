@@ -274,6 +274,26 @@ fn capture_thread(
     }
 }
 /// None when the byte count does not match the frame shape.
+/// Builds the call encoder: OpenH264, Constrained Baseline
+/// (the WhatsApp video profile), 640x480 at 15 fps and
+/// 900 kbps, a keyframe at least every 45 frames, skip-frame
+/// disabled so a still scene still produces the preview
+/// cadence. None when the codec fails to start.
+fn make_encoder() -> Option<openh264::encoder::Encoder> {
+    use openh264::encoder::{
+        BitRate, Encoder, EncoderConfig, FrameRate, IntraFramePeriod, Profile, UsageType,
+    };
+    use openh264::OpenH264API;
+    let config = EncoderConfig::new()
+        .bitrate(BitRate::from_bps(900_000))
+        .max_frame_rate(FrameRate::from_hz(15.0))
+        .usage_type(UsageType::CameraVideoRealTime)
+        .profile(Profile::Baseline)
+        .intra_frame_period(IntraFramePeriod::from_num_frames(45))
+        .enable_skip_frame(false);
+    Encoder::with_api_config(OpenH264API::from_source(), config).ok()
+}
+
 fn yuyv_to_yuv420(raw: &[u8], width: u32, height: u32) -> Option<Vec<u8>> {
     let (w, h) = (width as usize, height as usize);
     if raw.len() < w * h * 2 || w % 2 != 0 || h % 2 != 0 {

@@ -98,10 +98,11 @@ pub(super) fn handle_call_event(
                     sink.emit(BackendEvent::IncomingCall {
                         call_id: call_id.clone(),
                         chat_jid: group_jid
-                            .clone()
+                            .as_ref()
+                            .map(ToString::to_string)
                             .unwrap_or_else(|| ic.from.to_string()),
                         video: *is_video,
-                        group_jid: group_jid.clone(),
+                        group_jid: group_jid.as_ref().map(ToString::to_string),
                     });
                 }
             }
@@ -347,8 +348,9 @@ pub(super) async fn start_group_call(
         }
     };
     let video_plumbing = if video { Some(build_video(events).await) } else { None };
+    let voip = client.voip();
     let mut builder =
-        client.voip().group_call_by_id(&jid).audio(audio.source.clone(), audio.sink.clone());
+        voip.group_call_by_id(&jid).audio(audio.source.clone(), audio.sink.clone());
     if let Some(plumbing) = &video_plumbing {
         builder = builder.video(plumbing.source.clone(), plumbing.sink.clone());
     }
@@ -448,7 +450,7 @@ pub(super) async fn accept_incoming_call(
                     whatsapp_rust::wacore::types::call::CallAction::Offer {
                         group_jid: Some(group),
                         ..
-                    } => group.clone(),
+                    } => group.to_string(),
                     _ => chat_jid.clone(),
                 }
             } else {
@@ -533,11 +535,11 @@ pub(super) async fn preview_call_link(
         match client.voip().preview_call_link(link, media).await {
             Ok(preview) => {
                 events.emit(BackendEvent::CallLinkPreview {
-                    url: whatsapp_rust::wacore::types::group_call::CallLink {
-                        token: preview.token.clone(),
-                        media,
-                    }
-                    .url(),
+                    url: format!(
+                        "https://call.whatsapp.com/{}/{}",
+                        media.as_str(),
+                        preview.token
+                    ),
                     creator_jid: preview.creator.to_string(),
                     video: media == CallLinkMedia::Video,
                     waiting_room: preview.waiting_room_enabled,
@@ -545,7 +547,7 @@ pub(super) async fn preview_call_link(
                 return;
             }
             Err(e) => {
-                last_error = Some(error_words(&e));
+                last_error = Some(error_words(&e).to_owned());
             }
         }
     }
@@ -608,8 +610,8 @@ pub(super) async fn join_call_link(
     tokio::spawn(async move {
         // The builder borrows the client and the link string,
         // so it is built here, inside the task that owns both.
-        let mut builder = client
-            .voip()
+        let voip = client.voip();
+        let mut builder = voip
             .call_link(&link, media)
             .audio(audio.source.clone(), audio.sink.clone());
         if let Some(plumbing) = &video_plumbing {
@@ -926,7 +928,7 @@ pub(super) async fn pump_call(
                                 .iter()
                                 .map(|u| crate::CallWaitingUser {
                                     jid: u.jid.to_string(),
-                                    phone: u.pn.clone(),
+                                    phone: u.pn.as_ref().map(ToString::to_string),
                                 })
                                 .collect(),
                         });

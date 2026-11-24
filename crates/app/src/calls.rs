@@ -31,7 +31,7 @@
 //! two never mix.
 
 use crate::state::{App, Screen};
-use crate::theme::{rgb, SP_1, SP_1_5, SP_2, SP_2_5, SP_3, SP_3_5};
+use crate::theme::{rgb, SP_1, SP_1_5, SP_2, SP_2_5, SP_3, SP_3_5, SP_SECTION};
 use core::filter::ChatFilter;
 use core::model::{CallDirection, CallEntry, CallKind, Chat, ChatKind};
 use eframe::egui::{
@@ -167,23 +167,16 @@ struct PickerAction {
     label_key: &'static str,
 }
 
-/// The call actions a picker row carries, voice first. In
-/// live mode the video action is absent (P1-26): video calling
-/// is not built, and an action that can only fail must not be
-/// offered. Demo mode keeps both actions as fixtures of the
-/// dataset's call kinds; starting one still lands on the
-/// honest refusal in `start_call_kind`.
-fn picker_call_actions(live_mode: bool) -> Vec<PickerAction> {
-    let voice =
-        PickerAction { video: false, icon: crate::icons::Icon::Phone, label_key: "calls.voice" };
-    if live_mode {
-        vec![voice]
-    } else {
-        vec![
-            voice,
-            PickerAction { video: true, icon: crate::icons::Icon::Video, label_key: "calls.video" },
-        ]
-    }
+/// The call actions a picker row carries, voice first. Both
+/// kinds start real calls in every mode that can call at all:
+/// video calling is built (the call card carries the stage
+/// and the camera toggle), so the video action is a real
+/// offer everywhere, not a fixture.
+fn picker_call_actions(_live_mode: bool) -> Vec<PickerAction> {
+    vec![
+        PickerAction { video: false, icon: crate::icons::Icon::Phone, label_key: "calls.voice" },
+        PickerAction { video: true, icon: crate::icons::Icon::Video, label_key: "calls.video" },
+    ]
 }
 
 /// The one call log row, shared by the desktop panel and the
@@ -624,7 +617,18 @@ impl App {
     pub(crate) fn call_chat_kind(&mut self, chat_id: u64, video: bool) {
         self.open_call_target(chat_id);
         if self.live_mode {
-            self.start_call_kind(video);
+            // A group chat's call is a group call: the call
+            // belongs to the group, not to one member.
+            let group = self
+                .chats
+                .iter()
+                .find(|c| c.id == chat_id)
+                .is_some_and(|c| c.kind == core::model::ChatKind::Group);
+            if group {
+                self.start_group_call_kind(video);
+            } else {
+                self.start_call_kind(video);
+            }
         }
     }
 
@@ -714,6 +718,43 @@ impl App {
                     &mut self.calls.search,
                 );
                 ui.add_space(SP_2_5);
+                if self.live_mode {
+                    // Call links: create one to share, or join
+                    // with one. Two secondary actions under a
+                    // quiet caption; the panel's one primary
+                    // stays New call above.
+                    ui.label(
+                        RichText::new(crate::i18n::t("call.links_title"))
+                            .size(12.0)
+                            .color(rgb(t.text_secondary)),
+                    );
+                    ui.add_space(SP_2);
+                    ui.horizontal(|ui| {
+                        if crate::widgets::button(
+                            ui,
+                            t,
+                            &crate::i18n::t("call.create_link"),
+                            crate::widgets::Btn::Secondary,
+                        )
+                        .clicked()
+                        {
+                            self.calls.link_create_open = true;
+                            self.calls.link_created = None;
+                        }
+                        if crate::widgets::button(
+                            ui,
+                            t,
+                            &crate::i18n::t("call.join_link"),
+                            crate::widgets::Btn::Secondary,
+                        )
+                        .clicked()
+                        {
+                            self.calls.link_join_open = true;
+                            self.calls.link_preview = None;
+                        }
+                    });
+                    ui.add_space(SP_2_5);
+                }
                 // Shortcut circles at panel width, the same row
                 // portrait carries: recent contacts and the
                 // favorites filter over the log.
@@ -1354,23 +1395,22 @@ mod tests {
         assert_eq!(call_back_icon(&voice), crate::icons::Icon::Phone);
     }
 
-    /// Batch 6: a demo picker row carries both call actions,
-    /// voice and video, each with its own glyph and locale
-    /// label. A live row carries the voice action only (P1-26):
-    /// video calling is not built, so live must not offer it.
+    /// A picker row carries both call actions, voice and
+    /// video, each with its own glyph and locale label, in
+    /// demo and live rows alike: video calling is built, so
+    /// both modes offer both kinds.
     #[test]
     fn picker_rows_carry_voice_and_video_actions() {
-        let actions = picker_call_actions(false);
-        assert_eq!(actions.len(), 2);
-        assert!(!actions[0].video);
-        assert_eq!(actions[0].icon, crate::icons::Icon::Phone);
-        assert_eq!(actions[0].label_key, "calls.voice");
-        assert!(actions[1].video);
-        assert_eq!(actions[1].icon, crate::icons::Icon::Video);
-        assert_eq!(actions[1].label_key, "calls.video");
-        let live = picker_call_actions(true);
-        assert_eq!(live.len(), 1);
-        assert!(!live[0].video);
+        for live_mode in [false, true] {
+            let actions = picker_call_actions(live_mode);
+            assert_eq!(actions.len(), 2);
+            assert!(!actions[0].video);
+            assert_eq!(actions[0].icon, crate::icons::Icon::Phone);
+            assert_eq!(actions[0].label_key, "calls.voice");
+            assert!(actions[1].video);
+            assert_eq!(actions[1].icon, crate::icons::Icon::Video);
+            assert_eq!(actions[1].label_key, "calls.video");
+        }
     }
 
     /// Batch 6: the unified row has no per-row info button left
@@ -1504,5 +1544,255 @@ mod tests {
         assert_eq!(app.selected_chat, 4);
         assert!(app.calls.active.is_none(), "no call is simulated in demo mode");
         assert!(app.notice.is_none(), "no notice claims a call happened");
+    }
+}
+
+impl App {
+    /// The call-link dialogs: create (pick a kind, get the
+    /// URL, copy it or join the call it names) and join (paste
+    /// a link, preview its facts, join). Both talk to the
+    /// backend through the link commands; a failure lands as
+    /// the typed CallLinkFailed notice.
+    pub(crate) fn draw_link_dialogs(&mut self, ctx: &egui::Context) {
+        if self.calls.link_create_open {
+            self.draw_link_create_dialog(ctx);
+        }
+        if self.calls.link_join_open {
+            self.draw_link_join_dialog(ctx);
+        }
+    }
+
+    fn draw_link_create_dialog(&mut self, ctx: &egui::Context) {
+        let t = self.theme;
+        let mut close = false;
+        let mut create = false;
+        let mut copy: Option<String> = None;
+        let mut join: Option<(String, bool)> = None;
+        egui::Window::new(crate::i18n::t("call.create_link"))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
+            .fixed_size(Vec2::new(340.0, 300.0))
+            .frame(crate::glass::frame_with_shadow(&t, 16.0))
+            .show(ctx, |ui| {
+                match self.calls.link_created.clone() {
+                    Some((url, video)) => {
+                        ui.label(
+                            RichText::new(crate::i18n::t(if video {
+                                "call.link_kind_video"
+                            } else {
+                                "call.link_kind_audio"
+                            }))
+                            .size(12.0)
+                            .color(rgb(t.text_secondary)),
+                        );
+                        ui.add_space(SP_2);
+                        ui.label(
+                            RichText::new(&url)
+                                .size(13.0)
+                                .color(rgb(t.text_primary)),
+                        );
+                        ui.add_space(SP_2);
+                        ui.label(
+                            RichText::new(crate::i18n::t("call.link_created_note"))
+                                .size(12.0)
+                                .color(rgb(t.text_secondary)),
+                        );
+                        ui.add_space(SP_SECTION);
+                        ui.horizontal(|ui| {
+                            if crate::widgets::button(
+                                ui,
+                                &t,
+                                &crate::i18n::t("call.copy_link"),
+                                crate::widgets::Btn::Secondary,
+                            )
+                            .clicked()
+                            {
+                                copy = Some(url.clone());
+                            }
+                            if crate::widgets::button(
+                                ui,
+                                &t,
+                                &crate::i18n::t("call.join_this_call"),
+                                crate::widgets::Btn::Primary,
+                            )
+                            .clicked()
+                            {
+                                join = Some((url.clone(), video));
+                            }
+                        });
+                    }
+                    None => {
+                        ui.radio_value(
+                            &mut self.calls.link_create_video,
+                            true,
+                            crate::i18n::t("call.link_kind_video"),
+                        );
+                        ui.radio_value(
+                            &mut self.calls.link_create_video,
+                            false,
+                            crate::i18n::t("call.link_kind_audio"),
+                        );
+                        ui.add_space(SP_SECTION);
+                        if crate::widgets::button(
+                            ui,
+                            &t,
+                            &crate::i18n::t("call.create_link"),
+                            crate::widgets::Btn::Primary,
+                        )
+                        .clicked()
+                            && !self.calls.link_busy
+                        {
+                            create = true;
+                        }
+                    }
+                }
+                ui.add_space(SP_3);
+                if crate::widgets::button(
+                    ui,
+                    &t,
+                    &crate::i18n::t("common.close"),
+                    crate::widgets::Btn::Secondary,
+                )
+                .clicked()
+                {
+                    close = true;
+                }
+            });
+        if create {
+            self.calls.link_busy = true;
+            let video = self.calls.link_create_video;
+            self.send_backend(backend::BackendCommand::CreateCallLink { video });
+        }
+        if let Some(url) = copy {
+            ctx.copy_text(url);
+        }
+        if let Some((url, video)) = join {
+            self.calls.link_create_open = false;
+            self.calls.link_created = None;
+            self.join_call_link(&url, video);
+        }
+        if close {
+            self.calls.link_create_open = false;
+            self.calls.link_created = None;
+        }
+    }
+
+    fn draw_link_join_dialog(&mut self, ctx: &egui::Context) {
+        let t = self.theme;
+        let mut close = false;
+        let mut preview = false;
+        let mut join: Option<(String, bool)> = None;
+        let preview_state = self.calls.link_preview.clone();
+        egui::Window::new(crate::i18n::t("call.join_link"))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
+            .fixed_size(Vec2::new(340.0, 320.0))
+            .frame(crate::glass::frame_with_shadow(&t, 16.0))
+            .show(ctx, |ui| {
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.calls.link_input)
+                        .hint_text(crate::i18n::t("call.link_paste_hint"))
+                        .desired_width(f32::INFINITY),
+                );
+                ui.add_space(SP_3);
+                if crate::widgets::button(
+                    ui,
+                    &t,
+                    &crate::i18n::t("call.link_preview"),
+                    crate::widgets::Btn::Secondary,
+                )
+                .clicked()
+                    && !self.calls.link_busy
+                {
+                    preview = true;
+                }
+                if let Some(facts) = &preview_state {
+                    ui.add_space(SP_SECTION);
+                    ui.label(
+                        RichText::new(crate::i18n::t(if facts.video {
+                            "call.link_kind_video"
+                        } else {
+                            "call.link_kind_audio"
+                        }))
+                        .size(13.0)
+                        .color(rgb(t.text_primary)),
+                    );
+                    let creator = self
+                        .chats
+                        .iter()
+                        .find(|c| {
+                            self.live_jid(c.id).as_deref()
+                                == Some(facts.creator_jid.as_str())
+                        })
+                        .map_or_else(
+                            || {
+                                facts
+                                    .creator_jid
+                                    .split('@')
+                                    .next()
+                                    .unwrap_or_default()
+                                    .to_owned()
+                            },
+                            |c| c.title.clone(),
+                        );
+                    ui.add_space(SP_2);
+                    ui.label(
+                        RichText::new(format!(
+                            "{} {}",
+                            crate::i18n::t("call.link_by"),
+                            creator
+                        ))
+                        .size(12.0)
+                        .color(rgb(t.text_secondary)),
+                    );
+                    if facts.waiting_room {
+                        ui.add_space(SP_2);
+                        ui.label(
+                            RichText::new(crate::i18n::t("call.link_waiting_note"))
+                                .size(12.0)
+                                .color(rgb(t.text_secondary)),
+                        );
+                    }
+                    ui.add_space(SP_SECTION);
+                    if crate::widgets::button(
+                        ui,
+                        &t,
+                        &crate::i18n::t("call.join_call"),
+                        crate::widgets::Btn::Primary,
+                    )
+                    .clicked()
+                    {
+                        join = Some((facts.url.clone(), facts.video));
+                    }
+                }
+                ui.add_space(SP_3);
+                if crate::widgets::button(
+                    ui,
+                    &t,
+                    &crate::i18n::t("common.close"),
+                    crate::widgets::Btn::Secondary,
+                )
+                .clicked()
+                {
+                    close = true;
+                }
+            });
+        if preview {
+            self.calls.link_busy = true;
+            self.calls.link_preview = None;
+            let link = self.calls.link_input.trim().to_owned();
+            self.send_backend(backend::BackendCommand::PreviewCallLink { link });
+        }
+        if let Some((url, video)) = join {
+            self.calls.link_join_open = false;
+            self.calls.link_preview = None;
+            self.join_call_link(&url, video);
+        }
+        if close {
+            self.calls.link_join_open = false;
+            self.calls.link_preview = None;
+        }
     }
 }

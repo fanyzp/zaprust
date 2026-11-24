@@ -970,6 +970,12 @@ pub(crate) fn message_bubble(
     // its body is never painted.
     let body_text: &str =
         if msg.deleted && !msg.deleted_by_sender { "This message was deleted" } else { &msg.body };
+    // The display form of the body (core::bidi): reshaped
+    // and visual-ordered for RTL text, byte-identical for
+    // everything else. Every measure and paint pass below
+    // uses this one string, so the passes always agree.
+    let body_display = core::bidi::display(body_text);
+    let body_text: &str = &body_display;
     let failed = msg.delivery == Some(Delivery::Failed);
     let meta_text = if failed {
         format!("Not sent  {}", msg.time)
@@ -993,15 +999,9 @@ pub(crate) fn message_bubble(
     let kind_h;
     match &msg.kind {
         MessageKind::Text | MessageKind::System => {
-            // The display form of the body (core::bidi):
-            // reshaped and visual-ordered for RTL text,
-            // byte-identical for everything else. Markdown
-            // parsing runs on the display string; its markers
-            // are ASCII and travel with their runs.
-            let body_display = core::bidi::display(body_text);
             let est = crate::markdown::measure(
                 ui,
-                &body_display,
+                body_text,
                 14.5,
                 text_color,
                 rgb(t.bg_panel_alt),
@@ -1009,7 +1009,7 @@ pub(crate) fn message_bubble(
             );
             body_galley = crate::markdown::galley_leading(
                 ui,
-                &body_display,
+                body_text,
                 14.5,
                 text_color,
                 rgb(t.bg_panel_alt),
@@ -1031,7 +1031,7 @@ pub(crate) fn message_bubble(
         MessageKind::Image { caption, view_once: false } => {
             body_galley = crate::markdown::galley_leading(
                 ui,
-                caption,
+                &core::bidi::display(caption),
                 14.5,
                 text_color,
                 rgb(t.bg_panel_alt),
@@ -1065,7 +1065,7 @@ pub(crate) fn message_bubble(
             } else {
                 body_galley = crate::markdown::galley_leading(
                     ui,
-                    caption,
+                    &core::bidi::display(caption),
                     14.5,
                     text_color,
                     rgb(t.bg_panel_alt),
@@ -1249,7 +1249,7 @@ pub(crate) fn message_bubble(
         MessageKind::Carousel { body, cards } => {
             body_galley = crate::markdown::galley_leading(
                 ui,
-                body,
+                &core::bidi::display(body),
                 14.5,
                 text_color,
                 rgb(t.bg_panel_alt),
@@ -1695,7 +1695,7 @@ pub(crate) fn message_bubble(
                 if !caption.is_empty() {
                     let g = crate::markdown::galley(
                         ui,
-                        caption,
+                        &core::bidi::display(caption),
                         14.5,
                         text_color,
                         rgb(t.bg_panel_alt),
@@ -1847,7 +1847,7 @@ pub(crate) fn message_bubble(
                     if !caption.is_empty() {
                         let g = crate::markdown::galley(
                             ui,
-                            caption,
+                            &core::bidi::display(caption),
                             14.5,
                             text_color,
                             rgb(t.bg_panel_alt),
@@ -2537,7 +2537,7 @@ pub(crate) fn message_bubble(
                 // the protocol actions are not safe to synthesize.
                 let g = crate::markdown::galley(
                     ui,
-                    body,
+                    &core::bidi::display(body),
                     14.5,
                     text_color,
                     rgb(t.bg_panel_alt),

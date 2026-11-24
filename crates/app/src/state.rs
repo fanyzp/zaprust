@@ -2485,6 +2485,7 @@ impl App {
                 Some("chats") => "Chats",
                 Some("notifications") => "Notifications",
                 Some("privacy") => "Privacy & Security",
+                Some("shortcuts") => "Shortcuts",
                 Some("features") => "Features",
                 Some("storage") => "Data & Storage",
                 Some("about") => "About",

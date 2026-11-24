@@ -1300,7 +1300,6 @@ impl App {
         }
     }
 }
-}
 
 impl App {
     /// The status viewer overlay: a full-screen dark stage in

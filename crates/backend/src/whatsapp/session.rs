@@ -2194,11 +2194,21 @@ pub(super) async fn run_async(
                 #[cfg(feature = "calls")]
                 BackendCommand::EndCall => {
                     let handle = lock_cache(&call_active).as_ref().map(|a| a.handle.clone());
+                    // The joining slot is taken under its own
+                    // short lock hold: an if-let would keep the
+                    // guard alive across the awaits below. It is
+                    // only taken when no call is active, exactly
+                    // as the branch order below implies.
+                    let joining = if handle.is_none() {
+                        lock_cache(&call_joining).take()
+                    } else {
+                        None
+                    };
                     if let Some(handle) = handle {
                         // The pump notices the end and
                         // emits the final CallChanged.
                         let _ = handle.terminate().await;
-                    } else if let Some(cancelled) = lock_cache(&call_joining).take() {
+                    } else if let Some(cancelled) = joining {
                         // A call-link join still waiting (for
                         // the host, or for the network): cancel
                         // it and end the overlay now. The join

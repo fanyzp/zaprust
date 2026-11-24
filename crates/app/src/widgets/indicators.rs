@@ -1,7 +1,7 @@
 //! Feedback and text helpers: spinners, loading rows, empty states,
 //! text truncation and the panel edge seam.
 
-use crate::theme::{rgb, SP_6, SP_1_5};
+use crate::theme::{rgb, SP_1_5, SP_6};
 use core::theme::{Rgb, Tokens};
 use eframe::egui::{self, Color32, FontId, Pos2, RichText, Stroke};
 

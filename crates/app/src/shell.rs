@@ -2,7 +2,7 @@
 //! collapsed-sidebar strip.
 
 use crate::state::{effective_pixels_per_point, layout_mode_for_content, App, LayoutMode, Screen};
-use crate::theme::{apply_visuals, rgb, SP_3, SP_1_5, SP_2_5, SP_3_5};
+use crate::theme::{apply_visuals, rgb, SP_1_5, SP_2_5, SP_3, SP_3_5};
 use crate::widgets::rail_button;
 use core::filter::total_unread;
 use eframe::egui::{self, Align, Layout, Margin, RichText, Sense, Vec2};

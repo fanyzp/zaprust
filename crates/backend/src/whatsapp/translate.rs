@@ -640,9 +640,7 @@ pub(super) fn translate_event(
                         reactions: counters
                             .reactions
                             .iter()
-                            .map(|r| {
-                                (r.code.clone(), u32::try_from(r.count).unwrap_or(u32::MAX))
-                            })
+                            .map(|r| (r.code.clone(), u32::try_from(r.count).unwrap_or(u32::MAX)))
                             .collect(),
                         poll_votes: counters
                             .votes
@@ -1810,10 +1808,8 @@ pub(super) fn translate_newsletter_message(
     msg.server_id = Some(entry.server_id);
     msg.kind = kind;
     msg.view_once = view_once;
-    msg.edited = matches!(
-        entry.edit,
-        whatsapp_rust::wacore::types::message::EditAttribute::AdminEdit
-    );
+    msg.edited =
+        matches!(entry.edit, whatsapp_rust::wacore::types::message::EditAttribute::AdminEdit);
     msg.forwarded = entry.forwards_count.is_some_and(|count| count > 0);
     msg.reactions = entry
         .reactions
@@ -2022,9 +2018,7 @@ fn classify_unwrapped_deep(
         // the envelope, so a comment renders as the text or
         // media it actually is instead of a kind label
         // (audit P0-09).
-        if let Some(inner) =
-            msg.comment_message.as_option().and_then(|c| c.message.as_option())
-        {
+        if let Some(inner) = msg.comment_message.as_option().and_then(|c| c.message.as_option()) {
             return classify_unwrapped_deep(inner.get_base_message(), depth + 1);
         }
         let envelope = msg
@@ -3852,8 +3846,7 @@ mod live_pairing_fix_tests {
     #[test]
     fn unreadable_encrypted_comment_keeps_its_label() {
         let mut msg = wa::Message::default();
-        msg.enc_comment_message =
-            MessageField::some(wa::message::EncCommentMessage::default());
+        msg.enc_comment_message = MessageField::some(wa::message::EncCommentMessage::default());
         let (kind, _) = classify_message(&msg);
         assert!(
             matches!(kind, LiveMessageKind::Other(ref label) if label == "Channel comment"),

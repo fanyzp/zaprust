@@ -2966,10 +2966,8 @@ impl crate::state::App {
                     .as_ref()
                     .and_then(|s| s.server_ids.get(&(chat_id, server_id)).copied());
                 if let Some(mid) = mid {
-                    let previous = self
-                        .live
-                        .as_mut()
-                        .and_then(|s| s.pending_channel_votes.remove(&mid));
+                    let previous =
+                        self.live.as_mut().and_then(|s| s.pending_channel_votes.remove(&mid));
                     if let Some(previous) = previous {
                         self.set_poll_my_votes(chat_id, mid, &previous);
                     }
@@ -3040,9 +3038,7 @@ impl crate::state::App {
             }
             BackendEvent::ChannelInfoFetched { info } => {
                 if let Some(session) = &mut self.live {
-                    session
-                        .channel_meta
-                        .insert(info.channel.jid.clone(), info.channel.clone());
+                    session.channel_meta.insert(info.channel.jid.clone(), info.channel.clone());
                     session.channel_infos.insert(info.channel.jid.clone(), info);
                 }
             }
@@ -7679,10 +7675,7 @@ impl crate::state::App {
         // The role drives the composer; if this channel's
         // metadata has not landed yet, ask for the list that
         // carries it.
-        let meta_missing = self
-            .live
-            .as_ref()
-            .is_some_and(|s| !s.channel_meta.contains_key(&jid));
+        let meta_missing = self.live.as_ref().is_some_and(|s| !s.channel_meta.contains_key(&jid));
         if meta_missing {
             if let Some(session) = &mut self.live {
                 session.channels_list_requested = true;
@@ -7690,10 +7683,7 @@ impl crate::state::App {
             self.send_backend(BackendCommand::FetchChannels);
         }
         self.send_backend(BackendCommand::WatchChannel { jid: jid.clone() });
-        let idle = self
-            .live
-            .as_ref()
-            .is_some_and(|s| !s.channel_history.contains_key(&chat_id));
+        let idle = self.live.as_ref().is_some_and(|s| !s.channel_history.contains_key(&chat_id));
         if idle {
             self.fetch_channel_page(&jid, None);
         }
@@ -7708,11 +7698,7 @@ impl crate::state::App {
             return;
         };
         let before = self.live.as_ref().and_then(|s| {
-            s.server_ids
-                .keys()
-                .filter(|(cid, _)| *cid == chat_id)
-                .map(|(_, sid)| *sid)
-                .min()
+            s.server_ids.keys().filter(|(cid, _)| *cid == chat_id).map(|(_, sid)| *sid).min()
         });
         self.fetch_channel_page(&jid, before);
     }
@@ -7742,7 +7728,9 @@ impl crate::state::App {
                     if let core::model::MessageKind::Poll { options, .. } = &mut msg.kind {
                         for (hash, count) in &counters.poll_votes {
                             for (name, votes) in options.iter_mut() {
-                                if sha2::Sha256::digest(name.as_bytes()).as_slice() == hash.as_slice() {
+                                if sha2::Sha256::digest(name.as_bytes()).as_slice()
+                                    == hash.as_slice()
+                                {
                                     *votes = *count;
                                 }
                             }
@@ -16040,8 +16028,10 @@ mod channel_tests {
         let (mut app, tx, ctx, _cmd_rx) = live_app();
         app.channel_create_open = true;
         tx.send(channel_chat(OWN_JID, "Weekend Builds")).unwrap();
-        tx.send(BackendEvent::ChannelCreated { channel: channel_meta(OWN_JID, backend::LiveChannelRole::Owner) })
-            .unwrap();
+        tx.send(BackendEvent::ChannelCreated {
+            channel: channel_meta(OWN_JID, backend::LiveChannelRole::Owner),
+        })
+        .unwrap();
         drain_all(&mut app, &ctx);
         assert!(!app.channel_create_open, "the form closes");
         assert_eq!(app.selected_chat, jid_id(OWN_JID), "the new channel opens");
@@ -16069,10 +16059,14 @@ mod channel_tests {
             "the failure is stated in the panel: {:?}",
             app.channel_panel_notice
         );
-        tx.send(BackendEvent::ChannelFound { channel: channel_meta(CHANNEL_JID, backend::LiveChannelRole::Guest) })
-            .unwrap();
-        tx.send(BackendEvent::ChannelFollowed { channel: channel_meta(CHANNEL_JID, backend::LiveChannelRole::Follower) })
-            .unwrap();
+        tx.send(BackendEvent::ChannelFound {
+            channel: channel_meta(CHANNEL_JID, backend::LiveChannelRole::Guest),
+        })
+        .unwrap();
+        tx.send(BackendEvent::ChannelFollowed {
+            channel: channel_meta(CHANNEL_JID, backend::LiveChannelRole::Follower),
+        })
+        .unwrap();
         drain_all(&mut app, &ctx);
         assert!(app.channel_panel_notice.is_none(), "the follow clears the panel notice");
         assert_eq!(

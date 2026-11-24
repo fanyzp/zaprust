@@ -110,7 +110,11 @@ impl App {
                 let (opts, mine) = core::rich::apply_vote(options, my_votes, *multiple, idx);
                 *options = opts;
                 *my_votes = mine;
-                option_names = my_votes.iter().filter_map(|i| options.get(*i)).map(|(name, _)| name.clone()).collect();
+                option_names = my_votes
+                    .iter()
+                    .filter_map(|i| options.get(*i))
+                    .map(|(name, _)| name.clone())
+                    .collect();
             }
         }
         // Mirror the optimistic vote into the session store,
@@ -120,7 +124,8 @@ impl App {
             if let Some(msgs) = session.messages.get_mut(&chat_id) {
                 if let Some((_, msg)) = msgs.iter_mut().find(|(_, m)| m.id == msg_id) {
                     if let MessageKind::Poll { options, multiple, my_votes, .. } = &mut msg.kind {
-                        let (opts, mine) = core::rich::apply_vote(options, my_votes, *multiple, idx);
+                        let (opts, mine) =
+                            core::rich::apply_vote(options, my_votes, *multiple, idx);
                         *options = opts;
                         *my_votes = mine;
                     }

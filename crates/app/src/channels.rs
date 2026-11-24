@@ -20,8 +20,8 @@
 //! while admins and owners keep the normal composer.
 
 use crate::state::{App, Notice, Screen, UiConfirm};
-use backend::BackendCommand;
 use crate::theme::{rgb, SP_1, SP_2, SP_3, SP_4};
+use backend::BackendCommand;
 use core::model::{Chat, ChatKind};
 use core::theme::Tokens;
 use eframe::egui::{self, Align2, Margin, RichText, Vec2};
@@ -33,11 +33,7 @@ pub(crate) fn followers_text(count: u64) -> String {
     if count == 1 {
         crate::i18n::t("channels.followers_one")
     } else {
-        crate::i18n::tf(
-            "channels.followers",
-            "count",
-            &core::filter::format_count(count),
-        )
+        crate::i18n::tf("channels.followers", "count", &core::filter::format_count(count))
     }
 }
 
@@ -193,97 +189,95 @@ impl App {
                 }
                 let mut clicked: Option<u64> = None;
                 let mut row_pick: Option<(u64, ChannelPick)> = None;
-                egui::ScrollArea::vertical()
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        for chat in &rows {
-                            let state = self.row_state_for(chat);
-                            let resp = crate::chat_list::chat_row(
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                    for chat in &rows {
+                        let state = self.row_state_for(chat);
+                        let resp = crate::chat_list::chat_row(
+                            ui,
+                            chat,
+                            chat.id == self.selected_chat,
+                            false,
+                            t,
+                            state,
+                            None,
+                            None,
+                        );
+                        if resp.clicked() {
+                            clicked = Some(chat.id);
+                        }
+                        let meta = self.channel_meta_for(chat.id);
+                        resp.context_menu(|ui| {
+                            ui.set_min_width(200.0);
+                            if crate::widgets::menu_item_icon(
                                 ui,
-                                chat,
-                                chat.id == self.selected_chat,
-                                false,
                                 t,
-                                state,
+                                Some(crate::icons::Icon::Chat),
+                                &crate::i18n::t("channels.open"),
                                 None,
-                                None,
-                            );
-                            if resp.clicked() {
-                                clicked = Some(chat.id);
+                            )
+                            .clicked()
+                            {
+                                row_pick = Some((chat.id, ChannelPick::Open));
+                                ui.close();
                             }
-                            let meta = self.channel_meta_for(chat.id);
-                            resp.context_menu(|ui| {
-                                ui.set_min_width(200.0);
+                            if crate::widgets::menu_item_icon(
+                                ui,
+                                t,
+                                Some(crate::icons::Icon::Info),
+                                &crate::i18n::t("channels.info"),
+                                None,
+                            )
+                            .clicked()
+                            {
+                                row_pick = Some((chat.id, ChannelPick::Info));
+                                ui.close();
+                            }
+                            if live {
+                                let muted = meta.as_ref().is_some_and(|m| m.muted);
+                                let mute_label = if muted {
+                                    crate::i18n::t("channels.unmute")
+                                } else {
+                                    crate::i18n::t("channels.mute")
+                                };
                                 if crate::widgets::menu_item_icon(
                                     ui,
                                     t,
-                                    Some(crate::icons::Icon::Chat),
-                                    &crate::i18n::t("channels.open"),
-                                    None,
-                                )
-                                .clicked()
-                                {
-                                    row_pick = Some((chat.id, ChannelPick::Open));
-                                    ui.close();
-                                }
-                                if crate::widgets::menu_item_icon(
-                                    ui,
-                                    t,
-                                    Some(crate::icons::Icon::Info),
-                                    &crate::i18n::t("channels.info"),
-                                    None,
-                                )
-                                .clicked()
-                                {
-                                    row_pick = Some((chat.id, ChannelPick::Info));
-                                    ui.close();
-                                }
-                                if live {
-                                    let muted = meta.as_ref().is_some_and(|m| m.muted);
-                                    let mute_label = if muted {
-                                        crate::i18n::t("channels.unmute")
+                                    Some(if muted {
+                                        crate::icons::Icon::Bell
                                     } else {
-                                        crate::i18n::t("channels.mute")
-                                    };
-                                    if crate::widgets::menu_item_icon(
+                                        crate::icons::Icon::BellOff
+                                    }),
+                                    &mute_label,
+                                    None,
+                                )
+                                .clicked()
+                                {
+                                    row_pick = Some((chat.id, ChannelPick::Mute(!muted)));
+                                    ui.close();
+                                }
+                                // The owner cannot
+                                // unfollow their own
+                                // channel; everyone
+                                // else confirms first
+                                // (section 24).
+                                let role = meta.as_ref().map(|m| m.role);
+                                if role != Some(backend::LiveChannelRole::Owner)
+                                    && role.is_some()
+                                    && crate::widgets::menu_item_danger(
                                         ui,
                                         t,
-                                        Some(if muted {
-                                            crate::icons::Icon::Bell
-                                        } else {
-                                            crate::icons::Icon::BellOff
-                                        }),
-                                        &mute_label,
-                                        None,
+                                        crate::icons::Icon::Delete,
+                                        &crate::i18n::t("channels.unfollow"),
                                     )
                                     .clicked()
-                                    {
-                                        row_pick = Some((chat.id, ChannelPick::Mute(!muted)));
-                                        ui.close();
-                                    }
-                                    // The owner cannot
-                                    // unfollow their own
-                                    // channel; everyone
-                                    // else confirms first
-                                    // (section 24).
-                                    let role = meta.as_ref().map(|m| m.role);
-                                    if role != Some(backend::LiveChannelRole::Owner)
-                                        && role.is_some()
-                                        && crate::widgets::menu_item_danger(
-                                            ui,
-                                            t,
-                                            crate::icons::Icon::Delete,
-                                            &crate::i18n::t("channels.unfollow"),
-                                        )
-                                        .clicked()
-                                    {
-                                        row_pick = Some((chat.id, ChannelPick::Unfollow));
-                                        ui.close();
-                                    }
+                                {
+                                    row_pick = Some((chat.id, ChannelPick::Unfollow));
+                                    ui.close();
                                 }
-                            });
-                        }
-                    });
+                            }
+                        });
+                    }
+                });
                 if let Some(id) = clicked {
                     self.select_chat_now(id);
                 }
@@ -462,9 +456,7 @@ impl App {
                 if !found.description.is_empty() {
                     ui.add_space(SP_1);
                     ui.label(
-                        RichText::new(&found.description)
-                            .size(12.0)
-                            .color(rgb(t.text_secondary)),
+                        RichText::new(&found.description).size(12.0).color(rgb(t.text_secondary)),
                     );
                 }
                 ui.add_space(SP_2);
@@ -544,10 +536,9 @@ impl App {
     ) {
         let t = self.tokens();
         let mut follow = false;
-        egui::Frame::new()
-            .fill(rgb(t.bg_panel))
-            .inner_margin(Margin::symmetric(12, 10))
-            .show(ui, |ui| {
+        egui::Frame::new().fill(rgb(t.bg_panel)).inner_margin(Margin::symmetric(12, 10)).show(
+            ui,
+            |ui| {
                 ui.with_layout(
                     egui::Layout::left_to_right(egui::Align::Center)
                         .with_main_align(egui::Align::Center),
@@ -573,7 +564,8 @@ impl App {
                         }
                     },
                 );
-            });
+            },
+        );
         if follow {
             if let Some(jid) = self.live_jid(chat.id) {
                 self.send_backend(BackendCommand::FollowChannel { jid });
@@ -636,9 +628,7 @@ impl App {
                     if !m.description.is_empty() {
                         ui.add_space(SP_1);
                         ui.label(
-                            RichText::new(&m.description)
-                                .size(12.0)
-                                .color(rgb(t.text_secondary)),
+                            RichText::new(&m.description).size(12.0).color(rgb(t.text_secondary)),
                         );
                     }
                     let role_note = match m.role {

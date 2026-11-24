@@ -131,7 +131,11 @@ pub(super) async fn follow_channel(client: &whatsapp_rust::Client, events: &Even
 }
 
 /// Answers [`BackendCommand::UnfollowChannel`].
-pub(super) async fn unfollow_channel(client: &whatsapp_rust::Client, events: &EventSink, jid: &str) {
+pub(super) async fn unfollow_channel(
+    client: &whatsapp_rust::Client,
+    events: &EventSink,
+    jid: &str,
+) {
     let fail = |message: String| {
         events.emit(BackendEvent::ChannelUnfollowFailed { jid: jid.to_owned(), message });
     };
@@ -231,17 +235,23 @@ pub(super) async fn react_to_channel_update(
     emoji: &str,
 ) {
     let fail = |message: String| {
-        events.emit(BackendEvent::ChannelReactionFailed { jid: jid.to_owned(), server_id, message });
+        events.emit(BackendEvent::ChannelReactionFailed {
+            jid: jid.to_owned(),
+            server_id,
+            message,
+        });
     };
     match jid.parse::<Jid>() {
-        Ok(parsed) => match client.newsletter().send_reaction_raw(&parsed, server_id, emoji).await {
-            Ok(_) => events.emit(BackendEvent::ChannelReactionSet {
-                jid: jid.to_owned(),
-                server_id,
-                emoji: emoji.to_owned(),
-            }),
-            Err(e) => fail(format!("That reaction could not be sent: {}", error_words(&e))),
-        },
+        Ok(parsed) => {
+            match client.newsletter().send_reaction_raw(&parsed, server_id, emoji).await {
+                Ok(_) => events.emit(BackendEvent::ChannelReactionSet {
+                    jid: jid.to_owned(),
+                    server_id,
+                    emoji: emoji.to_owned(),
+                }),
+                Err(e) => fail(format!("That reaction could not be sent: {}", error_words(&e))),
+            }
+        }
         Err(e) => fail(format!("That channel address is not usable: {}", error_words(&e))),
     }
 }
@@ -279,7 +289,11 @@ pub(super) async fn vote_channel_poll(
     options: &[String],
 ) {
     let fail = |message: String| {
-        events.emit(BackendEvent::ChannelPollVoteFailed { jid: jid.to_owned(), server_id, message });
+        events.emit(BackendEvent::ChannelPollVoteFailed {
+            jid: jid.to_owned(),
+            server_id,
+            message,
+        });
     };
     match jid.parse::<Jid>() {
         Ok(parsed) => {
@@ -359,7 +373,11 @@ pub(super) async fn revoke_channel_update(
 /// facts ride along only when the server answers them: a
 /// follower's info fetch is metadata-only and says so by
 /// leaving the admin fields empty, never by failing.
-pub(super) async fn fetch_channel_info(client: &whatsapp_rust::Client, events: &EventSink, jid: &str) {
+pub(super) async fn fetch_channel_info(
+    client: &whatsapp_rust::Client,
+    events: &EventSink,
+    jid: &str,
+) {
     let fail = |message: String| {
         events.emit(BackendEvent::ChannelInfoFailed { jid: jid.to_owned(), message });
     };
@@ -379,8 +397,12 @@ pub(super) async fn fetch_channel_info(client: &whatsapp_rust::Client, events: &
     };
     let channel = channel_from_metadata(&meta);
     let (admin_count, follower_names) = if channel.role.can_post() {
-        let admin_count =
-            client.newsletter().get_admin_info(&parsed).await.ok().and_then(|info| info.admin_count);
+        let admin_count = client
+            .newsletter()
+            .get_admin_info(&parsed)
+            .await
+            .ok()
+            .and_then(|info| info.admin_count);
         let follower_names = client
             .newsletter()
             .get_followers(&parsed, 50)

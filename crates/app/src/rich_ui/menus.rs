@@ -234,7 +234,7 @@ impl App {
                                 "Star",
                                 None,
                             )
-                        .clicked()
+                            .clicked()
                         {
                             self.toggle_star_message(msg.id);
                             close = true;
@@ -674,8 +674,7 @@ impl App {
                                 // its own composer.
                                 self.channel_poll_for = Some(self.selected_chat);
                                 self.channel_poll_question.clear();
-                                self.channel_poll_options =
-                                    vec![String::new(), String::new()];
+                                self.channel_poll_options = vec![String::new(), String::new()];
                                 self.channel_poll_multiple = false;
                             } else {
                                 self.composer.poll_draft = Some(crate::state::PollDraft {

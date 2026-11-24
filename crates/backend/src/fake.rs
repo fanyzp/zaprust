@@ -1613,8 +1613,7 @@ impl Backend for FakeBackend {
                     } else {
                         events.emit(BackendEvent::ChannelFollowFailed {
                             jid: jid.clone(),
-                            message: "That channel is not part of the test-mode script."
-                                .to_owned(),
+                            message: "That channel is not part of the test-mode script.".to_owned(),
                         });
                     }
                 }
@@ -1624,8 +1623,9 @@ impl Backend for FakeBackend {
                             jid: jid.clone(),
                             message: "Unfollowing the channel failed: connection lost".to_owned(),
                         });
-                    } else if let Some(channel) =
-                        channel_state.iter_mut().find(|c| c.jid == jid && c.role == crate::LiveChannelRole::Follower)
+                    } else if let Some(channel) = channel_state
+                        .iter_mut()
+                        .find(|c| c.jid == jid && c.role == crate::LiveChannelRole::Follower)
                     {
                         channel.role = crate::LiveChannelRole::Guest;
                         channel.followers = channel.followers.saturating_sub(1);
@@ -1695,8 +1695,7 @@ impl Backend for FakeBackend {
                             .values()
                             .filter(|m| {
                                 m.chat_jid == jid
-                                    && m.server_id
-                                        .is_some_and(|s| before.is_none_or(|b| s < b))
+                                    && m.server_id.is_some_and(|s| before.is_none_or(|b| s < b))
                             })
                             .cloned()
                             .collect();
@@ -1730,8 +1729,7 @@ impl Backend for FakeBackend {
                         events.emit(BackendEvent::ChannelReactionFailed {
                             jid: jid.clone(),
                             server_id,
-                            message: "That reaction could not be sent: connection lost"
-                                .to_owned(),
+                            message: "That reaction could not be sent: connection lost".to_owned(),
                         });
                     } else if let Some(key) = key {
                         if let Some(msg) = message_state.get_mut(&key) {
@@ -1749,8 +1747,7 @@ impl Backend for FakeBackend {
                         events.emit(BackendEvent::ChannelReactionFailed {
                             jid: jid.clone(),
                             server_id,
-                            message: "That update is not part of the test-mode script."
-                                .to_owned(),
+                            message: "That update is not part of the test-mode script.".to_owned(),
                         });
                     }
                 }
@@ -1863,8 +1860,7 @@ impl Backend for FakeBackend {
                         events.emit(BackendEvent::ChannelPollVoteFailed {
                             jid: jid.clone(),
                             server_id,
-                            message: "That update is not part of the test-mode script."
-                                .to_owned(),
+                            message: "That update is not part of the test-mode script.".to_owned(),
                         });
                     }
                 }
@@ -1925,11 +1921,8 @@ impl Backend for FakeBackend {
                     }
                 }
                 BackendCommand::FetchChannelInfo { jid } => {
-                    let known = channel_state
-                        .iter()
-                        .find(|c| c.jid == jid)
-                        .cloned()
-                        .or_else(|| {
+                    let known =
+                        channel_state.iter().find(|c| c.jid == jid).cloned().or_else(|| {
                             if jid == FAKE_DISCOVERABLE_CHANNEL_JID {
                                 Some(scripted_discoverable_channel())
                             } else {
@@ -1960,8 +1953,7 @@ impl Backend for FakeBackend {
                     } else {
                         events.emit(BackendEvent::ChannelInfoFailed {
                             jid: jid.clone(),
-                            message: "That channel is not part of the test-mode script."
-                                .to_owned(),
+                            message: "That channel is not part of the test-mode script.".to_owned(),
                         });
                     }
                 }
@@ -1969,8 +1961,7 @@ impl Backend for FakeBackend {
                     if take_failure("SetChannelMuted") {
                         events.emit(BackendEvent::ChannelMuteFailed {
                             jid: jid.clone(),
-                            message: "Changing the mute setting failed: connection lost"
-                                .to_owned(),
+                            message: "Changing the mute setting failed: connection lost".to_owned(),
                         });
                     } else if let Some(channel) = channel_state.iter_mut().find(|c| c.jid == jid) {
                         channel.muted = muted;
@@ -1978,8 +1969,7 @@ impl Backend for FakeBackend {
                     } else {
                         events.emit(BackendEvent::ChannelMuteFailed {
                             jid: jid.clone(),
-                            message: "That channel is not part of the test-mode script."
-                                .to_owned(),
+                            message: "That channel is not part of the test-mode script.".to_owned(),
                         });
                     }
                 }
@@ -4080,8 +4070,7 @@ mod tests {
         ch.commands
             .send(BackendCommand::FollowChannel { jid: FAKE_DISCOVERABLE_CHANNEL_JID.to_owned() })
             .unwrap();
-        let followed =
-            collect_until(&ch, &|e| matches!(e, BackendEvent::ChannelFollowed { .. }));
+        let followed = collect_until(&ch, &|e| matches!(e, BackendEvent::ChannelFollowed { .. }));
         assert!(
             followed.iter().any(|e| matches!(e, BackendEvent::ChatUpsert(chat)
                 if chat.jid == FAKE_DISCOVERABLE_CHANNEL_JID)),
@@ -4126,8 +4115,7 @@ mod tests {
         ch.commands
             .send(BackendCommand::LookupChannel { code: "NoSuchChannelCode".to_owned() })
             .unwrap();
-        let failed =
-            collect_until(&ch, &|e| matches!(e, BackendEvent::ChannelLookupFailed { .. }));
+        let failed = collect_until(&ch, &|e| matches!(e, BackendEvent::ChannelLookupFailed { .. }));
         assert!(
             matches!(&failed[failed.len() - 1], BackendEvent::ChannelLookupFailed { .. }),
             "an unknown code answers with the typed failure: {failed:?}"
@@ -4135,8 +4123,7 @@ mod tests {
         ch.commands
             .send(BackendCommand::FollowChannel { jid: FAKE_DISCOVERABLE_CHANNEL_JID.to_owned() })
             .unwrap();
-        let failed =
-            collect_until(&ch, &|e| matches!(e, BackendEvent::ChannelFollowFailed { .. }));
+        let failed = collect_until(&ch, &|e| matches!(e, BackendEvent::ChannelFollowFailed { .. }));
         assert!(
             matches!(&failed[failed.len() - 1], BackendEvent::ChannelFollowFailed { .. }),
             "the injected failure answers typed: {failed:?}"
@@ -4144,8 +4131,7 @@ mod tests {
         ch.commands
             .send(BackendCommand::FollowChannel { jid: FAKE_DISCOVERABLE_CHANNEL_JID.to_owned() })
             .unwrap();
-        let followed =
-            collect_until(&ch, &|e| matches!(e, BackendEvent::ChannelFollowed { .. }));
+        let followed = collect_until(&ch, &|e| matches!(e, BackendEvent::ChannelFollowed { .. }));
         assert!(
             matches!(&followed[followed.len() - 1], BackendEvent::ChannelFollowed { channel }
                 if channel.role == crate::LiveChannelRole::Follower),
@@ -4181,7 +4167,10 @@ mod tests {
             .collect();
         assert_eq!(ids, ["fake-ch-5", "fake-ch-4"], "the newest page first: {first:?}");
         assert!(
-            matches!(&first[first.len() - 1], BackendEvent::ChannelHistoryFetched { added: 2, end_of_history: false, .. }),
+            matches!(
+                &first[first.len() - 1],
+                BackendEvent::ChannelHistoryFetched { added: 2, end_of_history: false, .. }
+            ),
             "more pages exist: {first:?}"
         );
         let second = page(&ch, Some(104));
@@ -4195,7 +4184,10 @@ mod tests {
         assert_eq!(ids, ["fake-ch-3", "fake-ch-2"], "the page before 104: {second:?}");
         let third = page(&ch, Some(102));
         assert!(
-            matches!(&third[third.len() - 1], BackendEvent::ChannelHistoryFetched { added: 1, end_of_history: true, .. }),
+            matches!(
+                &third[third.len() - 1],
+                BackendEvent::ChannelHistoryFetched { added: 1, end_of_history: true, .. }
+            ),
             "the last page ends the history: {third:?}"
         );
         ch.commands.send(BackendCommand::Shutdown).unwrap();
@@ -4230,7 +4222,10 @@ mod tests {
             .unwrap();
         let voted = collect_until(&ch, &|e| matches!(e, BackendEvent::ChannelPollVoted { .. }));
         assert!(
-            matches!(&voted[voted.len() - 1], BackendEvent::ChannelPollVoted { server_id: 104, .. }),
+            matches!(
+                &voted[voted.len() - 1],
+                BackendEvent::ChannelPollVoted { server_id: 104, .. }
+            ),
             "the vote settles: {voted:?}"
         );
         ch.commands
@@ -4299,8 +4294,7 @@ mod tests {
                 multiple: false,
             })
             .unwrap();
-        let created =
-            collect_until(&ch, &|e| matches!(e, BackendEvent::ChannelPollCreated { .. }));
+        let created = collect_until(&ch, &|e| matches!(e, BackendEvent::ChannelPollCreated { .. }));
         assert!(
             created.iter().any(|e| matches!(e, BackendEvent::MessageUpsert(m)
                 if matches!(&m.kind, crate::LiveMessageKind::Poll { .. }))),
@@ -4313,8 +4307,7 @@ mod tests {
                 text: "Build log: the release pipeline is green, again".to_owned(),
             })
             .unwrap();
-        let edited =
-            collect_until(&ch, &|e| matches!(e, BackendEvent::ChannelUpdateEdited { .. }));
+        let edited = collect_until(&ch, &|e| matches!(e, BackendEvent::ChannelUpdateEdited { .. }));
         assert!(
             matches!(&edited[edited.len() - 1], BackendEvent::ChannelUpdateEdited { message_id, .. }
                 if message_id == "fake-own-1"),

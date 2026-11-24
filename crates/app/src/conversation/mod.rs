@@ -46,7 +46,7 @@ pub(crate) fn scroll_bottom_button_top(full_bottom: f32, stack_h: f32, size: f32
 
 use crate::bubble::{message_bubble, BubbleAction, MediaCtx};
 use crate::state::{App, Notice};
-use crate::theme::{rgb, SP_1, SP_2, SP_1_5, SP_2_5, SP_HALF};
+use crate::theme::{rgb, SP_1, SP_1_5, SP_2, SP_2_5, SP_HALF};
 use core::model::{Delivery, Message};
 use core::theme::Tokens;
 use eframe::egui::{
@@ -911,16 +911,13 @@ impl App {
                                     // the metadata has landed;
                                     // the generic subtitle is
                                     // the fallback until then.
-                                    let subtitle =
-                                        if chat.kind == core::model::ChatKind::Channel {
-                                            self.channel_meta_for(chat.id)
-                                                .map(|m| {
-                                                    crate::channels::followers_text(m.followers)
-                                                })
-                                                .unwrap_or_else(|| self.header_subtitle(&chat))
-                                        } else {
-                                            self.header_subtitle(&chat)
-                                        };
+                                    let subtitle = if chat.kind == core::model::ChatKind::Channel {
+                                        self.channel_meta_for(chat.id)
+                                            .map(|m| crate::channels::followers_text(m.followers))
+                                            .unwrap_or_else(|| self.header_subtitle(&chat))
+                                    } else {
+                                        self.header_subtitle(&chat)
+                                    };
                                     ui.label(
                                         RichText::new(subtitle)
                                             .size(12.0)

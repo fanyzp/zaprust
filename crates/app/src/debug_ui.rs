@@ -7,7 +7,7 @@
 //! solely inside an explicitly opted-in bundle.
 
 use crate::state::{App, Notice, Screen};
-use crate::theme::{SP_2, SP_1_5, SP_2_5};
+use crate::theme::{SP_1_5, SP_2, SP_2_5};
 use backend::BackendEvent;
 use core::debug;
 use eframe::egui::{self, RichText};

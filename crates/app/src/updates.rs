@@ -26,7 +26,7 @@
 //! family, opened from a feed row or from My Status.
 
 use crate::state::{App, Notice, PhotoFetchState, StagedStatusMedia, StatusEntry, StatusViewer};
-use crate::theme::{rgb, SP_1, SP_2, SP_3, SP_4, SP_1_5};
+use crate::theme::{rgb, SP_1, SP_1_5, SP_2, SP_3, SP_4};
 use eframe::egui::{self, Align2, CornerRadius, FontId, Margin, Pos2, RichText, Sense, Vec2};
 
 /// Height of the My Status row and of a feed row: avatar disc

@@ -15,7 +15,7 @@
 //! the rest of demo mode does.
 
 use crate::icons::Icon;
-use crate::theme::{rgb, SP_3, SP_4, SP_1_5, SP_2_5};
+use crate::theme::{rgb, SP_1_5, SP_2_5, SP_3, SP_4};
 use crate::widgets::{button, button_enabled, text_field, Btn};
 use core::theme::Tokens;
 use eframe::egui::{self, RichText, Stroke, Vec2};

@@ -31,7 +31,7 @@
 //! two never mix.
 
 use crate::state::{App, Screen};
-use crate::theme::{rgb, SP_1, SP_2, SP_3, SP_1_5, SP_2_5, SP_3_5};
+use crate::theme::{rgb, SP_1, SP_1_5, SP_2, SP_2_5, SP_3, SP_3_5};
 use core::filter::ChatFilter;
 use core::model::{CallDirection, CallEntry, CallKind, Chat, ChatKind};
 use eframe::egui::{

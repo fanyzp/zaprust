@@ -1340,17 +1340,14 @@ pub(super) async fn run_async(
                     }
                 }
                 BackendCommand::ReactToChannelUpdate { jid, server_id, emoji } => {
-                    super::channels::react_to_channel_update(&client, &events, &jid, server_id, &emoji)
-                        .await;
+                    super::channels::react_to_channel_update(
+                        &client, &events, &jid, server_id, &emoji,
+                    )
+                    .await;
                 }
                 BackendCommand::CreateChannelPoll { jid, question, options, multiple } => {
                     super::channels::create_channel_poll(
-                        &client,
-                        &events,
-                        &jid,
-                        &question,
-                        &options,
-                        multiple,
+                        &client, &events, &jid, &question, &options, multiple,
                     )
                     .await;
                 }
@@ -1359,8 +1356,14 @@ pub(super) async fn run_async(
                         .await;
                 }
                 BackendCommand::EditChannelUpdate { jid, message_id, text } => {
-                    super::channels::edit_channel_update(&client, &events, &jid, &message_id, &text)
-                        .await;
+                    super::channels::edit_channel_update(
+                        &client,
+                        &events,
+                        &jid,
+                        &message_id,
+                        &text,
+                    )
+                    .await;
                 }
                 BackendCommand::RevokeChannelUpdate { jid, message_id } => {
                     super::channels::revoke_channel_update(&client, &events, &jid, &message_id)

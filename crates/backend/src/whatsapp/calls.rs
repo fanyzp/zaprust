@@ -1061,7 +1061,7 @@ async fn accept_peer_video_upgrade(
     active: &CallActive,
     call_id: &str,
     events: &EventSink,
-    upgrade_token: Option<whatsapp_rust::wacore::types::call::MediaVideoUpgradeToken>,
+    upgrade_token: Option<whatsapp_rust::wacore::voip_control::MediaVideoUpgradeToken>,
 ) {
     let existing = {
         let guard = lock_cache(active);

@@ -7,6 +7,7 @@ resolver = "2"
 members = [
     "crates/core",
     "crates/backend",
+    "crates/camera",
     "crates/store",
     "crates/app",
     "crates/features/export-chat",

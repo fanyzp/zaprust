@@ -83,6 +83,10 @@ pub(crate) enum Icon {
     Storefront,
     Bolt,
     Receipt,
+    VideocamOff,
+    BackHand,
+    ScreenShare,
+    GroupAdd,
 }
 
 /// The icon size grid (design standard, icon discipline):
@@ -189,6 +193,10 @@ pub(crate) fn glyph(icon: Icon) -> char {
         Icon::Storefront => '\u{ea12}',    // storefront
         Icon::Bolt => '\u{ea0b}',          // bolt
         Icon::Receipt => '\u{ef6e}',       // receipt_long
+        Icon::VideocamOff => '\u{e04c}',   // videocam_off
+        Icon::BackHand => '\u{e764}',      // back_hand
+        Icon::ScreenShare => '\u{e0e2}',   // screen_share
+        Icon::GroupAdd => '\u{e7f0}',      // group_add
     }
 }
 

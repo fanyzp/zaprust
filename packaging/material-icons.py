@@ -105,6 +105,10 @@ WANTED = [
     ("Storefront", ["storefront"]),
     ("Bolt", ["bolt"]),
     ("Receipt", ["receipt_long", "receipt"]),
+    ("VideocamOff", ["videocam_off"]),
+    ("BackHand", ["back_hand"]),
+    ("ScreenShare", ["screen_share"]),
+    ("GroupAdd", ["group_add"]),
 ]
 
 # Variable font axes pinned for the Rounded route.

@@ -399,7 +399,7 @@ impl App {
                 self.composer.event_draft.clone()
             };
             if let Some(snap) = snap {
-                ctx.data_mut(|d| d.insert_temp(egui::Id::new(snap_key), snap));
+                ctx.data_mut(|d| d.insert_temp(egui::Id::unique(snap_key), snap));
             }
         }
         let Some(menu_p) = crate::anim::popup_phase(ctx, phase_key, open, self.motion) else {
@@ -407,10 +407,10 @@ impl App {
         };
         let exiting = !open;
         let mut exit_draft =
-            if exiting { ctx.data(|d| d.get_temp::<EventDraft>(egui::Id::new(snap_key))) } else { None };
+            if exiting { ctx.data(|d| d.get_temp::<EventDraft>(egui::Id::unique(snap_key))) } else { None };
         let mut submit = false;
         let mut cancel = false;
-        egui::Area::new(egui::Id::new(area_key))
+        egui::Area::new(egui::Id::unique(area_key))
             .pivot(Align2::CENTER_CENTER)
             .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
             .order(egui::Order::Foreground)
@@ -463,7 +463,7 @@ impl App {
                     });
                 });
             });
-        crate::anim::popup_transform(ctx, egui::Id::new(area_key), ctx.content_rect().center(), menu_p);
+        crate::anim::popup_transform(ctx, egui::Id::unique(area_key), ctx.content_rect().center(), menu_p);
         if exiting {
             // The exit run only replays the last frame of the
             // form; its buttons and fields edit the snapshot.

@@ -3806,22 +3806,64 @@ mod live_pairing_fix_tests {
         assert!(matches!(kind, LiveMessageKind::Media { media: MediaKind::Sticker, .. }));
     }
 
-    /// Typed summaries: an album header, an event, a group
-    /// invite, and a channel invite each name themselves
-    /// instead of wearing the fake text "Message".
+    /// P7: an event message classifies as the typed event kind
+    /// with every display field carried, and its text summary
+    /// names the event.
+    #[test]
+    fn event_message_classifies_with_fields() {
+        let mut event_proto = wa::message::EventMessage::default();
+        event_proto.name = Some("Launch dinner".to_owned());
+        event_proto.description = Some("Bring a jacket".to_owned());
+        event_proto.start_time = Some(1_700_086_400);
+        event_proto.end_time = Some(1_700_097_200);
+        event_proto.join_link = Some("https://meet.example.com/launch".to_owned());
+        event_proto.extra_guests_allowed = Some(true);
+        event_proto.location =
+            Some(Box::new(wa::message::LocationMessage { name: Some("Rooftop".to_owned()), ..Default::default() }));
+        let mut event = wa::Message::default();
+        event.event_message = MessageField::some(event_proto);
+        let (kind, _) = classify_message(&event);
+        let LiveMessageKind::Event {
+            name,
+            description,
+            start_time,
+            end_time,
+            location,
+            join_link,
+            extra_guests,
+            canceled,
+            ..
+        } = &kind
+        else {
+            panic!("the event classifies as an event kind: {kind:?}");
+        };
+        assert_eq!(name, "Launch dinner");
+        assert_eq!(description, "Bring a jacket");
+        assert_eq!((*start_time, *end_time), (1_700_086_400, 1_700_097_200));
+        assert_eq!(location, "Rooftop");
+        assert_eq!(join_link, "https://meet.example.com/launch");
+        assert!(*extra_guests);
+        assert!(!*canceled);
+        assert_eq!(body_for(&kind, false, None), "Launch dinner");
+        // A cancellation wears its marker in the summary.
+        let mut canceled_proto = wa::message::EventMessage::default();
+        canceled_proto.name = Some("Launch dinner".to_owned());
+        canceled_proto.is_canceled = Some(true);
+        let mut canceled_msg = wa::Message::default();
+        canceled_msg.event_message = MessageField::some(canceled_proto);
+        let (kind, _) = classify_message(&canceled_msg);
+        assert_eq!(body_for(&kind, false, None), "Launch dinner (canceled)");
+    }
+
+    /// Typed summaries: an album header, a group invite, and a
+    /// channel invite each name themselves instead of wearing
+    /// the fake text "Message".
     #[test]
     fn unrepresented_kinds_get_typed_summaries() {
         let mut album = wa::Message::default();
         album.album_message = MessageField::some(wa::message::AlbumMessage::default());
         let (kind, _) = classify_message(&album);
         assert_eq!(body_for(&kind, false, None), "Album");
-
-        let mut event_proto = wa::message::EventMessage::default();
-        event_proto.name = Some("Launch dinner".to_owned());
-        let mut event = wa::Message::default();
-        event.event_message = MessageField::some(event_proto);
-        let (kind, _) = classify_message(&event);
-        assert_eq!(body_for(&kind, false, None), "Launch dinner");
 
         let mut invite_proto = wa::message::GroupInviteMessage::default();
         invite_proto.group_name = Some("Weekend Hikers".to_owned());

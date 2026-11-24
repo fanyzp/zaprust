@@ -4410,6 +4410,115 @@ mod tests {
         ch.commands.send(BackendCommand::Shutdown).unwrap();
     }
 
+    /// P7: an event round trip on the fake: create lands as a
+    /// message, my RSVP echoes back as an event response, an
+    /// edit (here a cancellation) lands as an edit event.
+    #[test]
+    fn event_create_respond_edit_round_trip() {
+        let ch = start(FakeBackend::auto());
+        linked(&ch);
+        ch.commands
+            .send(BackendCommand::CreateEvent {
+                chat_jid: FAKE_DM_JID.to_owned(),
+                name: "Team lunch".to_owned(),
+                description: String::new(),
+                start_time: 1_700_086_400,
+                end_time: 1_700_097_200,
+                location: "Canteen".to_owned(),
+                join_link: String::new(),
+                scheduled_call: false,
+                extra_guests: true,
+            })
+            .unwrap();
+        let created = collect_until(&ch, &|e| {
+            matches!(e, BackendEvent::NewMessage { msg, .. }
+                if matches!(&msg.kind, crate::LiveMessageKind::Event { name, .. } if name == "Team lunch"))
+        });
+        assert!(
+            matches!(&created[created.len() - 1], BackendEvent::NewMessage { msg, .. }
+                if msg.event_secret.is_some() && msg.event_creator.is_some()),
+            "the created event carries its secret and creator: {created:?}"
+        );
+        ch.commands
+            .send(BackendCommand::RespondEvent {
+                chat_jid: FAKE_DM_JID.to_owned(),
+                message_id: "fake-event-1".to_owned(),
+                response: crate::EventRsvp::Going,
+                extra_guest_count: None,
+            })
+            .unwrap();
+        let answered = collect_until(&ch, &|e| matches!(e, BackendEvent::EventResponse { .. }));
+        assert!(
+            matches!(&answered[answered.len() - 1], BackendEvent::EventResponse { from_me: true, response: crate::EventRsvp::Going, .. }),
+            "my answer echoes back: {answered:?}"
+        );
+        ch.commands
+            .send(BackendCommand::EditEvent {
+                chat_jid: FAKE_DM_JID.to_owned(),
+                message_id: "fake-event-mine-1".to_owned(),
+                name: "Release retrospective".to_owned(),
+                description: String::new(),
+                start_time: 1_700_200_000,
+                end_time: 0,
+                location: String::new(),
+                join_link: "https://meet.example.com/retro".to_owned(),
+                scheduled_call: true,
+                extra_guests: false,
+                canceled: true,
+            })
+            .unwrap();
+        let edited = collect_until(&ch, &|e| matches!(e, BackendEvent::EventEdited { .. }));
+        assert!(
+            matches!(&edited[edited.len() - 1], BackendEvent::EventEdited { canceled: true, .. }),
+            "the cancellation lands as an edit: {edited:?}"
+        );
+        ch.commands.send(BackendCommand::Shutdown).unwrap();
+    }
+
+    /// Failure injection for the event commands: each failure
+    /// is the typed event and no success event leaks.
+    #[test]
+    fn injected_event_failures_are_typed() {
+        let mut fake = FakeBackend::auto();
+        fake.fail_next = vec!["RespondEvent", "EditEvent"];
+        let ch = start(fake);
+        linked(&ch);
+        ch.commands
+            .send(BackendCommand::RespondEvent {
+                chat_jid: FAKE_DM_JID.to_owned(),
+                message_id: "fake-event-1".to_owned(),
+                response: crate::EventRsvp::Maybe,
+                extra_guest_count: None,
+            })
+            .unwrap();
+        let failed = collect_until(&ch, &|e| matches!(e, BackendEvent::EventRespondFailed { .. }));
+        assert!(
+            failed.iter().all(|e| !matches!(e, BackendEvent::EventResponse { .. })),
+            "a failed RSVP emits no response: {failed:?}"
+        );
+        ch.commands
+            .send(BackendCommand::EditEvent {
+                chat_jid: FAKE_DM_JID.to_owned(),
+                message_id: "fake-event-mine-1".to_owned(),
+                name: "X".to_owned(),
+                description: String::new(),
+                start_time: 1_700_200_000,
+                end_time: 0,
+                location: String::new(),
+                join_link: String::new(),
+                scheduled_call: false,
+                extra_guests: false,
+                canceled: false,
+            })
+            .unwrap();
+        let failed = collect_until(&ch, &|e| matches!(e, BackendEvent::EventEditFailed { .. }));
+        assert!(
+            failed.iter().all(|e| !matches!(e, BackendEvent::EventEdited { .. })),
+            "a failed edit emits no edit: {failed:?}"
+        );
+        ch.commands.send(BackendCommand::Shutdown).unwrap();
+    }
+
     /// Failure injection for delete-for-me: the message stays
     /// until the uninjected retry removes it.
     #[test]

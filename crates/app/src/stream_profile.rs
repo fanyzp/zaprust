@@ -69,7 +69,7 @@ mod tests {
             };
             let draw = |app: &mut App, ctx: &egui::Context, time: f64| {
                 let chat = chat.clone();
-                ctx.run_ui(input(time), |ctx| {
+                let _ = ctx.run_ui(input(time), |ctx| {
                     egui::CentralPanel::default().show(ctx, |ui| {
                         let mut actions = Vec::new();
                         let mut engaged = false;

@@ -21,6 +21,10 @@
 /// follow the message when older pages prepend in front of
 /// it, never by position).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[allow(dead_code)]
+// Chip, Notice and Divider are part of the rig's pinned key
+// space: the stream keys only message rows today, and the
+// invariant tests construct the full space.
 pub(crate) enum RowKey {
     /// A day or time separator chip, keyed by the message
     /// that follows it.
@@ -133,6 +137,10 @@ impl Heights {
     /// offset moves by the same delta, so the anchor's
     /// viewport position is preserved exactly. A correction
     /// at or below the anchor moves nothing.
+    // Part of the rig's pinned surface, proven by the
+    // correction invariant test; the stream restores a moved
+    // anchor by scrolling its painted rect into place instead.
+    #[allow(dead_code)]
     pub(crate) fn offset_after_correction(
         &self,
         offset: f32,

@@ -1573,7 +1573,12 @@ impl App {
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
             .fixed_size(Vec2::new(340.0, 300.0))
-            .frame(crate::glass::frame_with_shadow(&t, 16.0))
+            .frame(
+                egui::Frame::new()
+                    .fill(rgb(t.bg_panel))
+                    .corner_radius(egui::CornerRadius::same(20))
+                    .inner_margin(Margin::same(16)),
+            )
             .show(ctx, |ui| {
                 match self.calls.link_created.clone() {
                     Some((url, video)) => {
@@ -1689,7 +1694,12 @@ impl App {
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
             .fixed_size(Vec2::new(340.0, 320.0))
-            .frame(crate::glass::frame_with_shadow(&t, 16.0))
+            .frame(
+                egui::Frame::new()
+                    .fill(rgb(t.bg_panel))
+                    .corner_radius(egui::CornerRadius::same(20))
+                    .inner_margin(Margin::same(16)),
+            )
             .show(ctx, |ui| {
                 ui.add(
                     egui::TextEdit::singleline(&mut self.calls.link_input)

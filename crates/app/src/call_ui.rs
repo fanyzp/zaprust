@@ -906,7 +906,8 @@ impl App {
         Area::new(Id::new("call_overlay"))
             .anchor(Align2::RIGHT_BOTTOM, Vec2::new(-16.0, -16.0))
             .show(ctx, |ui| {
-                crate::glass::frame_with_shadow(&t, 20.0)
+                crate::theme::glass_frame(t, crate::theme::RADIUS_PANEL)
+                    .fill(rgb(t.bg_panel))
                     .inner_margin(Margin::same(20))
                     .show(ui, |ui| {
                         ui.set_width(336.0);
@@ -956,12 +957,13 @@ impl App {
                                         egui::Color32::WHITE,
                                     );
                                 } else {
-                                    icons::paint(
+                                    icons::draw(
                                         ui.painter(),
                                         Icon::Videocam,
                                         rect.center(),
                                         icons::SIZE_DISPLAY,
                                         rgb(t.text_faint),
+                                        rgb(t.bg_panel_alt),
                                     );
                                 }
                                 // The local preview tile.
@@ -1537,22 +1539,24 @@ impl App {
                     );
                 }
                 if participant.sharing {
-                    icons::paint(
+                    icons::draw(
                         ui.painter(),
                         Icon::ScreenShare,
                         ui.cursor().min + Vec2::new(8.0, 8.0),
                         icons::SIZE_BADGE,
                         rgb(t.accent),
+                        rgb(t.bg_panel),
                     );
                     ui.add_space(16.0);
                 }
                 if participant.hand_raised {
-                    icons::paint(
+                    icons::draw(
                         ui.painter(),
                         Icon::BackHand,
                         ui.cursor().min + Vec2::new(8.0, 8.0),
                         icons::SIZE_BADGE,
                         rgb(t.accent),
+                        rgb(t.bg_panel),
                     );
                     ui.add_space(16.0);
                 }
@@ -1601,7 +1605,12 @@ impl App {
             .resizable(false)
             .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
             .fixed_size(Vec2::new(320.0, 380.0))
-            .frame(crate::glass::frame_with_shadow(&t, 16.0))
+            .frame(
+                egui::Frame::new()
+                    .fill(rgb(t.bg_panel))
+                    .corner_radius(egui::CornerRadius::same(20))
+                    .inner_margin(Margin::same(16)),
+            )
             .show(ctx, |ui| {
                 match self.groups.live_members.get(&call.chat_id) {
                     Some(members) => {

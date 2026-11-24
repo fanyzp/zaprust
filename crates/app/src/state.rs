@@ -1663,8 +1663,7 @@ pub(crate) struct App {
     /// Channel counts have no actor list to derive them from
     /// (unlike chat reactions), so the rollback restores this
     /// snapshot verbatim; ChannelReactionSet drops it.
-    pub(crate) pending_channel_reactions:
-        std::collections::HashMap<u64, Vec<(String, u32)>>,
+    pub(crate) pending_channel_reactions: std::collections::HashMap<u64, Vec<(String, u32)>>,
     /// Live mode: the starred value of a message before a
     /// star change the backend has not yet settled. The entry
     /// is taken when the change is sent; a server report of

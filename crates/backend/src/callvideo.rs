@@ -279,7 +279,7 @@ fn capture_thread(
 /// 900 kbps, a keyframe at least every 45 frames, skip-frame
 /// disabled so a still scene still produces the preview
 /// cadence. None when the codec fails to start.
-fn make_encoder() -> Option<openh264::encoder::Encoder> {
+fn make_encoder() -> Result<openh264::encoder::Encoder, String> {
     use openh264::encoder::{
         BitRate, Encoder, EncoderConfig, FrameRate, IntraFramePeriod, Profile, UsageType,
     };
@@ -290,8 +290,9 @@ fn make_encoder() -> Option<openh264::encoder::Encoder> {
         .usage_type(UsageType::CameraVideoRealTime)
         .profile(Profile::Baseline)
         .intra_frame_period(IntraFramePeriod::from_num_frames(45))
-        .enable_skip_frame(false);
-    Encoder::with_api_config(OpenH264API::from_source(), config).ok()
+        .skip_frames(false);
+    Encoder::with_api_config(OpenH264API::from_source(), config)
+        .map_err(|_| "The video encoder would not start.".to_owned())
 }
 
 fn yuyv_to_yuv420(raw: &[u8], width: u32, height: u32) -> Option<Vec<u8>> {

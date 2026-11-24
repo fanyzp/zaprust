@@ -286,8 +286,8 @@ pub(super) async fn start_outgoing_call(
         }
     };
     let video_plumbing = if video { Some(build_video(events).await) } else { None };
-    let mut builder =
-        client.voip().call(&jid).audio(audio.source.clone(), audio.sink.clone());
+    let voip = client.voip();
+    let mut builder = voip.call(&jid).audio(audio.source.clone(), audio.sink.clone());
     if let Some(plumbing) = &video_plumbing {
         builder = builder.video(plumbing.source.clone(), plumbing.sink.clone());
     }
@@ -427,8 +427,8 @@ pub(super) async fn accept_incoming_call(
         }
     };
     let video_plumbing = if offer_video { Some(build_video(events).await) } else { None };
-    let mut builder =
-        client.voip().accept(ic).audio(audio.source.clone(), audio.sink.clone());
+    let voip = client.voip();
+    let mut builder = voip.accept(ic).audio(audio.source.clone(), audio.sink.clone());
     if let Some(plumbing) = &video_plumbing {
         builder = builder.video(plumbing.source.clone(), plumbing.sink.clone());
     }

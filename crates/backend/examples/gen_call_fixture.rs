@@ -51,7 +51,7 @@ fn main() {
         .usage_type(UsageType::CameraVideoRealTime)
         .profile(Profile::Baseline)
         .intra_frame_period(IntraFramePeriod::from_num_frames(45))
-        .enable_skip_frame(false);
+        .skip_frames(false);
     let mut encoder =
         Encoder::with_api_config(OpenH264API::from_source(), config).expect("encoder starts");
     let mut out: Vec<u8> = Vec::new();

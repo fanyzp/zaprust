@@ -527,45 +527,64 @@ impl App {
 
     /// The follower bar that replaces the composer in a
     /// channel the user cannot post to: the reason, and for
-    /// a guest the follow action itself.
+    /// a guest the follow action itself. It floats in the
+    /// composer's zone, anchored to the panel's bottom the
+    /// same way the composer floats: drawn as a layout child
+    /// after the stream it would land below the visible
+    /// rect, because the stream takes the full height.
     pub(crate) fn draw_channel_follower_bar(
         &mut self,
         ui: &mut egui::Ui,
+        full_rect: egui::Rect,
         chat: &Chat,
         role: backend::LiveChannelRole,
     ) {
         let t = self.tokens();
         let mut follow = false;
-        egui::Frame::new().fill(rgb(t.bg_panel)).inner_margin(Margin::symmetric(12, 10)).show(
-            ui,
-            |ui| {
-                ui.with_layout(
-                    egui::Layout::left_to_right(egui::Align::Center)
-                        .with_main_align(egui::Align::Center),
-                    |ui| {
-                        let text = if role == backend::LiveChannelRole::Guest {
-                            crate::i18n::t("channels.bar_guest")
-                        } else {
-                            crate::i18n::t("channels.bar_follower")
-                        };
-                        ui.label(RichText::new(text).size(12.0).color(rgb(t.text_secondary)));
-                        if role == backend::LiveChannelRole::Guest {
-                            ui.add_space(SP_3);
-                            if crate::widgets::button(
-                                ui,
-                                t,
-                                &crate::i18n::t("channels.bar_follow_action"),
-                                crate::widgets::Btn::Primary,
-                            )
-                            .clicked()
-                            {
-                                follow = true;
-                            }
-                        }
-                    },
-                );
-            },
-        );
+        let fmargin = crate::conversation::side_margin(full_rect.width());
+        egui::Area::new(egui::Id::unique("channel_follower_float"))
+            .fixed_pos(egui::Pos2::new(
+                full_rect.left() + fmargin,
+                full_rect.bottom() - crate::conversation::COMPOSER_LIFT,
+            ))
+            .pivot(egui::Align2::LEFT_BOTTOM)
+            .order(egui::Order::Foreground)
+            .show(ui.ctx(), |ui| {
+                ui.set_width(full_rect.width() - fmargin * 2.0);
+                egui::Frame::new()
+                    .fill(rgb(t.bg_panel))
+                    .corner_radius(egui::CornerRadius::same(20))
+                    .inner_margin(Margin::symmetric(12, 10))
+                    .show(ui, |ui| {
+                        ui.with_layout(
+                            egui::Layout::left_to_right(egui::Align::Center)
+                                .with_main_align(egui::Align::Center),
+                            |ui| {
+                                let text = if role == backend::LiveChannelRole::Guest {
+                                    crate::i18n::t("channels.bar_guest")
+                                } else {
+                                    crate::i18n::t("channels.bar_follower")
+                                };
+                                ui.label(
+                                    RichText::new(text).size(12.0).color(rgb(t.text_secondary)),
+                                );
+                                if role == backend::LiveChannelRole::Guest {
+                                    ui.add_space(SP_3);
+                                    if crate::widgets::button(
+                                        ui,
+                                        t,
+                                        &crate::i18n::t("channels.bar_follow_action"),
+                                        crate::widgets::Btn::Primary,
+                                    )
+                                    .clicked()
+                                    {
+                                        follow = true;
+                                    }
+                                }
+                            },
+                        );
+                    });
+            });
         if follow {
             if let Some(jid) = self.live_jid(chat.id) {
                 self.send_backend(BackendCommand::FollowChannel { jid });

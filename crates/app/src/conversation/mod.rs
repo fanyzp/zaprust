@@ -1035,7 +1035,7 @@ impl App {
                 // one-way, and a composer that cannot send
                 // would be a dead control.
                 if let Some(role) = self.channel_composer_blocked(&chat) {
-                    self.draw_channel_follower_bar(ui, &chat, role);
+                    self.draw_channel_follower_bar(ui, full_rect, &chat, role);
                 } else {
                     self.draw_composer(ui, full_rect, t, now, &mut engaged);
                 }

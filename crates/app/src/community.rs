@@ -505,7 +505,7 @@ fn draw_community_admin_sections(
             .color(rgb(t.text_secondary)),
     );
     ui.horizontal(|ui| {
-        let w = (ui.available_width() - 110.0).max(120.0);
+        let w = (ui.available_width() - 148.0).max(120.0);
         crate::widgets::text_field(ui, t, admin.subgroup_name, "", w);
         if crate::widgets::button(
             ui,

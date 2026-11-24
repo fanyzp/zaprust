@@ -26,8 +26,8 @@ use std::sync::mpsc::Receiver;
 use std::time::Duration;
 
 use crate::{
-    Backend, BackendCommand, BackendConfig, BackendEvent, EventSink, LiveChat, LiveChatKind,
-    LiveMessage, LiveStatus, OwnProfile,
+    Backend, BackendCommand, BackendConfig, BackendEvent, EventSink, LiveChannel, LiveChat,
+    LiveChatKind, LiveMessage, LiveStatus, OwnProfile,
 };
 
 /// The payload the fake backend asks the UI to render as a QR code.
@@ -382,6 +382,22 @@ pub fn scripted_chats() -> Vec<LiveChat> {
             is_parent: false,
         },
         LiveChat {
+            jid: FAKE_OWN_CHANNEL_JID.to_owned(),
+            title: "Weekend Builds (live demo)".to_owned(),
+            kind: LiveChatKind::Channel,
+            preview: "Weekend build: a screenshot tour of the new channels screen".to_owned(),
+            preview_sender: None,
+            timestamp: 1_699_999_000,
+            unread: 0,
+            archived: false,
+            pinned: false,
+            ephemeral_secs: 0,
+            muted: false,
+            mute_until: 0,
+            parent_jid: None,
+            is_parent: false,
+        },
+        LiveChat {
             jid: FAKE_COMMUNITY_JID.to_owned(),
             title: "Weekend Community (live demo)".to_owned(),
             kind: LiveChatKind::Group,
@@ -398,6 +414,157 @@ pub fn scripted_chats() -> Vec<LiveChat> {
             is_parent: true,
         },
     ]
+}
+
+/// JID of the scripted discoverable channel: not followed,
+/// found through its invite code.
+pub const FAKE_DISCOVERABLE_CHANNEL_JID: &str = "10000000007@newsletter";
+/// JID of the scripted channel this account owns.
+pub const FAKE_OWN_CHANNEL_JID: &str = "10000000008@newsletter";
+/// Invite code of the scripted followed channel.
+pub const FAKE_CHANNEL_INVITE: &str = "CityNewsDemo";
+/// Invite code of the scripted discoverable channel.
+pub const FAKE_DISCOVERABLE_INVITE: &str = "HarborWeatherDemo";
+/// Invite code of the scripted owned channel.
+pub const FAKE_OWN_INVITE: &str = "WeekendBuildsDemo";
+
+/// The scripted channel directory: the channels the fake
+/// account follows or owns, as FetchChannels reports them.
+/// The discoverable channel is deliberately absent: it is
+/// found by invite lookup, not by listing.
+#[must_use]
+pub fn scripted_channels() -> Vec<LiveChannel> {
+    vec![
+        LiveChannel {
+            jid: FAKE_CHANNEL_JID.to_owned(),
+            name: "City News (live demo)".to_owned(),
+            description: "City news, roadworks and events, posted by the city desk.".to_owned(),
+            followers: 12_483,
+            verified: true,
+            role: crate::LiveChannelRole::Follower,
+            muted: false,
+            invite_code: Some(FAKE_CHANNEL_INVITE.to_owned()),
+            created_at: 1_680_000_000,
+        },
+        LiveChannel {
+            jid: FAKE_OWN_CHANNEL_JID.to_owned(),
+            name: "Weekend Builds (live demo)".to_owned(),
+            description: "Build logs from the workshop.".to_owned(),
+            followers: 312,
+            verified: false,
+            role: crate::LiveChannelRole::Owner,
+            muted: false,
+            invite_code: Some(FAKE_OWN_INVITE.to_owned()),
+            created_at: 1_690_000_000,
+        },
+    ]
+}
+
+/// The scripted discoverable channel, as an invite lookup
+/// reports it: real metadata, Guest role (not followed).
+#[must_use]
+pub fn scripted_discoverable_channel() -> LiveChannel {
+    LiveChannel {
+        jid: FAKE_DISCOVERABLE_CHANNEL_JID.to_owned(),
+        name: "Harbor Weather (live demo)".to_owned(),
+        description: "Harbor forecasts and tide tables, twice a day.".to_owned(),
+        followers: 3_208,
+        verified: false,
+        role: crate::LiveChannelRole::Guest,
+        muted: false,
+        invite_code: Some(FAKE_DISCOVERABLE_INVITE.to_owned()),
+        created_at: 1_685_000_000,
+    }
+}
+
+/// The scripted channel history: the updates a history fetch
+/// serves, carrying the server IDs channel reactions and
+/// votes key on. City News gets a text/photo/poll run plus
+/// the announcement the roster preview quotes; the owned
+/// channel gets two own posts, the edit and revoke targets.
+#[must_use]
+pub fn scripted_channel_history() -> Vec<LiveMessage> {
+    let mut photo = LiveMessage::text(
+        "fake-ch-2",
+        FAKE_CHANNEL_JID,
+        Some("City News".to_owned()),
+        "The new riverfront park, opened this morning",
+        1_699_950_000,
+        false,
+    );
+    photo.server_id = Some(102);
+    photo.kind = crate::LiveMessageKind::Media {
+        media: crate::MediaKind::Photo,
+        caption: "The new riverfront park, opened this morning".to_owned(),
+        seconds: 0,
+        size_bytes: 204_000,
+    };
+    photo.reactions = vec![("❤️".to_owned(), 32)];
+    let mut poll = LiveMessage::text(
+        "fake-ch-4",
+        FAKE_CHANNEL_JID,
+        Some("City News".to_owned()),
+        "",
+        1_699_995_000,
+        false,
+    );
+    poll.server_id = Some(104);
+    poll.kind = crate::LiveMessageKind::Poll {
+        question: "Should the night market run every weekend?".to_owned(),
+        options: vec![("Every weekend".to_owned(), 412), ("Once a month".to_owned(), 187)],
+        multiple: false,
+        my_votes: Vec::new(),
+        correct: None,
+    };
+    let mut first = LiveMessage::text(
+        "fake-ch-1",
+        FAKE_CHANNEL_JID,
+        Some("City News".to_owned()),
+        "Morning briefing: roadworks on Harbor Avenue start Monday",
+        1_699_900_000,
+        false,
+    );
+    first.server_id = Some(101);
+    first.reactions = vec![("👍".to_owned(), 14)];
+    let mut third = LiveMessage::text(
+        "fake-ch-3",
+        FAKE_CHANNEL_JID,
+        Some("City News".to_owned()),
+        "City council approves the night market permit",
+        1_699_990_000,
+        false,
+    );
+    third.server_id = Some(103);
+    let mut fifth = LiveMessage::text(
+        "fake-ch-5",
+        FAKE_CHANNEL_JID,
+        Some("City News".to_owned()),
+        "Announcement: the holiday events schedule is out",
+        1_700_000_100,
+        false,
+    );
+    fifth.server_id = Some(105);
+    fifth.reactions = vec![("👍".to_owned(), 58), ("🎉".to_owned(), 9)];
+    let mut own_first = LiveMessage::text(
+        "fake-own-1",
+        FAKE_OWN_CHANNEL_JID,
+        None,
+        "Build log: the new release pipeline is green",
+        1_699_980_000,
+        true,
+    );
+    own_first.server_id = Some(201);
+    let mut own_second = LiveMessage::text(
+        "fake-own-2",
+        FAKE_OWN_CHANNEL_JID,
+        None,
+        "Weekend build: a screenshot tour of the new channels screen",
+        1_699_999_000,
+        true,
+    );
+    own_second.server_id = Some(202);
+    own_second.reactions = vec![("👍".to_owned(), 3)];
+    vec![first, photo, third, poll, fifth, own_first, own_second]
 }
 
 /// A real 1-second H.264 MP4 (128x96, 10 fps), generated with
@@ -1054,8 +1221,17 @@ impl Backend for FakeBackend {
             scripted_messages()
                 .into_iter()
                 .chain(scripted_group_messages())
+                .chain(scripted_channel_history())
                 .map(|m| ((m.chat_jid.clone(), m.id.clone()), m))
                 .collect();
+        // The channel directory state: FetchChannels reports
+        // it, follow/unfollow/create mutate it, and the info
+        // fetch reads roles from it, mirroring the server-side
+        // state the real backend queries per command.
+        let mut channel_state: Vec<LiveChannel> = scripted_channels();
+        // Channels created during the run get sequential JIDs
+        // above the scripted range.
+        let mut created_channel_counter: u64 = 0;
         let mut polls: std::collections::HashMap<String, LiveMessage> = scripted_messages()
             .into_iter()
             .filter(|m| matches!(m.kind, crate::LiveMessageKind::Poll { .. }))
@@ -1351,6 +1527,443 @@ impl Backend for FakeBackend {
                         events.emit(BackendEvent::MessageRevoked {
                             chat_jid: "status@broadcast".to_owned(),
                             message_id,
+                        });
+                    }
+                }
+                BackendCommand::FetchChannels => {
+                    if take_failure("FetchChannels") {
+                        events.emit(BackendEvent::ChannelsListFailed {
+                            message: "Loading the channel list failed: connection lost".to_owned(),
+                        });
+                    } else {
+                        let channels = channel_state
+                            .iter()
+                            .filter(|c| c.role != crate::LiveChannelRole::Guest)
+                            .cloned()
+                            .collect();
+                        events.emit(BackendEvent::ChannelsListed { channels });
+                    }
+                }
+                BackendCommand::LookupChannel { code } => {
+                    let tail = code.rsplit("channel/").next().unwrap_or(&code);
+                    let pasted: String =
+                        tail.chars().take_while(|c| c.is_ascii_alphanumeric()).collect();
+                    let found = if pasted.eq_ignore_ascii_case(FAKE_CHANNEL_INVITE) {
+                        channel_state.iter().find(|c| c.jid == FAKE_CHANNEL_JID).cloned()
+                    } else if pasted.eq_ignore_ascii_case(FAKE_DISCOVERABLE_INVITE) {
+                        Some(scripted_discoverable_channel())
+                    } else if pasted.eq_ignore_ascii_case(FAKE_OWN_INVITE) {
+                        channel_state.iter().find(|c| c.jid == FAKE_OWN_CHANNEL_JID).cloned()
+                    } else {
+                        None
+                    };
+                    if take_failure("LookupChannel") {
+                        events.emit(BackendEvent::ChannelLookupFailed {
+                            message: "No channel was found for that link: connection lost"
+                                .to_owned(),
+                        });
+                    } else if let Some(channel) = found {
+                        events.emit(BackendEvent::ChannelFound { channel });
+                    } else {
+                        events.emit(BackendEvent::ChannelLookupFailed {
+                            message: "No channel in test mode uses that invite link.".to_owned(),
+                        });
+                    }
+                }
+                BackendCommand::FollowChannel { jid } => {
+                    if let Some(log) = &command_log {
+                        log.lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .push(format!("follow_channel:{jid}"));
+                    }
+                    if take_failure("FollowChannel") {
+                        events.emit(BackendEvent::ChannelFollowFailed {
+                            jid: jid.clone(),
+                            message: "Following the channel failed: connection lost".to_owned(),
+                        });
+                    } else if jid == FAKE_DISCOVERABLE_CHANNEL_JID {
+                        let mut channel = scripted_discoverable_channel();
+                        channel.role = crate::LiveChannelRole::Follower;
+                        channel.followers += 1;
+                        channel_state.retain(|c| c.jid != jid);
+                        channel_state.push(channel.clone());
+                        let chat = LiveChat {
+                            jid: jid.clone(),
+                            title: channel.name.clone(),
+                            kind: LiveChatKind::Channel,
+                            preview: String::new(),
+                            preview_sender: None,
+                            timestamp: 1_700_000_400,
+                            unread: 0,
+                            archived: false,
+                            pinned: false,
+                            ephemeral_secs: 0,
+                            muted: false,
+                            mute_until: 0,
+                            parent_jid: None,
+                            is_parent: false,
+                        };
+                        chat_state.insert(jid.clone(), chat.clone());
+                        events.emit(BackendEvent::ChatUpsert(chat));
+                        events.emit(BackendEvent::ChannelFollowed { channel });
+                    } else if let Some(channel) =
+                        channel_state.iter().find(|c| c.jid == jid).cloned()
+                    {
+                        events.emit(BackendEvent::ChannelFollowed { channel });
+                    } else {
+                        events.emit(BackendEvent::ChannelFollowFailed {
+                            jid: jid.clone(),
+                            message: "That channel is not part of the test-mode script."
+                                .to_owned(),
+                        });
+                    }
+                }
+                BackendCommand::UnfollowChannel { jid } => {
+                    if take_failure("UnfollowChannel") {
+                        events.emit(BackendEvent::ChannelUnfollowFailed {
+                            jid: jid.clone(),
+                            message: "Unfollowing the channel failed: connection lost".to_owned(),
+                        });
+                    } else if let Some(channel) =
+                        channel_state.iter_mut().find(|c| c.jid == jid && c.role == crate::LiveChannelRole::Follower)
+                    {
+                        channel.role = crate::LiveChannelRole::Guest;
+                        channel.followers = channel.followers.saturating_sub(1);
+                        events.emit(BackendEvent::ChannelUnfollowed { jid: jid.clone() });
+                    } else {
+                        events.emit(BackendEvent::ChannelUnfollowFailed {
+                            jid: jid.clone(),
+                            message: "That channel is not followed in the test-mode script."
+                                .to_owned(),
+                        });
+                    }
+                }
+                BackendCommand::CreateChannel { name, description } => {
+                    if name.trim().is_empty() {
+                        events.emit(BackendEvent::ChannelCreateFailed {
+                            message: "A channel needs a name.".to_owned(),
+                        });
+                    } else if take_failure("CreateChannel") {
+                        events.emit(BackendEvent::ChannelCreateFailed {
+                            message: "Creating the channel failed: connection lost".to_owned(),
+                        });
+                    } else {
+                        created_channel_counter += 1;
+                        let jid = format!("{}@newsletter", 1_000_000_010 + created_channel_counter);
+                        let channel = LiveChannel {
+                            jid: jid.clone(),
+                            name: name.clone(),
+                            description: description.clone(),
+                            followers: 1,
+                            verified: false,
+                            role: crate::LiveChannelRole::Owner,
+                            muted: false,
+                            invite_code: None,
+                            created_at: 1_700_000_400,
+                        };
+                        channel_state.push(channel.clone());
+                        let chat = LiveChat {
+                            jid: jid.clone(),
+                            title: name.clone(),
+                            kind: LiveChatKind::Channel,
+                            preview: String::new(),
+                            preview_sender: None,
+                            timestamp: 1_700_000_400,
+                            unread: 0,
+                            archived: false,
+                            pinned: false,
+                            ephemeral_secs: 0,
+                            muted: false,
+                            mute_until: 0,
+                            parent_jid: None,
+                            is_parent: false,
+                        };
+                        chat_state.insert(jid.clone(), chat.clone());
+                        events.emit(BackendEvent::ChatUpsert(chat));
+                        events.emit(BackendEvent::ChannelCreated { channel });
+                    }
+                }
+                BackendCommand::FetchChannelHistory { jid, count, before } => {
+                    if take_failure("FetchChannelHistory") {
+                        events.emit(BackendEvent::ChannelHistoryFailed {
+                            jid: jid.clone(),
+                            message: "Loading the channel's updates failed: connection lost"
+                                .to_owned(),
+                        });
+                    } else {
+                        let mut page: Vec<LiveMessage> = message_state
+                            .values()
+                            .filter(|m| {
+                                m.chat_jid == jid
+                                    && m.server_id
+                                        .is_some_and(|s| before.is_none_or(|b| s < b))
+                            })
+                            .cloned()
+                            .collect();
+                        page.sort_by_key(|m| std::cmp::Reverse(m.server_id.unwrap_or(0)));
+                        let total = page.len();
+                        page.truncate(usize::try_from(count).unwrap_or(usize::MAX));
+                        let added = u32::try_from(page.len()).unwrap_or(u32::MAX);
+                        let end_of_history = page.len() >= total;
+                        for msg in page {
+                            events.emit(BackendEvent::MessageUpsert(msg));
+                        }
+                        events.emit(BackendEvent::ChannelHistoryFetched {
+                            jid: jid.clone(),
+                            added,
+                            end_of_history,
+                        });
+                    }
+                }
+                BackendCommand::WatchChannel { .. } => {
+                    // Counters in test mode arrive through the
+                    // history fetch; the watch arms nothing and
+                    // answers nothing, exactly the live
+                    // contract's fire-and-forget shape.
+                }
+                BackendCommand::ReactToChannelUpdate { jid, server_id, emoji } => {
+                    let key = message_state
+                        .iter()
+                        .find(|(_, m)| m.chat_jid == jid && m.server_id == Some(server_id))
+                        .map(|(k, _)| k.clone());
+                    if take_failure("ReactToChannelUpdate") {
+                        events.emit(BackendEvent::ChannelReactionFailed {
+                            jid: jid.clone(),
+                            server_id,
+                            message: "That reaction could not be sent: connection lost"
+                                .to_owned(),
+                        });
+                    } else if let Some(key) = key {
+                        if let Some(msg) = message_state.get_mut(&key) {
+                            msg.my_reaction =
+                                if emoji.is_empty() { None } else { Some(emoji.clone()) };
+                            let updated = msg.clone();
+                            events.emit(BackendEvent::MessageUpsert(updated));
+                        }
+                        events.emit(BackendEvent::ChannelReactionSet {
+                            jid: jid.clone(),
+                            server_id,
+                            emoji: emoji.clone(),
+                        });
+                    } else {
+                        events.emit(BackendEvent::ChannelReactionFailed {
+                            jid: jid.clone(),
+                            server_id,
+                            message: "That update is not part of the test-mode script."
+                                .to_owned(),
+                        });
+                    }
+                }
+                BackendCommand::CreateChannelPoll { jid, question, options, multiple } => {
+                    let can_post = channel_state
+                        .iter()
+                        .find(|c| c.jid == jid)
+                        .is_some_and(|c| c.role.can_post());
+                    if take_failure("CreateChannelPoll") {
+                        events.emit(BackendEvent::ChannelPollFailed {
+                            jid: jid.clone(),
+                            message: "Posting the poll failed: connection lost".to_owned(),
+                        });
+                    } else if !can_post {
+                        events.emit(BackendEvent::ChannelPollFailed {
+                            jid: jid.clone(),
+                            message: "Only admins can post to that channel.".to_owned(),
+                        });
+                    } else {
+                        let server_id = message_state
+                            .values()
+                            .filter(|m| m.chat_jid == jid)
+                            .filter_map(|m| m.server_id)
+                            .max()
+                            .unwrap_or(200)
+                            + 1;
+                        sent_counter += 1;
+                        let id = format!("fake-ch-poll-{server_id}");
+                        let mut poll = LiveMessage::text(
+                            id.clone(),
+                            jid.clone(),
+                            None,
+                            "",
+                            1_700_000_400 + i64::try_from(sent_counter).unwrap_or(0),
+                            true,
+                        );
+                        poll.server_id = Some(server_id);
+                        poll.kind = crate::LiveMessageKind::Poll {
+                            question: question.clone(),
+                            options: options.iter().map(|o| (o.clone(), 0)).collect(),
+                            multiple,
+                            my_votes: Vec::new(),
+                            correct: None,
+                        };
+                        message_state.insert((jid.clone(), id), poll.clone());
+                        events.emit(BackendEvent::MessageUpsert(poll));
+                        events.emit(BackendEvent::ChannelPollCreated { jid: jid.clone() });
+                    }
+                }
+                BackendCommand::VoteChannelPoll { jid, server_id, options } => {
+                    let key = message_state
+                        .iter()
+                        .find(|(_, m)| m.chat_jid == jid && m.server_id == Some(server_id))
+                        .map(|(k, _)| k.clone());
+                    if take_failure("VoteChannelPoll") {
+                        events.emit(BackendEvent::ChannelPollVoteFailed {
+                            jid: jid.clone(),
+                            server_id,
+                            message: "That vote could not be sent: connection lost".to_owned(),
+                        });
+                    } else if let Some(key) = key {
+                        let mut voted = false;
+                        if let Some(msg) = message_state.get_mut(&key) {
+                            if let crate::LiveMessageKind::Poll {
+                                options: poll_options,
+                                my_votes,
+                                ..
+                            } = &mut msg.kind
+                            {
+                                *my_votes = poll_options
+                                    .iter()
+                                    .enumerate()
+                                    .filter(|(_, (name, _))| options.contains(name))
+                                    .map(|(index, _)| index)
+                                    .collect();
+                                voted = true;
+                            }
+                            let updated = msg.clone();
+                            events.emit(BackendEvent::MessageUpsert(updated));
+                        }
+                        if voted {
+                            events.emit(BackendEvent::ChannelPollVoted {
+                                jid: jid.clone(),
+                                server_id,
+                            });
+                        } else {
+                            events.emit(BackendEvent::ChannelPollVoteFailed {
+                                jid: jid.clone(),
+                                server_id,
+                                message: "That update is not a poll.".to_owned(),
+                            });
+                        }
+                    } else {
+                        events.emit(BackendEvent::ChannelPollVoteFailed {
+                            jid: jid.clone(),
+                            server_id,
+                            message: "That update is not part of the test-mode script."
+                                .to_owned(),
+                        });
+                    }
+                }
+                BackendCommand::EditChannelUpdate { jid, message_id, text } => {
+                    let key = (jid.clone(), message_id.clone());
+                    if take_failure("EditChannelUpdate") {
+                        events.emit(BackendEvent::ChannelUpdateEditFailed {
+                            jid: jid.clone(),
+                            message_id: message_id.clone(),
+                            message: "Editing the update failed: connection lost".to_owned(),
+                        });
+                    } else if message_state.get(&key).is_some_and(|m| m.from_me) {
+                        if let Some(msg) = message_state.get_mut(&key) {
+                            msg.body = text.clone();
+                            if let crate::LiveMessageKind::Media { caption, .. } = &mut msg.kind {
+                                *caption = text.clone();
+                            }
+                            msg.edited = true;
+                            let updated = msg.clone();
+                            events.emit(BackendEvent::MessageUpsert(updated));
+                        }
+                        events.emit(BackendEvent::ChannelUpdateEdited {
+                            jid: jid.clone(),
+                            message_id: message_id.clone(),
+                        });
+                    } else {
+                        events.emit(BackendEvent::ChannelUpdateEditFailed {
+                            jid: jid.clone(),
+                            message_id: message_id.clone(),
+                            message: "That update cannot be edited in test mode.".to_owned(),
+                        });
+                    }
+                }
+                BackendCommand::RevokeChannelUpdate { jid, message_id } => {
+                    let key = (jid.clone(), message_id.clone());
+                    if take_failure("RevokeChannelUpdate") {
+                        events.emit(BackendEvent::ChannelUpdateRevokeFailed {
+                            jid: jid.clone(),
+                            message_id: message_id.clone(),
+                            message: "Deleting the update failed: connection lost".to_owned(),
+                        });
+                    } else if message_state.get(&key).is_some_and(|m| m.from_me) {
+                        message_state.remove(&key);
+                        events.emit(BackendEvent::MessageRevoked {
+                            chat_jid: jid.clone(),
+                            message_id: message_id.clone(),
+                        });
+                        events.emit(BackendEvent::ChannelUpdateRevoked {
+                            jid: jid.clone(),
+                            message_id: message_id.clone(),
+                        });
+                    } else {
+                        events.emit(BackendEvent::ChannelUpdateRevokeFailed {
+                            jid: jid.clone(),
+                            message_id: message_id.clone(),
+                            message: "That update cannot be deleted in test mode.".to_owned(),
+                        });
+                    }
+                }
+                BackendCommand::FetchChannelInfo { jid } => {
+                    let known = channel_state
+                        .iter()
+                        .find(|c| c.jid == jid)
+                        .cloned()
+                        .or_else(|| {
+                            if jid == FAKE_DISCOVERABLE_CHANNEL_JID {
+                                Some(scripted_discoverable_channel())
+                            } else {
+                                None
+                            }
+                        });
+                    if take_failure("FetchChannelInfo") {
+                        events.emit(BackendEvent::ChannelInfoFailed {
+                            jid: jid.clone(),
+                            message: "Loading the channel info failed: connection lost".to_owned(),
+                        });
+                    } else if let Some(channel) = known {
+                        let (admin_count, follower_names) = if channel.role.can_post() {
+                            (
+                                Some(2),
+                                vec![
+                                    "Emma Wilson".to_owned(),
+                                    "Liam Chen".to_owned(),
+                                    "Sofia Rossi".to_owned(),
+                                ],
+                            )
+                        } else {
+                            (None, Vec::new())
+                        };
+                        events.emit(BackendEvent::ChannelInfoFetched {
+                            info: crate::LiveChannelInfo { channel, admin_count, follower_names },
+                        });
+                    } else {
+                        events.emit(BackendEvent::ChannelInfoFailed {
+                            jid: jid.clone(),
+                            message: "That channel is not part of the test-mode script."
+                                .to_owned(),
+                        });
+                    }
+                }
+                BackendCommand::SetChannelMuted { jid, muted } => {
+                    if take_failure("SetChannelMuted") {
+                        events.emit(BackendEvent::ChannelMuteFailed {
+                            jid: jid.clone(),
+                            message: "Changing the mute setting failed: connection lost"
+                                .to_owned(),
+                        });
+                    } else if let Some(channel) = channel_state.iter_mut().find(|c| c.jid == jid) {
+                        channel.muted = muted;
+                        events.emit(BackendEvent::ChannelMuteSet { jid: jid.clone(), muted });
+                    } else {
+                        events.emit(BackendEvent::ChannelMuteFailed {
+                            jid: jid.clone(),
+                            message: "That channel is not part of the test-mode script."
+                                .to_owned(),
                         });
                     }
                 }

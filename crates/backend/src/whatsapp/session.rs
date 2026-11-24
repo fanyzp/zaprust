@@ -1010,6 +1010,11 @@ pub(super) async fn run_async(
     // received.
     let mut pending: VecDeque<BackendCommand> = VecDeque::new();
 
+    // Channels whose live updates this session has armed
+    // (BackendCommand::WatchChannel): one renewal loop per
+    // channel, so a repeated watch is a no-op.
+    let mut watched_channels: std::collections::HashSet<String> = std::collections::HashSet::new();
+
     // Dispatch contract: commands run one at a time, in arrival
     // order. The order is load-bearing, not an accident: the app
     // binds each MessageSent (and each send error) to the OLDEST
@@ -1309,6 +1314,63 @@ pub(super) async fn run_async(
                             }),
                         }
                     }
+                }
+                BackendCommand::FetchChannels => {
+                    super::channels::fetch_channels(&client, &events).await;
+                }
+                BackendCommand::LookupChannel { code } => {
+                    super::channels::lookup_channel(&client, &events, &code).await;
+                }
+                BackendCommand::FollowChannel { jid } => {
+                    super::channels::follow_channel(&client, &events, &jid).await;
+                }
+                BackendCommand::UnfollowChannel { jid } => {
+                    super::channels::unfollow_channel(&client, &events, &jid).await;
+                }
+                BackendCommand::CreateChannel { name, description } => {
+                    super::channels::create_channel(&client, &events, &name, &description).await;
+                }
+                BackendCommand::FetchChannelHistory { jid, count, before } => {
+                    super::channels::fetch_channel_history(&client, &events, &jid, count, before)
+                        .await;
+                }
+                BackendCommand::WatchChannel { jid } => {
+                    if watched_channels.insert(jid.clone()) {
+                        super::channels::watch_channel(&client, &jid).await;
+                    }
+                }
+                BackendCommand::ReactToChannelUpdate { jid, server_id, emoji } => {
+                    super::channels::react_to_channel_update(&client, &events, &jid, server_id, &emoji)
+                        .await;
+                }
+                BackendCommand::CreateChannelPoll { jid, question, options, multiple } => {
+                    super::channels::create_channel_poll(
+                        &client,
+                        &events,
+                        &jid,
+                        &question,
+                        &options,
+                        multiple,
+                    )
+                    .await;
+                }
+                BackendCommand::VoteChannelPoll { jid, server_id, options } => {
+                    super::channels::vote_channel_poll(&client, &events, &jid, server_id, &options)
+                        .await;
+                }
+                BackendCommand::EditChannelUpdate { jid, message_id, text } => {
+                    super::channels::edit_channel_update(&client, &events, &jid, &message_id, &text)
+                        .await;
+                }
+                BackendCommand::RevokeChannelUpdate { jid, message_id } => {
+                    super::channels::revoke_channel_update(&client, &events, &jid, &message_id)
+                        .await;
+                }
+                BackendCommand::FetchChannelInfo { jid } => {
+                    super::channels::fetch_channel_info(&client, &events, &jid).await;
+                }
+                BackendCommand::SetChannelMuted { jid, muted } => {
+                    super::channels::set_channel_muted(&client, &events, &jid, muted).await;
                 }
                 BackendCommand::SetDisappearingTimer { chat_jid, duration_secs } => {
                     match chat_jid.parse::<Jid>() {

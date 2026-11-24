@@ -624,6 +624,35 @@ pub(super) fn translate_event(
                 });
             }
         }
+        Event::NewsletterLiveUpdate(update) => {
+            // Channel live updates carry counters only
+            // (reactions, poll tallies, forwards), keyed by
+            // the update's server ID; post bodies arrive
+            // through the message path. Forward each counter
+            // set as its own event so the app can settle the
+            // one update it names.
+            let jid = update.newsletter_jid.to_string();
+            for counters in &update.messages {
+                sink.emit(BackendEvent::ChannelCountersUpdated {
+                    counters: crate::LiveChannelCounters {
+                        jid: jid.clone(),
+                        server_id: counters.server_id,
+                        reactions: counters
+                            .reactions
+                            .iter()
+                            .map(|r| {
+                                (r.code.clone(), u32::try_from(r.count).unwrap_or(u32::MAX))
+                            })
+                            .collect(),
+                        poll_votes: counters
+                            .votes
+                            .iter()
+                            .map(|v| (v.option_hash, u32::try_from(v.count).unwrap_or(u32::MAX)))
+                            .collect(),
+                    },
+                });
+            }
+        }
         Event::UndecryptableMessage(failed) => {
             use whatsapp_rust::wacore::types::wire_enums::DecryptFailMode;
             // Only the wire's show mode renders a placeholder;
@@ -1274,6 +1303,17 @@ pub(super) fn body_for(kind: &LiveMessageKind, view_once: bool, text: Option<&st
 pub(super) fn structured_text(msg: &whatsapp_rust::prelude::wa::Message) -> Option<String> {
     let base = msg.get_base_message();
     let clean = |s: Option<String>| s.filter(|t| !t.trim().is_empty());
+    // A channel comment's words live in its inner message
+    // (audit P0-09): recover them from there, the same
+    // descent the classifier makes.
+    if let Some(inner) = base.comment_message.as_option().and_then(|c| c.message.as_option()) {
+        if let Some(text) = clean(inner.text_content().map(ToOwned::to_owned)) {
+            return Some(text);
+        }
+        if let Some(text) = structured_text(inner) {
+            return Some(text);
+        }
+    }
     if let Some(template) = base.template_message.as_option() {
         if let Some(text) = clean(
             template.hydrated_template.as_option().and_then(|t| t.hydrated_content_text.clone()),
@@ -1709,6 +1749,96 @@ pub(super) fn translate_message(
     Some((chat, msg))
 }
 
+/// Translates one channel history entry (from the library's
+/// newsletter history fetch) into a message upsert for the
+/// channel's chat. The classifier and body rules are the same
+/// ones chat messages use; the envelope differs: the entry
+/// carries the server ID channel reactions and votes key on,
+/// the server's own reaction counts and poll tallies, and no
+/// sender JID (a channel post's author is the channel; an
+/// admin profile name rides along when the channel uses one).
+/// An entry whose body the server withheld (a revoked update
+/// keeps its envelope and loses its payload) renders as a
+/// deleted-update placeholder, never as a blank bubble.
+pub(super) fn translate_newsletter_message(
+    channel_jid: &str,
+    entry: &whatsapp_rust::NewsletterMessage,
+) -> LiveMessage {
+    let (mut kind, view_once, body) = match entry.message.as_ref() {
+        Some(proto) => {
+            let text =
+                proto.text_content().map(ToOwned::to_owned).or_else(|| structured_text(proto));
+            let (mut kind, view_once) = classify_message(proto);
+            if matches!(kind, LiveMessageKind::Text) && text.is_none() {
+                kind = LiveMessageKind::Other(unhandled_label(proto));
+            }
+            let body = body_for(&kind, view_once, text.as_deref());
+            (kind, view_once, body)
+        }
+        None => {
+            let kind = LiveMessageKind::Other("Deleted update".to_owned());
+            let body = body_for(&kind, false, None);
+            (kind, false, body)
+        }
+    };
+    // The server's poll tallies key on the SHA-256 of the
+    // option name; the creation payload the classifier read
+    // holds the names, so the counts land on their options.
+    if let LiveMessageKind::Poll { options, .. } = &mut kind {
+        for (name, count) in options.iter_mut() {
+            let hash = whatsapp_rust::wacore::poll::compute_option_hash(name);
+            if let Some(vote) = entry.votes.iter().find(|v| v.option_hash == hash) {
+                *count = u32::try_from(vote.count).unwrap_or(u32::MAX);
+            }
+        }
+    }
+    let id = entry
+        .message_id
+        .as_ref()
+        .map(ToString::to_string)
+        .unwrap_or_else(|| format!("server:{}", entry.server_id));
+    let timestamp = i64::try_from(entry.original_timestamp.unwrap_or(entry.timestamp))
+        .unwrap_or(entry.timestamp.min(i64::MAX as u64) as i64);
+    let mut msg = LiveMessage::text(
+        id,
+        channel_jid.to_owned(),
+        entry.admin_profile.as_ref().map(|profile| profile.name.clone()),
+        body,
+        timestamp,
+        entry.is_sender,
+    );
+    msg.server_id = Some(entry.server_id);
+    msg.kind = kind;
+    msg.view_once = view_once;
+    msg.edited = matches!(
+        entry.edit,
+        whatsapp_rust::wacore::types::message::EditAttribute::AdminEdit
+    );
+    msg.forwarded = entry.forwards_count.is_some_and(|count| count > 0);
+    msg.reactions = entry
+        .reactions
+        .iter()
+        .map(|r| (r.code.clone(), u32::try_from(r.count).unwrap_or(u32::MAX)))
+        .collect();
+    if let Some(proto) = entry.message.as_ref() {
+        msg.photo_ref = super::util::photo_ref_of(proto);
+        msg.voice_ref = super::util::voice_ref_of(proto);
+        msg.video_ref = super::util::video_ref_of(proto);
+        msg.video_thumbnail = super::util::video_thumbnail_of(proto);
+        msg.poster_ref = super::util::poster_ref_of(proto);
+        if let Some((width, height)) = super::util::video_dimensions_of(proto) {
+            msg.video_width = Some(width);
+            msg.video_height = Some(height);
+        }
+        msg.photo_thumbnail = super::util::photo_thumbnail_of(proto);
+        msg.sticker_ref = super::util::sticker_ref_of(proto);
+        msg.voice_waveform = super::util::voice_waveform_of(proto);
+        carry_media_extras(&mut msg, proto);
+        msg.link_preview = embedded_link_preview(proto);
+    }
+    msg
+}
+
 /// Translates one live message addressed to `status@broadcast`
 /// into a [`crate::LiveStatus`]. The classifier and body rules
 /// are the same ones chat messages use, so a status reads
@@ -1886,6 +2016,17 @@ fn classify_unwrapped_deep(
     depth: u32,
 ) -> (LiveMessageKind, bool) {
     if depth < 4 {
+        // A channel comment wraps the comment's own body in
+        // its `message` field (the library's comments feature
+        // builds exactly this shape): classify the body, not
+        // the envelope, so a comment renders as the text or
+        // media it actually is instead of a kind label
+        // (audit P0-09).
+        if let Some(inner) =
+            msg.comment_message.as_option().and_then(|c| c.message.as_option())
+        {
+            return classify_unwrapped_deep(inner.get_base_message(), depth + 1);
+        }
         let envelope = msg
             .bot_invoke_message
             .as_option()

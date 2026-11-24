@@ -19,6 +19,7 @@ use crate::{Backend, BackendCommand, BackendConfig, EventSink};
 use session::run_async;
 
 mod calls;
+mod channels;
 mod profile;
 mod send;
 mod session;

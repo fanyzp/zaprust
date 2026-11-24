@@ -18,8 +18,9 @@ use crate::{
 
 #[cfg(feature = "calls")]
 use super::calls::{
-    accept_incoming_call, handle_call_event, offer_call_id, start_outgoing_call, CallActive,
-    CallIncoming,
+    accept_incoming_call, create_call_link, handle_call_event, join_call_link, offer_call_id,
+    preview_call_link, set_call_video, start_group_call, start_outgoing_call, CallActive,
+    CallIncoming, CallJoining,
 };
 use super::send::{
     delete_status, outgoing_contact_message, outgoing_location_message, outgoing_text_message,
@@ -609,6 +610,11 @@ pub(super) async fn run_async(
     let call_incoming_events = call_incoming.clone();
     #[cfg(feature = "calls")]
     let call_active: CallActive = std::sync::Arc::new(std::sync::Mutex::new(None));
+    // A call-link join in flight (its start can sit in a
+    // waiting room for as long as the host takes): the flag
+    // EndCall cancels through.
+    #[cfg(feature = "calls")]
+    let call_joining: CallJoining = std::sync::Arc::new(std::sync::Mutex::new(None));
     // The privacy-settings fetch spawned by `on_connected`. The slot
     // keeps only the newest fetch: a reconnect aborts the fetch it
     // replaces, so a slow fetch from an earlier connect can never
@@ -2002,6 +2008,157 @@ pub(super) async fn run_async(
                     start_outgoing_call(&client, &events, &call_active, &chat_jid, video).await;
                 }
                 #[cfg(feature = "calls")]
+                BackendCommand::StartGroupCall { chat_jid, video } => {
+                    start_group_call(&client, &events, &call_active, &chat_jid, video).await;
+                }
+                #[cfg(feature = "calls")]
+                BackendCommand::CreateCallLink { video } => {
+                    create_call_link(&client, &events, video).await;
+                }
+                #[cfg(feature = "calls")]
+                BackendCommand::PreviewCallLink { link } => {
+                    preview_call_link(&client, &events, &link).await;
+                }
+                #[cfg(feature = "calls")]
+                BackendCommand::JoinCallLink { link, video } => {
+                    join_call_link(
+                        client.clone(),
+                        &events,
+                        &call_active,
+                        &call_joining,
+                        link,
+                        video,
+                    )
+                    .await;
+                }
+                #[cfg(feature = "calls")]
+                BackendCommand::SetCallVideo { on } => {
+                    set_call_video(&events, &call_active, on).await;
+                }
+                #[cfg(feature = "calls")]
+                BackendCommand::SendCallReaction { emoji } => {
+                    let handle = lock_cache(&call_active).as_ref().map(|a| a.handle.clone());
+                    match handle {
+                        Some(handle) => {
+                            if let Err(e) = handle.send_reaction(emoji) {
+                                events.emit(BackendEvent::CallControlFailed {
+                                    message: format!(
+                                        "Sending the reaction failed: {}",
+                                        error_words(&e)
+                                    ),
+                                });
+                            }
+                        }
+                        None => events.emit(BackendEvent::CallControlFailed {
+                            message: "No call is in progress.".to_owned(),
+                        }),
+                    }
+                }
+                #[cfg(feature = "calls")]
+                BackendCommand::SetCallHandRaised { raised } => {
+                    let handle = lock_cache(&call_active).as_ref().map(|a| a.handle.clone());
+                    match handle {
+                        Some(handle) => {
+                            if let Err(e) = handle.set_hand_raised(raised).await {
+                                events.emit(BackendEvent::CallControlFailed {
+                                    message: format!(
+                                        "Raising your hand failed: {}",
+                                        error_words(&e)
+                                    ),
+                                });
+                            }
+                        }
+                        None => events.emit(BackendEvent::CallControlFailed {
+                            message: "No call is in progress.".to_owned(),
+                        }),
+                    }
+                }
+                #[cfg(feature = "calls")]
+                BackendCommand::InviteCallParticipant { jid } => {
+                    let handle = lock_cache(&call_active).as_ref().map(|a| a.handle.clone());
+                    match (handle, jid.parse::<Jid>()) {
+                        (Some(handle), Ok(target)) => {
+                            if let Err(e) = handle.invite_participant(&target).await {
+                                events.emit(BackendEvent::CallControlFailed {
+                                    message: format!(
+                                        "Inviting them failed: {}",
+                                        error_words(&e)
+                                    ),
+                                });
+                            }
+                        }
+                        (Some(_), Err(e)) => events.emit(BackendEvent::CallControlFailed {
+                            message: format!("Invalid address: {}", error_words(&e)),
+                        }),
+                        (None, _) => events.emit(BackendEvent::CallControlFailed {
+                            message: "No call is in progress.".to_owned(),
+                        }),
+                    }
+                }
+                #[cfg(feature = "calls")]
+                BackendCommand::AdmitWaitingUser { jid } => {
+                    let handle = lock_cache(&call_active).as_ref().map(|a| a.handle.clone());
+                    match (handle, jid.parse::<Jid>()) {
+                        (Some(handle), Ok(user)) => {
+                            if let Err(e) = handle.admit_waiting_user(&user).await {
+                                events.emit(BackendEvent::CallControlFailed {
+                                    message: format!(
+                                        "Letting them in failed: {}",
+                                        error_words(&e)
+                                    ),
+                                });
+                            }
+                        }
+                        (Some(_), Err(e)) => events.emit(BackendEvent::CallControlFailed {
+                            message: format!("Invalid address: {}", error_words(&e)),
+                        }),
+                        (None, _) => events.emit(BackendEvent::CallControlFailed {
+                            message: "No call is in progress.".to_owned(),
+                        }),
+                    }
+                }
+                #[cfg(feature = "calls")]
+                BackendCommand::DenyWaitingUser { jid } => {
+                    let handle = lock_cache(&call_active).as_ref().map(|a| a.handle.clone());
+                    match (handle, jid.parse::<Jid>()) {
+                        (Some(handle), Ok(user)) => {
+                            if let Err(e) = handle.deny_waiting_user(&user).await {
+                                events.emit(BackendEvent::CallControlFailed {
+                                    message: format!(
+                                        "Refusing them failed: {}",
+                                        error_words(&e)
+                                    ),
+                                });
+                            }
+                        }
+                        (Some(_), Err(e)) => events.emit(BackendEvent::CallControlFailed {
+                            message: format!("Invalid address: {}", error_words(&e)),
+                        }),
+                        (None, _) => events.emit(BackendEvent::CallControlFailed {
+                            message: "No call is in progress.".to_owned(),
+                        }),
+                    }
+                }
+                #[cfg(feature = "calls")]
+                BackendCommand::SetCallApproval { enabled } => {
+                    let handle = lock_cache(&call_active).as_ref().map(|a| a.handle.clone());
+                    match handle {
+                        Some(handle) => {
+                            if let Err(e) = handle.set_approval_required(enabled).await {
+                                events.emit(BackendEvent::CallControlFailed {
+                                    message: format!(
+                                        "Changing the waiting room failed: {}",
+                                        error_words(&e)
+                                    ),
+                                });
+                            }
+                        }
+                        None => events.emit(BackendEvent::CallControlFailed {
+                            message: "No call is in progress.".to_owned(),
+                        }),
+                    }
+                }
+                #[cfg(feature = "calls")]
                 BackendCommand::AcceptCall => {
                     accept_incoming_call(&client, &events, &call_active, &call_incoming).await;
                 }
@@ -2041,6 +2198,21 @@ pub(super) async fn run_async(
                         // The pump notices the end and
                         // emits the final CallChanged.
                         let _ = handle.terminate().await;
+                    } else if let Some(cancelled) = lock_cache(&call_joining).take() {
+                        // A call-link join still waiting (for
+                        // the host, or for the network): cancel
+                        // it and end the overlay now. The join
+                        // task sees the flag when its start
+                        // returns and terminates whatever
+                        // arrived, silently.
+                        cancelled.store(true, std::sync::atomic::Ordering::Relaxed);
+                        events.emit(BackendEvent::CallChanged {
+                            call_id: String::new(),
+                            chat_jid: String::new(),
+                            phase: crate::CallPhase::Ended,
+                            seconds: 0,
+                            reason: Some("Call ended".to_owned()),
+                        });
                     } else {
                         // Ringing incoming call: EndCall
                         // declines it.
@@ -2110,7 +2282,27 @@ pub(super) async fn run_async(
                     });
                 }
                 #[cfg(not(feature = "calls"))]
+                BackendCommand::SetCallVideo { .. }
+                | BackendCommand::SendCallReaction { .. }
+                | BackendCommand::SetCallHandRaised { .. }
+                | BackendCommand::InviteCallParticipant { .. }
+                | BackendCommand::AdmitWaitingUser { .. }
+                | BackendCommand::DenyWaitingUser { .. }
+                | BackendCommand::SetCallApproval { .. } => {
+                    events.emit(BackendEvent::CallControlFailed {
+                        message: "Calls are not compiled into this build.".to_owned(),
+                    });
+                }
+                #[cfg(not(feature = "calls"))]
+                BackendCommand::CreateCallLink { .. } | BackendCommand::PreviewCallLink { .. } => {
+                    events.emit(BackendEvent::CallLinkFailed {
+                        message: "Calls are not compiled into this build.".to_owned(),
+                    });
+                }
+                #[cfg(not(feature = "calls"))]
                 BackendCommand::StartCall { .. }
+                | BackendCommand::StartGroupCall { .. }
+                | BackendCommand::JoinCallLink { .. }
                 | BackendCommand::AcceptCall
                 | BackendCommand::RejectCall
                 | BackendCommand::EndCall => {

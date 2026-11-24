@@ -21,12 +21,33 @@ pub(super) type CallIncoming = std::sync::Arc<std::sync::Mutex<Option<std::sync:
 #[cfg(feature = "calls")]
 pub(super) type CallActive = std::sync::Arc<std::sync::Mutex<Option<ActiveCall>>>;
 
-/// One live call: its protocol handle plus its audio session.
+/// A call-link join in flight: the flag the join task checks
+/// when its long start finally returns, set by EndCall when the
+/// user gives up waiting (the join's own Ended was already
+/// emitted by the EndCall arm, so a cancelled join that still
+/// connects is terminated silently instead of resurrecting a
+/// call the user already closed).
+#[cfg(feature = "calls")]
+pub(super) type CallJoining =
+    std::sync::Arc<std::sync::Mutex<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>>>;
+
+/// One live call: its protocol handle plus its media sessions.
 #[cfg(feature = "calls")]
 pub(super) struct ActiveCall {
     pub(super) call_id: String,
     pub(super) handle: whatsapp_rust::voip::CallHandle,
     pub(super) audio: crate::audio::CallAudio,
+    /// The video endpoints, when the call carries video (it
+    /// started as a video call, or video was switched on
+    /// mid-call). Dropping this stops the camera and the frame
+    /// forwarder, so the slot owns it for exactly the call's
+    /// lifetime.
+    pub(super) video: Option<crate::callvideo::CallVideo>,
+    /// The other side's video is on, as the pump last reported
+    /// it. Shared with the session's control arms, which
+    /// compose [`BackendEvent::CallVideoState`] from the slot
+    /// and need the remote half they do not own.
+    pub(super) remote_video: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// (call id, caller chat) of an incoming offer event.
@@ -55,35 +76,33 @@ pub(super) fn handle_call_event(
     match &**event {
         Event::IncomingCall(ic) => match &ic.action {
             CallAction::Offer { call_id, is_video, group_jid, .. } => {
-                if group_jid.is_some() {
-                    sink.emit(BackendEvent::Error {
-                        message: "A group call invitation arrived. Group calls are not \
-                                  supported in Zaprust yet."
-                            .to_owned(),
-                    });
-                } else {
-                    // Only one call rings at a time: a second offer
-                    // while one is already stored must not replace
-                    // it. The app is showing the first caller, so
-                    // keep the first offer and ignore the second;
-                    // swapping it here would make Accept answer a
-                    // different caller than the one on screen.
-                    let stored_first = {
-                        let mut guard = lock_cache(slot);
-                        if guard.is_some() {
-                            true
-                        } else {
-                            *guard = Some(event.clone());
-                            false
-                        }
-                    };
-                    if !stored_first {
-                        sink.emit(BackendEvent::IncomingCall {
-                            call_id: call_id.clone(),
-                            chat_jid: ic.from.to_string(),
-                            video: *is_video,
-                        });
+                // Only one call rings at a time: a second offer
+                // while one is already stored must not replace
+                // it. The app is showing the first caller, so
+                // keep the first offer and ignore the second;
+                // swapping it here would make Accept answer a
+                // different caller than the one on screen. A
+                // group invitation rings the same way, keyed to
+                // the group: the call belongs to the group,
+                // whoever sent the invite.
+                let stored_first = {
+                    let mut guard = lock_cache(slot);
+                    if guard.is_some() {
+                        true
+                    } else {
+                        *guard = Some(event.clone());
+                        false
                     }
+                };
+                if !stored_first {
+                    sink.emit(BackendEvent::IncomingCall {
+                        call_id: call_id.clone(),
+                        chat_jid: group_jid
+                            .clone()
+                            .unwrap_or_else(|| ic.from.to_string()),
+                        video: *is_video,
+                        group_jid: group_jid.clone(),
+                    });
                 }
             }
             CallAction::Terminate { call_id, .. } => {
@@ -158,9 +177,85 @@ pub(super) fn handle_call_event(
     }
 }
 
-/// Starts an outgoing voice call: opens the audio devices first
-/// (that is also the microphone permission request), then places
-/// the call through the library facade.
+/// Builds the video plumbing for a call that carries video.
+/// Runs the (potentially slow, camera-probing) construction on
+/// a blocking thread so a wedged camera driver cannot stall
+/// the session loop; the construction itself is bounded by its
+/// own setup handshake.
+#[cfg(feature = "calls")]
+async fn build_video(events: &EventSink) -> crate::callvideo::CallVideo {
+    let sink = events.clone();
+    match tokio::task::spawn_blocking(move || crate::callvideo::CallVideo::real(sink)).await {
+        Ok(video) => video,
+        Err(_) => crate::callvideo::CallVideo::real(events.clone()),
+    }
+}
+
+/// Emits the call's video state from a video session's camera
+/// facts and the remote side's last known state.
+#[cfg(feature = "calls")]
+fn emit_video_state(
+    events: &EventSink,
+    video: Option<&crate::callvideo::CallVideo>,
+    remote_on: bool,
+) {
+    let (local_on, local_note) = match video {
+        Some(video) => (video.camera_on, video.camera_note.clone()),
+        None => (false, None),
+    };
+    events.emit(BackendEvent::CallVideoState { local_on, remote_on, local_note });
+}
+
+/// Adopts a started call: announces its first phase, reports
+/// its video state when it carries video, stores it in the
+/// slot BEFORE spawning its pump, and spawns the pump. The
+/// store-before-spawn order matters: the pump releases the
+/// slot by call id when the call ends, and a call that ends
+/// instantly (a buffered relay failure already waiting in its
+/// event stream) must find its own entry there; spawning
+/// first let the pump clean up an empty slot and left the
+/// dead entry stored behind it, rejecting every later call
+/// as "already in progress" until the app restarted.
+#[cfg(feature = "calls")]
+#[allow(clippy::too_many_arguments)]
+fn adopt_call(
+    events: &EventSink,
+    active: &CallActive,
+    handle: whatsapp_rust::voip::CallHandle,
+    chat_jid: String,
+    audio: crate::audio::CallAudio,
+    video: Option<crate::callvideo::CallVideo>,
+    first_phase: crate::CallPhase,
+) {
+    let call_id = handle.call_id().to_owned();
+    events.emit(BackendEvent::CallChanged {
+        call_id: call_id.clone(),
+        chat_jid: chat_jid.clone(),
+        phase: first_phase,
+        seconds: 0,
+        reason: None,
+    });
+    if video.is_some() {
+        emit_video_state(events, video.as_ref(), false);
+    }
+    let pump_handle = handle.clone();
+    *lock_cache(active) = Some(ActiveCall {
+        call_id: call_id.clone(),
+        handle,
+        audio,
+        video,
+        remote_video: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    });
+    spawn_call_pump(pump_handle, call_id, chat_jid, active, events);
+}
+
+/// Starts an outgoing 1:1 call: opens the audio devices first
+/// (that is also the microphone permission request), then
+/// places the call through the library facade. A video call
+/// also builds the camera plumbing and attaches the video
+/// endpoints; a machine without a camera still places the
+/// call (receiving video, sending voice) and says so through
+/// the video state event.
 #[cfg(feature = "calls")]
 pub(super) async fn start_outgoing_call(
     client: &whatsapp_rust::Client,
@@ -169,14 +264,6 @@ pub(super) async fn start_outgoing_call(
     chat_jid: &str,
     video: bool,
 ) {
-    if video {
-        // Video calling is not built yet; the user hears the
-        // plain fact and the working alternative.
-        events.emit(BackendEvent::Error {
-            message: "Video calls are not available yet. Voice calls work.".to_owned(),
-        });
-        return;
-    }
     if lock_cache(active).is_some() {
         events.emit(BackendEvent::Error { message: "A call is already in progress.".to_owned() });
         return;
@@ -197,32 +284,93 @@ pub(super) async fn start_outgoing_call(
             return;
         }
     };
-    match client.voip().call(&jid).audio(audio.source.clone(), audio.sink.clone()).start().await {
+    let video_plumbing = if video { Some(build_video(events).await) } else { None };
+    let mut builder =
+        client.voip().call(&jid).audio(audio.source.clone(), audio.sink.clone());
+    if let Some(plumbing) = &video_plumbing {
+        builder = builder.video(plumbing.source.clone(), plumbing.sink.clone());
+    }
+    match builder.start().await {
         Ok(handle) => {
-            let call_id = handle.call_id().to_owned();
-            events.emit(BackendEvent::CallChanged {
-                call_id: call_id.clone(),
-                chat_jid: chat_jid.to_owned(),
-                phase: crate::CallPhase::Ringing,
-                seconds: 0,
-                reason: None,
-            });
-            // Store the call BEFORE spawning its pump. The pump
-            // releases the slot by call id when the call ends, and
-            // a call that ends instantly (a buffered relay failure
-            // already waiting in its event stream) must find its
-            // own entry there: spawning first let the pump clean
-            // up an empty slot and left this dead entry stored
-            // behind it, rejecting every later call as "already
-            // in progress" until the app restarted.
-            let pump_handle = handle.clone();
-            *lock_cache(active) = Some(ActiveCall { call_id: call_id.clone(), handle, audio });
-            spawn_call_pump(pump_handle, call_id, chat_jid.to_owned(), active, events);
+            adopt_call(
+                events,
+                active,
+                handle,
+                chat_jid.to_owned(),
+                audio,
+                video_plumbing,
+                crate::CallPhase::Ringing,
+            );
         }
         Err(e) => {
             audio.shutdown();
+            if let Some(plumbing) = &video_plumbing {
+                plumbing.shutdown();
+            }
             events.emit(BackendEvent::Error {
                 message: format!("Starting the call failed: {}", error_words(&e)),
+            });
+        }
+    }
+}
+
+/// Starts an outgoing group call bound to a group chat: the
+/// library resolves the group's current roster itself and
+/// rings its members. Phases and roster then flow like any
+/// group call's.
+#[cfg(feature = "calls")]
+pub(super) async fn start_group_call(
+    client: &whatsapp_rust::Client,
+    events: &EventSink,
+    active: &CallActive,
+    chat_jid: &str,
+    video: bool,
+) {
+    if lock_cache(active).is_some() {
+        events.emit(BackendEvent::Error { message: "A call is already in progress.".to_owned() });
+        return;
+    }
+    let jid = match chat_jid.parse::<Jid>() {
+        Ok(j) => j,
+        Err(e) => {
+            events.emit(BackendEvent::Error {
+                message: format!("Invalid chat address: {}", error_words(&e)),
+            });
+            return;
+        }
+    };
+    let audio = match crate::audio::CallAudio::real(false).await {
+        Ok(a) => a,
+        Err(e) => {
+            events.emit(BackendEvent::Error { message: e });
+            return;
+        }
+    };
+    let video_plumbing = if video { Some(build_video(events).await) } else { None };
+    let mut builder =
+        client.voip().group_call_by_id(&jid).audio(audio.source.clone(), audio.sink.clone());
+    if let Some(plumbing) = &video_plumbing {
+        builder = builder.video(plumbing.source.clone(), plumbing.sink.clone());
+    }
+    match builder.start().await {
+        Ok(handle) => {
+            adopt_call(
+                events,
+                active,
+                handle,
+                chat_jid.to_owned(),
+                audio,
+                video_plumbing,
+                crate::CallPhase::Ringing,
+            );
+        }
+        Err(e) => {
+            audio.shutdown();
+            if let Some(plumbing) = &video_plumbing {
+                plumbing.shutdown();
+            }
+            events.emit(BackendEvent::Error {
+                message: format!("Starting the group call failed: {}", error_words(&e)),
             });
         }
     }
@@ -256,7 +404,19 @@ pub(super) async fn accept_incoming_call(
     let Event::IncomingCall(ic) = &*event else {
         return;
     };
-    let (call_id, chat_jid) = offer_call_id(ic);
+    let (_, chat_jid) = offer_call_id(ic);
+    // The offer's own facts decide the accept's shape: a video
+    // offer is accepted with video endpoints (the facade builds
+    // the group media spec itself when the offer is a group
+    // invitation, so one accept path serves both).
+    let offer_video = matches!(
+        &ic.action,
+        whatsapp_rust::wacore::types::call::CallAction::Offer { is_video: true, .. }
+    );
+    let offer_group = matches!(
+        &ic.action,
+        whatsapp_rust::wacore::types::call::CallAction::Offer { group_jid: Some(_), .. }
+    );
     let audio = match crate::audio::CallAudio::real(false).await {
         Ok(a) => a,
         Err(e) => {
@@ -264,7 +424,13 @@ pub(super) async fn accept_incoming_call(
             return;
         }
     };
-    match client.voip().accept(ic).audio(audio.source.clone(), audio.sink.clone()).start().await {
+    let video_plumbing = if offer_video { Some(build_video(events).await) } else { None };
+    let mut builder =
+        client.voip().accept(ic).audio(audio.source.clone(), audio.sink.clone());
+    if let Some(plumbing) = &video_plumbing {
+        builder = builder.video(plumbing.source.clone(), plumbing.sink.clone());
+    }
+    match builder.start().await {
         Ok(handle) => {
             // Accepted: now the slot can go. Clear it only if it
             // still holds this offer (it cannot have been replaced,
@@ -275,26 +441,307 @@ pub(super) async fn accept_incoming_call(
                 *guard = None;
             }
             drop(guard);
-            events.emit(BackendEvent::CallChanged {
-                call_id: call_id.clone(),
-                chat_jid: chat_jid.clone(),
-                phase: crate::CallPhase::Connecting,
-                seconds: 0,
-                reason: None,
-            });
-            // Store the call BEFORE spawning its pump, for the
-            // same reason as in start_outgoing_call: the pump
-            // releases the slot by call id when the call ends,
-            // and an instantly ending call must find its own
-            // entry there, not be stored behind the cleanup.
-            let pump_handle = handle.clone();
-            *lock_cache(active) = Some(ActiveCall { call_id: call_id.clone(), handle, audio });
-            spawn_call_pump(pump_handle, call_id, chat_jid, active, events);
+            // A group call's history and overlay belong to the
+            // group chat, not to whoever sent the invite.
+            let owner_jid = if offer_group {
+                match &ic.action {
+                    whatsapp_rust::wacore::types::call::CallAction::Offer {
+                        group_jid: Some(group),
+                        ..
+                    } => group.clone(),
+                    _ => chat_jid.clone(),
+                }
+            } else {
+                chat_jid.clone()
+            };
+            adopt_call(
+                events,
+                active,
+                handle,
+                owner_jid,
+                audio,
+                video_plumbing,
+                crate::CallPhase::Connecting,
+            );
         }
         Err(e) => {
             audio.shutdown();
+            if let Some(plumbing) = &video_plumbing {
+                plumbing.shutdown();
+            }
             events.emit(BackendEvent::Error {
                 message: format!("Accepting the call failed: {}", error_words(&e)),
+            });
+        }
+    }
+}
+
+/// Creates a call link of the asked kind and answers with its
+/// URL.
+#[cfg(feature = "calls")]
+pub(super) async fn create_call_link(
+    client: &whatsapp_rust::Client,
+    events: &EventSink,
+    video: bool,
+) {
+    use whatsapp_rust::wacore::types::group_call::CallLinkMedia;
+    let media = if video { CallLinkMedia::Video } else { CallLinkMedia::Audio };
+    match client.voip().create_call_link(media).await {
+        Ok(link) => {
+            events.emit(BackendEvent::CallLinkCreated { url: link.url(), video });
+        }
+        Err(e) => {
+            events.emit(BackendEvent::CallLinkFailed {
+                message: format!("Creating the call link failed: {}", error_words(&e)),
+            });
+        }
+    }
+}
+
+/// The media kind a call link string names, from its URL path
+/// when it carries one. A bare token names no kind.
+#[cfg(feature = "calls")]
+fn link_media_from_url(link: &str) -> Option<whatsapp_rust::wacore::types::group_call::CallLinkMedia> {
+    use whatsapp_rust::wacore::types::group_call::CallLinkMedia;
+    if link.contains("/video/") {
+        Some(CallLinkMedia::Video)
+    } else if link.contains("/audio/") {
+        Some(CallLinkMedia::Audio)
+    } else {
+        None
+    }
+}
+
+/// Reads a call link's facts before joining. The preview call
+/// needs the link's kind; a full URL names it, and for a bare
+/// token the audio kind is tried first, then video (the
+/// preview answers only for the kind the link was created
+/// with, so the one that answers is the link's kind).
+#[cfg(feature = "calls")]
+pub(super) async fn preview_call_link(
+    client: &whatsapp_rust::Client,
+    events: &EventSink,
+    link: &str,
+) {
+    use whatsapp_rust::wacore::types::group_call::CallLinkMedia;
+    let kinds: Vec<CallLinkMedia> = match link_media_from_url(link) {
+        Some(media) => vec![media],
+        None => vec![CallLinkMedia::Audio, CallLinkMedia::Video],
+    };
+    let mut last_error: Option<String> = None;
+    for media in kinds {
+        match client.voip().preview_call_link(link, media).await {
+            Ok(preview) => {
+                events.emit(BackendEvent::CallLinkPreview {
+                    url: whatsapp_rust::wacore::types::group_call::CallLink {
+                        token: preview.token.clone(),
+                        media,
+                    }
+                    .url(),
+                    creator_jid: preview.creator.to_string(),
+                    video: media == CallLinkMedia::Video,
+                    waiting_room: preview.waiting_room_enabled,
+                });
+                return;
+            }
+            Err(e) => {
+                last_error = Some(error_words(&e));
+            }
+        }
+    }
+    events.emit(BackendEvent::CallLinkFailed {
+        message: format!(
+            "That call link could not be read: {}",
+            last_error.unwrap_or_else(|| "unknown error".to_owned())
+        ),
+    });
+}
+
+/// Joins a call through a call link. The join can sit in the
+/// link's waiting room for as long as the host takes, so it
+/// runs as its own task: the overlay opens in Connecting at
+/// once (with an empty call id, adopted by the real one when
+/// the join lands), and the EndCall arm can cancel through
+/// the joining slot while the wait runs.
+#[cfg(feature = "calls")]
+pub(super) async fn join_call_link(
+    client: std::sync::Arc<whatsapp_rust::Client>,
+    events: &EventSink,
+    active: &CallActive,
+    joining: &CallJoining,
+    link: String,
+    video: bool,
+) {
+    use whatsapp_rust::wacore::types::group_call::CallLinkMedia;
+    if lock_cache(active).is_some() || lock_cache(joining).is_some() {
+        events.emit(BackendEvent::Error { message: "A call is already in progress.".to_owned() });
+        return;
+    }
+    let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    *lock_cache(joining) = Some(cancelled.clone());
+    events.emit(BackendEvent::CallChanged {
+        call_id: String::new(),
+        chat_jid: String::new(),
+        phase: crate::CallPhase::Connecting,
+        seconds: 0,
+        reason: None,
+    });
+    let media = if video { CallLinkMedia::Video } else { CallLinkMedia::Audio };
+    let audio = match crate::audio::CallAudio::real(false).await {
+        Ok(a) => a,
+        Err(e) => {
+            *lock_cache(joining) = None;
+            events.emit(BackendEvent::CallChanged {
+                call_id: String::new(),
+                chat_jid: String::new(),
+                phase: crate::CallPhase::Ended,
+                seconds: 0,
+                reason: Some(e),
+            });
+            return;
+        }
+    };
+    let video_plumbing = if video { Some(build_video(events).await) } else { None };
+    let active = active.clone();
+    let joining = joining.clone();
+    let events = events.clone();
+    tokio::spawn(async move {
+        // The builder borrows the client and the link string,
+        // so it is built here, inside the task that owns both.
+        let mut builder = client
+            .voip()
+            .call_link(&link, media)
+            .audio(audio.source.clone(), audio.sink.clone());
+        if let Some(plumbing) = &video_plumbing {
+            builder = builder.video(plumbing.source.clone(), plumbing.sink.clone());
+        }
+        let started = builder.start().await;
+        *lock_cache(&joining) = None;
+        if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+            // The user already closed this call: end whatever
+            // arrived and stay silent.
+            if let Ok(handle) = started {
+                let _ = handle.terminate().await;
+            }
+            audio.shutdown();
+            if let Some(plumbing) = &video_plumbing {
+                plumbing.shutdown();
+            }
+            return;
+        }
+        match started {
+            Ok(handle) => {
+                adopt_call(
+                    &events,
+                    &active,
+                    handle,
+                    String::new(),
+                    audio,
+                    video_plumbing,
+                    crate::CallPhase::Connecting,
+                );
+            }
+            Err(e) => {
+                audio.shutdown();
+                if let Some(plumbing) = &video_plumbing {
+                    plumbing.shutdown();
+                }
+                events.emit(BackendEvent::CallChanged {
+                    call_id: String::new(),
+                    chat_jid: String::new(),
+                    phase: crate::CallPhase::Ended,
+                    seconds: 0,
+                    reason: Some(format!(
+                        "Joining the call failed: {}",
+                        error_words(&e)
+                    )),
+                });
+            }
+        }
+    });
+}
+
+/// Turns the current call's local video on or off. Turning it
+/// on builds the camera plumbing and starts the video session
+/// (on a voice call this is the upgrade to a video call);
+/// turning it off stops the session and releases the camera.
+/// The confirmed state answers on
+/// [`BackendEvent::CallVideoState`], a refusal on
+/// [`BackendEvent::CallControlFailed`].
+#[cfg(feature = "calls")]
+pub(super) async fn set_call_video(events: &EventSink, active: &CallActive, on: bool) {
+    let handle = lock_cache(active).as_ref().map(|a| a.handle.clone());
+    let Some(handle) = handle else {
+        events.emit(BackendEvent::CallControlFailed {
+            message: "No call is in progress.".to_owned(),
+        });
+        return;
+    };
+    if !on {
+        // Detach the plumbing first: if stop_video then fails,
+        // the camera is still released and the state event
+        // below reports the local side off, which is the
+        // user's intent either way.
+        let taken = lock_cache(active).as_mut().and_then(|a| a.video.take());
+        match handle.stop_video().await {
+            Ok(()) => {
+                if let Some(plumbing) = &taken {
+                    plumbing.shutdown();
+                }
+                let remote = lock_cache(active)
+                    .as_ref()
+                    .is_some_and(|a| a.remote_video.load(std::sync::atomic::Ordering::Relaxed));
+                emit_video_state(events, None, remote);
+            }
+            Err(e) => {
+                // Restore the plumbing: the session is still
+                // live, so the camera must stay owned by it.
+                if let Some(plumbing) = taken {
+                    if let Some(slot) = &mut *lock_cache(active) {
+                        slot.video = Some(plumbing);
+                    }
+                }
+                events.emit(BackendEvent::CallControlFailed {
+                    message: format!("Stopping video failed: {}", error_words(&e)),
+                });
+            }
+        }
+        return;
+    }
+    if lock_cache(active).as_ref().is_some_and(|a| a.video.is_some()) {
+        // Already on: confirm the standing state.
+        let mut guard = lock_cache(active);
+        if let Some(slot) = &mut *guard {
+            let remote = slot.remote_video.load(std::sync::atomic::Ordering::Relaxed);
+            emit_video_state(events, slot.video.as_ref(), remote);
+        }
+        return;
+    }
+    let plumbing = build_video(events).await;
+    match handle.start_video(plumbing.source.clone(), plumbing.sink.clone()).await {
+        Ok(()) => {
+            let mut guard = lock_cache(active);
+            match &mut *guard {
+                Some(slot) if slot.handle.call_id() == handle.call_id() => {
+                    slot.video = Some(plumbing);
+                    let remote = slot.remote_video.load(std::sync::atomic::Ordering::Relaxed);
+                    emit_video_state(events, slot.video.as_ref(), remote);
+                }
+                _ => {
+                    // The call ended while the camera warmed
+                    // up: release it and say the control found
+                    // no call to act on.
+                    plumbing.shutdown();
+                    events.emit(BackendEvent::CallControlFailed {
+                        message: "No call is in progress.".to_owned(),
+                    });
+                }
+            }
+        }
+        Err(e) => {
+            plumbing.shutdown();
+            events.emit(BackendEvent::CallControlFailed {
+                message: format!("Starting video failed: {}", error_words(&e)),
             });
         }
     }
@@ -345,11 +792,17 @@ pub(super) fn spawn_call_pump(
     });
 }
 
-/// Pumps one call's event stream into `CallChanged` events: media
-/// connected flips the call Active and starts the duration clock;
-/// terminal library events end it with their reason; a half-second
-/// phase poll catches ends that arrive without an event. On the
-/// way out it releases the call slot and the audio devices.
+/// Pumps one call's event stream into backend events: media
+/// connected flips the call Active and starts the duration
+/// clock; terminal library events end it with their reason; a
+/// half-second phase poll catches ends that arrive without an
+/// event. Group and link calls additionally translate the
+/// roster snapshots, hand raises, screen-share changes,
+/// reactions and waiting-room updates; video state changes
+/// are answered here too (a peer's upgrade request is
+/// accepted with the call's own endpoints, or starts video
+/// on a voice call). On the way out it releases the call slot
+/// and the media devices.
 #[cfg(feature = "calls")]
 pub(super) async fn pump_call(
     handle: whatsapp_rust::voip::CallHandle,
@@ -363,6 +816,28 @@ pub(super) async fn pump_call(
     let mut active_since: Option<std::time::Instant> = None;
     let mut last_seconds: u32 = u32::MAX;
     let mut end_reason: Option<String> = None;
+    // Group roster bookkeeping: the engine's snapshots are
+    // authoritative for membership; the hand and share flags
+    // arrive on their own events and are folded in by JID.
+    let mut roster: Vec<crate::CallParticipant> = Vec::new();
+    let mut hand_raised: std::collections::HashMap<String, bool> = std::collections::HashMap::new();
+    let mut sharing: std::collections::HashMap<String, bool> = std::collections::HashMap::new();
+    let mut last_dropped: u64 = 0;
+    let emit_roster = |events: &EventSink,
+                       roster: &Vec<crate::CallParticipant>,
+                       hand_raised: &std::collections::HashMap<String, bool>,
+                       sharing: &std::collections::HashMap<String, bool>| {
+        let participants = roster
+            .iter()
+            .map(|p| crate::CallParticipant {
+                jid: p.jid.clone(),
+                state: p.state.clone(),
+                hand_raised: hand_raised.get(&p.jid).copied().unwrap_or(p.hand_raised),
+                sharing: sharing.get(&p.jid).copied().unwrap_or(p.sharing),
+            })
+            .collect();
+        events.emit(BackendEvent::CallParticipants { participants });
+    };
     'pump: loop {
         let tick = tokio::time::sleep(std::time::Duration::from_millis(500));
         tokio::select! {
@@ -406,6 +881,84 @@ pub(super) async fn pump_call(
                         end_reason = Some("The other side's audio format is not supported.".to_owned());
                         break 'pump;
                     }
+                    Ok(CallEvent::GroupUpdated(update)) => {
+                        roster = update
+                            .participants
+                            .iter()
+                            .map(|p| crate::CallParticipant {
+                                jid: p.jid.to_string(),
+                                state: p.state.clone().unwrap_or_default(),
+                                hand_raised: false,
+                                sharing: false,
+                            })
+                            .collect();
+                        emit_roster(&events, &roster, &hand_raised, &sharing);
+                    }
+                    Ok(CallEvent::HandRaised { participant, raised }) => {
+                        hand_raised.insert(participant.to_string(), raised);
+                        emit_roster(&events, &roster, &hand_raised, &sharing);
+                    }
+                    Ok(CallEvent::ScreenShareChanged { participant, screen_share }) => {
+                        use whatsapp_rust::wacore::types::group_call::ScreenShareState;
+                        let on = screen_share.state == ScreenShareState::Started;
+                        sharing.insert(participant.to_string(), on);
+                        emit_roster(&events, &roster, &hand_raised, &sharing);
+                        if on {
+                            // A share is remote video: the
+                            // stage opens for the sharer's
+                            // frames.
+                            set_remote_video(&active, &call_id, true);
+                            emit_slot_video_state(&events, &active, &call_id);
+                        }
+                    }
+                    Ok(CallEvent::Reaction { participant, emoji, removed, .. }) => {
+                        events.emit(BackendEvent::CallReaction {
+                            jid: participant.to_string(),
+                            emoji: if removed { None } else { emoji },
+                        });
+                    }
+                    Ok(CallEvent::WaitingRoomUpdated(room)) => {
+                        events.emit(BackendEvent::CallWaitingRoom {
+                            is_admin: room.is_admin,
+                            approval_required: room.enabled,
+                            users: room
+                                .users
+                                .iter()
+                                .map(|u| crate::CallWaitingUser {
+                                    jid: u.jid.to_string(),
+                                    phone: u.pn.clone(),
+                                })
+                                .collect(),
+                        });
+                    }
+                    Ok(CallEvent::PeerVideoStateChanged { state, upgrade_token, .. }) => {
+                        use whatsapp_rust::wacore::types::call::VideoState;
+                        let remote_on = matches!(
+                            state,
+                            VideoState::Enabled
+                                | VideoState::Paused
+                                | VideoState::UpgradeAccept
+                        );
+                        set_remote_video(&active, &call_id, remote_on);
+                        if state == VideoState::UpgradeRequest {
+                            accept_peer_video_upgrade(
+                                &handle, &active, &call_id, &events, upgrade_token,
+                            )
+                            .await;
+                        }
+                        emit_slot_video_state(&events, &active, &call_id);
+                    }
+                    Ok(CallEvent::VideoKeyframeNeeded) => {
+                        if let Some(slot) = &*lock_cache(&active) {
+                            if slot.call_id == call_id {
+                                if let Some(video) = &slot.video {
+                                    video
+                                        .force_keyframe
+                                        .store(true, std::sync::atomic::Ordering::Relaxed);
+                                }
+                            }
+                        }
+                    }
                     Ok(_) => {}
                     Err(()) => break 'pump,
                 }
@@ -413,6 +966,28 @@ pub(super) async fn pump_call(
             () = tick => {
                 if matches!(handle.phase(), Some(whatsapp_rust::wacore::voip_control::CallPhase::Ended)) {
                     break 'pump;
+                }
+                // Keyframe repair: when the video forwarder
+                // had to shed frames, ask the peer for a fresh
+                // keyframe so the app's decoder resyncs (the
+                // handle method is the sink consumer's documented
+                // recovery; it is throttled inside the engine).
+                {
+                    let dropped_now = lock_cache(&active).as_ref().and_then(|slot| {
+                        (slot.call_id == call_id)
+                            .then(|| slot.video.as_ref().map(|v| {
+                                v.dropped_frames.load(std::sync::atomic::Ordering::Relaxed)
+                            }))
+                            .flatten()
+                    });
+                    if let Some(dropped_now) = dropped_now {
+                        if dropped_now > last_dropped {
+                            last_dropped = dropped_now;
+                            handle.request_peer_keyframe(
+                                whatsapp_rust::voip::KeyframeUrgency::Immediate,
+                            );
+                        }
+                    }
                 }
                 if let Some(since) = active_since {
                     let secs = u32::try_from(since.elapsed().as_secs()).unwrap_or(u32::MAX);
@@ -435,6 +1010,9 @@ pub(super) async fn pump_call(
     // them (a replacement call may already be live).
     if let Some(finished) = release_slot_if(&active, |a| a.call_id == call_id) {
         finished.audio.shutdown();
+        if let Some(video) = &finished.video {
+            video.shutdown();
+        }
     }
     events.emit(BackendEvent::CallChanged {
         call_id,
@@ -443,6 +1021,85 @@ pub(super) async fn pump_call(
         seconds,
         reason: Some(end_reason.unwrap_or_else(|| "Call ended".to_owned())),
     });
+}
+
+/// Records the remote side's video state on the call slot (the
+/// session's control arms compose their video state events
+/// from it).
+#[cfg(feature = "calls")]
+fn set_remote_video(active: &CallActive, call_id: &str, on: bool) {
+    if let Some(slot) = &*lock_cache(active) {
+        if slot.call_id == call_id {
+            slot.remote_video.store(on, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+}
+
+/// Emits the video state composed from the call slot: the
+/// local half from its video plumbing, the remote half from
+/// the flag the pump maintains.
+#[cfg(feature = "calls")]
+fn emit_slot_video_state(events: &EventSink, active: &CallActive, call_id: &str) {
+    let guard = lock_cache(active);
+    if let Some(slot) = &*guard {
+        if slot.call_id == call_id {
+            let remote = slot.remote_video.load(std::sync::atomic::Ordering::Relaxed);
+            emit_video_state(events, slot.video.as_ref(), remote);
+        }
+    }
+}
+
+/// Answers a peer's video upgrade request: with the call's
+/// own video endpoints when it already carries video (the
+/// user consented to a video call when they started or
+/// accepted it as one), or by starting video on a voice call,
+/// which builds the camera plumbing and stores it in the
+/// slot like the SetCallVideo arm does.
+#[cfg(feature = "calls")]
+async fn accept_peer_video_upgrade(
+    handle: &whatsapp_rust::voip::CallHandle,
+    active: &CallActive,
+    call_id: &str,
+    events: &EventSink,
+    upgrade_token: Option<whatsapp_rust::wacore::types::call::MediaVideoUpgradeToken>,
+) {
+    let existing = {
+        let guard = lock_cache(active);
+        guard.as_ref().and_then(|slot| {
+            (slot.call_id == call_id).then(|| {
+                slot.video
+                    .as_ref()
+                    .map(|v| (v.source.clone(), v.sink.clone()))
+            })
+        })
+    };
+    match existing {
+        Some(Some((source, sink))) => {
+            if let Some(token) = upgrade_token {
+                let _ = handle.accept_video(token, source, sink).await;
+            }
+        }
+        Some(None) => {
+            let plumbing = build_video(events).await;
+            if handle
+                .start_video(plumbing.source.clone(), plumbing.sink.clone())
+                .await
+                .is_ok()
+            {
+                let mut guard = lock_cache(active);
+                if let Some(slot) = &mut *guard {
+                    if slot.call_id == call_id && slot.video.is_none() {
+                        slot.video = Some(plumbing);
+                        return;
+                    }
+                }
+                plumbing.shutdown();
+            } else {
+                plumbing.shutdown();
+            }
+        }
+        _ => {}
+    }
 }
 
 #[cfg(all(test, feature = "calls"))]

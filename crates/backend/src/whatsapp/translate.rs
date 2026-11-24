@@ -3873,8 +3873,7 @@ mod live_pairing_fix_tests {
         let (kind, _) = classify_message(&msg);
         assert!(matches!(kind, LiveMessageKind::Text), "got {kind:?}");
         let mut bare = wa::Message::default();
-        bare.rich_response_message =
-            MessageField::some(wa::AIRichResponseMessage::default());
+        bare.rich_response_message = MessageField::some(wa::AIRichResponseMessage::default());
         assert_eq!(structured_text(&bare), None);
         assert_eq!(unhandled_label(&bare), "AI response");
     }

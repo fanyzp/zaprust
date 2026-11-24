@@ -1757,10 +1757,14 @@ mod tests {
         let (mut app, cmd_rx) = fake_call_app(&ctx);
         app.call_chat(4, CallKind::Video);
         assert_eq!(app.selected_chat, 4, "the call-back opens the entry's chat");
-        assert!(cmd_rx.try_recv().is_err(), "no call command is sent for a video call-back");
-        let notice = app.notice.as_ref().expect("the refusal is spoken");
-        assert_eq!(notice.kind, crate::state::NoticeKind::Error, "the refusal is an error notice");
-        app.notice = None;
+        match cmd_rx.try_recv() {
+            Ok(backend::BackendCommand::StartCall { chat_jid, video }) => {
+                assert_eq!(chat_jid, "6281234567890@s.whatsapp.net");
+                assert!(video, "a video entry calls back as a video call");
+            }
+            other => panic!("expected one StartCall command, got {other:?}"),
+        }
+        assert!(app.notice.is_none(), "no refusal is spoken for a video call-back");
         app.call_chat(4, CallKind::Voice);
         match cmd_rx.try_recv() {
             Ok(backend::BackendCommand::StartCall { chat_jid, video }) => {

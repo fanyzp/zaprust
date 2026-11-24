@@ -1154,4 +1154,71 @@ mod channel_tests {
             "the card flips to following"
         );
     }
+
+    /// Rows 103/126: the folder gate. A wrong code keeps the
+    /// folder shut with the inline error and the prompt open
+    /// for another try; the right code opens it.
+    #[test]
+    pub(super) fn code_prompt_gates_the_locked_folder() {
+        let (mut app, _tx, _ctx, _cmd_rx) = live_app();
+        app.lock_code = core::lockcode::LockCode::new("2468");
+        assert!(app.lock_code.is_some());
+        app.code_prompt = Some(crate::state::CodePrompt::OpenFolder);
+        app.code_entry = "0000".to_owned();
+        app.submit_code_prompt();
+        assert!(!app.folder_unlocked, "a wrong code keeps the folder shut");
+        assert_eq!(app.code_error, Some(crate::state::CodeError::Wrong));
+        assert!(app.code_prompt.is_some(), "the prompt stays for another try");
+        app.code_entry = "2468".to_owned();
+        app.submit_code_prompt();
+        assert!(app.folder_unlocked, "the right code opens the folder");
+        assert!(app.code_prompt.is_none());
+    }
+
+    /// Rows 103/126: creating the code from the folder prompt
+    /// refuses a short code inline, then sets the code and
+    /// opens the folder.
+    #[test]
+    pub(super) fn code_prompt_create_flow_sets_the_code() {
+        let (mut app, _tx, _ctx, _cmd_rx) = live_app();
+        app.code_prompt = Some(crate::state::CodePrompt::CreateThenFolder);
+        app.code_entry = "12".to_owned();
+        app.code_entry_repeat = "12".to_owned();
+        app.submit_code_prompt();
+        assert_eq!(app.code_error, Some(crate::state::CodeError::TooShort));
+        assert!(app.lock_code.is_none());
+        app.code_entry = "2468".to_owned();
+        app.code_entry_repeat = "2469".to_owned();
+        app.submit_code_prompt();
+        assert_eq!(app.code_error, Some(crate::state::CodeError::Mismatch));
+        assert!(app.lock_code.is_none());
+        app.code_entry_repeat = "2468".to_owned();
+        app.submit_code_prompt();
+        assert!(app.lock_code.is_some(), "the matching code is set");
+        assert!(app.folder_unlocked, "and the folder opens");
+    }
+
+    /// Row 126: the lock code and the app lock flag survive
+    /// the settings document round trip, and a stored app
+    /// lock arms the lock screen at load.
+    #[test]
+    pub(super) fn lock_settings_survive_the_round_trip() {
+        let (mut app, _tx, _ctx, _cmd_rx) = live_app();
+        app.lock_code = core::lockcode::LockCode::new("2468");
+        app.app_lock_enabled = true;
+        let doc = app.settings_json();
+        let (mut fresh, _tx2, _ctx2, _rx2) = live_app();
+        fresh.apply_settings_document(&doc);
+        assert!(
+            fresh.lock_code.as_ref().is_some_and(|c| c.verify("2468")),
+            "the digest round-trips and still verifies"
+        );
+        assert!(fresh.app_lock_enabled);
+        assert!(fresh.app_locked_now, "the app lock arms at load");
+        assert!(fresh.settings_json().get("lock_salt").is_some());
+        assert!(
+            fresh.settings_json().get("lock_hash").and_then(|v| v.as_str()).is_some(),
+            "the document carries the digest, never the code"
+        );
+    }
 }

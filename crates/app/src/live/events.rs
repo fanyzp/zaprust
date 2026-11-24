@@ -6264,6 +6264,76 @@ mod chat_state_routing_tests {
         assert!(!archived_muted(&app));
     }
 
+    pub(super) fn chat_locked(app: &App) -> bool {
+        app.chats.iter().find(|c| c.id == jid_id(CHAT_JID)).expect("chat exists").locked
+    }
+
+    /// Row 103: locking a chat sends the Lock command, flips
+    /// the mirror and the archive row at once, and the
+    /// LockChanged report settles the pending entry.
+    #[test]
+    pub(super) fn lock_toggle_sends_applies_and_confirms() {
+        let (mut app, tx, ctx, cmd_rx) = live_app();
+        seed_chat(&mut app, &tx, &ctx);
+        let chat_id = jid_id(CHAT_JID);
+        app.apply_lock_chat(chat_id, true);
+        assert_eq!(
+            cmd_rx.try_recv(),
+            Ok(BackendCommand::ChatAction {
+                chat_jid: CHAT_JID.to_owned(),
+                action: ChatAction::Lock
+            }),
+            "locking in live mode must reach the backend"
+        );
+        assert!(chat_locked(&app), "the local flip applies at once");
+        assert!(store_row(&app).locked, "the archive write-through carries the lock");
+        assert!(app.pending_lock_actions.contains_key(&chat_id));
+        tx.send(BackendEvent::LockChanged { chat_jid: CHAT_JID.to_owned(), locked: true })
+            .unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(app.pending_lock_actions.is_empty(), "the report settles the lock");
+        assert!(chat_locked(&app));
+    }
+
+    /// Row 103: a failed lock restores the exact previous
+    /// state in the mirror and the archive.
+    #[test]
+    pub(super) fn failed_lock_rolls_back() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        seed_chat(&mut app, &tx, &ctx);
+        let chat_id = jid_id(CHAT_JID);
+        app.apply_lock_chat(chat_id, true);
+        assert!(chat_locked(&app));
+        tx.send(BackendEvent::ChatActionFailed {
+            chat_jid: CHAT_JID.to_owned(),
+            action: ChatAction::Lock,
+            message: "Changing the chat failed: connection lost".to_owned(),
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(!chat_locked(&app), "the failed lock rolls back");
+        assert!(!store_row(&app).locked, "the archive row rolls back with it");
+        assert!(app.pending_lock_actions.is_empty());
+    }
+
+    /// Row 103: a lock made on another device (a LockChanged
+    /// with no local pending entry) lands in the mirror and
+    /// the archive, and an uninformed upsert does not clear
+    /// the known lock afterwards.
+    #[test]
+    pub(super) fn lock_changed_from_elsewhere_lands() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        seed_chat(&mut app, &tx, &ctx);
+        tx.send(BackendEvent::LockChanged { chat_jid: CHAT_JID.to_owned(), locked: true })
+            .unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(chat_locked(&app));
+        assert!(store_row(&app).locked);
+        tx.send(state_upsert(false, false)).unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(chat_locked(&app), "an uninformed upsert keeps the known lock");
+    }
+
     /// Item 116: the row menu's favorite toggle (apply_favorite,
     /// the handler the menu pick lands in) flips the mirror at
     /// once and writes the flag through to the archive, and it

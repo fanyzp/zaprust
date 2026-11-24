@@ -59,6 +59,23 @@ fn report(ctx: &egui::Context, stack: &str) {
     });
 }
 
+/// The permanent half of the probe: the app's font stack
+/// must cover the Arabic and Hebrew scripts (the P2-65
+/// finding was that it covered neither, at all).
+#[test]
+fn app_stack_covers_arabic_and_hebrew() {
+    let app = egui::Context::default();
+    crate::theme::install_fonts(&app);
+    let mut out = app.run_ui(egui::RawInput::default(), |_| {});
+    out.textures_delta.clear();
+    app.fonts_mut(|fonts| {
+        let fid = egui::FontId::proportional(14.0);
+        for c in "مرحبا שלום".chars().filter(|c| *c != ' ') {
+            assert!(fonts.has_glyph(&fid, c), "U+{:04X} must be covered", c as u32);
+        }
+    });
+}
+
 #[test]
 fn bidi_probe_report() {
     // The egui default stack (no app fonts): the baseline

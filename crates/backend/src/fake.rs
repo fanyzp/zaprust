@@ -67,6 +67,18 @@ pub const FAKE_LOCKED_DM_JID: &str = "10000000031@s.whatsapp.net";
 /// only): the account blocked it before this session, so the
 /// connect-time blocklist carries it.
 pub const FAKE_PROMO_JID: &str = "10000000032@s.whatsapp.net";
+/// Whether the bidi-fixture chats are scripted: an Arabic
+/// and a Hebrew DM, for the RTL display surfaces. Gated like
+/// the lock fixture so the standard fixtures are unchanged
+/// unless a capture asks for them.
+fn bidi_fixture_enabled() -> bool {
+    std::env::var_os("ZAPRUST_FAKE_BIDI").is_some()
+}
+
+/// JID of the scripted Arabic DM (bidi-fixture gate only).
+pub const FAKE_BIDI_AR_JID: &str = "10000000033@s.whatsapp.net";
+/// JID of the scripted Hebrew DM (bidi-fixture gate only).
+pub const FAKE_BIDI_HE_JID: &str = "10000000034@s.whatsapp.net";
 /// JID of the scripted group chat.
 pub const FAKE_GROUP_JID: &str = "10000000002@g.us";
 /// JID of the scripted channel.
@@ -491,6 +503,42 @@ pub fn scripted_chats() -> Vec<LiveChat> {
             preview: "You won a prize! Claim it now".to_owned(),
             preview_sender: None,
             timestamp: 1_699_999_500,
+            unread: 0,
+            archived: false,
+            locked: false,
+            pinned: false,
+            ephemeral_secs: 0,
+            muted: false,
+            mute_until: 0,
+            parent_jid: None,
+            is_parent: false,
+        });
+    }
+    if bidi_fixture_enabled() {
+        chats.push(LiveChat {
+            jid: FAKE_BIDI_AR_JID.to_owned(),
+            title: "Layla Haddad (live demo)".to_owned(),
+            kind: LiveChatKind::Dm,
+            preview: "سنلتقي غدا at 5 قرب المكتبة".to_owned(),
+            preview_sender: None,
+            timestamp: 1_700_000_260,
+            unread: 1,
+            archived: false,
+            locked: false,
+            pinned: false,
+            ephemeral_secs: 0,
+            muted: false,
+            mute_until: 0,
+            parent_jid: None,
+            is_parent: false,
+        });
+        chats.push(LiveChat {
+            jid: FAKE_BIDI_HE_JID.to_owned(),
+            title: "Noa Levi (live demo)".to_owned(),
+            kind: LiveChatKind::Dm,
+            preview: "פגישה tomorrow ב-9 בבוקר".to_owned(),
+            preview_sender: None,
+            timestamp: 1_700_000_255,
             unread: 0,
             archived: false,
             locked: false,
@@ -1065,6 +1113,47 @@ pub fn scripted_lock_fixture_messages() -> Vec<LiveMessage> {
             Some("Promo Blast".to_owned()),
             "You won a prize! Claim it now",
             1_699_999_500,
+            false,
+        ),
+    ]
+}
+
+/// The scripted messages for the bidi fixture (an Arabic and
+/// a Hebrew DM), delivered with the linked script under the
+/// same gate as the chats themselves.
+#[must_use]
+pub fn scripted_bidi_fixture_messages() -> Vec<LiveMessage> {
+    vec![
+        LiveMessage::text(
+            "fake-bidi-ar-1",
+            FAKE_BIDI_AR_JID,
+            Some("Layla Haddad".to_owned()),
+            "مرحبا! وصلت الملفات، شكرا لك",
+            1_700_000_240,
+            false,
+        ),
+        LiveMessage::text(
+            "fake-bidi-ar-2",
+            FAKE_BIDI_AR_JID,
+            Some("Layla Haddad".to_owned()),
+            "سنلتقي غدا at 5 قرب المكتبة، والمبلغ 1234 ريال جاهز",
+            1_700_000_260,
+            false,
+        ),
+        LiveMessage::text(
+            "fake-bidi-he-1",
+            FAKE_BIDI_HE_JID,
+            Some("Noa Levi".to_owned()),
+            "שלום עולם, ההודעה הזו בעברית",
+            1_700_000_245,
+            false,
+        ),
+        LiveMessage::text(
+            "fake-bidi-he-2",
+            FAKE_BIDI_HE_JID,
+            Some("Noa Levi".to_owned()),
+            "פגישה tomorrow ב-9 בבוקר",
+            1_700_000_255,
             false,
         ),
     ]
@@ -4237,6 +4326,11 @@ fn emit_linked_script(
     }
     if lock_fixture_enabled() {
         for msg in scripted_lock_fixture_messages() {
+            events.emit(BackendEvent::MessageUpsert(msg));
+        }
+    }
+    if bidi_fixture_enabled() {
+        for msg in scripted_bidi_fixture_messages() {
             events.emit(BackendEvent::MessageUpsert(msg));
         }
     }

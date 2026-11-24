@@ -6294,12 +6294,17 @@ mod tests {
                 video: false,
             })
             .unwrap();
-        match next(&ch) {
-            BackendEvent::Error { message } => {
-                assert_eq!(message, "Starting the group call failed: connection lost");
-            }
-            other => panic!("expected the injected failure, got {other:?}"),
-        }
+        // The declined call's log entry may land first; collect
+        // until the injected failure itself arrives.
+        let events = collect_until(&ch, &|e| matches!(e, BackendEvent::Error { .. }));
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                BackendEvent::Error { message }
+                    if message == "Starting the group call failed: connection lost"
+            )),
+            "expected the injected failure: {events:?}"
+        );
         ch.commands
             .send(BackendCommand::StartGroupCall {
                 chat_jid: FAKE_GROUP_JID.to_owned(),

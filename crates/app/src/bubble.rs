@@ -1135,6 +1135,24 @@ pub(crate) fn message_bubble(
             content_w =
                 content_w.max(body_galley.size().x).max(if *canceled { 0.0 } else { 280.0 });
             let when = crate::live::fmt_event_when(*start_time, *end_time);
+            // The metadata rows lay out at the final inner
+            // width in the paint pass; grow the card to their
+            // single-line widths (plus the icon indent and
+            // slack, the location card's trick) so the measure
+            // pass's wrap is the paint pass's wrap.
+            let row_font = FontId::proportional(INNER_BODY_SIZE);
+            content_w = content_w.max(measure_text(ui, &when, row_font.clone()) + 26.0);
+            if !location.is_empty() {
+                content_w = content_w.max(measure_text(ui, location, row_font.clone()) + 26.0);
+            }
+            if !join_link.is_empty() {
+                let label = if *scheduled_call {
+                    crate::i18n::t("event.join_call")
+                } else {
+                    join_link.clone()
+                };
+                content_w = content_w.max(measure_text(ui, &label, row_font) + 26.0);
+            }
             let when_h = event_row_h(ui, &when, inner_max - 20.0, text_color);
             let location_h = if location.is_empty() {
                 0.0

@@ -4,6 +4,19 @@ All notable changes to Zaprust are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com), versions
 follow [SemVer](https://semver.org).
 
+## [1.6.17] - 2026-11-24
+
+### feat:
+
+- Channels are a real surface now. The Channels entry opens its own panel: the channels you follow with their follower counts and verified badges, a find-by-invite-link lookup with a preview card and a Follow button, and a form to create a channel of your own. Opening a channel loads its history (older updates page in as you scroll up) and keeps reaction counts and poll tallies live while you watch.
+- Following is one tap from the preview card; unfollowing asks first, both in the panel's row menu and in the conversation header. A channel's info (description, follower count, admin count, some follower names, the invite link, the creation date) is one click from the header or the row menu.
+- Channels stay one-way, like WhatsApp: followers and visitors get a short explainer bar instead of a composer (with a Follow button when you have not joined yet), while admins and owners post text, media and polls from the same conversation. Admins can edit and delete their channel's updates from the message menu; everyone can react to updates and vote in channel polls, and a failed reaction or vote puts things back the way they were and says why.
+- Channel comments and AI responses read as what they are: a comment on a channel post shows its own words (or its photo), and an AI response shows its text, instead of a generic placeholder.
+
+### fix:
+
+- Spacing inside screens completes its move onto the shared scale: the tight half steps between the main rungs are named steps of their own, so every gap in the app is one named number from the theme.
+
 ## [1.6.16] - 2026-11-24
 
 ### feat:

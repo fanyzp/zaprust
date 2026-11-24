@@ -21,6 +21,7 @@ use session::run_async;
 mod business;
 mod calls;
 mod channels;
+mod groups;
 mod profile;
 mod send;
 mod session;
@@ -80,7 +81,10 @@ impl Backend for WhatsappBackend {
 
 #[cfg(test)]
 mod tests {
-    use super::send::{apply_view_once, outgoing_location_message, outgoing_text_message};
+    use super::send::{
+        apply_view_once, outgoing_interactive_message, outgoing_interactive_response,
+        outgoing_location_message, outgoing_text_message,
+    };
     use super::util::received_poll_secret;
     use crate::MediaKind;
     use whatsapp_rust::prelude::*;
@@ -205,5 +209,70 @@ mod tests {
         let msg = outgoing_location_message("", 0.0, 0.0);
         let loc = msg.location_message.as_option().expect("location");
         assert_eq!(loc.name.as_deref(), None);
+    }
+
+    #[test]
+    fn interactive_builders_carry_their_shapes() {
+        use crate::{InteractiveSpec, LiveCard};
+        // Buttons: positional ids, response type, footer rides.
+        let msg = outgoing_interactive_message(&InteractiveSpec::Buttons {
+            text: "Lunch?".to_owned(),
+            footer: "Tap".to_owned(),
+            buttons: vec!["Yes".to_owned(), "No".to_owned()],
+        });
+        let buttons = msg.buttons_message.as_option().expect("buttons message");
+        assert_eq!(buttons.content_text.as_deref(), Some("Lunch?"));
+        assert_eq!(buttons.footer_text.as_deref(), Some("Tap"));
+        assert_eq!(buttons.buttons.len(), 2);
+        assert_eq!(buttons.buttons[0].button_id.as_deref(), Some("1"));
+        assert_eq!(buttons.buttons[1].button_id.as_deref(), Some("2"));
+
+        // List: rows number across sections in order.
+        let msg = outgoing_interactive_message(&InteractiveSpec::List {
+            title: "Slots".to_owned(),
+            description: String::new(),
+            button_label: "See slots".to_owned(),
+            sections: vec![
+                ("Morning".to_owned(), vec![("09:00".to_owned(), String::new())]),
+                ("Afternoon".to_owned(), vec![("13:00".to_owned(), String::new())]),
+            ],
+        });
+        let list = msg.list_message.as_option().expect("list message");
+        assert_eq!(list.title.as_deref(), Some("Slots"));
+        assert_eq!(list.sections.len(), 2);
+        assert_eq!(list.sections[0].rows[0].row_id.as_deref(), Some("1"));
+        assert_eq!(list.sections[1].rows[0].row_id.as_deref(), Some("2"));
+
+        // Carousel: one card, quick-reply params carry the label.
+        let msg = outgoing_interactive_message(&InteractiveSpec::Carousel {
+            body: "Pick one".to_owned(),
+            cards: vec![LiveCard {
+                title: "Card A".to_owned(),
+                body: String::new(),
+                image: None,
+                buttons: vec!["Open".to_owned()],
+            }],
+        });
+        let interactive = msg.interactive_message.as_option().expect("interactive message");
+        let carousel = match interactive.interactive_message.as_ref() {
+            Some(wa::message::interactive_message::InteractiveMessage::CarouselMessage(c)) => c,
+            other => panic!("expected a carousel, got {other:?}"),
+        };
+        assert_eq!(carousel.cards.len(), 1);
+
+        // Responses quote the original through the context info.
+        let jid = super::util::parse_address("10000000002@g.us").expect("jid");
+        let msg =
+            outgoing_interactive_response(&jid, "m1", Some("100@s.whatsapp.net"), false, "2", "No");
+        let response = msg.buttons_response_message.as_option().expect("buttons response");
+        assert_eq!(response.selected_button_id.as_deref(), Some("2"));
+        let context = response.context_info.as_option().expect("context");
+        assert_eq!(context.stanza_id.as_deref(), Some("m1"));
+        assert_eq!(context.participant.as_deref(), Some("100@s.whatsapp.net"));
+
+        let msg = outgoing_interactive_response(&jid, "m2", None, true, "1", "09:00");
+        let response = msg.list_response_message.as_option().expect("list response");
+        let reply = response.single_select_reply.as_option().expect("single select reply");
+        assert_eq!(reply.selected_row_id.as_deref(), Some("1"));
     }
 }

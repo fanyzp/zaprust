@@ -183,6 +183,23 @@ pub(super) fn translate_special(
                     return true;
                 }
             }
+            Some(Type::GROUP_MEMBER_LABEL_CHANGE) => {
+                // A member set or cleared their label in this
+                // group (row 65): state, never a bubble. The
+                // label rides the protocol payload; an empty
+                // one is a clear.
+                let label = protocol
+                    .member_label
+                    .as_option()
+                    .and_then(|member_label| member_label.label.clone())
+                    .filter(|label| !label.trim().is_empty());
+                sink.emit(BackendEvent::MemberLabelChanged {
+                    chat_jid,
+                    member_jid: source.sender.to_string(),
+                    label,
+                });
+                return true;
+            }
             // Any other protocol message (history sync
             // notifications the library consumes itself, peer
             // data operations, group settings records) is not
@@ -1368,18 +1385,26 @@ pub(super) fn body_for(kind: &LiveMessageKind, view_once: bool, text: Option<&st
         LiveMessageKind::Order { .. } => "Order".to_owned(),
         LiveMessageKind::Contact { name, .. } => name.clone(),
         LiveMessageKind::Carousel { body, .. } => body.clone(),
+        LiveMessageKind::Buttons { .. } => "Buttons".to_owned(),
+        LiveMessageKind::ListMsg { description, .. } => {
+            if description.is_empty() {
+                "List".to_owned()
+            } else {
+                description.clone()
+            }
+        }
         LiveMessageKind::Other(label) => label.clone(),
         LiveMessageKind::Text => "Message".to_owned(),
     }
 }
 
 /// The body text a structured payload carries in its own
-/// fields: template, buttons, list, product, order, and
-/// non-carousel interactive messages are text messages wearing
-/// structure, and their words live outside the two slots
-/// `text_content` reads. Recovering them here means previews,
-/// bubbles, search, and exports show the sender's words
-/// instead of a placeholder. A template whose hydrated text
+/// fields: template, product, order, and non-carousel
+/// interactive messages carry their words outside the two
+/// slots `text_content` reads, and so do buttons and list
+/// messages, whose typed kinds take their body from here.
+/// Recovering them here means previews, bubbles, search, and
+/// exports show the sender's words instead of a placeholder. A template whose hydrated text
 /// still carries an unsubstituted parameter marker is not
 /// recovered: showing raw markers would be worse than the
 /// typed label the fallthrough gives it.
@@ -2319,6 +2344,62 @@ fn classify_unwrapped_deep(
             .or_else(|| contact.vcard.as_deref().and_then(vcard_fn_name))
             .unwrap_or_default();
         return (LiveMessageKind::Contact { name, phone }, false);
+    }
+    if let Some(buttons_message) = msg.buttons_message.as_option() {
+        // A buttons message is its own kind, not text wearing
+        // structure (row 19): the bubble renders the buttons,
+        // and an answer names the picked button's wire id.
+        // Buttons without a label carry nothing to pick and
+        // are dropped, like the carousel's nameless flow
+        // buttons below.
+        let buttons = buttons_message
+            .buttons
+            .iter()
+            .filter_map(|button| {
+                let text = button
+                    .button_text
+                    .as_option()
+                    .and_then(|t| t.display_text.clone())
+                    .filter(|t| !t.trim().is_empty())?;
+                Some(crate::LiveButton { id: button.button_id.clone().unwrap_or_default(), text })
+            })
+            .collect();
+        return (
+            LiveMessageKind::Buttons {
+                footer: buttons_message.footer_text.clone().unwrap_or_default(),
+                buttons,
+            },
+            false,
+        );
+    }
+    if let Some(list_message) = msg.list_message.as_option() {
+        // A list message is its own kind (row 19): title in
+        // the body, sections of pickable rows below it.
+        let sections = list_message
+            .sections
+            .iter()
+            .map(|section| crate::LiveListSection {
+                title: section.title.clone().unwrap_or_default(),
+                rows: section
+                    .rows
+                    .iter()
+                    .map(|row| crate::LiveListRow {
+                        id: row.row_id.clone().unwrap_or_default(),
+                        title: row.title.clone().unwrap_or_default(),
+                        description: row.description.clone().unwrap_or_default(),
+                    })
+                    .collect(),
+            })
+            .collect();
+        return (
+            LiveMessageKind::ListMsg {
+                description: list_message.description.clone().unwrap_or_default(),
+                button_label: list_message.button_text.clone().unwrap_or_default(),
+                footer: list_message.footer_text.clone().unwrap_or_default(),
+                sections,
+            },
+            false,
+        );
     }
     if let Some(interactive) = msg.interactive_message.as_option() {
         use whatsapp_rust::prelude::wa::__buffa::oneof::message::interactive_message::InteractiveMessage as InteractiveOneof;
@@ -4062,7 +4143,7 @@ mod live_pairing_fix_tests {
         msg.buttons_message = MessageField::some(buttons);
         assert_eq!(structured_text(&msg).as_deref(), Some("Pick a slot"));
         let (kind, _) = classify_message(&msg);
-        assert!(matches!(kind, LiveMessageKind::Text));
+        assert!(matches!(kind, LiveMessageKind::Buttons { .. }), "got {kind:?}");
         assert_eq!(body_for(&kind, false, structured_text(&msg).as_deref()), "Pick a slot");
 
         let mut template_inner = wa::message::template_message::HydratedFourRowTemplate::default();

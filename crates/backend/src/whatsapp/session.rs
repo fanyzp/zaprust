@@ -483,11 +483,47 @@ async fn emit_community_structure(
     }
 }
 
+/// The member rows a `GroupMembers` answer carries: address,
+/// server-rendered name, admin flag, and the member's own
+/// label in this group when they have set one (row 65).
+fn member_rows(meta: &whatsapp_rust::GroupMetadata) -> Vec<crate::GroupMemberRow> {
+    meta.participants
+        .iter()
+        .map(|p| {
+            let label = p
+                .details
+                .as_ref()
+                .and_then(|d| d.participant_label.as_ref())
+                .map(|label| label.to_string())
+                .filter(|label| !label.trim().is_empty());
+            (p.jid.to_string(), participant_name(p), p.is_admin(), label)
+        })
+        .collect()
+}
+
 /// Emits the `GroupMembers` answer for one group from a fresh
 /// metadata fetch: the same member rows and own-role computation
 /// [`BackendCommand::FetchGroupMembers`] answers with, reused
 /// after a community participant removal so the community home
 /// re-renders from server truth.
+/// The account's own member label in a member row set: the
+/// row whose address is one of the account's own addresses
+/// (phone form or LID form).
+fn own_label_of(
+    client: &whatsapp_rust::Client,
+    members: &[(String, String, bool, Option<String>)],
+) -> Option<String> {
+    let own: Vec<String> = [client.pn(), client.lid()]
+        .into_iter()
+        .flatten()
+        .map(|jid| jid.to_non_ad().to_string())
+        .collect();
+    members
+        .iter()
+        .find(|(jid, ..)| own.iter().any(|mine| mine == jid))
+        .and_then(|(_, _, _, label)| label.clone())
+}
+
 async fn emit_group_members(
     client: &whatsapp_rust::Client,
     events: &crate::EventSink,
@@ -495,16 +531,18 @@ async fn emit_group_members(
 ) {
     let Ok(jid) = chat_jid.parse::<Jid>() else { return };
     let Ok(meta) = client.groups().fetch_metadata(&jid).await else { return };
-    let members: Vec<(String, String, bool)> = meta
-        .participants
-        .iter()
-        .map(|p| (p.jid.to_string(), participant_name(p), p.is_admin()))
-        .collect();
+    let members = member_rows(&meta);
     let own_admin = [client.pn(), client.lid()].into_iter().flatten().any(|own| {
         let own = own.to_non_ad().to_string();
         meta.participants.iter().any(|p| p.is_admin() && p.jid.to_non_ad().to_string() == own)
     });
-    events.emit(BackendEvent::GroupMembers { chat_jid: chat_jid.to_owned(), members, own_admin });
+    let own_label = own_label_of(client, &members);
+    events.emit(BackendEvent::GroupMembers {
+        chat_jid: chat_jid.to_owned(),
+        members,
+        own_admin,
+        own_label,
+    });
 }
 
 pub(super) async fn run_async(
@@ -584,6 +622,10 @@ pub(super) async fn run_async(
         std::collections::VecDeque::new(),
     )));
     let cache_for_messages = proto_cache.clone();
+    // Prepared group history shares kept for a retry (row 64):
+    // the library's retry token is opaque and session-bound,
+    // so it lives here and never crosses the contract.
+    let history_retries = super::groups::new_history_retries();
     // Media-retry addressing for every message this session
     // translates (live and history): when a media download
     // fails, the retry flow asks the author's device to
@@ -3147,6 +3189,96 @@ pub(super) async fn run_async(
                         (_, Err(e)) => events.emit(BackendEvent::Error { message: e }),
                     }
                 }
+                BackendCommand::AddGroupParticipantsWithHistory {
+                    chat_jid,
+                    participants,
+                    history,
+                } => {
+                    super::groups::add_participants_with_history(
+                        &client,
+                        &events,
+                        &history_retries,
+                        &chat_jid,
+                        &participants,
+                        &history,
+                    )
+                    .await;
+                }
+                BackendCommand::RetryGroupHistoryShare { chat_jid } => {
+                    super::groups::retry_history_share(
+                        &client,
+                        &events,
+                        &history_retries,
+                        &chat_jid,
+                    )
+                    .await;
+                }
+                BackendCommand::SetOwnMemberLabel { chat_jid, label } => {
+                    super::groups::set_own_member_label(&client, &events, &chat_jid, &label).await;
+                }
+                BackendCommand::ReportMessageToAdmins { chat_jid, message_id } => {
+                    super::groups::report_message_to_admins(
+                        &client,
+                        &events,
+                        &chat_jid,
+                        &message_id,
+                    )
+                    .await;
+                }
+                BackendCommand::FetchReportedMessages { chat_jid } => {
+                    super::groups::fetch_reported_messages(&client, &events, &chat_jid).await;
+                }
+                BackendCommand::SendInteractive { chat_jid, spec } => {
+                    match chat_jid.parse::<Jid>() {
+                        Ok(jid) => {
+                            let message = super::send::outgoing_interactive_message(&spec);
+                            match client.send_message(jid, message).await {
+                                Ok(sent) => events.emit(BackendEvent::MessageSent {
+                                    chat_jid: chat_jid.clone(),
+                                    message_id: sent.message_id.to_string(),
+                                }),
+                                Err(e) => events.emit(BackendEvent::Error {
+                                    message: format!("Sending failed: {}", error_words(&e)),
+                                }),
+                            }
+                        }
+                        Err(e) => events.emit(BackendEvent::Error {
+                            message: format!("Invalid chat address: {}", error_words(&e)),
+                        }),
+                    }
+                }
+                BackendCommand::SendInteractiveResponse {
+                    chat_jid,
+                    message_id,
+                    sender_jid,
+                    from_me: _,
+                    is_list,
+                    choice_id,
+                    choice_text,
+                } => match chat_jid.parse::<Jid>() {
+                    Ok(jid) => {
+                        let message = super::send::outgoing_interactive_response(
+                            &jid,
+                            &message_id,
+                            sender_jid.as_deref(),
+                            is_list,
+                            &choice_id,
+                            &choice_text,
+                        );
+                        match client.send_message(jid, message).await {
+                            Ok(sent) => events.emit(BackendEvent::MessageSent {
+                                chat_jid: chat_jid.clone(),
+                                message_id: sent.message_id.to_string(),
+                            }),
+                            Err(e) => events.emit(BackendEvent::Error {
+                                message: format!("Sending failed: {}", error_words(&e)),
+                            }),
+                        }
+                    }
+                    Err(e) => events.emit(BackendEvent::Error {
+                        message: format!("Invalid chat address: {}", error_words(&e)),
+                    }),
+                },
                 BackendCommand::SetGroupInfo { chat_jid, subject, description } => {
                     // The two fields are separate server calls
                     // and can fail independently. Both are
@@ -3239,11 +3371,7 @@ pub(super) async fn run_async(
                 BackendCommand::FetchGroupMembers { chat_jid } => match chat_jid.parse::<Jid>() {
                     Ok(jid) => match client.groups().fetch_metadata(&jid).await {
                         Ok(meta) => {
-                            let members: Vec<(String, String, bool)> = meta
-                                .participants
-                                .iter()
-                                .map(|p| (p.jid.to_string(), participant_name(p), p.is_admin()))
-                                .collect();
+                            let members = member_rows(&meta);
                             // My own role comes from the same
                             // metadata: my addresses (phone form
                             // and LID form) against the admin
@@ -3257,10 +3385,12 @@ pub(super) async fn run_async(
                                         p.is_admin() && p.jid.to_non_ad().to_string() == own
                                     })
                                 });
+                            let own_label = own_label_of(&client, &members);
                             events.emit(BackendEvent::GroupMembers {
                                 chat_jid: chat_jid.clone(),
                                 members,
                                 own_admin,
+                                own_label,
                             });
                             // The same metadata is the group's
                             // identity source: its subject heals a

@@ -322,3 +322,171 @@ pub(super) fn sticker_message(
     });
     message
 }
+
+/// Builds an interactive message proto from the neutral spec
+/// (row 19). The library ships no typed builders for these
+/// shapes at the pinned revision, so the protos are assembled
+/// field by field, mirroring what the receive classifier
+/// reads back: a sent message and a received one classify to
+/// the same kind. Button and row ids are positional, because
+/// an answer only needs to name the pick within its message.
+pub(super) fn outgoing_interactive_message(spec: &crate::InteractiveSpec) -> wa::Message {
+    use wa::message::interactive_message::InteractiveMessage as InteractiveOneof;
+    let mut message = wa::Message::default();
+    match spec {
+        crate::InteractiveSpec::Buttons { text, footer, buttons } => {
+            let mut buttons_message = wa::message::ButtonsMessage::default();
+            buttons_message.content_text = Some(text.clone());
+            if !footer.is_empty() {
+                buttons_message.footer_text = Some(footer.clone());
+            }
+            buttons_message.header_type = Some(wa::message::buttons_message::HeaderType::Empty);
+            buttons_message.buttons = buttons
+                .iter()
+                .enumerate()
+                .map(|(i, label)| {
+                    let mut button = wa::message::buttons_message::Button::default();
+                    button.button_id = Some((i + 1).to_string());
+                    let mut button_text =
+                        wa::message::buttons_message::button::ButtonText::default();
+                    button_text.display_text = Some(label.clone());
+                    button.button_text = MessageField::some(button_text);
+                    button.r#type = Some(wa::message::buttons_message::button::Type::Response);
+                    button
+                })
+                .collect();
+            message.buttons_message = MessageField::some(buttons_message);
+        }
+        crate::InteractiveSpec::List { title, description, button_label, sections } => {
+            let mut list = wa::message::ListMessage::default();
+            list.title = Some(title.clone());
+            if !description.is_empty() {
+                list.description = Some(description.clone());
+            }
+            list.button_text = Some(button_label.clone());
+            list.list_type = Some(wa::message::list_message::ListType::SingleSelect);
+            let mut row_number = 0usize;
+            list.sections = sections
+                .iter()
+                .map(|(section_title, rows)| {
+                    let mut section = wa::message::list_message::Section::default();
+                    if !section_title.is_empty() {
+                        section.title = Some(section_title.clone());
+                    }
+                    section.rows = rows
+                        .iter()
+                        .map(|(row_title, row_description)| {
+                            row_number += 1;
+                            let mut row = wa::message::list_message::Row::default();
+                            row.title = Some(row_title.clone());
+                            if !row_description.is_empty() {
+                                row.description = Some(row_description.clone());
+                            }
+                            row.row_id = Some(row_number.to_string());
+                            row
+                        })
+                        .collect();
+                    section
+                })
+                .collect();
+            message.list_message = MessageField::some(list);
+        }
+        crate::InteractiveSpec::Carousel { body, cards } => {
+            let mut interactive = wa::message::InteractiveMessage::default();
+            if !body.is_empty() {
+                let mut body_proto = wa::message::interactive_message::Body::default();
+                body_proto.text = Some(body.clone());
+                interactive.body = MessageField::some(body_proto);
+            }
+            let mut carousel = wa::message::interactive_message::CarouselMessage::default();
+            carousel.message_version = Some(1);
+            carousel.cards = cards
+                .iter()
+                .map(|card| {
+                    let mut card_message = wa::message::InteractiveMessage::default();
+                    if !card.title.is_empty() {
+                        let mut header = wa::message::interactive_message::Header::default();
+                        header.title = Some(card.title.clone());
+                        header.has_media_attachment = Some(false);
+                        card_message.header = MessageField::some(header);
+                    }
+                    if !card.body.is_empty() {
+                        let mut card_body = wa::message::interactive_message::Body::default();
+                        card_body.text = Some(card.body.clone());
+                        card_message.body = MessageField::some(card_body);
+                    }
+                    if !card.buttons.is_empty() {
+                        let mut flow = wa::message::interactive_message::NativeFlowMessage::default();
+                        flow.message_version = Some(1);
+                        flow.buttons = card
+                            .buttons
+                            .iter()
+                            .enumerate()
+                            .map(|(i, label)| {
+                                let mut flow_button =
+                                    wa::message::interactive_message::native_flow_message::NativeFlowButton::default();
+                                flow_button.name = Some("quick_reply".to_owned());
+                                flow_button.button_params_json = Some(
+                                    serde_json::json!({
+                                        "display_text": label,
+                                        "id": (i + 1).to_string(),
+                                    })
+                                    .to_string(),
+                                );
+                                flow_button
+                            })
+                            .collect();
+                        card_message.interactive_message =
+                            Some(InteractiveOneof::NativeFlowMessage(Box::new(flow)));
+                    }
+                    card_message
+                })
+                .collect();
+            interactive.interactive_message =
+                Some(InteractiveOneof::CarouselMessage(Box::new(carousel)));
+            message.interactive_message = MessageField::some(interactive);
+        }
+    }
+    message
+}
+
+/// Builds the answer to a received buttons or list message
+/// (row 19): the wire's response proto quoting the original
+/// through its context info, the same shape the receive
+/// classifier reads back as a text message carrying the
+/// chosen label.
+pub(super) fn outgoing_interactive_response(
+    chat_jid: &Jid,
+    message_id: &str,
+    sender_jid: Option<&str>,
+    is_list: bool,
+    choice_id: &str,
+    choice_text: &str,
+) -> wa::Message {
+    let mut context = wa::ContextInfo::default();
+    context.stanza_id = Some(message_id.to_owned());
+    context.participant =
+        Some(sender_jid.map(ToOwned::to_owned).unwrap_or_else(|| chat_jid.to_string()));
+    let mut message = wa::Message::default();
+    if is_list {
+        let mut response = wa::message::ListResponseMessage::default();
+        response.title = Some(choice_text.to_owned());
+        response.list_type = Some(wa::message::list_response_message::ListType::SingleSelect);
+        let mut reply = wa::message::list_response_message::SingleSelectReply::default();
+        reply.selected_row_id = Some(choice_id.to_owned());
+        response.single_select_reply = MessageField::some(reply);
+        response.context_info = MessageField::some(context);
+        message.list_response_message = MessageField::some(response);
+    } else {
+        let mut response = wa::message::ButtonsResponseMessage::default();
+        response.selected_button_id = Some(choice_id.to_owned());
+        response.response =
+            Some(wa::message::buttons_response_message::Response::SelectedDisplayText(
+                choice_text.to_owned(),
+            ));
+        response.r#type = Some(wa::message::buttons_response_message::Type::DisplayText);
+        response.context_info = MessageField::some(context);
+        message.buttons_response_message = MessageField::some(response);
+    }
+    message
+}

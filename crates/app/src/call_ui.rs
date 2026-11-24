@@ -1481,7 +1481,7 @@ impl App {
     /// Fetches the call chat's member list when the invite
     /// picker needs it and it is not on hand, the same
     /// fetch-once discipline as the profile panel.
-    fn ensure_call_members(&mut self) {
+    pub(crate) fn ensure_call_members(&mut self) {
         let Some(call) = &self.calls.active else {
             return;
         };

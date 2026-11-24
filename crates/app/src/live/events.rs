@@ -4441,7 +4441,7 @@ mod burst_drain_tests {
         tx.send(BackendEvent::VideoBytes {
             chat_jid: CHAT_JID.to_owned(),
             message_id: "vid-vo".to_owned(),
-            bytes: include_bytes!("testdata/tiny.mp4").to_vec(),
+            bytes: include_bytes!("../testdata/tiny.mp4").to_vec(),
         })
         .unwrap();
         drain_all(&mut app, &ctx);
@@ -5863,7 +5863,7 @@ mod chat_state_routing_tests {
             .expect("the writer answered")
             .expect("the write succeeded");
         let file = std::fs::File::open(&path).unwrap();
-        let mut archive = zip::ZipArchive::new(file).unwrap();
+        let mut archive = ::zip::ZipArchive::new(file).unwrap();
         let names: Vec<String> = archive.file_names().map(str::to_owned).collect();
         assert!(names.contains(&"chat.md".to_owned()), "{names:?}");
         assert!(names.contains(&"media/001-photo.jpg".to_owned()), "{names:?}");

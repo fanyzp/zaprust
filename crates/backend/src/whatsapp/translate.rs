@@ -166,6 +166,15 @@ pub(super) fn translate_special(
                 if let (Some(target_id), Some(edited)) =
                     (target_id, protocol.edited_message.as_option())
                 {
+                    // An edited event carries a fresh event
+                    // payload, not text: it reports as an event
+                    // edit with the whole new field set (a
+                    // cancellation is this same shape with the
+                    // canceled flag set).
+                    if let Some(event) = edited.event_message.as_option() {
+                        sink.emit(event_fields(event).into_edited(chat_jid, target_id));
+                        return true;
+                    }
                     sink.emit(BackendEvent::MessageEdited {
                         chat_jid,
                         message_id: target_id,
@@ -1211,6 +1220,12 @@ fn history_message(
             msg.poll_creator = msg.sender_jid.clone();
         }
     }
+    if matches!(msg.kind, LiveMessageKind::Event { .. }) {
+        if let Some(secret) = super::util::received_event_secret(proto) {
+            msg.event_secret = Some(secret);
+            msg.event_creator = msg.sender_jid.clone();
+        }
+    }
     Some(msg)
 }
 
@@ -1278,6 +1293,15 @@ pub(super) fn body_for(kind: &LiveMessageKind, view_once: bool, text: Option<&st
                 "Poll".to_owned()
             } else {
                 question.clone()
+            }
+        }
+        LiveMessageKind::Event { name, canceled, .. } => {
+            if *canceled {
+                "Event canceled".to_owned()
+            } else if name.is_empty() {
+                "Event".to_owned()
+            } else {
+                name.clone()
             }
         }
         LiveMessageKind::Location { name, .. } => name.clone(),
@@ -1761,6 +1785,14 @@ pub(super) fn translate_message(
             msg.poll_creator = Some(source.sender.to_string());
         }
     }
+    // An event creation's secret travels the same way, for the
+    // same reason: responses and edits are encrypted under it.
+    if matches!(msg.kind, LiveMessageKind::Event { .. }) {
+        if let Some(secret) = super::util::received_event_secret(&ctx.message) {
+            msg.event_secret = Some(secret);
+            msg.event_creator = Some(source.sender.to_string());
+        }
+    }
     Some((chat, msg))
 }
 
@@ -1985,6 +2017,107 @@ fn status_from_parts(
 }
 
 /// Classifies a message's rich kind from its protocol payload.
+/// The fields of one event payload, in the backend's own
+/// shape. Three consumers share this extraction: the
+/// classifier (a received event becomes
+/// [`LiveMessageKind::Event`]), the edit path (an edited event
+/// becomes [`BackendEvent::EventEdited`]), and the session's
+/// encrypted-edit decryption. The location is a label: the
+/// place name when the payload states one, else its address,
+/// else the formatted coordinates when that is all it states.
+pub(super) struct EventFields {
+    /// Event name.
+    pub name: String,
+    /// Free-text details (may be empty).
+    pub description: String,
+    /// Start, unix seconds (0 when the payload stated none).
+    pub start_time: i64,
+    /// End, unix seconds (0 when the event has no end).
+    pub end_time: i64,
+    /// Place label (may be empty).
+    pub location: String,
+    /// Join/call link (may be empty).
+    pub join_link: String,
+    /// The event is a scheduled call.
+    pub scheduled_call: bool,
+    /// Extra guests are allowed.
+    pub extra_guests: bool,
+    /// The organizer cancelled the event.
+    pub canceled: bool,
+}
+
+impl EventFields {
+    /// The fields as a fresh message kind: no responses yet,
+    /// no answer of mine.
+    pub(super) fn into_kind(self) -> LiveMessageKind {
+        LiveMessageKind::Event {
+            name: self.name,
+            description: self.description,
+            start_time: self.start_time,
+            end_time: self.end_time,
+            location: self.location,
+            join_link: self.join_link,
+            scheduled_call: self.scheduled_call,
+            extra_guests: self.extra_guests,
+            canceled: self.canceled,
+            my_rsvp: None,
+            going: 0,
+            maybe: 0,
+            not_going: 0,
+        }
+    }
+
+    /// The fields as an edit report for one message.
+    pub(super) fn into_edited(self, chat_jid: String, message_id: String) -> BackendEvent {
+        BackendEvent::EventEdited {
+            chat_jid,
+            message_id,
+            name: self.name,
+            description: self.description,
+            start_time: self.start_time,
+            end_time: self.end_time,
+            location: self.location,
+            join_link: self.join_link,
+            scheduled_call: self.scheduled_call,
+            extra_guests: self.extra_guests,
+            canceled: self.canceled,
+        }
+    }
+}
+
+/// Extracts the backend's event fields from a wire event
+/// payload. An absent name stays empty here; the card renders
+/// the neutral fallback, the data never invents one.
+pub(super) fn event_fields(
+    event: &whatsapp_rust::prelude::wa::message::EventMessage,
+) -> EventFields {
+    let location = event
+        .location
+        .as_option()
+        .map(|loc| {
+            let name = loc.name.clone().filter(|n| !n.trim().is_empty());
+            let address = loc.address.clone().filter(|a| !a.trim().is_empty());
+            match (name, address, loc.degrees_latitude, loc.degrees_longitude) {
+                (Some(name), _, _, _) => name,
+                (None, Some(address), _, _) => address,
+                (None, None, Some(lat), Some(lng)) => format!("{lat:.5}, {lng:.5}"),
+                _ => String::new(),
+            }
+        })
+        .unwrap_or_default();
+    EventFields {
+        name: event.name.clone().unwrap_or_default(),
+        description: event.description.clone().unwrap_or_default(),
+        start_time: event.start_time.unwrap_or(0),
+        end_time: event.end_time.unwrap_or(0),
+        location,
+        join_link: event.join_link.clone().unwrap_or_default(),
+        scheduled_call: event.is_schedule_call.unwrap_or(false),
+        extra_guests: event.extra_guests_allowed.unwrap_or(false),
+        canceled: event.is_canceled.unwrap_or(false),
+    }
+}
+
 /// Poll *votes* arrive encrypted as separate protocol messages;
 /// they never reach this classifier (the session decrypts them
 /// and reports them as `BackendEvent::PollVote`), so only poll
@@ -2237,9 +2370,11 @@ fn classify_unwrapped_deep(
         return (LiveMessageKind::Other(label.to_owned()), false);
     }
     if let Some(event) = msg.event_message.as_option() {
-        let label =
-            event.name.clone().filter(|n| !n.is_empty()).unwrap_or_else(|| "Event".to_owned());
-        return (LiveMessageKind::Other(label), false);
+        // An event renders as its own card kind, with the
+        // payload's fields carried whole (row 49): before this
+        // arm existed, a received event collapsed to a generic
+        // summary line carrying only its name.
+        return (event_fields(event).into_kind(), false);
     }
     if let Some(invite) = msg.group_invite_message.as_option() {
         let label = invite

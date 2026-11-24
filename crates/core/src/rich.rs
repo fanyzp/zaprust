@@ -113,6 +113,81 @@ pub fn apply_poll_ballot(
     PollTally { options, my_votes: mine, ballots }
 }
 
+/// An event's aggregated state: the response tallies, my own
+/// current response, and the latest response per responder the
+/// tallies were derived from.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EventTally {
+    /// Responses counted Going.
+    pub going: u32,
+    /// Responses counted Maybe.
+    pub maybe: u32,
+    /// Responses counted Not going.
+    pub not_going: u32,
+    /// My current response, when I have answered.
+    pub my_rsvp: Option<crate::model::EventRsvp>,
+    /// Latest response per responder (excluding me), keyed by
+    /// responder JID.
+    pub ballots: Vec<(String, crate::model::EventRsvp)>,
+}
+
+/// Applies one responder's answer to an event's tallies,
+/// replacing that responder's previous answer (last-response-
+/// wins, the protocol's rule: a response message carries the
+/// responder's whole current answer). The tallies are
+/// recomputed from the ballots plus my own answer, so
+/// re-applying the same answer is a no-op and a responder who
+/// changes their mind never counts twice. My own ballot lives
+/// in `my_rsvp`, never in `ballots` (the same split
+/// [`apply_poll_ballot`] keeps for polls).
+#[must_use]
+pub fn apply_event_response(
+    my_rsvp: Option<crate::model::EventRsvp>,
+    ballots: &[(String, crate::model::EventRsvp)],
+    responder: &str,
+    from_me: bool,
+    response: crate::model::EventRsvp,
+) -> EventTally {
+    let mut mine = my_rsvp;
+    let mut ballots: Vec<(String, crate::model::EventRsvp)> = ballots.to_vec();
+    if from_me {
+        mine = Some(response);
+    } else if let Some(entry) = ballots.iter_mut().find(|(v, _)| v == responder) {
+        entry.1 = response;
+    } else {
+        ballots.push((responder.to_owned(), response));
+    }
+    let (mut going, mut maybe, mut not_going) = (0_u32, 0_u32, 0_u32);
+    let mut count = |r: crate::model::EventRsvp| match r {
+        crate::model::EventRsvp::Going => going += 1,
+        crate::model::EventRsvp::Maybe => maybe += 1,
+        crate::model::EventRsvp::NotGoing => not_going += 1,
+    };
+    for (_, r) in &ballots {
+        count(*r);
+    }
+    if let Some(r) = mine {
+        count(r);
+    }
+    EventTally { going, maybe, not_going, my_rsvp: mine, ballots }
+}
+
+/// Retracts my own event response (the rollback twin of
+/// [`apply_event_response`]): my answer is cleared and the
+/// tallies are recomputed from the remaining ballots.
+#[must_use]
+pub fn retract_event_response(ballots: &[(String, crate::model::EventRsvp)]) -> EventTally {
+    let (mut going, mut maybe, mut not_going) = (0_u32, 0_u32, 0_u32);
+    for (_, r) in ballots {
+        match r {
+            crate::model::EventRsvp::Going => going += 1,
+            crate::model::EventRsvp::Maybe => maybe += 1,
+            crate::model::EventRsvp::NotGoing => not_going += 1,
+        }
+    }
+    EventTally { going, maybe, not_going, my_rsvp: None, ballots: ballots.to_vec() }
+}
+
 /// Percentage (0–100, rounded) of the total vote for each option.
 #[must_use]
 pub fn poll_percents(options: &[(String, u32)]) -> Vec<u32> {

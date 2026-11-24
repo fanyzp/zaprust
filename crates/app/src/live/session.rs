@@ -186,6 +186,7 @@ impl crate::state::App {
             channels_list_requested: false,
             history_armed: std::collections::HashSet::new(),
             poll_ballots: HashMap::new(),
+            event_ballots: HashMap::new(),
         };
         // Load the archive into the rendered data. Live mode never
         // shows demo data: start from empty and fill from the archive.
@@ -402,6 +403,21 @@ impl crate::state::App {
                             // backend below, once the session
                             // exists to send commands through.
                             if let Some(cmd) = poll_secret_registration(m) {
+                                archived_poll_secrets.push(cmd);
+                            }
+                            // Events ride the same two rails:
+                            // ballots seeded so the next response
+                            // replaces the right previous answer,
+                            // and the creation secret re-registered
+                            // so responses to an event created
+                            // before this start still decrypt.
+                            if !m.event_ballots.is_empty() {
+                                session.event_ballots.insert(
+                                    message_id(&m.chat_jid, &m.id),
+                                    m.event_ballots.clone(),
+                                );
+                            }
+                            if let Some(cmd) = event_secret_registration(m) {
                                 archived_poll_secrets.push(cmd);
                             }
                         }
@@ -899,6 +915,7 @@ mod qr_gate_tests {
             channels_list_requested: false,
             history_armed: std::collections::HashSet::new(),
             poll_ballots: HashMap::new(),
+            event_ballots: HashMap::new(),
         };
         if with_payload {
             session.qr = Some(backend::qr_matrix("ref,noise,identity,adv,1").unwrap());
@@ -1137,6 +1154,7 @@ mod logout_tests {
             channels_list_requested: false,
             history_armed: std::collections::HashSet::new(),
             poll_ballots: HashMap::new(),
+            event_ballots: HashMap::new(),
         });
         app.live_mode = true;
         (app, evt_tx, ctx, cmd_rx)

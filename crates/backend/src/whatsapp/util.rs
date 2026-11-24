@@ -36,6 +36,70 @@ pub(super) type PollSecrets = std::sync::Arc<
     std::sync::Mutex<std::collections::HashMap<(String, String), (String, Vec<u8>, Vec<String>)>>,
 >;
 
+/// The session's event-secret cache: `(chat JID, event message
+/// ID) -> (creator JID, secret)`. The event counterpart of
+/// [`PollSecrets`], with the same lifecycle: filled when this
+/// device creates an event and when an event creation message
+/// arrives (the secret travels inside the creation message's
+/// context info), topped up from the app's archive through
+/// [`crate::BackendCommand::RegisterEventSecret`]. An event
+/// whose secret none of those paths supplied answers responses
+/// and edits with an honest error, and its incoming responses
+/// are dropped undecrypted. Secrets are never logged.
+pub(super) type EventSecrets =
+    std::sync::Arc<std::sync::Mutex<std::collections::HashMap<(String, String), (String, Vec<u8>)>>>;
+
+/// Cap for the event-secret cache, with the same bound and the
+/// same eviction safety as [`POLL_SECRETS_CAP`].
+pub(super) const EVENT_SECRETS_CAP: usize = 1000;
+
+pub(super) fn cap_event_secrets(secrets: &EventSecrets) {
+    let mut map = lock_cache(secrets);
+    while map.len() > EVENT_SECRETS_CAP {
+        match map.keys().next().cloned() {
+            Some(key) => {
+                map.remove(&key);
+            }
+            None => break,
+        }
+    }
+}
+
+/// Extracts the creation secret from a received event creation
+/// message, or None for anything else. The secret is the
+/// `message_secret` of the message context info, exactly as
+/// for polls ([`received_poll_secret`]).
+pub(super) fn received_event_secret(
+    msg: &whatsapp_rust::prelude::wa::Message,
+) -> Option<Vec<u8>> {
+    msg.event_message.as_option()?;
+    msg.message_context_info
+        .as_option()
+        .and_then(|ctx| ctx.message_secret.clone())
+        .filter(|s| !s.is_empty())
+}
+
+/// Extracts an event response's routing and ciphertext from a
+/// protocol message: the event's message ID (from the
+/// response's creation message key) and the encrypted payload
+/// + IV. Returns `None` for anything that is not an event
+/// response carrying both parts. Decryption itself needs the
+/// creator and responder JIDs in their wire forms, so it
+/// happens in the session's message handler, not here.
+pub(super) fn event_response_payload(
+    msg: &whatsapp_rust::prelude::wa::Message,
+) -> Option<(String, Vec<u8>, Vec<u8>)> {
+    let response = msg.enc_event_response_message.as_option()?;
+    let event_id = response
+        .event_creation_message_key
+        .as_option()
+        .and_then(|key| key.id.clone())
+        .filter(|id| !id.is_empty())?;
+    let payload = response.enc_payload.clone().filter(|p| !p.is_empty())?;
+    let iv = response.enc_iv.clone().filter(|iv| !iv.is_empty())?;
+    Some((event_id, payload, iv))
+}
+
 /// Cap for the poll-secret cache, mirroring the proto cache's
 /// bound. Secrets are a session convenience: evicting one only
 /// means that poll answers with the honest "cannot vote" error, so

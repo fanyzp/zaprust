@@ -655,6 +655,7 @@ mod channel_tests {
             flags: HashMap::new(),
             engaged_chats: std::collections::HashSet::new(),
             poll_ballots: HashMap::new(),
+            event_ballots: HashMap::new(),
             photo_refs: HashMap::new(),
             voice_refs: HashMap::new(),
             video_refs: HashMap::new(),

@@ -31,6 +31,17 @@ pub enum Delivery {
     Failed,
 }
 
+/// One person's answer to an event invitation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum EventRsvp {
+    /// Attending.
+    Going,
+    /// Undecided.
+    Maybe,
+    /// Not attending.
+    NotGoing,
+}
+
 /// The kind of content a message carries.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum MessageKind {
@@ -97,6 +108,39 @@ pub enum MessageKind {
         my_votes: Vec<usize>,
         /// For quiz polls: the correct option index, when known.
         correct: Option<usize>,
+    },
+    /// An event: a named gathering with a start, an optional
+    /// end, and responses from the invited. The counts are the
+    /// aggregation of the per-responder ballots the session
+    /// keeps (last response wins, like poll ballots).
+    Event {
+        /// Event name.
+        name: String,
+        /// Free-text details (may be empty).
+        description: String,
+        /// Start, unix seconds (0 when the source stated none).
+        start_time: i64,
+        /// End, unix seconds (0 when the event has no end).
+        end_time: i64,
+        /// Place label (may be empty). A label, not a map
+        /// point: the place name or address the source states.
+        location: String,
+        /// Join/call link (may be empty).
+        join_link: String,
+        /// The event is a scheduled call.
+        scheduled_call: bool,
+        /// Extra guests are allowed.
+        extra_guests: bool,
+        /// The organizer cancelled the event.
+        canceled: bool,
+        /// My current response, when I have answered.
+        my_rsvp: Option<EventRsvp>,
+        /// Responses counted Going.
+        going: u32,
+        /// Responses counted Maybe.
+        maybe: u32,
+        /// Responses counted Not going.
+        not_going: u32,
     },
     /// A shared location (render-only card).
     Location {
@@ -556,6 +600,8 @@ pub enum PreviewMedia {
     Document,
     /// A poll.
     Poll,
+    /// An event.
+    Event,
     /// A sticker.
     Sticker,
 }
@@ -572,6 +618,7 @@ impl PreviewMedia {
             Self::Audio(secs) => format!("Audio · {}:{:02}", secs / 60, secs % 60),
             Self::Document => "Document".to_owned(),
             Self::Poll => "Poll".to_owned(),
+            Self::Event => "Event".to_owned(),
             Self::Sticker => "Sticker".to_owned(),
         }
     }
@@ -587,6 +634,7 @@ impl PreviewMedia {
             MessageKind::Audio { secs, .. } => Some(Self::Audio(*secs)),
             MessageKind::Document { .. } => Some(Self::Document),
             MessageKind::Poll { .. } => Some(Self::Poll),
+            MessageKind::Event { .. } => Some(Self::Event),
             MessageKind::Sticker => Some(Self::Sticker),
             _ => None,
         }

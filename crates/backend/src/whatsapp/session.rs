@@ -30,11 +30,12 @@ use super::translate::{
     translate_status,
 };
 use super::util::{
-    abort_latest, build_message_target, cap_poll_secrets, download_proto, error_words,
-    fetch_photo_by_ref, fetch_photo_bytes, fetch_video_by_ref, fetch_video_bytes,
-    fetch_video_file_by_ref, fetch_video_to_file, fetch_voice_by_ref, fetch_voice_bytes,
-    lock_cache, parse_address, poll_vote_payload, proto_is_view_once, received_poll_secret,
-    selected_indices, spawn_latest, unix_now, LatestTask, PollSecrets, ProtoCache,
+    abort_latest, build_message_target, cap_event_secrets, cap_poll_secrets, download_proto,
+    error_words, event_response_payload, fetch_photo_by_ref, fetch_photo_bytes, fetch_video_by_ref,
+    fetch_video_bytes, fetch_video_file_by_ref, fetch_video_to_file, fetch_voice_by_ref,
+    fetch_voice_bytes, lock_cache, parse_address, poll_vote_payload, proto_is_view_once,
+    received_event_secret, received_poll_secret, selected_indices, spawn_latest, unix_now,
+    EventSecrets, LatestTask, PollSecrets, ProtoCache,
 };
 
 /// How many session events may wait for the event callbacks.
@@ -597,6 +598,9 @@ pub(super) async fn run_async(
     let poll_secrets: PollSecrets =
         std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
     let secrets_for_messages = poll_secrets.clone();
+    let event_secrets: EventSecrets =
+        std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+    let event_secrets_for_messages = event_secrets.clone();
     // Call state: the ringing incoming call (kept as its event so
     // accept can borrow the offer) and the live call, if any.
     #[cfg(feature = "calls")]
@@ -778,6 +782,7 @@ pub(super) async fn run_async(
             let sink = sink_msg.clone();
             let cache = cache_for_messages.clone();
             let secrets = secrets_for_messages.clone();
+            let event_secrets = event_secrets_for_messages.clone();
             let retry = retry_for_messages.clone();
             let heal_attempts = heal_attempts_msg.clone();
             let identities = identities_msg.clone();
@@ -802,6 +807,17 @@ pub(super) async fn run_async(
                         (ctx.info.source.sender.to_string(), secret, names),
                     );
                     cap_poll_secrets(&secrets);
+                }
+                // A received event creation carries its secret
+                // the same way; caching it is what makes answering
+                // other people's events, and reading their
+                // answers, possible later in the session.
+                if let Some(secret) = received_event_secret(&ctx.message) {
+                    lock_cache(&event_secrets).insert(
+                        (ctx.info.source.chat.to_string(), ctx.info.id.to_string()),
+                        (ctx.info.source.sender.to_string(), secret),
+                    );
+                    cap_event_secrets(&event_secrets);
                 }
                 // A poll vote is a standalone encrypted message,
                 // never a chat message: decrypt it against the
@@ -849,6 +865,119 @@ pub(super) async fn run_async(
                         }
                     }
                     return;
+                }
+                // An event response is a standalone encrypted
+                // message, never a chat message: decrypt it
+                // against the event's creation secret and report
+                // the responder's current answer. Like the poll
+                // vote above, the decryption runs inline (local
+                // work, no network) so answers stay in arrival
+                // order behind the event they belong to, which
+                // last-response-wins relies on. A response whose
+                // secret this session does not know (and the app
+                // has not registered from its archive) cannot be
+                // read and is dropped, never guessed at.
+                if let Some((event_id, payload, iv)) = event_response_payload(&ctx.message) {
+                    let chat_jid = ctx.info.source.chat.to_string();
+                    let cached = lock_cache(&event_secrets)
+                        .get(&(chat_jid.clone(), event_id.clone()))
+                        .cloned();
+                    if let Some((creator, secret)) = cached {
+                        let responder = ctx.info.source.sender.clone();
+                        let creator_str = creator
+                            .parse::<Jid>()
+                            .map(|j| j.to_non_ad_string())
+                            .unwrap_or(creator);
+                        let decoded = whatsapp_rust::wacore::event::decrypt_event_response_with_secret(
+                            &payload,
+                            &iv,
+                            &secret,
+                            &event_id,
+                            &creator_str,
+                            &responder.to_non_ad_string(),
+                        );
+                        if let Ok(decoded) = decoded {
+                            let response = match decoded.response {
+                                Some(
+                                    whatsapp_rust::EventResponseType::Going,
+                                ) => Some(crate::EventRsvp::Going),
+                                Some(
+                                    whatsapp_rust::EventResponseType::Maybe,
+                                ) => Some(crate::EventRsvp::Maybe),
+                                Some(
+                                    whatsapp_rust::EventResponseType::NotGoing,
+                                ) => Some(crate::EventRsvp::NotGoing),
+                                _ => None,
+                            };
+                            if let Some(response) = response {
+                                sink.emit(BackendEvent::EventResponse {
+                                    chat_jid,
+                                    message_id: event_id,
+                                    responder_jid: responder.to_non_ad().to_string(),
+                                    from_me: ctx.info.source.is_from_me,
+                                    response,
+                                    extra_guest_count: decoded.extra_guest_count,
+                                });
+                            }
+                        }
+                    }
+                    return;
+                }
+                // An edit of a secret-carrying message arrives as
+                // an encrypted envelope the library does not
+                // auto-decrypt (its message_edit module documents
+                // this consumer flow). When the envelope targets
+                // an event whose secret this session knows,
+                // decrypt it here and report the event's new
+                // field set; envelopes targeting anything else
+                // keep the existing fall-through behavior.
+                if let Some(envelope) =
+                    whatsapp_rust::features::message_edit::extract_envelope(&ctx.message)
+                {
+                    if let Some(target_id) = envelope.target_id() {
+                        let chat_jid = ctx.info.source.chat.to_string();
+                        let cached = lock_cache(&event_secrets)
+                            .get(&(chat_jid.clone(), target_id.to_string()))
+                            .cloned();
+                        if let Some((creator, secret)) = cached {
+                            let editor = ctx.info.source.sender.clone();
+                            let original_sender = envelope.original_sender_for_dispatch(
+                                ctx.info.source.is_from_me,
+                                &editor,
+                                &editor,
+                            );
+                            let decrypted = whatsapp_rust::features::message_edit::decrypt(
+                                envelope.enc_payload,
+                                envelope.enc_iv,
+                                &secret,
+                                target_id,
+                                &original_sender,
+                                &editor,
+                            );
+                            if let Ok(inner) = decrypted {
+                                if let Some(edited) = inner
+                                    .protocol_message
+                                    .as_option()
+                                    .and_then(|p| p.edited_message.as_option())
+                                {
+                                    if let Some(event) = edited.event_message.as_option() {
+                                        sink.emit(
+                                            super::translate::event_fields(event).into_edited(
+                                                chat_jid,
+                                                target_id.to_string(),
+                                            ),
+                                        );
+                                        return;
+                                    }
+                                }
+                            }
+                            // A known event's envelope that does
+                            // not decrypt, or decrypts to something
+                            // else, is still an edit envelope, not
+                            // a chat message: never let it render.
+                            return;
+                        }
+                    }
                 }
                 {
                     let key = (ctx.info.source.chat.to_string(), ctx.info.id.to_string());
@@ -1578,6 +1707,265 @@ pub(super) async fn run_async(
                         ),
                         (_, Err(e)) => {
                             fail(format!("Invalid chat address: {}", error_words(&e)));
+                        }
+                    }
+                }
+                BackendCommand::CreateEvent {
+                    chat_jid,
+                    name,
+                    description,
+                    start_time,
+                    end_time,
+                    location,
+                    join_link,
+                    scheduled_call,
+                    extra_guests,
+                } => {
+                    match chat_jid.parse::<Jid>() {
+                        Ok(jid) => {
+                            let mut builder =
+                                whatsapp_rust::EventCreationParams::builder().name(name);
+                            if !description.is_empty() {
+                                builder = builder.description(description);
+                            }
+                            if start_time > 0 {
+                                builder = builder.start_time(start_time);
+                            }
+                            if end_time > 0 {
+                                builder = builder.end_time(end_time);
+                            }
+                            if !location.is_empty() {
+                                let mut loc =
+                                    whatsapp_rust::prelude::wa::message::LocationMessage::default();
+                                loc.name = Some(location);
+                                builder = builder.location(loc);
+                            }
+                            if !join_link.is_empty() {
+                                builder = builder.join_link(join_link);
+                            }
+                            if scheduled_call {
+                                builder = builder.is_scheduled_call(true);
+                            }
+                            if extra_guests {
+                                builder = builder.extra_guests_allowed(true);
+                            }
+                            match client.events().create(jid.clone(), builder.build()).await {
+                                Ok(created) => {
+                                    // Cache the creation secret so
+                                    // this event stays answerable
+                                    // and editable for the rest of
+                                    // the session.
+                                    lock_cache(&event_secrets).insert(
+                                        (
+                                            jid.to_string(),
+                                            created.send_result().message_id.to_string(),
+                                        ),
+                                        (
+                                            created.creator().to_string(),
+                                            created.secret().as_bytes().to_vec(),
+                                        ),
+                                    );
+                                    cap_event_secrets(&event_secrets);
+                                }
+                                Err(e) => events.emit(BackendEvent::Error {
+                                    message: format!(
+                                        "Creating the event failed: {}",
+                                        error_words(&e)
+                                    ),
+                                }),
+                            }
+                        }
+                        Err(e) => events.emit(BackendEvent::Error {
+                            message: format!("Invalid chat address: {}", error_words(&e)),
+                        }),
+                    }
+                }
+                BackendCommand::RegisterEventSecret {
+                    chat_jid,
+                    message_id,
+                    creator_jid,
+                    secret,
+                } => {
+                    // The app kept this event's creation secret in
+                    // its archive from an earlier session; putting
+                    // it in the session cache makes the event
+                    // answerable and its incoming responses
+                    // decryptable again. Silent by contract:
+                    // nothing answers.
+                    lock_cache(&event_secrets)
+                        .insert((chat_jid, message_id), (creator_jid, secret));
+                    cap_event_secrets(&event_secrets);
+                }
+                BackendCommand::RespondEvent {
+                    chat_jid,
+                    message_id,
+                    response,
+                    extra_guest_count,
+                } => {
+                    // Answering needs the event's creation secret,
+                    // cached at creation for own events and on
+                    // receipt for other people's events, and
+                    // re-registered by the app for events from
+                    // earlier sessions. An event whose secret none
+                    // of those paths supplied gets an honest
+                    // error, never a fake answer.
+                    let cached = lock_cache(&event_secrets)
+                        .get(&(chat_jid.clone(), message_id.clone()))
+                        .cloned();
+                    // Failures answer with EventRespondFailed, not
+                    // the generic Error: the app applied the
+                    // response optimistically and can only roll it
+                    // back if the failure names its event.
+                    let fail = |message: String| {
+                        events.emit(BackendEvent::EventRespondFailed {
+                            chat_jid: chat_jid.clone(),
+                            message_id: message_id.clone(),
+                            message,
+                        });
+                    };
+                    let response_type = match response {
+                        crate::EventRsvp::Going => whatsapp_rust::EventResponseType::Going,
+                        crate::EventRsvp::Maybe => whatsapp_rust::EventResponseType::Maybe,
+                        crate::EventRsvp::NotGoing => whatsapp_rust::EventResponseType::NotGoing,
+                    };
+                    match (cached, chat_jid.parse::<Jid>()) {
+                        (Some((creator, secret)), Ok(jid)) => match creator.parse::<Jid>() {
+                            Ok(creator_jid) => {
+                                if let Err(e) = client
+                                    .events()
+                                    .respond_raw(
+                                        jid,
+                                        &message_id,
+                                        &creator_jid,
+                                        &secret,
+                                        response_type,
+                                        extra_guest_count,
+                                    )
+                                    .await
+                                {
+                                    fail(format!("Answering failed: {}", error_words(&e)));
+                                }
+                            }
+                            Err(e) => {
+                                fail(format!(
+                                    "Invalid event creator address: {}",
+                                    error_words(&e)
+                                ));
+                            }
+                        },
+                        (None, _) => fail(
+                            "This event cannot be answered from Zaprust: its \
+                                          creation secret is not available. The secret \
+                                          travels with the event when it is created or \
+                                          received, and Zaprust keeps it with the archived \
+                                          event; this event's secret never reached this \
+                                          device, so the event predates the archive or the \
+                                          sender's client did not include it."
+                                .to_owned(),
+                        ),
+                        (_, Err(e)) => {
+                            fail(format!("Invalid chat address: {}", error_words(e)));
+                        }
+                    }
+                }
+                BackendCommand::EditEvent {
+                    chat_jid,
+                    message_id,
+                    name,
+                    description,
+                    start_time,
+                    end_time,
+                    location,
+                    join_link,
+                    scheduled_call,
+                    extra_guests,
+                    canceled,
+                } => {
+                    // Editing an event replaces the whole payload
+                    // and is encrypted under the event's creation
+                    // secret: the library routes secret-carrying
+                    // replacement content to its encrypted edit
+                    // kind when the request carries the secret.
+                    // Failures answer with EventEditFailed, not
+                    // the generic Error: the app applied the edit
+                    // optimistically and can only restore the
+                    // event's previous fields if the failure names
+                    // its event.
+                    let fail = |message: String| {
+                        events.emit(BackendEvent::EventEditFailed {
+                            chat_jid: chat_jid.clone(),
+                            message_id: message_id.clone(),
+                            message,
+                        });
+                    };
+                    let cached = lock_cache(&event_secrets)
+                        .get(&(chat_jid.clone(), message_id.clone()))
+                        .cloned();
+                    match cached {
+                        None => fail(
+                            "This event cannot be edited from Zaprust: its \
+                                          creation secret is not available. The secret \
+                                          travels with the event when it is created or \
+                                          received, and Zaprust keeps it with the archived \
+                                          event; this event's secret never reached this \
+                                          device, so the event predates the archive or the \
+                                          sender's client did not include it."
+                                .to_owned(),
+                        ),
+                        Some((creator, secret)) => {
+                            let target = build_message_target(&chat_jid, &message_id, None, true)
+                                .and_then(|(jid, sender, mid)| {
+                                    whatsapp_rust::MessageRef::new(&jid, mid, sender.as_ref(), true)
+                                        .map(|t| (jid, t))
+                                        .map_err(|_| "That message reference is invalid.".to_owned())
+                                });
+                            match (target, creator.parse::<Jid>(), whatsapp_rust::MessageSecret::try_from(secret.as_slice())) {
+                                (Ok((_jid, target)), Ok(creator_jid), Ok(secret)) => {
+                                    let mut event =
+                                        whatsapp_rust::prelude::wa::message::EventMessage::default();
+                                    event.name = Some(name);
+                                    if !description.is_empty() {
+                                        event.description = Some(description);
+                                    }
+                                    if start_time > 0 {
+                                        event.start_time = Some(start_time);
+                                    }
+                                    if end_time > 0 {
+                                        event.end_time = Some(end_time);
+                                    }
+                                    if !location.is_empty() {
+                                        let mut loc = whatsapp_rust::prelude::wa::message::LocationMessage::default();
+                                        loc.name = Some(location);
+                                        event.location = whatsapp_rust::prelude::MessageField::some(loc);
+                                    }
+                                    if !join_link.is_empty() {
+                                        event.join_link = Some(join_link);
+                                    }
+                                    if scheduled_call {
+                                        event.is_schedule_call = Some(true);
+                                    }
+                                    if extra_guests {
+                                        event.extra_guests_allowed = Some(true);
+                                    }
+                                    if canceled {
+                                        event.is_canceled = Some(true);
+                                    }
+                                    let mut content = whatsapp_rust::prelude::wa::Message::default();
+                                    content.event_message = whatsapp_rust::prelude::MessageField::some(event);
+                                    let request = whatsapp_rust::EditRequest::new(target, content)
+                                        .with_secret(&creator_jid, &secret);
+                                    if let Err(e) = client.edit_message(request).await {
+                                        fail(format!("Editing the event failed: {}", error_words(&e)));
+                                    }
+                                }
+                                (Err(e), _, _) => fail(e),
+                                (_, Err(e), _) => {
+                                    fail(format!("Invalid event creator address: {}", error_words(&e)));
+                                }
+                                (_, _, Err(_)) => {
+                                    fail("The event's archived creation secret is malformed.".to_owned());
+                                }
+                            }
                         }
                     }
                 }

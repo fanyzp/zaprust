@@ -154,6 +154,359 @@ impl crate::state::App {
         }
     }
 
+    /// Brings the open conversation's copy of one event back in
+    /// line with the session mirror (the rollback path after a
+    /// failed response re-applied the previous answer in the
+    /// mirror). The event counterpart of
+    /// [`App::sync_poll_from_mirror`].
+    pub(crate) fn sync_event_from_mirror(&mut self, chat_id: u64, mid: u64) {
+        let restored = self
+            .live
+            .as_ref()
+            .and_then(|s| s.messages.get(&chat_id))
+            .and_then(|msgs| msgs.iter().find(|(_, m)| m.id == mid))
+            .and_then(|(_, m)| match &m.kind {
+                MessageKind::Event { going, maybe, not_going, my_rsvp, .. } => {
+                    Some((*going, *maybe, *not_going, *my_rsvp))
+                }
+                _ => None,
+            });
+        if let Some((going, maybe, not_going, my_rsvp)) = restored {
+            for m in self.conversation.iter_mut().filter(|m| m.id == mid) {
+                if let MessageKind::Event {
+                    going: g,
+                    maybe: mb,
+                    not_going: ng,
+                    my_rsvp: mine,
+                    ..
+                } = &mut m.kind
+                {
+                    *g = going;
+                    *mb = maybe;
+                    *ng = not_going;
+                    *mine = my_rsvp;
+                }
+            }
+        }
+    }
+
+    /// Applies one decrypted event response: the responder's
+    /// whole current answer replaces their previous one, so
+    /// re-applying the same answer is a no-op and a changed
+    /// mind never counts twice. The mirror event is updated
+    /// first; an event the mirror does not hold (its chat was
+    /// never loaded this session) is updated straight in the
+    /// archive. Either way the resulting tally snapshot is
+    /// persisted, so the counts and the ballots they came from
+    /// survive a restart. The event counterpart of
+    /// [`App::apply_poll_vote`].
+    pub(crate) fn apply_event_response(
+        &mut self,
+        chat_jid: &str,
+        event_id: &str,
+        responder: &str,
+        from_me: bool,
+        response: backend::EventRsvp,
+    ) {
+        let chat_id = jid_id(chat_jid);
+        let mid = message_id(chat_jid, event_id);
+        let mut tally: Option<EventTallyWrite> = None;
+        if let Some(session) = &mut self.live {
+            let ballots = session.event_ballots.get(&mid).cloned().unwrap_or_default();
+            if let Some(entry) = session.messages.get_mut(&chat_id) {
+                if let Some((_, msg)) = entry.iter_mut().find(|(_, m)| m.id == mid) {
+                    if let MessageKind::Event { going, maybe, not_going, my_rsvp, .. } =
+                        &mut msg.kind
+                    {
+                        let t = core::rich::apply_event_response(
+                            *my_rsvp,
+                            &ballots
+                                .iter()
+                                .map(|(j, r)| (j.clone(), crate::live::to_rsvp(*r)))
+                                .collect::<Vec<_>>(),
+                            responder,
+                            from_me,
+                            crate::live::to_rsvp(response),
+                        );
+                        *going = t.going;
+                        *maybe = t.maybe;
+                        *not_going = t.not_going;
+                        *my_rsvp = t.my_rsvp;
+                        tally = Some(EventTallyWrite {
+                            chat_jid: chat_jid.to_owned(),
+                            message_id: event_id.to_owned(),
+                            going: t.going,
+                            maybe: t.maybe,
+                            not_going: t.not_going,
+                            my_rsvp: t.my_rsvp.map(crate::live::rsvp_to_backend),
+                            ballots: t
+                                .ballots
+                                .iter()
+                                .map(|(j, r)| (j.clone(), crate::live::rsvp_to_backend(*r)))
+                                .collect(),
+                        });
+                    }
+                }
+            }
+            if let Some(tally) = &tally {
+                if tally.ballots.is_empty() {
+                    session.event_ballots.remove(&mid);
+                } else {
+                    session.event_ballots.insert(mid, tally.ballots.clone());
+                }
+            }
+        }
+        if tally.is_none() {
+            // The mirror never loaded this event (its chat is not
+            // in memory): aggregate against the archived copy and
+            // write the tally straight back to the archive.
+            if let Some(store) = self.live.as_ref().and_then(|s| s.store.as_ref()) {
+                if let Ok(rows) = store.messages(chat_jid) {
+                    if let Some((archived, _)) = rows.into_iter().find(|(m, _)| m.id == event_id) {
+                        if let backend::LiveMessageKind::Event {
+                            my_rsvp: archived_mine, ..
+                        } = &archived.kind
+                        {
+                            let t = core::rich::apply_event_response(
+                                archived_mine.map(crate::live::to_rsvp),
+                                &archived
+                                    .event_ballots
+                                    .iter()
+                                    .map(|(j, r)| (j.clone(), crate::live::to_rsvp(*r)))
+                                    .collect::<Vec<_>>(),
+                                responder,
+                                from_me,
+                                crate::live::to_rsvp(response),
+                            );
+                            let ballots: Vec<(String, backend::EventRsvp)> = t
+                                .ballots
+                                .iter()
+                                .map(|(j, r)| (j.clone(), crate::live::rsvp_to_backend(*r)))
+                                .collect();
+                            let _ = store.set_event_tally(
+                                chat_jid,
+                                event_id,
+                                t.going,
+                                t.maybe,
+                                t.not_going,
+                                t.my_rsvp.map(crate::live::rsvp_to_backend),
+                                &ballots,
+                            );
+                        }
+                    }
+                }
+            }
+            return;
+        }
+        if let Some(tally) = tally {
+            self.persist_event_tally(tally);
+        }
+        if self.selected_chat == chat_id {
+            self.sync_conversation();
+        }
+    }
+
+    /// Retracts my own response on one event (the rollback for
+    /// a failed first answer: there is no previous answer to
+    /// re-apply, so mine is cleared and the tallies recomputed
+    /// from the remaining ballots). Mirror first, archive
+    /// fallback, persisted either way, exactly like
+    /// [`App::apply_event_response`].
+    pub(crate) fn apply_event_retraction(&mut self, chat_jid: &str, event_id: &str) {
+        let chat_id = jid_id(chat_jid);
+        let mid = message_id(chat_jid, event_id);
+        let mut tally: Option<EventTallyWrite> = None;
+        if let Some(session) = &mut self.live {
+            let ballots = session.event_ballots.get(&mid).cloned().unwrap_or_default();
+            if let Some(entry) = session.messages.get_mut(&chat_id) {
+                if let Some((_, msg)) = entry.iter_mut().find(|(_, m)| m.id == mid) {
+                    if let MessageKind::Event { going, maybe, not_going, my_rsvp, .. } =
+                        &mut msg.kind
+                    {
+                        let t = core::rich::retract_event_response(
+                            &ballots
+                                .iter()
+                                .map(|(j, r)| (j.clone(), crate::live::to_rsvp(*r)))
+                                .collect::<Vec<_>>(),
+                        );
+                        *going = t.going;
+                        *maybe = t.maybe;
+                        *not_going = t.not_going;
+                        *my_rsvp = None;
+                        tally = Some(EventTallyWrite {
+                            chat_jid: chat_jid.to_owned(),
+                            message_id: event_id.to_owned(),
+                            going: t.going,
+                            maybe: t.maybe,
+                            not_going: t.not_going,
+                            my_rsvp: None,
+                            ballots: t
+                                .ballots
+                                .iter()
+                                .map(|(j, r)| (j.clone(), crate::live::rsvp_to_backend(*r)))
+                                .collect(),
+                        });
+                    }
+                }
+            }
+            if let Some(tally) = &tally {
+                if tally.ballots.is_empty() {
+                    session.event_ballots.remove(&mid);
+                } else {
+                    session.event_ballots.insert(mid, tally.ballots.clone());
+                }
+            }
+        }
+        if tally.is_none() {
+            if let Some(store) = self.live.as_ref().and_then(|s| s.store.as_ref()) {
+                if let Ok(rows) = store.messages(chat_jid) {
+                    if let Some((archived, _)) = rows.into_iter().find(|(m, _)| m.id == event_id) {
+                        if let backend::LiveMessageKind::Event { .. } = &archived.kind {
+                            let t = core::rich::retract_event_response(
+                                &archived
+                                    .event_ballots
+                                    .iter()
+                                    .map(|(j, r)| (j.clone(), crate::live::to_rsvp(*r)))
+                                    .collect::<Vec<_>>(),
+                            );
+                            let ballots: Vec<(String, backend::EventRsvp)> = t
+                                .ballots
+                                .iter()
+                                .map(|(j, r)| (j.clone(), crate::live::rsvp_to_backend(*r)))
+                                .collect();
+                            let _ = store.set_event_tally(
+                                chat_jid,
+                                event_id,
+                                t.going,
+                                t.maybe,
+                                t.not_going,
+                                None,
+                                &ballots,
+                            );
+                        }
+                    }
+                }
+            }
+            return;
+        }
+        if let Some(tally) = tally {
+            self.persist_event_tally(tally);
+        }
+        if self.selected_chat == chat_id {
+            self.sync_conversation();
+        }
+    }
+
+    /// Applies one event edit (mine confirmed, a peer's edit
+    /// arriving from the wire, or the rollback restoring the
+    /// previous fields): the descriptive fields of `new_kind`
+    /// replace the event's, while its tallies and my response
+    /// are preserved. The mirror, the open conversation copy
+    /// and the archive row all move together.
+    pub(crate) fn apply_event_edit(
+        &mut self,
+        chat_jid: &str,
+        event_id: &str,
+        chat_id: u64,
+        mid: u64,
+        new_kind: core::model::MessageKind,
+    ) {
+        let core::model::MessageKind::Event {
+            name,
+            description,
+            start_time,
+            end_time,
+            location,
+            join_link,
+            scheduled_call,
+            extra_guests,
+            canceled,
+            ..
+        } = &new_kind
+        else {
+            return;
+        };
+        let (name, description, location, join_link) = (
+            name.clone(),
+            description.clone(),
+            location.clone(),
+            join_link.clone(),
+        );
+        let (start_time, end_time, scheduled_call, extra_guests, canceled) =
+            (*start_time, *end_time, *scheduled_call, *extra_guests, *canceled);
+        let merge = |kind: &mut core::model::MessageKind| {
+            if let core::model::MessageKind::Event {
+                name: n,
+                description: d,
+                start_time: s,
+                end_time: e,
+                location: l,
+                join_link: j,
+                scheduled_call: sc,
+                extra_guests: eg,
+                canceled: c,
+                ..
+            } = kind
+            {
+                *n = name.clone();
+                *d = description.clone();
+                *s = start_time;
+                *e = end_time;
+                *l = location.clone();
+                *j = join_link.clone();
+                *sc = scheduled_call;
+                *eg = extra_guests;
+                *c = canceled;
+            }
+        };
+        if let Some(entry) = self.live.as_mut().and_then(|s| s.messages.get_mut(&chat_id)) {
+            for (_, m) in entry.iter_mut().filter(|(_, m)| m.id == mid) {
+                merge(&mut m.kind);
+            }
+        }
+        for m in self.conversation.iter_mut().filter(|m| m.id == mid) {
+            merge(&mut m.kind);
+        }
+        if let Some(store) = self.live.as_ref().and_then(|s| s.store.as_ref()) {
+            let _ = store.set_event_fields(
+                chat_jid,
+                event_id,
+                &name,
+                &description,
+                start_time,
+                end_time,
+                location.as_deref(),
+                join_link.as_deref(),
+                scheduled_call,
+                extra_guests,
+                canceled,
+            );
+        }
+        if self.selected_chat == chat_id {
+            self.sync_conversation();
+        }
+    }
+
+    /// Routes one event tally snapshot to the archive, with the
+    /// same batching contract as [`App::persist_poll_tally`].
+    pub(super) fn persist_event_tally(&mut self, tally: EventTallyWrite) {
+        if self.event_batch.active {
+            self.event_batch.event_tally_writes.push(tally);
+            return;
+        }
+        if let Some(store) = self.live.as_ref().and_then(|s| s.store.as_ref()) {
+            let _ = store.set_event_tally(
+                &tally.chat_jid,
+                &tally.message_id,
+                tally.going,
+                tally.maybe,
+                tally.not_going,
+                tally.my_rsvp,
+                &tally.ballots,
+            );
+        }
+    }
+
     /// Routes one poll tally snapshot to the archive: queued into
     /// the running event batch when there is one (its flush writes
     /// tallies after the batch's upserts), written immediately
@@ -923,6 +1276,7 @@ mod mirror_pruning_tests {
             channels_list_requested: false,
             history_armed: std::collections::HashSet::new(),
             poll_ballots: HashMap::new(),
+            event_ballots: HashMap::new(),
         });
         app.live_mode = true;
         (app, evt_tx, ctx, cmd_rx)
@@ -1463,6 +1817,7 @@ mod reaction_tests {
             flags: HashMap::new(),
             engaged_chats: std::collections::HashSet::new(),
             poll_ballots: HashMap::new(),
+            event_ballots: HashMap::new(),
             photo_refs: HashMap::new(),
             voice_refs: HashMap::new(),
             video_refs: HashMap::new(),

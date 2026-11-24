@@ -160,6 +160,11 @@ pub(crate) struct EventBatch {
     /// whose creation upsert sits in the same batch still lands
     /// on an existing row, and the last snapshot wins.
     pub(crate) poll_tally_writes: Vec<PollTallyWrite>,
+    /// Event tally states produced by response events in this
+    /// batch, with the same snapshot contract as
+    /// [`Self::poll_tally_writes`]: the flush writes them after
+    /// the batch's upserts and the last snapshot wins.
+    pub(crate) event_tally_writes: Vec<EventTallyWrite>,
     /// Chats whose unread badge a batch upsert raised. The
     /// badge lives in the mirror, but the archive row must carry
     /// the same count (a restart reloads from the archive), so
@@ -182,6 +187,26 @@ pub(crate) struct PollTallyWrite {
     pub(crate) my_votes: Vec<usize>,
     /// Latest ballot per voter.
     pub(crate) ballots: Vec<(String, Vec<usize>)>,
+}
+
+/// One event's aggregated tally state, on its way to the
+/// archive: the three counts, my response, and the
+/// per-responder ballots they were derived from.
+pub(crate) struct EventTallyWrite {
+    /// Chat JID the event lives in.
+    pub(crate) chat_jid: String,
+    /// Protocol ID of the event message.
+    pub(crate) message_id: String,
+    /// Responses counted Going.
+    pub(crate) going: u32,
+    /// Responses counted Maybe.
+    pub(crate) maybe: u32,
+    /// Responses counted Not going.
+    pub(crate) not_going: u32,
+    /// My current response, when I have answered.
+    pub(crate) my_rsvp: Option<backend::EventRsvp>,
+    /// Latest response per responder.
+    pub(crate) ballots: Vec<(String, backend::EventRsvp)>,
 }
 
 /// One chat's older-history fetch state within a session
@@ -435,6 +460,12 @@ pub(crate) struct LiveSession {
     /// copy rides on the stored message (see
     /// `store::Store::set_poll_tally`).
     pub(crate) poll_ballots: HashMap<u64, Vec<(String, Vec<usize>)>>,
+    /// Per-responder event ballots per numeric message ID, the
+    /// event counterpart of [`Self::poll_ballots`]: seeded from
+    /// the archive at start and extended by every response
+    /// event, so last-response-wins stays honest across
+    /// restarts (see `store::Store::set_event_tally`).
+    pub(crate) event_ballots: HashMap<u64, Vec<(String, backend::EventRsvp)>>,
     /// Chats where the user performed a real read action (scrolled
     /// to the newest messages, focused or typed in the composer,
     /// sent a reply) since the last receipt went out. Read
@@ -761,6 +792,45 @@ fn poll_secret_registration(msg: &LiveMessage) -> Option<BackendCommand> {
     })
 }
 
+/// Builds the command that hands one archived event's creation
+/// secret back to the backend, or `None` when the message is not
+/// an event whose secret and creator were both kept. The event
+/// counterpart of [`poll_secret_registration`], with the same
+/// contract: an event from an earlier session needs this before
+/// it can be answered or have its incoming responses decrypted
+/// in the new one.
+fn event_secret_registration(msg: &LiveMessage) -> Option<BackendCommand> {
+    let secret = msg.event_secret.as_ref()?;
+    let creator = msg.event_creator.as_ref()?;
+    if !matches!(msg.kind, backend::LiveMessageKind::Event { .. }) {
+        return None;
+    }
+    Some(BackendCommand::RegisterEventSecret {
+        chat_jid: msg.chat_jid.clone(),
+        message_id: msg.id.clone(),
+        creator_jid: creator.clone(),
+        secret: <redacted>
+    })
+}
+
+/// Converts a backend event response into the core model's.
+pub(crate) fn to_rsvp(rsvp: backend::EventRsvp) -> core::model::EventRsvp {
+    match rsvp {
+        backend::EventRsvp::Going => core::model::EventRsvp::Going,
+        backend::EventRsvp::Maybe => core::model::EventRsvp::Maybe,
+        backend::EventRsvp::NotGoing => core::model::EventRsvp::NotGoing,
+    }
+}
+
+/// Converts a core model event response into the backend's.
+pub(crate) fn rsvp_to_backend(rsvp: core::model::EventRsvp) -> backend::EventRsvp {
+    match rsvp {
+        core::model::EventRsvp::Going => backend::EventRsvp::Going,
+        core::model::EventRsvp::Maybe => backend::EventRsvp::Maybe,
+        core::model::EventRsvp::NotGoing => backend::EventRsvp::NotGoing,
+    }
+}
+
 /// Converts a backend rich kind into the core model kind.
 pub(crate) fn to_kind(kind: &backend::LiveMessageKind) -> MessageKind {
     match kind {
@@ -774,6 +844,35 @@ pub(crate) fn to_kind(kind: &backend::LiveMessageKind) -> MessageKind {
                 correct: *correct,
             }
         }
+        backend::LiveMessageKind::Event {
+            name,
+            description,
+            start_time,
+            end_time,
+            location,
+            join_link,
+            scheduled_call,
+            extra_guests,
+            canceled,
+            my_rsvp,
+            going,
+            maybe,
+            not_going,
+        } => MessageKind::Event {
+            name: name.clone(),
+            description: description.clone(),
+            start_time: *start_time,
+            end_time: *end_time,
+            location: location.clone(),
+            join_link: join_link.clone(),
+            scheduled_call: *scheduled_call,
+            extra_guests: *extra_guests,
+            canceled: *canceled,
+            my_rsvp: my_rsvp.map(to_rsvp),
+            going: *going,
+            maybe: *maybe,
+            not_going: *not_going,
+        },
         backend::LiveMessageKind::Location { name, latitude, longitude } => {
             MessageKind::Location { name: name.clone(), latitude: *latitude, longitude: *longitude }
         }

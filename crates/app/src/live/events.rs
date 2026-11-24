@@ -360,6 +360,23 @@ impl crate::state::App {
                     }
                 }
             }
+            if !batch.event_tally_writes.is_empty() {
+                if let Some(store) = &session.store {
+                    // Same contract as the poll tallies above:
+                    // after the upserts, last snapshot wins.
+                    for tally in &batch.event_tally_writes {
+                        let _ = store.set_event_tally(
+                            &tally.chat_jid,
+                            &tally.message_id,
+                            tally.going,
+                            tally.maybe,
+                            tally.not_going,
+                            tally.my_rsvp,
+                            &tally.ballots,
+                        );
+                    }
+                }
+            }
             if !batch.chat_rows_dirty.is_empty() {
                 if let Some(store) = &session.store {
                     // Written from the mirror as it stands now,
@@ -944,6 +961,102 @@ impl crate::state::App {
                     self.pending_poll_votes.remove(&mid);
                 }
                 self.apply_poll_vote(&chat_jid, &pid, &voter_jid, from_me, &selected);
+            }
+            BackendEvent::EventResponse {
+                chat_jid,
+                message_id: pid,
+                responder_jid,
+                from_me,
+                response,
+            } => {
+                if from_me {
+                    // My own answer reported back settles the
+                    // pending change it confirms.
+                    let mid = message_id(&chat_jid, &pid);
+                    self.pending_event_rsvps.remove(&mid);
+                }
+                self.apply_event_response(&chat_jid, &pid, &responder_jid, from_me, response);
+            }
+            BackendEvent::EventRespondFailed { chat_jid, message_id: pid, message } => {
+                let chat_id = jid_id(&chat_jid);
+                let mid = message_id(&chat_jid, &pid);
+                // Scrubbed before display, like the poll vote
+                // failure path above.
+                let message = core::crash::scrub_for_display(&message);
+                tracing::warn!("event response failed: {message}");
+                if let Some(previous) = self.pending_event_rsvps.remove(&mid) {
+                    // The answer never reached the server: put
+                    // my previous answer back (or clear mine
+                    // when there was none), which recomputes
+                    // the tally in the mirror and the archive
+                    // alike. With no previous answer there is
+                    // nothing to re-apply: the optimistic count
+                    // came from my answer alone, so restore the
+                    // event from the archive copy instead.
+                    match previous {
+                        Some(prev) => {
+                            self.apply_event_response(&chat_jid, &pid, "", true, prev);
+                        }
+                        None => {
+                            self.apply_event_retraction(&chat_jid, &pid);
+                        }
+                    }
+                    self.sync_event_from_mirror(chat_id, mid);
+                }
+                self.notice = Some(Notice::error(human_error(&message)));
+            }
+            BackendEvent::EventEdited {
+                chat_jid,
+                message_id: pid,
+                name,
+                description,
+                start_time,
+                end_time,
+                location,
+                join_link,
+                scheduled_call,
+                extra_guests,
+                canceled,
+            } => {
+                let chat_id = jid_id(&chat_jid);
+                let mid = message_id(&chat_jid, &pid);
+                // An edit echo for my own event settles the
+                // pending change it confirms.
+                self.pending_event_edits.remove(&mid);
+                self.apply_event_edit(
+                    &chat_jid,
+                    &pid,
+                    chat_id,
+                    mid,
+                    core::model::MessageKind::Event {
+                        name,
+                        description,
+                        start_time,
+                        end_time,
+                        location,
+                        join_link,
+                        scheduled_call,
+                        extra_guests,
+                        canceled,
+                        my_rsvp: None,
+                        going: 0,
+                        maybe: 0,
+                        not_going: 0,
+                    },
+                );
+            }
+            BackendEvent::EventEditFailed { chat_jid, message_id: pid, message } => {
+                let chat_id = jid_id(&chat_jid);
+                let mid = message_id(&chat_jid, &pid);
+                let message = core::crash::scrub_for_display(&message);
+                tracing::warn!("event edit failed: {message}");
+                if let Some(previous) = self.pending_event_edits.remove(&mid) {
+                    // The edit never reached the server: the
+                    // event keeps its previous fields, in the
+                    // session mirror and the open view alike.
+                    self.apply_event_edit(&chat_jid, &pid, chat_id, mid, previous);
+                }
+                self.notice = Some(Notice::error(human_error(&message)));
             }
             BackendEvent::MessageEdited { chat_jid, message_id: pid, new_body } => {
                 let chat_id = jid_id(&chat_jid);
@@ -2648,6 +2761,7 @@ mod burst_drain_tests {
             channels_list_requested: false,
             history_armed: std::collections::HashSet::new(),
             poll_ballots: HashMap::new(),
+            event_ballots: HashMap::new(),
         });
         app.live_mode = true;
         (app, evt_tx, ctx, cmd_rx)
@@ -5784,6 +5898,7 @@ mod chat_state_routing_tests {
             channels_list_requested: false,
             history_armed: std::collections::HashSet::new(),
             poll_ballots: HashMap::new(),
+            event_ballots: HashMap::new(),
         });
         app.live_mode = true;
         (app, evt_tx, ctx, cmd_rx)

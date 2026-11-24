@@ -1713,6 +1713,23 @@ pub(crate) struct App {
     /// a PollVoteFailed re-applies the stored selection as my
     /// ballot, which recomputes the tally back (rolled back).
     pub(crate) pending_poll_votes: std::collections::HashMap<u64, Vec<usize>>,
+    /// Live mode: my event response before an answer the
+    /// backend has not yet settled, per event message ID (None
+    /// when I had not answered). An EventResponse echo carrying
+    /// my answer drops the entry (confirmed); an
+    /// EventRespondFailed re-applies the stored answer (or
+    /// retracts mine when there was none), which recomputes
+    /// the tally back (rolled back). The event counterpart of
+    /// `pending_poll_votes`.
+    pub(crate) pending_event_rsvps:
+        std::collections::HashMap<u64, Option<backend::EventRsvp>>,
+    /// Live mode: an event's full kind before an edit the
+    /// backend has not yet settled, per event message ID. An
+    /// EventEdited report drops the entry (confirmed); an
+    /// EventEditFailed re-applies the stored kind (rolled
+    /// back).
+    pub(crate) pending_event_edits:
+        std::collections::HashMap<u64, core::model::MessageKind>,
     /// Live mode: a chat's (archived, pinned, muted, mute_until)
     /// before a chat action the backend has not yet settled,
     /// keyed by chat ID and the action's field group ("archive",
@@ -2410,6 +2427,8 @@ impl App {
             pending_pins: std::collections::HashMap::new(),
             pending_keeps: std::collections::HashMap::new(),
             pending_poll_votes: std::collections::HashMap::new(),
+            pending_event_rsvps: std::collections::HashMap::new(),
+            pending_event_edits: std::collections::HashMap::new(),
             pending_chat_actions: std::collections::HashMap::new(),
             pending_unread: std::collections::HashMap::new(),
             pending_blocks: std::collections::HashMap::new(),

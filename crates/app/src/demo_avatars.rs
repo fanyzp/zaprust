@@ -191,6 +191,7 @@ mod tests {
             channels_list_requested: false,
             history_armed: std::collections::HashSet::new(),
             poll_ballots: HashMap::new(),
+            event_ballots: HashMap::new(),
         }
     }
 

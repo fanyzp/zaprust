@@ -747,6 +747,100 @@ pub enum BackendCommand {
         /// by index into this list).
         options: Vec<String>,
     },
+    /// Create an event in a chat. The event itself arrives
+    /// back through the ordinary message flow (its creation
+    /// carries the secret RSVPs are encrypted under, like a
+    /// poll's); a refused creation answers the generic
+    /// [`BackendEvent::Error`], like [`BackendCommand::CreatePoll`].
+    CreateEvent {
+        /// Chat JID.
+        chat_jid: String,
+        /// Event name (required, non-empty).
+        name: String,
+        /// Free-text details (may be empty).
+        description: String,
+        /// Start, unix seconds.
+        start_time: i64,
+        /// End, unix seconds (0 when the event has no end).
+        end_time: i64,
+        /// Place label (may be empty).
+        location: String,
+        /// Join/call link (may be empty).
+        join_link: String,
+        /// The event is a scheduled call.
+        scheduled_call: bool,
+        /// Extra guests are allowed.
+        extra_guests: bool,
+    },
+    /// Answer an event invitation (RSVP). The answer is
+    /// encrypted under the event's creation secret, so it
+    /// needs the secret the session cached when the event was
+    /// created or received, or that the app re-registered from
+    /// its archive. A response that cannot be sent answers
+    /// [`BackendEvent::EventRespondFailed`]; a landed one is
+    /// reported back as [`BackendEvent::EventResponse`] with
+    /// `from_me` set, like a poll vote's echo.
+    RespondEvent {
+        /// Chat JID.
+        chat_jid: String,
+        /// Protocol ID of the event message.
+        message_id: String,
+        /// The response.
+        response: EventRsvp,
+        /// Extra guests I am bringing, when the event allows
+        /// them (only meaningful with a Going response).
+        extra_guest_count: Option<i32>,
+    },
+    /// Hand the backend an event creation secret the app kept
+    /// in its archive, so an event from an earlier session
+    /// stays answerable and its incoming responses stay
+    /// decryptable in this one. The event counterpart of
+    /// [`BackendCommand::RegisterPollSecret`]; registering is
+    /// silent: no event answers it.
+    RegisterEventSecret {
+        /// Chat JID.
+        chat_jid: String,
+        /// Protocol ID of the event message.
+        message_id: String,
+        /// JID of the event's creator.
+        creator_jid: String,
+        /// The creation secret bytes.
+        secret: <redacted>
+    },
+    /// Edit one of my own events, or cancel it. An event edit
+    /// replaces the whole event payload (the protocol has no
+    /// field-level patch), so every field rides along; a
+    /// cancellation is the same edit with `canceled` set. The
+    /// edit is encrypted under the event's creation secret,
+    /// so it needs the secret the same way
+    /// [`BackendCommand::RespondEvent`] does. A landed edit is
+    /// reported back as [`BackendEvent::EventEdited`] with
+    /// `from_me` semantics through the message flow; a refused
+    /// one answers [`BackendEvent::EventEditFailed`].
+    EditEvent {
+        /// Chat JID.
+        chat_jid: String,
+        /// Protocol ID of the event message.
+        message_id: String,
+        /// Event name.
+        name: String,
+        /// Free-text details (may be empty).
+        description: String,
+        /// Start, unix seconds.
+        start_time: i64,
+        /// End, unix seconds (0 when the event has no end).
+        end_time: i64,
+        /// Place label (may be empty).
+        location: String,
+        /// Join/call link (may be empty).
+        join_link: String,
+        /// The event is a scheduled call.
+        scheduled_call: bool,
+        /// Extra guests are allowed.
+        extra_guests: bool,
+        /// Cancel the event with this edit.
+        canceled: bool,
+    },
     /// Set (or clear, with an empty string) my reaction to a message.
     React {
         /// Chat JID.
@@ -1369,6 +1463,20 @@ pub enum BackendCommand {
     Shutdown,
 }
 
+/// One person's answer to an event invitation. Responses
+/// are encrypted per responder under the event's creation
+/// secret; the app aggregates the decrypted answers into the
+/// tallies on [`LiveMessageKind::Event`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum EventRsvp {
+    /// Attending.
+    Going,
+    /// Undecided.
+    Maybe,
+    /// Not attending.
+    NotGoing,
+}
+
 /// The kind of rich content a live message carries.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum LiveMessageKind {
@@ -1386,6 +1494,43 @@ pub enum LiveMessageKind {
         my_votes: Vec<usize>,
         /// Quiz: the correct option index, when known.
         correct: Option<usize>,
+    },
+    /// An event: a named gathering with a start, an optional
+    /// end, and responses from the invited. The tallies are
+    /// the app's aggregation of the per-responder ballots on
+    /// [`LiveMessage::event_ballots`] (last response wins,
+    /// like poll ballots); the backend reports responses, it
+    /// does not keep tally state.
+    Event {
+        /// Event name.
+        name: String,
+        /// Free-text details (may be empty).
+        description: String,
+        /// Start, unix seconds (0 when the payload stated none).
+        start_time: i64,
+        /// End, unix seconds (0 when the event has no end).
+        end_time: i64,
+        /// Place label the payload states (may be empty). A
+        /// label, not a map point: the payload's place name or
+        /// address, or its formatted coordinates when that is
+        /// all it states.
+        location: String,
+        /// Join/call link (may be empty).
+        join_link: String,
+        /// The event is a scheduled call.
+        scheduled_call: bool,
+        /// Extra guests are allowed.
+        extra_guests: bool,
+        /// The organizer cancelled the event.
+        canceled: bool,
+        /// My current response, when I have answered.
+        my_rsvp: Option<EventRsvp>,
+        /// Responses counted Going.
+        going: u32,
+        /// Responses counted Maybe.
+        maybe: u32,
+        /// Responses counted Not going.
+        not_going: u32,
     },
     /// A shared location.
     Location {
@@ -2038,6 +2183,37 @@ pub struct LiveMessage {
     /// last-vote-wins replacements instead of double-counting a
     /// voter whose earlier ballot it has forgotten.
     pub poll_ballots: Vec<(String, Vec<usize>)>,
+    /// For an event message: the event's creation secret,
+    /// carried in the creation message's context info.
+    /// Responses to the event are encrypted under a key derived
+    /// from this secret, so the backend needs it both to answer
+    /// and to decrypt other people's answers. It travels on the
+    /// message so the app can archive it with the event (in its
+    /// encrypted archive) and hand it back with
+    /// [`BackendCommand::RegisterEventSecret`] in later
+    /// sessions; without that, an event from before the current
+    /// session could neither be answered nor tallied. `None`
+    /// for every other kind, and for events whose creation
+    /// payload carried no secret.
+    pub event_secret: Option<Vec<u8>>,
+    /// For an event message: the JID of the event's creator
+    /// (the creation message's author). The response encryption
+    /// key is derived over the creator and responder JIDs, so
+    /// the creator is part of the event's crypto identity and
+    /// is archived and re-registered together with
+    /// [`LiveMessage::event_secret`]. `None` for every other
+    /// kind.
+    pub event_creator: Option<String>,
+    /// For an event message: the latest known response per
+    /// responder, `(responder JID, response)`, as aggregated by
+    /// the app from [`BackendEvent::EventResponse`] events. The
+    /// backend never fills this in (it reports responses, it
+    /// does not keep tally state); the archive carries it on the
+    /// message so the app can reload it after a restart and keep
+    /// applying last-response-wins replacements instead of
+    /// double-counting a responder whose earlier answer it has
+    /// forgotten.
+    pub event_ballots: Vec<(String, EventRsvp)>,
     /// The sender's verified business name, when the payload
     /// states one (history sync carries it per message). The
     /// app treats its presence as proof the sender is a
@@ -2106,6 +2282,9 @@ impl LiveMessage {
             poll_secret: None,
             poll_creator: None,
             poll_ballots: Vec::new(),
+            event_secret: None,
+            event_creator: None,
+            event_ballots: Vec::new(),
         }
     }
 }
@@ -2807,6 +2986,91 @@ pub enum BackendEvent {
         /// Protocol ID of the poll message.
         message_id: String,
         /// Why the vote failed, in user words.
+        message: String,
+    },
+    /// A response to an event landed. Responses arrive on the
+    /// wire as separate encrypted messages; the backend
+    /// decrypts them with the event's creation secret and
+    /// reports the responder's current answer (last-response-
+    /// wins: a later event for the same responder replaces the
+    /// earlier one wholesale). Aggregating the answers into
+    /// tallies is the app's job. A response whose event secret
+    /// the backend does not know cannot be decrypted and is
+    /// never reported. The event counterpart of
+    /// [`BackendEvent::PollVote`].
+    EventResponse {
+        /// Chat JID.
+        chat_jid: String,
+        /// Protocol ID of the event message.
+        message_id: String,
+        /// JID of the responder.
+        responder_jid: String,
+        /// True when the response is the account's own (cast
+        /// from this or another of the account's devices).
+        from_me: bool,
+        /// The responder's current answer.
+        response: EventRsvp,
+        /// Extra guests the responder is bringing, when stated.
+        extra_guest_count: Option<i32>,
+    },
+    /// A [`BackendCommand::RespondEvent`] never reached the
+    /// server: the event's creation secret is unavailable on
+    /// this device, an address was invalid, or the send itself
+    /// failed. The app rolls the optimistic response back to
+    /// the answer it replaced and shows `message` as the
+    /// notice. The event counterpart of
+    /// [`BackendEvent::PollVoteFailed`], with the same contract.
+    EventRespondFailed {
+        /// Chat JID.
+        chat_jid: String,
+        /// Protocol ID of the event message.
+        message_id: String,
+        /// Why the response failed, in user words.
+        message: String,
+    },
+    /// An event was edited by its organizer (a cancellation is
+    /// an edit with `canceled` set). The edit replaces the
+    /// whole event payload, so every field rides along, in the
+    /// same shape as [`LiveMessageKind::Event`]. Own edits made
+    /// from another of the account's devices arrive here too;
+    /// the app applies the payload as the event's new state.
+    EventEdited {
+        /// Chat JID.
+        chat_jid: String,
+        /// Protocol ID of the event message.
+        message_id: String,
+        /// Event name.
+        name: String,
+        /// Free-text details (may be empty).
+        description: String,
+        /// Start, unix seconds (0 when the payload stated none).
+        start_time: i64,
+        /// End, unix seconds (0 when the event has no end).
+        end_time: i64,
+        /// Place label the payload states (may be empty).
+        location: String,
+        /// Join/call link (may be empty).
+        join_link: String,
+        /// The event is a scheduled call.
+        scheduled_call: bool,
+        /// Extra guests are allowed.
+        extra_guests: bool,
+        /// The organizer cancelled the event with this edit.
+        canceled: bool,
+    },
+    /// A [`BackendCommand::EditEvent`] never reached the
+    /// server: the event's creation secret is unavailable on
+    /// this device, an address was invalid, or the send itself
+    /// failed. The app restores the event's previous fields and
+    /// shows `message` as the notice. The event counterpart of
+    /// [`BackendEvent::EditMessageFailed`], with the same
+    /// contract.
+    EventEditFailed {
+        /// Chat JID.
+        chat_jid: String,
+        /// Protocol ID of the event message.
+        message_id: String,
+        /// Why the edit failed, in user words.
         message: String,
     },
     /// A message was edited by its sender.

@@ -367,6 +367,24 @@ struct MessageData {
     /// ballot instead of counting twice.
     #[serde(default)]
     poll_ballots: Vec<(String, Vec<usize>)>,
+    /// An event's creation secret, archived with the event so
+    /// the app can hand it back to the backend in later
+    /// sessions (responses are encrypted under it; without it
+    /// the event could neither be answered nor tallied after a
+    /// restart). It sits in this encrypted archive, never in
+    /// plaintext settings.
+    #[serde(default)]
+    event_secret: Option<Vec<u8>>,
+    /// An event's creator JID, archived alongside the secret
+    /// (the response key derivation needs both).
+    #[serde(default)]
+    event_creator: Option<String>,
+    /// An event's latest response per responder, `(responder
+    /// JID, response)`, as aggregated by the app. Kept so a
+    /// responder's changed answer after a restart replaces
+    /// their old one instead of counting twice.
+    #[serde(default)]
+    event_ballots: Vec<(String, backend::EventRsvp)>,
     /// The sender's verified business name, when the payload
     /// stated one; the app badges the chat from it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1207,6 +1225,36 @@ impl Store {
             }
             poll_ballots = existing.poll_ballots.clone();
         }
+        // Events merge like polls: a rewrite of the creation
+        // (a history re-sync, an echo) carries no responses, so
+        // the archived tallies, my answer and the ballots are
+        // the state of record and survive it.
+        let mut event_ballots: Vec<(String, backend::EventRsvp)> = msg.event_ballots.clone();
+        let existing_event = if matches!(stored_kind, Some(backend::LiveMessageKind::Event { .. })) {
+            Self::read_message_data(conn, &msg.chat_jid, &msg.id)?
+                .filter(|data| matches!(data.kind, Some(backend::LiveMessageKind::Event { .. })))
+        } else {
+            None
+        };
+        if let Some(existing) = &existing_event {
+            if let (
+                Some(backend::LiveMessageKind::Event {
+                    going: old_going,
+                    maybe: old_maybe,
+                    not_going: old_not_going,
+                    my_rsvp: old_mine,
+                    ..
+                }),
+                Some(backend::LiveMessageKind::Event { going, maybe, not_going, my_rsvp, .. }),
+            ) = (&existing.kind, &mut stored_kind)
+            {
+                *going = *old_going;
+                *maybe = *old_maybe;
+                *not_going = *old_not_going;
+                *my_rsvp = *old_mine;
+            }
+            event_ballots = existing.event_ballots.clone();
+        }
         let data = MessageData {
             kind: stored_kind,
             sender_jid: msg.sender_jid.clone(),
@@ -1249,6 +1297,15 @@ impl Store {
                 .clone()
                 .or_else(|| existing_poll.as_ref().and_then(|data| data.poll_creator.clone())),
             poll_ballots,
+            event_secret: msg
+                .event_secret
+                .clone()
+                .or_else(|| existing_event.as_ref().and_then(|data| data.event_secret.clone())),
+            event_creator: msg
+                .event_creator
+                .clone()
+                .or_else(|| existing_event.as_ref().and_then(|data| data.event_creator.clone())),
+            event_ballots,
         };
         let data_json = serde_json::to_string(&data).map_err(|e| {
             StoreError::Sqlite(rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
@@ -1492,6 +1549,111 @@ impl Store {
         }
         *mine = my_votes.to_vec();
         data.poll_ballots = ballots.to_vec();
+        let data_json = serde_json::to_string(&data).map_err(|e| {
+            StoreError::Sqlite(rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
+        })?;
+        self.conn.execute(
+            "UPDATE messages SET data = ?3 WHERE chat_jid = ?1 AND id = ?2",
+            params![chat_jid, id, data_json],
+        )?;
+        Ok(())
+    }
+
+    /// Records an event's aggregated state in the archive: the
+    /// tallies, my own response, and the per-responder ballots
+    /// they were computed from. The event counterpart of
+    /// [`Store::set_poll_tally`], with the same contract: a
+    /// message that is not an archived event is left alone.
+    ///
+    /// # Errors
+    /// [`StoreError`] on SQLite failures.
+    pub fn set_event_tally(
+        &self,
+        chat_jid: &str,
+        id: &str,
+        going: u32,
+        maybe: u32,
+        not_going: u32,
+        my_rsvp: Option<backend::EventRsvp>,
+        ballots: &[(String, backend::EventRsvp)],
+    ) -> Result<(), StoreError> {
+        let Some(mut data) = Self::read_message_data(&self.conn, chat_jid, id)? else {
+            return Ok(());
+        };
+        let Some(backend::LiveMessageKind::Event {
+            going: g,
+            maybe: m,
+            not_going: n,
+            my_rsvp: mine,
+            ..
+        }) = &mut data.kind
+        else {
+            return Ok(());
+        };
+        *g = going;
+        *m = maybe;
+        *n = not_going;
+        *mine = my_rsvp;
+        data.event_ballots = ballots.to_vec();
+        let data_json = serde_json::to_string(&data).map_err(|e| {
+            StoreError::Sqlite(rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
+        })?;
+        self.conn.execute(
+            "UPDATE messages SET data = ?3 WHERE chat_jid = ?1 AND id = ?2",
+            params![chat_jid, id, data_json],
+        )?;
+        Ok(())
+    }
+
+    /// Replaces the descriptive fields of one stored event
+    /// (an edit or a cancellation landing from the wire, or my
+    /// own confirmed edit), leaving its tallies, my response
+    /// and its ballots untouched. A message without any (or no
+    /// such message) is a quiet no-op.
+    ///
+    /// # Errors
+    /// [`StoreError`] on SQLite failures.
+    pub fn set_event_fields(
+        &self,
+        chat_jid: &str,
+        id: &str,
+        name: &str,
+        description: &str,
+        start_time: i64,
+        end_time: Option<i64>,
+        location: Option<&str>,
+        join_link: Option<&str>,
+        scheduled_call: bool,
+        extra_guests: bool,
+        canceled: bool,
+    ) -> Result<(), StoreError> {
+        let Some(mut data) = Self::read_message_data(&self.conn, chat_jid, id)? else {
+            return Ok(());
+        };
+        let Some(backend::LiveMessageKind::Event {
+            name: n,
+            description: d,
+            start_time: s,
+            end_time: e,
+            location: l,
+            join_link: j,
+            scheduled_call: sc,
+            extra_guests: eg,
+            canceled: c,
+            ..
+        }) = &mut data.kind
+        else {
+            return Ok(());
+        };
+        *n = name.to_owned();
+        *d = description.to_owned();
+        *s = start_time;
+        *e = end_time;
+        *l = location.map(str::to_owned);
+        *j = join_link.map(str::to_owned);
+        *sc = scheduled_call;
+        *eg = extra_guests;
+        *c = canceled;
         let data_json = serde_json::to_string(&data).map_err(|e| {
             StoreError::Sqlite(rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
         })?;
@@ -2052,6 +2214,9 @@ impl Store {
             msg.poll_secret = data.poll_secret;
             msg.poll_creator = data.poll_creator;
             msg.poll_ballots = data.poll_ballots;
+            msg.event_secret = data.event_secret;
+            msg.event_creator = data.event_creator;
+            msg.event_ballots = data.event_ballots;
             msg.expires_at = row.get(8)?;
             let flags: i64 = row.get(7)?;
             Ok((msg, flags))

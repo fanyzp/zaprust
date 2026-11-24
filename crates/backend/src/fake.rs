@@ -721,6 +721,65 @@ pub fn scripted_messages() -> Vec<LiveMessage> {
         thumbnail: None,
     });
     link.reactions = vec![("👍".to_owned(), 1)];
+    // Sarah's event: she is going (her ballot is scripted with
+    // it, so the card's tally and the archived ballots agree),
+    // I have not answered yet. The creation secret is a
+    // placeholder like the poll's: the fake does no event
+    // crypto, the bytes are a stand-in the app archives and
+    // re-registers next session.
+    let mut event = LiveMessage::text(
+        "fake-event-1",
+        FAKE_DM_JID,
+        Some("Sarah Miller".to_owned()),
+        "",
+        1_700_000_280,
+        false,
+    );
+    event.kind = crate::LiveMessageKind::Event {
+        name: "Rooftop dinner".to_owned(),
+        description: "Bringing the city guide notes; booking is under my name.".to_owned(),
+        start_time: 1_700_086_400,
+        end_time: 1_700_097_200,
+        location: "Skyline Rooftop, Harbor Avenue".to_owned(),
+        join_link: String::new(),
+        scheduled_call: false,
+        extra_guests: true,
+        canceled: false,
+        my_rsvp: None,
+        going: 1,
+        maybe: 0,
+        not_going: 0,
+    };
+    event.event_secret = Some(vec![5u8; 32]);
+    event.event_creator = Some(FAKE_DM_JID.to_owned());
+    event.event_ballots = vec![(FAKE_DM_JID.to_owned(), crate::EventRsvp::Going)];
+    // My own event in the same chat: the edit and cancel
+    // targets for the demo, with no answers yet.
+    let mut my_event = LiveMessage::text(
+        "fake-event-mine-1",
+        FAKE_DM_JID,
+        None,
+        "",
+        1_700_000_285,
+        true,
+    );
+    my_event.kind = crate::LiveMessageKind::Event {
+        name: "Release retrospective".to_owned(),
+        description: String::new(),
+        start_time: 1_700_172_800,
+        end_time: 1_700_176_400,
+        location: String::new(),
+        join_link: String::new(),
+        scheduled_call: true,
+        extra_guests: false,
+        canceled: false,
+        my_rsvp: None,
+        going: 0,
+        maybe: 0,
+        not_going: 0,
+    };
+    my_event.event_secret = Some(vec![5u8; 32]);
+    my_event.event_creator = Some(FAKE_OWN_JID.to_owned());
     let mut photo = LiveMessage::text(
         "fake-photo-1",
         FAKE_DM_JID,
@@ -803,6 +862,8 @@ pub fn scripted_messages() -> Vec<LiveMessage> {
         poll,
         view_once_video,
         link,
+        event,
+        my_event,
         LiveMessage::text(
             "fake-promo-1",
             FAKE_DM_JID,
@@ -876,7 +937,40 @@ pub(crate) fn scripted_group_messages() -> Vec<LiveMessage> {
         name: "Emma Wilson".to_owned(),
         phone: "Contact card shared by Mike".to_owned(),
     };
-    vec![location, carousel, contact]
+    // Mike's group event: three scripted ballots (Mike and
+    // Emma going, Sarah maybe) with tallies that agree with
+    // them, so the group card shows a real aggregation.
+    let mut event = LiveMessage::text(
+        "fake-event-group-1",
+        FAKE_GROUP_JID,
+        Some("Mike Johnson".to_owned()),
+        "",
+        1_700_000_220,
+        false,
+    );
+    event.kind = crate::LiveMessageKind::Event {
+        name: "Sunday hike".to_owned(),
+        description: "Trailhead at the north gate; bring water.".to_owned(),
+        start_time: 1_700_259_200,
+        end_time: 1_700_280_000,
+        location: "North gate trailhead".to_owned(),
+        join_link: String::new(),
+        scheduled_call: false,
+        extra_guests: false,
+        canceled: false,
+        my_rsvp: None,
+        going: 2,
+        maybe: 1,
+        not_going: 0,
+    };
+    event.event_secret = Some(vec![5u8; 32]);
+    event.event_creator = Some("10000000004@s.whatsapp.net".to_owned());
+    event.event_ballots = vec![
+        ("10000000004@s.whatsapp.net".to_owned(), crate::EventRsvp::Going),
+        ("10000000007@s.whatsapp.net".to_owned(), crate::EventRsvp::Going),
+        (FAKE_DM_JID.to_owned(), crate::EventRsvp::Maybe),
+    ];
+    vec![location, carousel, contact, event]
 }
 
 /// The scripted older-history pages for the DM chat, keyed by
@@ -1255,6 +1349,15 @@ impl Backend for FakeBackend {
         let mut polls: std::collections::HashMap<String, LiveMessage> = scripted_messages()
             .into_iter()
             .filter(|m| matches!(m.kind, crate::LiveMessageKind::Poll { .. }))
+            .map(|m| (m.id.clone(), m))
+            .collect();
+        // Events by message ID, from both scripted chats: the
+        // state RespondEvent and EditEvent mutate and answer
+        // from, like the polls map above.
+        let mut events_map: std::collections::HashMap<String, LiveMessage> = scripted_messages()
+            .into_iter()
+            .chain(scripted_group_messages())
+            .filter(|m| matches!(m.kind, crate::LiveMessageKind::Event { .. }))
             .map(|m| (m.id.clone(), m))
             .collect();
         // Call simulation: shared with a ticker thread that walks
@@ -2340,6 +2443,164 @@ impl Backend for FakeBackend {
                             chat_jid,
                             message_id,
                             message: "Voting failed: that poll is not part of this chat."
+                                .to_owned(),
+                        });
+                    }
+                }
+                BackendCommand::CreateEvent {
+                    chat_jid,
+                    name,
+                    description,
+                    start_time,
+                    end_time,
+                    location,
+                    join_link,
+                    scheduled_call,
+                    extra_guests,
+                } => {
+                    sent_counter += 1;
+                    let mut msg = LiveMessage::text(
+                        format!("fake-event-sent-{sent_counter}"),
+                        chat_jid,
+                        None,
+                        "",
+                        1_700_000_300 + i64::try_from(sent_counter).unwrap_or(0),
+                        true,
+                    );
+                    msg.kind = crate::LiveMessageKind::Event {
+                        name,
+                        description,
+                        start_time,
+                        end_time,
+                        location,
+                        join_link,
+                        scheduled_call,
+                        extra_guests,
+                        canceled: false,
+                        my_rsvp: None,
+                        going: 0,
+                        maybe: 0,
+                        not_going: 0,
+                    };
+                    // A created event carries its (placeholder)
+                    // secret and creator, like the real backend's
+                    // creation upsert does.
+                    msg.event_secret = Some(vec![5u8; 32]);
+                    msg.event_creator = Some(FAKE_OWN_JID.to_owned());
+                    events_map.insert(msg.id.clone(), msg.clone());
+                    events.emit(BackendEvent::MessageUpsert(msg));
+                }
+                BackendCommand::RegisterEventSecret { chat_jid, message_id, .. } => {
+                    if let Some(log) = &command_log {
+                        log.lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .push(format!("event_secret_registration:{chat_jid}:{message_id}"));
+                    }
+                }
+                BackendCommand::RespondEvent { chat_jid, message_id, response, extra_guest_count } => {
+                    // The contract matches the real backend: an
+                    // answer is answered by an EventResponse event
+                    // carrying my new current answer (last-response-
+                    // wins replace semantics). Tallies are the app's
+                    // aggregation job; the fake only keeps its own
+                    // record of my answer so its model of the event
+                    // stays coherent. An unknown event answers with
+                    // the honest failure, like the real backend does
+                    // when an event's secret never reached the device.
+                    if take_failure("RespondEvent") {
+                        events.emit(BackendEvent::EventRespondFailed {
+                            chat_jid,
+                            message_id,
+                            message: "Answering failed: connection lost".to_owned(),
+                        });
+                    } else if let Some(msg) = events_map.get_mut(&message_id) {
+                        if let crate::LiveMessageKind::Event { my_rsvp, .. } = &mut msg.kind {
+                            *my_rsvp = Some(response);
+                        }
+                        events.emit(BackendEvent::EventResponse {
+                            chat_jid,
+                            message_id,
+                            responder_jid: FAKE_OWN_JID.to_owned(),
+                            from_me: true,
+                            response,
+                            extra_guest_count,
+                        });
+                    } else {
+                        events.emit(BackendEvent::EventRespondFailed {
+                            chat_jid,
+                            message_id,
+                            message: "Answering failed: that event is not part of this chat."
+                                .to_owned(),
+                        });
+                    }
+                }
+                BackendCommand::EditEvent {
+                    chat_jid,
+                    message_id,
+                    name,
+                    description,
+                    start_time,
+                    end_time,
+                    location,
+                    join_link,
+                    scheduled_call,
+                    extra_guests,
+                    canceled,
+                } => {
+                    // The contract matches the real backend: a
+                    // landed edit is answered by an EventEdited
+                    // event carrying the whole new field set (a
+                    // cancellation is the same shape with the flag
+                    // set), and the fake's stored event takes the
+                    // same fields so its model stays coherent.
+                    if take_failure("EditEvent") {
+                        events.emit(BackendEvent::EventEditFailed {
+                            chat_jid,
+                            message_id,
+                            message: "Editing the event failed: connection lost".to_owned(),
+                        });
+                    } else if let Some(msg) = events_map.get_mut(&message_id) {
+                        if let crate::LiveMessageKind::Event {
+                            name: n,
+                            description: d,
+                            start_time: s,
+                            end_time: e,
+                            location: l,
+                            join_link: j,
+                            scheduled_call: sc,
+                            extra_guests: eg,
+                            canceled: c,
+                            ..
+                        } = &mut msg.kind
+                        {
+                            *n = name.clone();
+                            *d = description.clone();
+                            *s = start_time;
+                            *e = end_time;
+                            *l = location.clone();
+                            *j = join_link.clone();
+                            *sc = scheduled_call;
+                            *eg = extra_guests;
+                            *c = canceled;
+                        }
+                        events.emit(BackendEvent::EventEdited {
+                            chat_jid,
+                            message_id,
+                            name,
+                            description,
+                            start_time,
+                            end_time,
+                            location,
+                            join_link,
+                            scheduled_call,
+                            extra_guests,
+                            canceled,
+                        });
+                    } else {
+                        events.emit(BackendEvent::EventEditFailed {
+                            chat_jid,
+                            message_id,
+                            message: "Editing the event failed: that event is not part of this chat."
                                 .to_owned(),
                         });
                     }

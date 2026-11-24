@@ -316,7 +316,7 @@ mod tests {
         target.unread = 5;
         let locked_id = target.id;
         // The folder admits it; every other filter hides it.
-        assert!(ChatFilter::Locked.matches(&chats.iter().find(|c| c.id == locked_id).unwrap()));
+        assert!(ChatFilter::Locked.matches(chats.iter().find(|c| c.id == locked_id).unwrap()));
         for filter in [
             ChatFilter::All,
             ChatFilter::Unread,

@@ -214,72 +214,6 @@ fn push_cp(out: &mut String, cp: u32) {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn latin_text_is_byte_identical() {
-        for s in [
-            "Hello world",
-            "Meeting at 5, room 12",
-            "https://example.com/path?q=1",
-            "multi\nline\ntext",
-            "",
-        ] {
-            assert_eq!(display(s), s);
-        }
-        assert!(!contains_rtl("Hello world"));
-    }
-
-    #[test]
-    fn pure_hebrew_reverses_into_visual_order() {
-        // Logical: shin lamed vav final-mem. Visual order is
-        // the exact reverse; Hebrew letters need no shaping.
-        assert_eq!(display("שלום"), "םולש");
-        assert!(contains_rtl("שלום"));
-    }
-
-    #[test]
-    fn arabic_letters_take_contextual_forms() {
-        // beh-alef-beh: initial beh, final alef, isolated
-        // beh (alef does not join forwards), then the whole
-        // word reverses for display.
-        assert_eq!(display("باب"), "\u{FE8F}\u{FE8E}\u{FE91}");
-    }
-
-    #[test]
-    fn lam_alef_becomes_the_ligature() {
-        assert_eq!(display("لا"), "\u{FEFB}");
-        // In السلام: isolated alef, initial lam, medial seen,
-        // the lam-alef ligature in final form (the seen joins
-        // into it), isolated meem; reversed for display.
-        assert_eq!(display("السلام"), "\u{FEE1}\u{FEFC}\u{FEB4}\u{FEDF}\u{FE8D}");
-    }
-
-    #[test]
-    fn mixed_paragraph_keeps_latin_runs_in_order() {
-        // An LTR paragraph (first strong is Latin) keeps its
-        // Latin order; the Arabic run inside is shaped and
-        // reversed as one unit.
-        assert_eq!(display("abc مرحبا def"), "abc \u{FE8E}\u{FE92}\u{FEA3}\u{FEAE}\u{FEE3} def");
-    }
-
-    #[test]
-    fn digits_inside_an_rtl_paragraph_stay_readable() {
-        // "The amount 1234": the digits form one LTR run at
-        // the visual end of the RTL paragraph, digits in
-        // their normal order.
-        let out = display("المبلغ 1234");
-        assert!(out.starts_with("1234 "), "digits lead visually: {out:?}");
-        assert!(!out.contains('4') || out.matches('4').count() == 1);
-    }
-
-    #[test]
-    fn reshape_leaves_hebrew_and_latin_alone() {
-        assert_eq!(reshape_arabic("שלום abc"), "שלום abc");
-    }
-}
 /// (letter, joining type, isolated, final, initial, medial);
 /// a zero form means the letter has no such form.
 static LETTER_FORMS: &[(u32, Join, u32, u32, u32, u32)] = &[
@@ -536,3 +470,70 @@ static LAM_ALEF: &[(u32, u32, u32)] = &[
     (0x0625, 0xFEF9, 0xFEFA),
     (0x0627, 0xFEFB, 0xFEFC),
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn latin_text_is_byte_identical() {
+        for s in [
+            "Hello world",
+            "Meeting at 5, room 12",
+            "https://example.com/path?q=1",
+            "multi\nline\ntext",
+            "",
+        ] {
+            assert_eq!(display(s), s);
+        }
+        assert!(!contains_rtl("Hello world"));
+    }
+
+    #[test]
+    fn pure_hebrew_reverses_into_visual_order() {
+        // Logical: shin lamed vav final-mem. Visual order is
+        // the exact reverse; Hebrew letters need no shaping.
+        assert_eq!(display("שלום"), "םולש");
+        assert!(contains_rtl("שלום"));
+    }
+
+    #[test]
+    fn arabic_letters_take_contextual_forms() {
+        // beh-alef-beh: initial beh, final alef, isolated
+        // beh (alef does not join forwards), then the whole
+        // word reverses for display.
+        assert_eq!(display("باب"), "\u{FE8F}\u{FE8E}\u{FE91}");
+    }
+
+    #[test]
+    fn lam_alef_becomes_the_ligature() {
+        assert_eq!(display("لا"), "\u{FEFB}");
+        // In السلام: isolated alef, initial lam, medial seen,
+        // the lam-alef ligature in final form (the seen joins
+        // into it), isolated meem; reversed for display.
+        assert_eq!(display("السلام"), "\u{FEE1}\u{FEFC}\u{FEB4}\u{FEDF}\u{FE8D}");
+    }
+
+    #[test]
+    fn mixed_paragraph_keeps_latin_runs_in_order() {
+        // An LTR paragraph (first strong is Latin) keeps its
+        // Latin order; the Arabic run inside is shaped and
+        // reversed as one unit.
+        assert_eq!(display("abc مرحبا def"), "abc \u{FE8E}\u{FE92}\u{FEA3}\u{FEAE}\u{FEE3} def");
+    }
+
+    #[test]
+    fn digits_inside_an_rtl_paragraph_stay_readable() {
+        // "The amount 1234": the digits form one LTR run at
+        // the visual end of the RTL paragraph, digits in
+        // their normal order.
+        let out = display("المبلغ 1234");
+        assert!(out.starts_with("1234 "), "digits lead visually: {out:?}");
+        assert!(!out.contains('4') || out.matches('4').count() == 1);
+    }
+
+    #[test]
+    fn reshape_leaves_hebrew_and_latin_alone() {
+        assert_eq!(reshape_arabic("שלום abc"), "שלום abc");
+    }
+}

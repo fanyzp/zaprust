@@ -863,7 +863,7 @@ fn tab_label(item: &str) -> String {
         "Privacy & Security" => crate::i18n::t("settings.privacy"),
         "Shortcuts" => crate::i18n::t("settings.shortcuts"),
         "Features" => crate::i18n::t("settings.features"),
-        "Business" => crate::i18n::t("business.settings_title"),
+        "Business" => crate::i18n::t("business.title"),
         "Data & Storage" => crate::i18n::t("settings.storage"),
         "About" => crate::i18n::t("settings.about"),
         // Anything else is already a display string.

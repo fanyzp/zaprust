@@ -8,7 +8,7 @@ use super::*;
 
 impl App {
     pub(crate) fn page_business(&mut self, ui: &mut egui::Ui, t: core::theme::Tokens) {
-        page_header(ui, &crate::i18n::t("business.settings_title"));
+        page_header(ui, &crate::i18n::t("business.title"));
         if self.live.is_none() {
             ui.label(
                 RichText::new(crate::i18n::t("business.live_only"))
@@ -26,7 +26,7 @@ impl App {
     /// behind the row's menu, and the editor form in place of
     /// the list while one is open.
     fn section_quick_replies(&mut self, ui: &mut egui::Ui, t: core::theme::Tokens) {
-        group_label(ui, t, &crate::i18n::t("business.quick_replies"));
+        group_label(ui, t, &crate::i18n::t("business.quick_title"));
         if self.business.quick_editor.is_some() {
             self.quick_editor_form(ui, t);
             return;
@@ -63,7 +63,7 @@ impl App {
                                 t,
                                 crate::icons::Icon::MoreVert,
                                 28.0,
-                                &crate::i18n::t("labels.actions"),
+                                &crate::i18n::t("common.actions"),
                                 None,
                             );
                             anchor.context_menu(|ui| {
@@ -147,7 +147,7 @@ impl App {
                     ui,
                     t,
                     &mut form.shortcut,
-                    &crate::i18n::t("business.quick_shortcut_hint"),
+                    &crate::i18n::t("business.quick_shortcut"),
                     ui.available_width(),
                 );
                 ui.add_space(SP_2);
@@ -160,7 +160,7 @@ impl App {
                     ui,
                     t,
                     &mut form.message,
-                    &crate::i18n::t("business.quick_message_hint"),
+                    &crate::i18n::t("business.quick_message"),
                     ui.available_width(),
                 );
                 ui.add_space(SP_2);
@@ -173,7 +173,7 @@ impl App {
                     ui,
                     t,
                     &mut form.keywords,
-                    &crate::i18n::t("business.quick_keywords_hint"),
+                    &crate::i18n::t("business.quick_keywords"),
                     ui.available_width(),
                 );
             });
@@ -219,7 +219,7 @@ impl App {
     /// so plainly (the server creates profiles from the
     /// phone's business app, not from a form here).
     fn section_own_profile(&mut self, ui: &mut egui::Ui, t: core::theme::Tokens) {
-        group_label(ui, t, &crate::i18n::t("business.own_profile"));
+        group_label(ui, t, &crate::i18n::t("business.own_title"));
         self.ensure_own_business_profile();
         if self.business.own_form.is_some() {
             self.own_profile_form(ui, t);
@@ -265,7 +265,7 @@ impl App {
                 if crate::widgets::button(
                     ui,
                     t,
-                    &crate::i18n::t("business.edit_profile"),
+                    &crate::i18n::t("business.own_edit"),
                     crate::widgets::Btn::Secondary,
                 )
                 .clicked()
@@ -345,7 +345,7 @@ impl App {
                 const MODES: [(&str, &str); 4] = [
                     ("closed", "business.closed"),
                     ("open_24h", "business.open_24h"),
-                    ("specific_hours", "business.specific_hours"),
+                    ("specific_hours", "business.day_specific"),
                     ("appointment_only", "business.appointment_only"),
                 ];
                 for (i, day) in form.days.iter_mut().enumerate() {

@@ -6,6 +6,8 @@
 
 # ---- common actions ----
 "common.cancel" = "Cancel"
+"common.edit" = "Edit"
+"common.actions" = "Actions"
 "common.close" = "Close"
 "common.save" = "Save"
 "common.add" = "Add"
@@ -791,4 +793,6 @@
 "business.day_sat" = "Saturday"
 "business.day_sun" = "Sunday"
 "business.order_loading" = "Loading order details..."
+"business.catalog_loading" = "Loading catalog..."
+"business.own_loading" = "Loading your business profile..."
 "business.live_only" = "Business tools need a connected account."

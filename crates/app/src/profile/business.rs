@@ -263,7 +263,7 @@ pub(super) fn catalog_body(
         ui,
         t,
         Some((Icon::ChevronLeft, t.text_secondary)),
-        &crate::i18n::t("business.catalog"),
+        &crate::i18n::t("business.catalog_title"),
         t.text_primary,
         false,
     )

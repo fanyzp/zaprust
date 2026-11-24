@@ -6,6 +6,8 @@
 
 # ---- common actions ----
 "common.cancel" = "Batal"
+"common.edit" = "Ubah"
+"common.actions" = "Tindakan"
 "common.close" = "Tutup"
 "common.save" = "Simpan"
 "common.add" = "Tambah"
@@ -774,4 +776,6 @@
 "business.day_sat" = "Sabtu"
 "business.day_sun" = "Minggu"
 "business.order_loading" = "Memuat detail pesanan..."
+"business.catalog_loading" = "Memuat katalog..."
+"business.own_loading" = "Memuat profil bisnis kamu..."
 "business.live_only" = "Fitur bisnis butuh akun yang terhubung."

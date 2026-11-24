@@ -67,6 +67,21 @@ impl App {
         if kind == ProfileKind::User {
             if let Some(jid) = self.live_jid(chat.id) {
                 self.ensure_business_profile(&jid);
+                // QA hook (--catalog): stage the catalog open
+                // for this chat and kick its fetches, exactly
+                // as the section's catalog row does on click.
+                if self.business.catalog_qa_open && self.business.catalog_open_for.is_none() {
+                    self.business.catalog_open_for = Some(jid.clone());
+                    if !self.business.catalogs.contains_key(&jid) {
+                        self.send_backend(backend::BackendCommand::FetchCollections {
+                            chat_jid: jid.clone(),
+                        });
+                        self.send_backend(backend::BackendCommand::FetchCatalog {
+                            chat_jid: jid,
+                            after: None,
+                        });
+                    }
+                }
             }
         }
         if self.profile_form_for != Some(chat.id) {

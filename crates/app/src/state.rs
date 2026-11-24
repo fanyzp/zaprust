@@ -50,6 +50,9 @@ pub(crate) struct Args {
     /// QA hook (--gallery media|links|docs): open the profile
     /// dock on a gallery section (screenshots).
     gallery: Option<String>,
+    /// QA hook (--catalog): open the profile dock on the
+    /// selected business chat's catalog (screenshots).
+    catalog: bool,
     /// QA hook (--stage <path>): stage this file in the
     /// selected chat's composer (screenshots).
     stage: Option<String>,
@@ -120,6 +123,7 @@ impl Args {
             search: None,
             chat_search: None,
             gallery: None,
+            catalog: false,
             stage: None,
             editor: false,
             // Live is the default: an installed copy opens as the
@@ -303,6 +307,10 @@ impl Args {
                     }
                 }
                 "--profile" => {
+                    args.profile = true;
+                }
+                "--catalog" => {
+                    args.catalog = true;
                     args.profile = true;
                 }
                 "--header-menu" => {
@@ -1259,6 +1267,9 @@ pub(crate) enum LabelPickerTarget {
 /// events and typed fetch answers; the archive tables are
 /// the launch seed and the write-through target.
 pub(crate) struct BusinessState {
+    /// QA hook (--catalog): stage the catalog sub-view open
+    /// for the selected chat's business (screenshots only).
+    pub(crate) catalog_qa_open: bool,
     /// Synced label definitions, in arrival order (the
     /// surfaces sort by name).
     pub(crate) labels: Vec<backend::LiveLabel>,
@@ -1331,6 +1342,7 @@ pub(crate) struct BusinessState {
 impl BusinessState {
     fn new() -> Self {
         Self {
+            catalog_qa_open: false,
             labels: Vec::new(),
             chat_labels: std::collections::HashMap::new(),
             message_labels: std::collections::HashMap::new(),
@@ -3114,6 +3126,12 @@ impl App {
             app.chat_search.open = true;
             app.chat_search.chat_id = app.selected_chat;
             app.chat_search.query = query.clone();
+        }
+        if args.catalog {
+            // QA hook: stage the business catalog open in the
+            // profile dock (the dock resolves the chat's JID
+            // and performs the open on its first draw).
+            app.business.catalog_qa_open = true;
         }
         if let Some(section) = &args.gallery {
             // QA hook: open the profile dock on a gallery

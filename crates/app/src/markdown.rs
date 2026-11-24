@@ -751,7 +751,12 @@ mod tests {
                     .map(|n| n.first_vertex as usize)
                     .unwrap_or(usize::MAX);
                 if glyph.chr == ' ' {
-                    assert_eq!(end, start, "a space paints no quad");
+                    // A trailing space has no next glyph to
+                    // bound it; the triangle count above already
+                    // proves it painted nothing.
+                    if i + 1 < row.glyphs.len() {
+                        assert_eq!(end, start, "a space paints no quad");
+                    }
                     continue;
                 }
                 let verts = &mesh.vertices[start..(start + 4).min(mesh.vertices.len())];

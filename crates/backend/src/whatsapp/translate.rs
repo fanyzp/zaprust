@@ -1803,6 +1803,7 @@ fn history_status(
 /// the wire payload: the shared tail of the live and history
 /// status translators (media references, the text background,
 /// the video's stated duration).
+#[allow(clippy::too_many_arguments)]
 fn status_from_parts(
     id: String,
     author_jid: String,

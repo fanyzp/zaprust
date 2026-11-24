@@ -145,7 +145,7 @@ pub(super) async fn post_text_status(
             whatsapp_rust::StatusSendOptions::default(),
         )
         .await
-        .map_err(|e| format!("{}", super::util::error_words(&e)))
+        .map_err(|e| super::util::error_words(&e).to_string())
 }
 
 /// Posts a photo or video status through the library's status
@@ -184,12 +184,12 @@ pub(super) async fn post_media_status(
             .status()
             .send_image(upload, thumbnail, caption, recipients, options)
             .await
-            .map_err(|e| format!("{}", super::util::error_words(&e))),
+            .map_err(|e| super::util::error_words(&e).to_string()),
         _ => client
             .status()
             .send_video(upload, thumbnail, seconds, caption, recipients, options)
             .await
-            .map_err(|e| format!("{}", super::util::error_words(&e))),
+            .map_err(|e| super::util::error_words(&e).to_string()),
     }
 }
 
@@ -204,12 +204,12 @@ pub(super) async fn delete_status(
     recipients: &[Jid],
 ) -> Result<SendResult, String> {
     let id = whatsapp_rust::MessageId::new(message_id)
-        .map_err(|e| format!("{}", super::util::error_words(&e)))?;
+        .map_err(|e| super::util::error_words(&e).to_string())?;
     client
         .status()
         .revoke(id, recipients, whatsapp_rust::StatusSendOptions::default())
         .await
-        .map_err(|e| format!("{}", super::util::error_words(&e)))
+        .map_err(|e| super::util::error_words(&e).to_string())
 }
 
 /// Builds the outgoing text message: bare text, or extendedText

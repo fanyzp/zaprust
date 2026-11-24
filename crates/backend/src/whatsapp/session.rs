@@ -1322,13 +1322,13 @@ pub(super) async fn run_async(
                                     .groups()
                                     .set_ephemeral(jid, duration_secs)
                                     .await
-                                    .map_err(|e| format!("{}", error_words(&e)))
+                                    .map_err(|e| error_words(&e).to_string())
                             } else {
                                 client
                                     .set_chat_disappearing_timer(jid, duration_secs)
                                     .await
                                     .map(|_| ())
-                                    .map_err(|e| format!("{}", error_words(&e)))
+                                    .map_err(|e| error_words(&e).to_string())
                             };
                             match result {
                                 Ok(()) => events.emit(BackendEvent::DisappearingChanged {

@@ -104,6 +104,39 @@ pub const FAKE_ORDER_ID: &str = "fake-order-1";
 /// Order token of the scripted order message.
 pub const FAKE_ORDER_TOKEN: &str = "fake-order-token";
 
+/// Which scripted incoming call the linked script rings with,
+/// from `ZAPRUST_FAKE_CALL`: "video" rings a 1:1 video call
+/// from the DM contact, "group" a group voice call, and
+/// "group-video" a group video call. Unset (the default) rings
+/// the plain 1:1 voice call every existing capture is built
+/// on. Gated like the other fixture families so the standard
+/// fixtures are unchanged unless a capture asks for them.
+fn call_fixture() -> Option<&'static str> {
+    match std::env::var("ZAPRUST_FAKE_CALL").ok().as_deref() {
+        Some("video") => Some("video"),
+        Some("group") => Some("group"),
+        Some("group-video") => Some("group-video"),
+        _ => None,
+    }
+}
+
+/// Whether the waiting-room fixture is scripted: during any
+/// active call, a guest arrives in the waiting room (the fake
+/// hosts every call it is asked about) and Admit/Deny answer.
+/// From `ZAPRUST_FAKE_WAITING`, gated like the other fixture
+/// families.
+fn waiting_fixture_enabled() -> bool {
+    std::env::var_os("ZAPRUST_FAKE_WAITING").is_some()
+}
+
+/// JIDs of the scripted group call's other members and of the
+/// waiting-room guest.
+pub const FAKE_MEMBER2_JID: &str = "10000000011@s.whatsapp.net";
+/// Third scripted group member.
+pub const FAKE_MEMBER3_JID: &str = "10000000012@s.whatsapp.net";
+/// The waiting-room guest's JID.
+pub const FAKE_GUEST_JID: &str = "10000000013@s.whatsapp.net";
+
 /// JID of the scripted group chat.
 pub const FAKE_GROUP_JID: &str = "10000000002@g.us";
 /// JID of the scripted channel.
@@ -2758,17 +2791,6 @@ impl Backend for FakeBackend {
                     defer_read_receipt(events.clone(), chat_jid.clone(), id, ts);
                 }
                 BackendCommand::StartCall { chat_jid, video } => {
-                    if video {
-                        // Aligned with the live backend (P1-26):
-                        // video calling is not built, so the fake
-                        // answers the same honest error instead of
-                        // simulating a video call live cannot make.
-                        events.emit(BackendEvent::Error {
-                            message: "Video calls are not available yet. Voice calls work."
-                                .to_owned(),
-                        });
-                        continue;
-                    }
                     if let Some(log) = &command_log {
                         log.lock()
                             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -2783,15 +2805,12 @@ impl Backend for FakeBackend {
                     } else {
                         state.counter += 1;
                         let call_id = format!("fake-call-{}", state.counter);
-                        state.current = Some(FakeCall {
-                            call_id: call_id.clone(),
-                            chat_jid: chat_jid.clone(),
-                            outgoing: true,
+                        state.current = Some(FakeCall::plain(
+                            call_id.clone(),
+                            chat_jid.clone(),
+                            true,
                             video,
-                            phase: crate::CallPhase::Ringing,
-                            seconds: 0,
-                            ticks: 0,
-                        });
+                        ));
                         events.emit(BackendEvent::CallChanged {
                             call_id,
                             chat_jid,
@@ -2799,6 +2818,365 @@ impl Backend for FakeBackend {
                             seconds: 0,
                             reason: None,
                         });
+                    }
+                }
+                BackendCommand::StartGroupCall { chat_jid, video } => {
+                    if let Some(log) = &command_log {
+                        log.lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .push(format!("start_group_call:{chat_jid}:{video}"));
+                    }
+                    let mut state =
+                        call_state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                    if state.current.is_some() {
+                        events.emit(BackendEvent::Error {
+                            message: "A call is already in progress.".to_owned(),
+                        });
+                    } else {
+                        state.counter += 1;
+                        let call_id = format!("fake-call-{}", state.counter);
+                        let mut call = FakeCall::plain(
+                            call_id.clone(),
+                            chat_jid.clone(),
+                            true,
+                            video,
+                        );
+                        call.group = true;
+                        call.participants = scripted_group_participants();
+                        state.current = Some(call);
+                        let current = state.current.as_ref().expect("just stored");
+                        events.emit(BackendEvent::CallChanged {
+                            call_id,
+                            chat_jid,
+                            phase: crate::CallPhase::Ringing,
+                            seconds: 0,
+                            reason: None,
+                        });
+                        emit_fake_roster(&events, current);
+                    }
+                }
+                BackendCommand::CreateCallLink { video } => {
+                    if let Some(log) = &command_log {
+                        log.lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .push(format!("create_call_link:{video}"));
+                    }
+                    if take_failure("CreateCallLink") {
+                        events.emit(BackendEvent::CallLinkFailed {
+                            message: "Creating the call link failed: connection lost"
+                                .to_owned(),
+                        });
+                    } else {
+                        let kind = if video { "video" } else { "audio" };
+                        events.emit(BackendEvent::CallLinkCreated {
+                            url: format!("https://call.whatsapp.com/{kind}/fake-link-1622"),
+                            video,
+                        });
+                    }
+                }
+                BackendCommand::PreviewCallLink { link } => {
+                    if let Some(log) = &command_log {
+                        log.lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .push("preview_call_link".to_owned());
+                    }
+                    if take_failure("PreviewCallLink") {
+                        events.emit(BackendEvent::CallLinkFailed {
+                            message: "That call link could not be read: connection lost"
+                                .to_owned(),
+                        });
+                    } else if link.contains("call.whatsapp.com/") || link.contains("fake-link") {
+                        events.emit(BackendEvent::CallLinkPreview {
+                            url: if link.starts_with("http") {
+                                link.clone()
+                            } else {
+                                format!("https://call.whatsapp.com/audio/{link}")
+                            },
+                            creator_jid: FAKE_DM_JID.to_owned(),
+                            video: link.contains("/video/"),
+                            waiting_room: true,
+                        });
+                    } else {
+                        events.emit(BackendEvent::CallLinkFailed {
+                            message: "That call link could not be read: not a call link"
+                                .to_owned(),
+                        });
+                    }
+                }
+                BackendCommand::JoinCallLink { link: _, video } => {
+                    if let Some(log) = &command_log {
+                        log.lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .push(format!("join_call_link:{video}"));
+                    }
+                    let mut state =
+                        call_state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                    if state.current.is_some() {
+                        events.emit(BackendEvent::Error {
+                            message: "A call is already in progress.".to_owned(),
+                        });
+                    } else {
+                        state.counter += 1;
+                        let call_id = format!("fake-call-{}", state.counter);
+                        // The overlay opens in Connecting first,
+                        // like the live join; a failure then ends
+                        // it with the reason.
+                        events.emit(BackendEvent::CallChanged {
+                            call_id: call_id.clone(),
+                            chat_jid: String::new(),
+                            phase: crate::CallPhase::Connecting,
+                            seconds: 0,
+                            reason: None,
+                        });
+                        if take_failure("JoinCallLink") {
+                            events.emit(BackendEvent::CallChanged {
+                                call_id,
+                                chat_jid: String::new(),
+                                phase: crate::CallPhase::Ended,
+                                seconds: 0,
+                                reason: Some(
+                                    "Joining the call failed: connection lost".to_owned(),
+                                ),
+                            });
+                        } else {
+                            let mut call = FakeCall::plain(
+                                call_id.clone(),
+                                String::new(),
+                                true,
+                                video,
+                            );
+                            call.group = true;
+                            call.link = true;
+                            call.phase = crate::CallPhase::Connecting;
+                            // The link's creator is already in
+                            // their call; one more guest is
+                            // still connecting (the ticker
+                            // connects them shortly).
+                            call.participants = vec![
+                                FakeParticipant {
+                                    jid: FAKE_DM_JID.to_owned(),
+                                    state: "connected".to_owned(),
+                                    hand_raised: false,
+                                    sharing: false,
+                                },
+                                FakeParticipant {
+                                    jid: FAKE_MEMBER2_JID.to_owned(),
+                                    state: "ringing".to_owned(),
+                                    hand_raised: false,
+                                    sharing: false,
+                                },
+                            ];
+                            state.current = Some(call);
+                        }
+                    }
+                }
+                BackendCommand::SetCallVideo { on } => {
+                    if let Some(log) = &command_log {
+                        log.lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .push(format!("call_video:{on}"));
+                    }
+                    if take_failure("SetCallVideo") {
+                        events.emit(BackendEvent::CallControlFailed {
+                            message: "Starting video failed: connection lost".to_owned(),
+                        });
+                    } else {
+                        let mut state =
+                            call_state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                        match &mut state.current {
+                            Some(call) => {
+                                call.video = on;
+                                if !on {
+                                    call.video_stream_started = false;
+                                }
+                                // The scripted peer side mirrors
+                                // the call's kind: on a video
+                                // call their video is on.
+                                events.emit(BackendEvent::CallVideoState {
+                                    local_on: on,
+                                    remote_on: call.video,
+                                    local_note: None,
+                                });
+                            }
+                            None => events.emit(BackendEvent::CallControlFailed {
+                                message: "No call is in progress.".to_owned(),
+                            }),
+                        }
+                    }
+                }
+                BackendCommand::SendCallReaction { emoji } => {
+                    if let Some(log) = &command_log {
+                        log.lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .push(format!("call_reaction:{emoji}"));
+                    }
+                    if take_failure("SendCallReaction") {
+                        events.emit(BackendEvent::CallControlFailed {
+                            message: "Sending the reaction failed: connection lost".to_owned(),
+                        });
+                    } else {
+                        let state =
+                            call_state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                        if state.current.is_none() {
+                            events.emit(BackendEvent::CallControlFailed {
+                                message: "No call is in progress.".to_owned(),
+                            });
+                        }
+                    }
+                }
+                BackendCommand::SetCallHandRaised { raised } => {
+                    if let Some(log) = &command_log {
+                        log.lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .push(format!("call_hand:{raised}"));
+                    }
+                    if take_failure("SetCallHandRaised") {
+                        events.emit(BackendEvent::CallControlFailed {
+                            message: "Raising your hand failed: connection lost".to_owned(),
+                        });
+                    } else {
+                        let state =
+                            call_state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                        if state.current.is_none() {
+                            events.emit(BackendEvent::CallControlFailed {
+                                message: "No call is in progress.".to_owned(),
+                            });
+                        }
+                    }
+                }
+                BackendCommand::InviteCallParticipant { jid } => {
+                    if let Some(log) = &command_log {
+                        log.lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .push(format!("call_invite:{jid}"));
+                    }
+                    if take_failure("InviteCallParticipant") {
+                        events.emit(BackendEvent::CallControlFailed {
+                            message: "Inviting them failed: connection lost".to_owned(),
+                        });
+                    } else {
+                        let mut state =
+                            call_state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                        match &mut state.current {
+                            Some(call) if call.group => {
+                                let at = call.active_ticks + 8;
+                                call.pending_invite = Some((jid.clone(), at));
+                                call.participants.push(FakeParticipant {
+                                    jid,
+                                    state: "ringing".to_owned(),
+                                    hand_raised: false,
+                                    sharing: false,
+                                });
+                                let current = state.current.as_ref().expect("present");
+                                emit_fake_roster(&events, current);
+                            }
+                            _ => events.emit(BackendEvent::CallControlFailed {
+                                message: "No group call is in progress.".to_owned(),
+                            }),
+                        }
+                    }
+                }
+                BackendCommand::AdmitWaitingUser { jid } => {
+                    if let Some(log) = &command_log {
+                        log.lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .push(format!("call_admit:{jid}"));
+                    }
+                    if take_failure("AdmitWaitingUser") {
+                        events.emit(BackendEvent::CallControlFailed {
+                            message: "Letting them in failed: connection lost".to_owned(),
+                        });
+                    } else {
+                        let mut state =
+                            call_state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                        match &mut state.current {
+                            Some(call) if call.waiting.as_deref() == Some(jid.as_str()) => {
+                                call.waiting = None;
+                                call.participants.push(FakeParticipant {
+                                    jid: jid.clone(),
+                                    state: "connected".to_owned(),
+                                    hand_raised: false,
+                                    sharing: false,
+                                });
+                                let approval = call.approval;
+                                let current = state.current.as_ref().expect("present");
+                                emit_fake_roster(&events, current);
+                                events.emit(BackendEvent::CallWaitingRoom {
+                                    is_admin: true,
+                                    approval_required: approval,
+                                    users: Vec::new(),
+                                });
+                            }
+                            _ => events.emit(BackendEvent::CallControlFailed {
+                                message: "That person is not waiting.".to_owned(),
+                            }),
+                        }
+                    }
+                }
+                BackendCommand::DenyWaitingUser { jid } => {
+                    if let Some(log) = &command_log {
+                        log.lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .push(format!("call_deny:{jid}"));
+                    }
+                    if take_failure("DenyWaitingUser") {
+                        events.emit(BackendEvent::CallControlFailed {
+                            message: "Refusing them failed: connection lost".to_owned(),
+                        });
+                    } else {
+                        let mut state =
+                            call_state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                        match &mut state.current {
+                            Some(call) if call.waiting.as_deref() == Some(jid.as_str()) => {
+                                call.waiting = None;
+                                let approval = call.approval;
+                                events.emit(BackendEvent::CallWaitingRoom {
+                                    is_admin: true,
+                                    approval_required: approval,
+                                    users: Vec::new(),
+                                });
+                            }
+                            _ => events.emit(BackendEvent::CallControlFailed {
+                                message: "That person is not waiting.".to_owned(),
+                            }),
+                        }
+                    }
+                }
+                BackendCommand::SetCallApproval { enabled } => {
+                    if let Some(log) = &command_log {
+                        log.lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .push(format!("call_approval:{enabled}"));
+                    }
+                    if take_failure("SetCallApproval") {
+                        events.emit(BackendEvent::CallControlFailed {
+                            message: "Changing the waiting room failed: connection lost"
+                                .to_owned(),
+                        });
+                    } else {
+                        let mut state =
+                            call_state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                        match &mut state.current {
+                            Some(call) => {
+                                call.approval = enabled;
+                                let users: Vec<crate::CallWaitingUser> = call
+                                    .waiting
+                                    .iter()
+                                    .map(|jid| crate::CallWaitingUser {
+                                        jid: jid.clone(),
+                                        phone: None,
+                                    })
+                                    .collect();
+                                events.emit(BackendEvent::CallWaitingRoom {
+                                    is_admin: true,
+                                    approval_required: enabled,
+                                    users,
+                                });
+                            }
+                            None => events.emit(BackendEvent::CallControlFailed {
+                                message: "No call is in progress.".to_owned(),
+                            }),
+                        }
                     }
                 }
                 BackendCommand::AcceptCall => {
@@ -4605,6 +4983,29 @@ impl Backend for FakeBackend {
     }
 }
 
+/// One scripted participant in a fake group or link call.
+#[derive(Debug, Clone)]
+struct FakeParticipant {
+    jid: String,
+    state: String,
+    hand_raised: bool,
+    sharing: bool,
+}
+
+/// The scripted group call's roster at ring time: the DM
+/// contact plus the two scripted members, all ringing.
+fn scripted_group_participants() -> Vec<FakeParticipant> {
+    [FAKE_DM_JID, FAKE_MEMBER2_JID, FAKE_MEMBER3_JID]
+        .iter()
+        .map(|jid| FakeParticipant {
+            jid: (*jid).to_owned(),
+            state: "ringing".to_owned(),
+            hand_raised: false,
+            sharing: false,
+        })
+        .collect()
+}
+
 /// One simulated call in the fake's phase machine.
 #[derive(Debug)]
 struct FakeCall {
@@ -4616,6 +5017,147 @@ struct FakeCall {
     seconds: u32,
     /// Ticks (250 ms) spent in the current phase.
     ticks: u32,
+    /// A group or call-link call (its roster is scripted).
+    group: bool,
+    /// Joined through a call link.
+    link: bool,
+    /// The scripted roster (group and link calls only).
+    participants: Vec<FakeParticipant>,
+    /// Ticks (250 ms) spent Active; the group script's beats
+    /// are scheduled against it.
+    active_ticks: u64,
+    /// Script beats already played (bit flags, see the BEAT_
+    /// constants in the ticker).
+    beats: u32,
+    /// The waiting-room guest's JID while they wait (the
+    /// waiting-room fixture and hosted link calls).
+    waiting: Option<String>,
+    /// The waiting room currently requires approval.
+    approval: bool,
+    /// An invited participant and the active-tick at which
+    /// they connect.
+    pending_invite: Option<(String, u64)>,
+    /// The fixture video stream thread is running for this
+    /// call.
+    video_stream_started: bool,
+}
+
+impl FakeCall {
+    /// A plain 1:1 call with no scripted roster.
+    fn plain(call_id: String, chat_jid: String, outgoing: bool, video: bool) -> Self {
+        Self {
+            call_id,
+            chat_jid,
+            outgoing,
+            video,
+            phase: crate::CallPhase::Ringing,
+            seconds: 0,
+            ticks: 0,
+            group: false,
+            link: false,
+            participants: Vec::new(),
+            active_ticks: 0,
+            beats: 0,
+            waiting: None,
+            approval: true,
+            pending_invite: None,
+            video_stream_started: false,
+        }
+    }
+}
+
+/// Emits the call's roster snapshot, the way the real backend
+/// re-sends the whole roster on every change.
+fn emit_fake_roster(events: &EventSink, call: &FakeCall) {
+    events.emit(BackendEvent::CallParticipants {
+        participants: call
+            .participants
+            .iter()
+            .map(|p| crate::CallParticipant {
+                jid: p.jid.clone(),
+                state: p.state.clone(),
+                hand_raised: p.hand_raised,
+                sharing: p.sharing,
+            })
+            .collect(),
+    });
+}
+
+/// The call-video fixture's access units, parsed once from
+/// the checked-in stream the generator example produced:
+/// records of [u32 LE length][u8 keyframe][AU bytes]. The
+/// stream is a real H.264 encode of a test pattern, so the
+/// app's real decoder is what renders it.
+fn fixture_aus() -> &'static [(Vec<u8>, bool)] {
+    static AUS: std::sync::OnceLock<Vec<(Vec<u8>, bool)>> = std::sync::OnceLock::new();
+    AUS.get_or_init(|| {
+        let bytes: &[u8] = include_bytes!("../testdata/call-video-fixture.h264");
+        let mut out = Vec::new();
+        let mut at = 0usize;
+        while at + 5 <= bytes.len() {
+            let len =
+                u32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]])
+                    as usize;
+            let keyframe = bytes[at + 4] != 0;
+            let start = at + 5;
+            let Some(au) = bytes.get(start..start + len) else { break };
+            out.push((au.to_vec(), keyframe));
+            at = start + len;
+        }
+        out
+    })
+}
+
+/// Streams the fixture's access units into the app for one
+/// video call, at the stream's own 15 fps, until the call
+/// leaves Active or stops being a video call. In a group call
+/// the frames are attributed to the participant currently
+/// sharing, or to the first connected participant when nobody
+/// shares: attribution is how the app knows whose picture it
+/// is painting.
+fn fake_video_stream(
+    state: std::sync::Arc<std::sync::Mutex<FakeCallState>>,
+    alive: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    events: EventSink,
+    call_id: String,
+) {
+    let aus = fixture_aus();
+    if aus.is_empty() {
+        return;
+    }
+    let mut index = 0usize;
+    while alive.load(std::sync::atomic::Ordering::Relaxed) {
+        std::thread::sleep(std::time::Duration::from_millis(66));
+        let sender = {
+            let guard = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let Some(call) = &guard.current else { return };
+            if call.call_id != call_id
+                || call.phase != crate::CallPhase::Active
+                || !call.video
+            {
+                return;
+            }
+            if call.group {
+                call.participants
+                    .iter()
+                    .find(|p| p.sharing)
+                    .or_else(|| {
+                        call.participants.iter().find(|p| p.state == "connected")
+                    })
+                    .map(|p| p.jid.clone())
+            } else {
+                None
+            }
+        };
+        let (data, keyframe) = &aus[index % aus.len()];
+        index += 1;
+        events.try_emit(BackendEvent::CallVideoAu {
+            sender,
+            data: data.clone(),
+            keyframe: *keyframe,
+            orientation: 0,
+        });
+    }
 }
 
 /// FakeBackend call state, shared between the command loop and
@@ -4629,9 +5171,27 @@ struct FakeCallState {
     log_counter: u64,
 }
 
+/// Script beats for group calls, as bit flags on
+/// [`FakeCall::beats`]: each fires once, at its scheduled
+/// active-tick.
+const BEAT_VIDEO_STATE: u32 = 1 << 0;
+const BEAT_MEMBER2: u32 = 1 << 1;
+const BEAT_MEMBER3: u32 = 1 << 2;
+const BEAT_HAND: u32 = 1 << 3;
+const BEAT_REACT: u32 = 1 << 4;
+const BEAT_SHARE: u32 = 1 << 5;
+const BEAT_WAITING: u32 = 1 << 6;
+const BEAT_LINK_GUEST: u32 = 1 << 7;
+
 /// Walks the fake call phase machine: outgoing calls ring for
 /// about a second, connect, go active and tick the duration once
-/// a second; accepted incoming calls connect the same way.
+/// a second; accepted incoming calls connect the same way. While
+/// a call is Active the scripted beats play: a video call
+/// reports its video state and starts the fixture stream; a
+/// group call connects its members in sequence, then one
+/// raises a hand, one reacts, and one starts sharing; a link
+/// call connects its second guest; and under the waiting-room
+/// fixture a guest arrives to be admitted or denied.
 fn fake_call_ticker(
     state: std::sync::Arc<std::sync::Mutex<FakeCallState>>,
     alive: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -4639,7 +5199,8 @@ fn fake_call_ticker(
 ) {
     while alive.load(std::sync::atomic::Ordering::Relaxed) {
         std::thread::sleep(std::time::Duration::from_millis(250));
-        let mut emit: Option<BackendEvent> = None;
+        let mut emits: Vec<BackendEvent> = Vec::new();
+        let mut start_stream: Option<String> = None;
         {
             let mut guard = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Some(call) = &mut guard.current {
@@ -4648,7 +5209,7 @@ fn fake_call_ticker(
                     crate::CallPhase::Ringing if call.outgoing && call.ticks >= 4 => {
                         call.phase = crate::CallPhase::Connecting;
                         call.ticks = 0;
-                        emit = Some(BackendEvent::CallChanged {
+                        emits.push(BackendEvent::CallChanged {
                             call_id: call.call_id.clone(),
                             chat_jid: call.chat_jid.clone(),
                             phase: crate::CallPhase::Connecting,
@@ -4659,7 +5220,7 @@ fn fake_call_ticker(
                     crate::CallPhase::Connecting if call.ticks >= 3 => {
                         call.phase = crate::CallPhase::Active;
                         call.ticks = 0;
-                        emit = Some(BackendEvent::CallChanged {
+                        emits.push(BackendEvent::CallChanged {
                             call_id: call.call_id.clone(),
                             chat_jid: call.chat_jid.clone(),
                             phase: crate::CallPhase::Active,
@@ -4667,23 +5228,152 @@ fn fake_call_ticker(
                             reason: None,
                         });
                     }
-                    crate::CallPhase::Active if call.ticks % 4 == 0 => {
-                        call.seconds += 1;
-                        emit = Some(BackendEvent::CallChanged {
-                            call_id: call.call_id.clone(),
-                            chat_jid: call.chat_jid.clone(),
-                            phase: crate::CallPhase::Active,
-                            seconds: call.seconds,
-                            reason: None,
-                        });
+                    crate::CallPhase::Active => {
+                        call.active_ticks += 1;
+                        if call.ticks % 4 == 0 {
+                            call.seconds += 1;
+                            emits.push(BackendEvent::CallChanged {
+                                call_id: call.call_id.clone(),
+                                chat_jid: call.chat_jid.clone(),
+                                phase: crate::CallPhase::Active,
+                                seconds: call.seconds,
+                                reason: None,
+                            });
+                        }
+                        fake_call_beats(call, &mut emits, &mut start_stream);
                     }
                     _ => {}
                 }
             }
         }
-        if let Some(event) = emit {
+        for event in emits {
             events.emit(event);
         }
+        if let Some(call_id) = start_stream {
+            let stream_state = state.clone();
+            let stream_alive = alive.clone();
+            let stream_events = events.clone();
+            std::thread::Builder::new()
+                .name("zaprust-fake-video".to_owned())
+                .spawn(move || {
+                    fake_video_stream(stream_state, stream_alive, stream_events, call_id);
+                })
+                .ok();
+        }
+    }
+}
+
+/// Plays one tick of the Active-phase script for `call`,
+/// appending the events it produces. Roster changes are
+/// emitted after this returns by the caller-visible helper
+/// pattern: beats that change the roster set `roster_dirty`,
+/// handled here by emitting the snapshot directly into
+/// `emits` (the events are ordered, so a snapshot computed
+/// now is the state at this tick).
+fn fake_call_beats(
+    call: &mut FakeCall,
+    emits: &mut Vec<BackendEvent>,
+    start_stream: &mut Option<String>,
+) {
+    let ticks = call.active_ticks;
+    let mut roster_dirty = false;
+    if call.video && call.beats & BEAT_VIDEO_STATE == 0 {
+        call.beats |= BEAT_VIDEO_STATE;
+        emits.push(BackendEvent::CallVideoState {
+            local_on: true,
+            remote_on: true,
+            local_note: None,
+        });
+    }
+    if call.video && !call.video_stream_started {
+        call.video_stream_started = true;
+        *start_stream = Some(call.call_id.clone());
+    }
+    if call.group && !call.link {
+        // Members connect in sequence, then the control
+        // script: a raised hand, a reaction, a screen share.
+        if ticks >= 8 && call.beats & BEAT_MEMBER2 == 0 {
+            call.beats |= BEAT_MEMBER2;
+            set_participant_state(call, FAKE_MEMBER2_JID, "connected");
+            roster_dirty = true;
+        }
+        if ticks >= 16 && call.beats & BEAT_MEMBER3 == 0 {
+            call.beats |= BEAT_MEMBER3;
+            set_participant_state(call, FAKE_MEMBER3_JID, "connected");
+            roster_dirty = true;
+        }
+        if ticks == 1 {
+            set_participant_state(call, FAKE_DM_JID, "connected");
+            roster_dirty = true;
+        }
+        if ticks >= 24 && call.beats & BEAT_HAND == 0 {
+            call.beats |= BEAT_HAND;
+            if let Some(p) = call.participants.iter_mut().find(|p| p.jid == FAKE_MEMBER2_JID) {
+                p.hand_raised = true;
+            }
+            roster_dirty = true;
+        }
+        if ticks >= 32 && call.beats & BEAT_REACT == 0 {
+            call.beats |= BEAT_REACT;
+            emits.push(BackendEvent::CallReaction {
+                jid: FAKE_MEMBER2_JID.to_owned(),
+                emoji: Some("👍".to_owned()),
+            });
+        }
+        if ticks >= 40 && call.beats & BEAT_SHARE == 0 {
+            call.beats |= BEAT_SHARE;
+            if let Some(p) = call.participants.iter_mut().find(|p| p.jid == FAKE_MEMBER3_JID) {
+                p.sharing = true;
+            }
+            roster_dirty = true;
+        }
+    }
+    if call.link && ticks >= 8 && call.beats & BEAT_LINK_GUEST == 0 {
+        call.beats |= BEAT_LINK_GUEST;
+        set_participant_state(call, FAKE_MEMBER2_JID, "connected");
+        roster_dirty = true;
+    }
+    if let Some((jid, at)) = &call.pending_invite {
+        if ticks >= *at {
+            let jid = jid.clone();
+            call.pending_invite = None;
+            set_participant_state(call, &jid, "connected");
+            roster_dirty = true;
+        }
+    }
+    if waiting_fixture_enabled()
+        && ticks >= 20
+        && call.waiting.is_none()
+        && call.beats & BEAT_WAITING == 0
+    {
+        call.beats |= BEAT_WAITING;
+        call.waiting = Some(FAKE_GUEST_JID.to_owned());
+        emits.push(BackendEvent::CallWaitingRoom {
+            is_admin: true,
+            approval_required: call.approval,
+            users: vec![crate::CallWaitingUser { jid: FAKE_GUEST_JID.to_owned(), phone: None }],
+        });
+    }
+    if roster_dirty {
+        emits.push(BackendEvent::CallParticipants {
+            participants: call
+                .participants
+                .iter()
+                .map(|p| crate::CallParticipant {
+                    jid: p.jid.clone(),
+                    state: p.state.clone(),
+                    hand_raised: p.hand_raised,
+                    sharing: p.sharing,
+                })
+                .collect(),
+        });
+    }
+}
+
+/// Sets one scripted participant's roster state word.
+fn set_participant_state(call: &mut FakeCall, jid: &str, state: &str) {
+    if let Some(p) = call.participants.iter_mut().find(|p| p.jid == jid) {
+        p.state = state.to_owned();
     }
 }
 
@@ -4697,6 +5387,11 @@ fn emit_call_end(events: &EventSink, state: &mut FakeCallState, call: &FakeCall,
         seconds: call.seconds,
         reason: Some(reason.to_owned()),
     });
+    if call.chat_jid.is_empty() {
+        // A call-link call belongs to no chat: there is no
+        // transcript to leave its line in.
+        return;
+    }
     state.log_counter += 1;
     let kind_label = if call.video { "Video call" } else { "Voice call" };
     let body = if call.seconds > 0 || call.phase == crate::CallPhase::Active {
@@ -4913,27 +5608,39 @@ fn emit_linked_script(
     // One scripted incoming voice call from the DM contact, so
     // the whole call surface (ring, accept, talk, end, log entry)
     // is exercised in test mode without a phone. Registered in
-    // the call state first so AcceptCall finds it.
+    // the call state first so AcceptCall finds it. The call
+    // fixture gate (ZAPRUST_FAKE_CALL) swaps in a video call or
+    // a group invitation for the call captures.
     {
         let mut state = call_state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if state.current.is_none() {
             state.counter += 1;
             let call_id = format!("fake-call-{}", state.counter);
-            state.current = Some(FakeCall {
-                call_id: call_id.clone(),
-                chat_jid: FAKE_DM_JID.to_owned(),
-                outgoing: false,
-                video: false,
-                phase: crate::CallPhase::Ringing,
-                seconds: 0,
-                ticks: 0,
-            });
-            events.emit(BackendEvent::IncomingCall {
-                call_id,
-                chat_jid: FAKE_DM_JID.to_owned(),
-                video: false,
-                group_jid: None,
-            });
+            let (mut call, group_jid) = match call_fixture() {
+                Some(kind @ ("group" | "group-video")) => {
+                    let mut call = FakeCall::plain(
+                        call_id.clone(),
+                        FAKE_GROUP_JID.to_owned(),
+                        false,
+                        kind == "group-video",
+                    );
+                    call.group = true;
+                    call.participants = scripted_group_participants();
+                    (call, Some(FAKE_GROUP_JID.to_owned()))
+                }
+                Some("video") => (
+                    FakeCall::plain(call_id.clone(), FAKE_DM_JID.to_owned(), false, true),
+                    None,
+                ),
+                _ => (
+                    FakeCall::plain(call_id.clone(), FAKE_DM_JID.to_owned(), false, false),
+                    None,
+                ),
+            };
+            call.phase = crate::CallPhase::Ringing;
+            let (chat_jid, video) = (call.chat_jid.clone(), call.video);
+            state.current = Some(call);
+            events.emit(BackendEvent::IncomingCall { call_id, chat_jid, video, group_jid });
         }
     }
     // The scripted peer starts typing after the message flow, so

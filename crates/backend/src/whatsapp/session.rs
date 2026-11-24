@@ -1535,7 +1535,7 @@ pub(super) async fn run_async(
                     match handle {
                         Some(handle) => {
                             if let Err(e) = handle.set_muted(muted).await {
-                                events.emit(BackendEvent::Error {
+                                events.emit(BackendEvent::CallAudioFailed {
                                     message: format!("Setting mute failed: {}", error_words(&e)),
                                 });
                             } else {
@@ -1545,7 +1545,7 @@ pub(super) async fn run_async(
                                 });
                             }
                         }
-                        None => events.emit(BackendEvent::Error {
+                        None => events.emit(BackendEvent::CallAudioFailed {
                             message: "No call is in progress.".to_owned(),
                         }),
                     }
@@ -1562,18 +1562,22 @@ pub(super) async fn run_async(
                                 speaker: Some(speaker),
                             });
                         }
-                        None => events.emit(BackendEvent::Error {
+                        None => events.emit(BackendEvent::CallAudioFailed {
                             message: "No call is in progress.".to_owned(),
                         }),
                     }
                 }
                 #[cfg(not(feature = "calls"))]
+                BackendCommand::SetCallMuted { .. } | BackendCommand::SetCallSpeaker { .. } => {
+                    events.emit(BackendEvent::CallAudioFailed {
+                        message: "Calls are not compiled into this build.".to_owned(),
+                    });
+                }
+                #[cfg(not(feature = "calls"))]
                 BackendCommand::StartCall { .. }
                 | BackendCommand::AcceptCall
                 | BackendCommand::RejectCall
-                | BackendCommand::EndCall
-                | BackendCommand::SetCallMuted { .. }
-                | BackendCommand::SetCallSpeaker { .. } => {
+                | BackendCommand::EndCall => {
                     events.emit(BackendEvent::Error {
                         message: "Calls are not compiled into this build.".to_owned(),
                     });

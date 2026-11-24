@@ -2594,9 +2594,10 @@ pub enum BackendEvent {
     /// [`BackendCommand::SetCallMuted`] or
     /// [`BackendCommand::SetCallSpeaker`]. The app flips its
     /// toggles optimistically and confirms them from this
-    /// event; a failure answers with the generic error and the
-    /// app reverts the flip (P2-33). Before, the speaker toggle
-    /// had no outcome event at all.
+    /// event; a failure answers with
+    /// [`BackendEvent::CallAudioFailed`] and the app reverts
+    /// the flip (P2-33). Before, the speaker toggle had no
+    /// outcome event at all.
     CallAudioState {
         /// The confirmed microphone mute state, when this
         /// event answers the mute toggle.
@@ -2604,6 +2605,19 @@ pub enum BackendEvent {
         /// The confirmed speaker state, when this event
         /// answers the speaker toggle.
         speaker: Option<bool>,
+    },
+    /// An in-call audio toggle failed: the answering event
+    /// for [`BackendCommand::SetCallMuted`] and
+    /// [`BackendCommand::SetCallSpeaker`] when the call
+    /// engine refuses or no call is in progress. It is typed,
+    /// not the generic error, for the same reason
+    /// [`BackendEvent::ReactionFailed`] is: the app must roll
+    /// exactly one optimistic change back (the toggle's
+    /// backup pair), and an unrelated generic error must
+    /// never trip that revert (VRF-04).
+    CallAudioFailed {
+        /// Why the toggle failed, in user words.
+        message: String,
     },
     /// The current call changed phase. While `Active`, the
     /// backend re-emits this roughly once a second with the

@@ -1592,17 +1592,23 @@ impl Backend for FakeBackend {
                             .unwrap_or_else(std::sync::PoisonError::into_inner)
                             .push(format!("call_muted:{muted}"));
                     }
-                    let state =
-                        call_state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                    if state.current.is_none() {
-                        events.emit(BackendEvent::Error {
-                            message: "No call is in progress.".to_owned(),
+                    if take_failure("SetCallMuted") {
+                        events.emit(BackendEvent::CallAudioFailed {
+                            message: "Setting mute failed: connection lost".to_owned(),
                         });
                     } else {
-                        events.emit(BackendEvent::CallAudioState {
-                            muted: Some(muted),
-                            speaker: None,
-                        });
+                        let state =
+                            call_state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                        if state.current.is_none() {
+                            events.emit(BackendEvent::CallAudioFailed {
+                                message: "No call is in progress.".to_owned(),
+                            });
+                        } else {
+                            events.emit(BackendEvent::CallAudioState {
+                                muted: Some(muted),
+                                speaker: None,
+                            });
+                        }
                     }
                 }
                 BackendCommand::SetCallSpeaker { speaker } => {
@@ -1611,17 +1617,23 @@ impl Backend for FakeBackend {
                             .unwrap_or_else(std::sync::PoisonError::into_inner)
                             .push(format!("call_speaker:{speaker}"));
                     }
-                    let state =
-                        call_state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                    if state.current.is_none() {
-                        events.emit(BackendEvent::Error {
-                            message: "No call is in progress.".to_owned(),
+                    if take_failure("SetCallSpeaker") {
+                        events.emit(BackendEvent::CallAudioFailed {
+                            message: "Setting speaker failed: connection lost".to_owned(),
                         });
                     } else {
-                        events.emit(BackendEvent::CallAudioState {
-                            muted: None,
-                            speaker: Some(speaker),
-                        });
+                        let state =
+                            call_state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                        if state.current.is_none() {
+                            events.emit(BackendEvent::CallAudioFailed {
+                                message: "No call is in progress.".to_owned(),
+                            });
+                        } else {
+                            events.emit(BackendEvent::CallAudioState {
+                                muted: None,
+                                speaker: Some(speaker),
+                            });
+                        }
                     }
                 }
                 BackendCommand::CreatePoll { chat_jid, question, options, multiple } => {

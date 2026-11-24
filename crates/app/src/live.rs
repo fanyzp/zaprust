@@ -2364,6 +2364,12 @@ impl crate::state::App {
                     if is_group && actor.is_some() && delivery == Delivery::Read {
                         delivery = Delivery::Delivered;
                     }
+                    // First sight of this message's history:
+                    // record the insertion order the size cap
+                    // prunes by.
+                    if !self.receipt_log.contains_key(&mid) {
+                        self.receipt_log_order.push_back(mid);
+                    }
                     let log = self.receipt_log.entry(mid).or_default();
                     log.push((kind, fmt_time(at)));
                     // The receipt log only feeds the message-info
@@ -2371,9 +2377,7 @@ impl crate::state::App {
                     if log.len() > 32 {
                         log.drain(..log.len() - 32);
                     }
-                    if self.receipt_log.len() > 4096 {
-                        self.receipt_log.clear();
-                    }
+                    self.prune_receipt_log();
                     let mut applied = false;
                     if let Some(entry) =
                         self.live.as_mut().and_then(|s| s.messages.get_mut(&chat_id))
@@ -3579,17 +3583,6 @@ impl crate::state::App {
                 }
             }
             BackendEvent::Error { message } => {
-                // A failed in-call audio toggle (P2-33): the
-                // optimistic flip goes back to its backup pair.
-                // The backup exists only in the window between
-                // a toggle click and its CallAudioState
-                // confirmation, so no other error can trip this.
-                if let Some(call) = &mut self.calls.active {
-                    if let Some((muted, speaker)) = call.audio_backup.take() {
-                        call.muted = muted;
-                        call.speaker = speaker;
-                    }
-                }
                 // A failure ends any in-flight create (P2-31):
                 // the error replaces the Busy notice below, and
                 // no stale pending flag may let a later unrelated
@@ -3724,6 +3717,24 @@ impl crate::state::App {
                     }
                     call.audio_backup = None;
                 }
+            }
+            BackendEvent::CallAudioFailed { message } => {
+                // A failed in-call audio toggle (P2-33): the
+                // optimistic flip goes back to its backup pair.
+                // The revert hangs on this typed event, never on
+                // the generic error: an unrelated failure used
+                // to trip it and flap a toggle that had actually
+                // landed (VRF-04). Same display treatment as the
+                // generic error path: scrubbed, then user words.
+                let message = core::crash::scrub_for_display(&message);
+                tracing::warn!("call audio toggle failed: {message}");
+                if let Some(call) = &mut self.calls.active {
+                    if let Some((muted, speaker)) = call.audio_backup.take() {
+                        call.muted = muted;
+                        call.speaker = speaker;
+                    }
+                }
+                self.notice = Some(Notice::error(human_error(&message)));
             }
             BackendEvent::CallChanged { call_id, chat_jid, phase, seconds, reason } => {
                 let chat_id = jid_id(&chat_jid);
@@ -5329,6 +5340,21 @@ impl crate::state::App {
         }
     }
 
+    /// The receipt log's size cap: at most 4,096 message
+    /// histories are kept. Past the cap the OLDEST histories
+    /// drop, in first-insertion order, and the recent ones
+    /// stay: the log used to clear wholesale at the cap,
+    /// silently emptying the Message info history of every
+    /// message at once (VRF-05). Keys already forgotten leave
+    /// a stale slot in the order queue; the prune skips them.
+    pub(crate) fn prune_receipt_log(&mut self) {
+        const RECEIPT_LOG_CAP: usize = 4096;
+        while self.receipt_log.len() > RECEIPT_LOG_CAP {
+            let Some(oldest) = self.receipt_log_order.pop_front() else { break };
+            self.receipt_log.remove(&oldest);
+        }
+    }
+
     /// Drops every per-message helper entry kept for one live
     /// message: its protocol ID, sender JID, receipt log,
     /// reaction state, archive flags, and any pending read
@@ -5379,6 +5405,7 @@ impl crate::state::App {
         self.media.textures.remove(&msg_id);
         self.sender_jids.remove(&msg_id);
         self.receipt_log.remove(&msg_id);
+        self.receipt_log_order.retain(|id| *id != msg_id);
         self.my_reactions.remove(&msg_id);
         self.pending_reactions.remove(&msg_id);
         // Pending action state for the forgotten message:
@@ -10062,6 +10089,34 @@ mod burst_drain_tests {
             "the oldest entries drain away"
         );
         assert_eq!(log.last(), Some(&(ReceiptKind::Delivered, fmt_time(BASE_TS + 39 * 60))));
+    }
+
+    /// VRF-05: the log's size cap drops the oldest histories
+    /// and keeps the recent ones. It used to clear the whole
+    /// map past 4,096 entries, silently emptying the Message
+    /// info history of every message at once.
+    #[test]
+    fn receipt_log_cap_drops_oldest_and_keeps_recent() {
+        let (mut app, _tx, _ctx, _cmd_rx) = live_app();
+        for id in 0..4_100u64 {
+            app.receipt_log.insert(id, vec![(ReceiptKind::Read, "09:05".to_owned())]);
+            app.receipt_log_order.push_back(id);
+        }
+        app.prune_receipt_log();
+        assert_eq!(app.receipt_log.len(), 4_096);
+        for dropped in 0..4u64 {
+            assert!(!app.receipt_log.contains_key(&dropped), "oldest {dropped} dropped");
+        }
+        assert!(app.receipt_log.contains_key(&4), "the fifth history survives");
+        assert!(app.receipt_log.contains_key(&4_099), "the newest history survives");
+        // A stale slot in the order queue (a forgotten
+        // message) does not stall or corrupt the prune.
+        app.receipt_log_order.push_front(999_999);
+        app.receipt_log.insert(500_000, vec![(ReceiptKind::Read, "09:06".to_owned())]);
+        app.receipt_log_order.push_back(500_000);
+        app.prune_receipt_log();
+        assert_eq!(app.receipt_log.len(), 4_096);
+        assert!(app.receipt_log.contains_key(&500_000));
     }
 
     /// Incoming typing: a TypingReceived event marks the chat

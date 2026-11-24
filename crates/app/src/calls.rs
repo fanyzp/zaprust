@@ -1602,7 +1602,7 @@ impl App {
                         ui.horizontal(|ui| {
                             if crate::widgets::button(
                                 ui,
-                                &t,
+                                t,
                                 &crate::i18n::t("call.copy_link"),
                                 crate::widgets::Btn::Secondary,
                             )
@@ -1612,7 +1612,7 @@ impl App {
                             }
                             if crate::widgets::button(
                                 ui,
-                                &t,
+                                t,
                                 &crate::i18n::t("call.join_this_call"),
                                 crate::widgets::Btn::Primary,
                             )
@@ -1636,7 +1636,7 @@ impl App {
                         ui.add_space(SP_SECTION);
                         if crate::widgets::button(
                             ui,
-                            &t,
+                            t,
                             &crate::i18n::t("call.create_link"),
                             crate::widgets::Btn::Primary,
                         )
@@ -1650,7 +1650,7 @@ impl App {
                 ui.add_space(SP_3);
                 if crate::widgets::button(
                     ui,
-                    &t,
+                    t,
                     &crate::i18n::t("common.close"),
                     crate::widgets::Btn::Secondary,
                 )

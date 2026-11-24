@@ -272,6 +272,7 @@ impl CallDecoder {
     /// the stage keeps its last good frame and the next
     /// keyframe resyncs.
     pub(crate) fn decode(&mut self, au: &[u8]) -> Option<(Vec<u8>, u32, u32)> {
+        use openh264::formats::YUVSource as _;
         match self.decoder.decode(au) {
             Ok(Some(yuv)) => {
                 let (width, height) = yuv.dimensions();
@@ -728,54 +729,66 @@ impl App {
 /// The reaction set the card offers, WhatsApp's in-call set.
 const REACTIONS: [&str; 6] = ["👍", "❤️", "😂", "😮", "😢", "🙏"];
 
-/// One call control: a 56pt disc with its caption under it
-/// (design standard section 19). `active` fills the disc with
-/// the accent (a toggle that is on); `danger` fills it with
-/// the danger color (decline, end).
+/// Diameter of one call action disc.
+const CALL_DISC: f32 = 56.0;
+
+/// One labeled call action: a disc with its caption under it,
+/// centered in the cell it is given (one column of the action
+/// row). The whole column is the click target, and the caption
+/// is always visible: a call action never hides its meaning in
+/// a hover tooltip. While an action is latched (the `pending`
+/// argument, fed from the call's action_pending flag) the disc,
+/// its glyph and its caption paint dimmed, so the latch the
+/// click handling enforces is visible instead of silently
+/// swallowing further clicks.
 fn call_action(
     ui: &mut egui::Ui,
-    t: &crate::theme::Theme,
     icon: Icon,
-    caption: &str,
-    active: bool,
-    danger: bool,
+    bg: egui::Color32,
+    glyph: egui::Color32,
+    label: &str,
+    t: core::theme::Tokens,
+    pending: bool,
 ) -> bool {
     let mut clicked = false;
     ui.vertical_centered(|ui| {
-        let (rect, response) =
-            ui.allocate_exact_size(Vec2::splat(56.0), Sense::click());
-        let center = rect.center();
-        let fill = if danger {
-            t.danger
-        } else if active {
-            t.accent
-        } else if response.hovered() {
-            crate::theme::mix(t.bg_panel_alt, t.text_primary, 0.10)
-        } else {
-            t.bg_panel_alt
+        // Disc, a 6 px gap, and room for the 12 px caption.
+        let (rect, response) = ui.allocate_exact_size(
+            Vec2::new(CALL_DISC + 16.0, CALL_DISC + 6.0 + 16.0),
+            Sense::click(),
+        );
+        let dim = |c: egui::Color32| {
+            egui::Color32::from_rgba_unmultiplied(
+                c.r(),
+                c.g(),
+                c.b(),
+                (f32::from(c.a()) * 0.55) as u8,
+            )
         };
-        ui.painter().circle_filled(center, 28.0, rgb(fill));
-        let glyph_color = if danger || active {
-            crate::theme::Color::new(1.0, 1.0, 1.0)
+        let (bg, glyph, label_color) = if pending {
+            (dim(bg), dim(glyph), dim(rgb(t.text_secondary)))
         } else {
-            t.text_primary
+            (bg, glyph, rgb(t.text_secondary))
         };
-        icons::paint(
+        let disc_center =
+            egui::Pos2::new(rect.center().x, rect.top() + CALL_DISC / 2.0);
+        ui.painter().circle_filled(disc_center, CALL_DISC / 2.0, bg);
+        icons::draw(
             ui.painter(),
             icon,
-            center,
-            icons::SIZE_LARGE,
-            rgb(glyph_color),
+            disc_center,
+            crate::icons::SIZE_TAB,
+            glyph,
+            bg,
         );
-        if response.clicked() {
-            clicked = true;
-        }
-        ui.add_space(SP_2);
-        ui.label(
-            RichText::new(caption)
-                .size(12.0)
-                .color(rgb(t.text_secondary)),
+        ui.painter().text(
+            egui::Pos2::new(rect.center().x, rect.top() + CALL_DISC + 6.0),
+            Align2::CENTER_TOP,
+            label,
+            egui::FontId::proportional(12.0),
+            label_color,
         );
+        clicked = response.on_hover_text(label).clicked();
     });
     clicked
 }
@@ -1091,7 +1104,7 @@ impl App {
                                     call.participants.iter().take(shown)
                                 {
                                     self.draw_call_participant_row(
-                                        ui, &call, participant, &t,
+                                        ui, &call, participant, t,
                                     );
                                 }
                                 if call.participants.len() > shown {
@@ -1143,7 +1156,7 @@ impl App {
                                                 if !pending {
                                                     if crate::widgets::button(
                                                         ui,
-                                                        &t,
+                                                        t,
                                                         &crate::i18n::t(
                                                             "call.admit",
                                                         ),
@@ -1158,7 +1171,7 @@ impl App {
                                                     }
                                                     if crate::widgets::button(
                                                         ui,
-                                                        &t,
+                                                        t,
                                                         &crate::i18n::t(
                                                             "call.deny",
                                                         ),
@@ -1241,96 +1254,130 @@ impl App {
                                 ui.add_space(SP_SECTION);
                             }
                             // The actions, on the one center
-                            // axis. Decline/End is the danger
-                            // disc; Accept the accent disc.
-                            let latched = call.action_pending;
+                            // axis: even columns of labeled
+                            // discs (section 19). Decline and
+                            // End wear the danger fill, Accept
+                            // the accent, and a toggle that is
+                            // on wears the accent too.
                             match call.phase {
                                 CallUiPhase::Incoming => {
-                                    ui.horizontal(|ui| {
-                                        ui.add_space(52.0);
+                                    ui.columns(2, |cols| {
                                         if call_action(
-                                            ui,
-                                            &t,
+                                            &mut cols[0],
                                             Icon::CallEnd,
+                                            rgb(t.danger),
+                                            rgb(t.on_danger()),
                                             &crate::i18n::t("call.decline"),
-                                            false,
-                                            true,
-                                        ) && !latched
-                                        {
+                                            t,
+                                            call.action_pending,
+                                        ) {
                                             action = Some("reject".to_owned());
                                         }
-                                        ui.add_space(40.0);
                                         if call_action(
-                                            ui,
-                                            &t,
+                                            &mut cols[1],
                                             Icon::Phone,
+                                            rgb(t.accent),
+                                            rgb(t.on_accent()),
                                             &crate::i18n::t("call.accept"),
-                                            true,
-                                            false,
-                                        ) && !latched
-                                        {
+                                            t,
+                                            call.action_pending,
+                                        ) {
                                             action = Some("accept".to_owned());
                                         }
                                     });
                                 }
-                                CallUiPhase::Ended => {}
+                                CallUiPhase::Ended => {
+                                    if crate::widgets::button(
+                                        ui,
+                                        t,
+                                        &crate::i18n::t("common.close"),
+                                        crate::widgets::Btn::Secondary,
+                                    )
+                                    .clicked()
+                                    {
+                                        action = Some("close".to_owned());
+                                    }
+                                }
                                 _ => {
-                                    ui.horizontal(|ui| {
-                                        ui.add_space(6.0);
+                                    ui.columns(4, |cols| {
+                                        let mute_icon = if call.muted {
+                                            Icon::MicOff
+                                        } else {
+                                            Icon::Mic
+                                        };
                                         if call_action(
-                                            ui,
-                                            &t,
-                                            if call.muted {
-                                                Icon::MicOff
-                                            } else {
-                                                Icon::Mic
-                                            },
+                                            &mut cols[0],
+                                            mute_icon,
+                                            rgb(t.bg_panel_alt),
+                                            rgb(t.text_primary),
                                             &crate::i18n::t(if call.muted {
-                                                "call.unmute"
+                                                "common.unmute"
                                             } else {
-                                                "call.mute"
+                                                "common.mute"
                                             }),
-                                            call.muted,
-                                            false,
+                                            t,
+                                            call.action_pending,
                                         ) {
                                             action = Some("mute".to_owned());
                                         }
-                                        ui.add_space(SP_3);
+                                        // The speaker toggle wears
+                                        // the accent while it is on,
+                                        // so its state reads at a
+                                        // glance, not only from its
+                                        // glyph.
+                                        let (speaker_bg, speaker_glyph) =
+                                            if call.speaker {
+                                                (rgb(t.accent), rgb(t.on_accent()))
+                                            } else {
+                                                (
+                                                    rgb(t.bg_panel_alt),
+                                                    rgb(t.text_primary),
+                                                )
+                                            };
                                         if call_action(
-                                            ui,
-                                            &t,
+                                            &mut cols[1],
                                             Icon::VolumeUp,
+                                            speaker_bg,
+                                            speaker_glyph,
                                             &crate::i18n::t("call.speaker"),
-                                            call.speaker,
-                                            false,
+                                            t,
+                                            call.action_pending,
                                         ) {
                                             action = Some("speaker".to_owned());
                                         }
-                                        ui.add_space(SP_3);
+                                        let (video_bg, video_glyph) =
+                                            if call.video_local {
+                                                (rgb(t.accent), rgb(t.on_accent()))
+                                            } else {
+                                                (
+                                                    rgb(t.bg_panel_alt),
+                                                    rgb(t.text_primary),
+                                                )
+                                            };
                                         if call_action(
-                                            ui,
-                                            &t,
+                                            &mut cols[2],
                                             if call.video_local {
                                                 Icon::Videocam
                                             } else {
                                                 Icon::VideocamOff
                                             },
+                                            video_bg,
+                                            video_glyph,
                                             &crate::i18n::t("call.video"),
-                                            call.video_local,
-                                            false,
+                                            t,
+                                            call.action_pending,
                                         ) {
                                             action = Some("video".to_owned());
                                         }
-                                        ui.add_space(SP_3);
                                         if call_action(
-                                            ui,
-                                            &t,
+                                            &mut cols[3],
                                             Icon::CallEnd,
+                                            rgb(t.danger),
+                                            rgb(t.on_danger()),
                                             &crate::i18n::t("call.end"),
-                                            false,
-                                            true,
-                                        ) && !latched
-                                        {
+                                            t,
+                                            call.action_pending,
+                                        ) {
                                             action = Some("end".to_owned());
                                         }
                                     });
@@ -1339,12 +1386,24 @@ impl App {
                                             || call.phase == CallUiPhase::Active)
                                     {
                                         ui.add_space(SP_3);
-                                        ui.horizontal(|ui| {
-                                            ui.add_space(52.0);
+                                        ui.columns(2, |cols| {
+                                            let (hand_bg, hand_glyph) =
+                                                if call.hand_raised {
+                                                    (
+                                                        rgb(t.accent),
+                                                        rgb(t.on_accent()),
+                                                    )
+                                                } else {
+                                                    (
+                                                        rgb(t.bg_panel_alt),
+                                                        rgb(t.text_primary),
+                                                    )
+                                                };
                                             if call_action(
-                                                ui,
-                                                &t,
+                                                &mut cols[0],
                                                 Icon::BackHand,
+                                                hand_bg,
+                                                hand_glyph,
                                                 &crate::i18n::t(
                                                     if call.hand_raised {
                                                         "call.lower_hand"
@@ -1352,22 +1411,19 @@ impl App {
                                                         "call.raise_hand"
                                                     },
                                                 ),
-                                                call.hand_raised,
-                                                false,
+                                                t,
+                                                call.action_pending,
                                             ) {
-                                                action =
-                                                    Some("hand".to_owned());
+                                                action = Some("hand".to_owned());
                                             }
-                                            ui.add_space(40.0);
                                             if call_action(
-                                                ui,
-                                                &t,
+                                                &mut cols[1],
                                                 Icon::GroupAdd,
-                                                &crate::i18n::t(
-                                                    "call.add_people",
-                                                ),
-                                                false,
-                                                false,
+                                                rgb(t.bg_panel_alt),
+                                                rgb(t.text_primary),
+                                                &crate::i18n::t("call.add_people"),
+                                                t,
+                                                call.action_pending,
                                             ) {
                                                 action =
                                                     Some("invite".to_owned());
@@ -1376,6 +1432,7 @@ impl App {
                                     }
                                 }
                             }
+                            }
                         });
                     });
             });
@@ -1383,8 +1440,30 @@ impl App {
             Some("accept") => self.accept_active_call(),
             Some("reject") => self.reject_active_call(),
             Some("end") => self.end_active_call(),
-            Some("mute") => self.toggle_call_mute(),
-            Some("speaker") => self.toggle_call_speaker(),
+            Some("mute") => {
+                if let Some(call) = &mut self.calls.active {
+                    // Optimistic flip with a backup: the
+                    // backend's CallAudioState confirms it, an
+                    // error reverts it (P2-33).
+                    call.audio_backup = Some((call.muted, call.speaker));
+                    call.muted = !call.muted;
+                    let muted = call.muted;
+                    self.send_backend(BackendCommand::SetCallMuted { muted });
+                }
+            }
+            Some("speaker") => {
+                if let Some(call) = &mut self.calls.active {
+                    call.audio_backup = Some((call.muted, call.speaker));
+                    call.speaker = !call.speaker;
+                    let speaker = call.speaker;
+                    self.send_backend(BackendCommand::SetCallSpeaker { speaker });
+                }
+            }
+            Some("close") => {
+                self.calls.active = None;
+                self.calls.media = CallMediaState::default();
+                self.calls.invite_open = false;
+            }
             Some("video") => self.toggle_call_video(),
             Some("hand") => self.toggle_call_hand(),
             Some("invite") => {
@@ -1414,7 +1493,7 @@ impl App {
         ui: &mut egui::Ui,
         call: &CallUi,
         participant: &backend::CallParticipant,
-        t: &crate::theme::Theme,
+        t: core::theme::Tokens,
     ) {
         ui.horizontal(|ui| {
             let (rect, _) =
@@ -1598,7 +1677,7 @@ impl App {
                 ui.add_space(SP_3);
                 if crate::widgets::button(
                     ui,
-                    &t,
+                    t,
                     &crate::i18n::t("common.close"),
                     crate::widgets::Btn::Secondary,
                 )

@@ -290,7 +290,7 @@ impl Camera {
             buffers.push((map, buffer.length as usize));
         }
 
-        let mut camera = Self { fd, width, height, buffers };
+        let camera = Self { fd, width, height, buffers };
         for index in 0..camera.buffers.len() {
             camera.queue(index as u32)?;
         }

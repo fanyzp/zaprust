@@ -285,7 +285,7 @@ fn make_encoder() -> Result<openh264::encoder::Encoder, String> {
     };
     use openh264::OpenH264API;
     let config = EncoderConfig::new()
-        .bitrate(BitRate::from_bps(900_000))
+        .bitrate(BitRate::from_bps(BITRATE_BPS))
         .max_frame_rate(FrameRate::from_hz(15.0))
         .usage_type(UsageType::CameraVideoRealTime)
         .profile(Profile::Baseline)

@@ -80,6 +80,7 @@ whatsapp-rust = { git = "https://github.com/oxidezap/whatsapp-rust", rev = "e634
 # matches the one the protocol library itself uses.
 diesel = { version = "2.4", default-features = false, features = ["sqlite"], optional = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 
 [dev-dependencies]
 store = { path = "../store" }

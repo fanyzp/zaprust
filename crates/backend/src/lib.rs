@@ -1472,6 +1472,97 @@ pub enum BackendCommand {
         /// Which operation.
         op: ParticipantOp,
     },
+    /// Add participants to a group and share recent history
+    /// with the ones who were added (row 64). The added
+    /// participants are the share's audience: the bundle goes
+    /// to them and to this account's other devices only.
+    /// Answered with a [`BackendEvent::GroupHistoryReported`]
+    /// event carrying the add outcome and the share outcome
+    /// separately; a hard failure of the add itself surfaces
+    /// as an `Error` event, like the plain add.
+    AddGroupParticipantsWithHistory {
+        /// Group JID.
+        chat_jid: String,
+        /// Participant JIDs or phone numbers to add.
+        participants: Vec<String>,
+        /// Recent plain-text history from the app's archive,
+        /// oldest first. The library applies its own
+        /// eligibility policy and window to these.
+        history: Vec<HistoryMessageRecord>,
+    },
+    /// Resume a group history share whose prepared bundle the
+    /// backend kept after a retryable failure (row 64). The
+    /// members are NOT added again. Answered with a
+    /// [`BackendEvent::GroupHistoryReported`] event whose add
+    /// lists are empty.
+    RetryGroupHistoryShare {
+        /// Group JID.
+        chat_jid: String,
+    },
+    /// Set or clear this account's own member label in a
+    /// group (row 65). An empty label clears it. Answered
+    /// with [`BackendEvent::MemberLabelSet`], or
+    /// [`BackendEvent::MemberLabelFailed`] when the send
+    /// failed.
+    SetOwnMemberLabel {
+        /// Group JID.
+        chat_jid: String,
+        /// The label text (empty clears).
+        label: String,
+    },
+    /// Report one message to the group's own admins (row 65).
+    /// This is not a spam report to WhatsApp. Answered with
+    /// [`BackendEvent::MessageReportedToAdmins`], or
+    /// [`BackendEvent::ReportToAdminsFailed`] when the report
+    /// did not go out.
+    ReportMessageToAdmins {
+        /// Group JID.
+        chat_jid: String,
+        /// Protocol id of the message to report.
+        message_id: String,
+    },
+    /// Fetch the messages reported to a group's admins
+    /// (row 65, the admin side). Answered with a
+    /// [`BackendEvent::ReportedMessages`] event, or
+    /// [`BackendEvent::ReportedMessagesFailed`].
+    FetchReportedMessages {
+        /// Group JID.
+        chat_jid: String,
+    },
+    /// Send an interactive message (buttons, list, or
+    /// carousel) built from raw protos (row 19). The local
+    /// echo the app created is confirmed by the usual
+    /// `MessageSent` event; a failure surfaces as an `Error`
+    /// event, like the sibling send commands.
+    SendInteractive {
+        /// Chat JID.
+        chat_jid: String,
+        /// What to build and send.
+        spec: InteractiveSpec,
+    },
+    /// Answer a received buttons or list message by naming
+    /// the chosen button or row (row 19). The answer rides
+    /// the wire's response proto quoting the original
+    /// message; locally it echoes as a text message carrying
+    /// the chosen label, which is also how answers from other
+    /// clients arrive. Confirmed by `MessageSent`; a failure
+    /// surfaces as an `Error` event.
+    SendInteractiveResponse {
+        /// Chat JID.
+        chat_jid: String,
+        /// Protocol id of the message being answered.
+        message_id: String,
+        /// Author JID of the original message (group chats).
+        sender_jid: Option<String>,
+        /// True when the original message is this account's.
+        from_me: bool,
+        /// True for a list row answer, false for a button.
+        is_list: bool,
+        /// The chosen button or row's wire id.
+        choice_id: String,
+        /// The chosen button or row's label (the echo text).
+        choice_text: String,
+    },
     /// Set a group's subject and/or description.
     SetGroupInfo {
         /// Group JID.
@@ -2071,6 +2162,28 @@ pub enum LiveMessageKind {
         /// The cards.
         cards: Vec<LiveCard>,
     },
+    /// A message with quick-reply buttons. The body text is in
+    /// [`LiveMessage::body`]; the buttons carry the wire's own
+    /// ids, because an answer must name the button it picks.
+    Buttons {
+        /// Footer line under the body (may be empty).
+        footer: String,
+        /// The buttons, in wire order.
+        buttons: Vec<LiveButton>,
+    },
+    /// A list message: a title, a body (in
+    /// [`LiveMessage::body`]), and sections of pickable rows.
+    /// An answer names the row it picks by id.
+    ListMsg {
+        /// Description under the title (may be empty).
+        description: String,
+        /// Label of the button that opens the list on a phone.
+        button_label: String,
+        /// Footer line (may be empty).
+        footer: String,
+        /// The sections, in wire order.
+        sections: Vec<LiveListSection>,
+    },
     /// A media message (photo, video, voice, document, sticker).
     /// The bytes are not carried; they can be fetched on demand
     /// through the download command while the session lasts.
@@ -2106,6 +2219,150 @@ pub enum MediaKind {
     Document,
     /// Sticker.
     Sticker,
+}
+
+/// One quick-reply button of a [`LiveMessageKind::Buttons`]
+/// message: the wire id an answer names, and the label shown.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct LiveButton {
+    /// The button's wire id (an answer names it).
+    pub id: String,
+    /// The label shown on the button.
+    pub text: String,
+}
+
+/// One pickable row of a [`LiveMessageKind::ListMsg`] section.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct LiveListRow {
+    /// The row's wire id (an answer names it).
+    pub id: String,
+    /// The row's title.
+    pub title: String,
+    /// The row's description (may be empty).
+    pub description: String,
+}
+
+/// One section of a [`LiveMessageKind::ListMsg`] message.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct LiveListSection {
+    /// The section title (may be empty for a single section).
+    pub title: String,
+    /// The rows, in wire order.
+    pub rows: Vec<LiveListRow>,
+}
+
+/// One archived plain-text message the app offers as group
+/// history when adding members (row 64). The app builds these
+/// from its own archive; the live backend rebuilds the wire
+/// records from them and the library applies its own
+/// eligibility policy (acknowledged plain text, inside the
+/// sharing window, count-capped). Non-text messages are never
+/// offered: the library would drop them anyway.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HistoryMessageRecord {
+    /// Protocol message ID.
+    pub id: String,
+    /// Author JID (the group participant address); `None` for
+    /// messages this account sent.
+    pub author_jid: Option<String>,
+    /// True when this account sent the message.
+    pub from_me: bool,
+    /// Unix timestamp (seconds).
+    pub timestamp: i64,
+    /// The message's plain text.
+    pub body: String,
+    /// JIDs the message mentions, in wire order.
+    pub mentions: Vec<String>,
+    /// Persisted delivery state for an outgoing message;
+    /// `None` for incoming messages (held by this device,
+    /// which the wire record states as read).
+    pub delivery: Option<DeliveryState>,
+}
+
+/// The truthful outcome of a group history share, mapped from
+/// the library's own outcome type. A share can fail after the
+/// members were added; the two halves are always reported
+/// separately, and nothing here claims a recipient read or
+/// received anything.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HistoryShareReport {
+    /// The bundle was accepted by the server with complete
+    /// fanout; `messages` records were shared.
+    Shared {
+        /// How many history records the bundle carried.
+        messages: usize,
+    },
+    /// No share was requested (nobody opted in).
+    NotRequested,
+    /// The library skipped the share; `reason` says why, in
+    /// words (sharing disabled, no eligible messages, the
+    /// sender may not share, and so on).
+    Skipped {
+        /// Why the share was skipped.
+        reason: String,
+    },
+    /// The share failed. `retryable` is true when the backend
+    /// kept the prepared share and a
+    /// [`BackendCommand::RetryGroupHistoryShare`] can resume
+    /// it without adding the members again.
+    Failed {
+        /// What failed, in words.
+        error: String,
+        /// Whether a retry can resume the prepared share.
+        retryable: bool,
+    },
+}
+
+/// What an interactive message send builds (row 19). The live
+/// backend turns the spec into the wire proto; the app builds
+/// the same shapes from a received message's kind when it
+/// echoes, so a sent message renders exactly like a received
+/// one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InteractiveSpec {
+    /// Quick-reply buttons under a body text.
+    Buttons {
+        /// Body text above the buttons.
+        text: String,
+        /// Footer line (may be empty).
+        footer: String,
+        /// Button labels, in order (at most three; the wire
+        /// assigns positional ids).
+        buttons: Vec<String>,
+    },
+    /// A list message with sections of rows.
+    List {
+        /// The list title.
+        title: String,
+        /// Description under the title (may be empty).
+        description: String,
+        /// Label of the button that opens the list.
+        button_label: String,
+        /// The sections as (section title, rows) pairs, rows
+        /// as (row title, row description) pairs. Wire row ids
+        /// are assigned positionally by the builder.
+        sections: Vec<(String, Vec<(String, String)>)>,
+    },
+    /// A carousel of up to two cards (the renderer's window;
+    /// nothing sendable may be locally invisible).
+    Carousel {
+        /// Body text above the cards.
+        body: String,
+        /// The cards.
+        cards: Vec<LiveCard>,
+    },
+}
+
+/// One message reported to a group's admins, as the admin
+/// fetch reports it (row 65). The reporting device may not
+/// hold the named message; the entry names it by id either
+/// way.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReportedMessageEntry {
+    /// The reported message's protocol id.
+    pub message_id: String,
+    /// JIDs of the members who reported it.
+    pub reporters: Vec<String>,
 }
 
 /// One participant in a group or call-link call, as the call
@@ -2998,6 +3255,12 @@ pub struct LiveChannelCounters {
     /// already renders.
     pub poll_votes: Vec<([u8; 32], u32)>,
 }
+
+/// One group member row as the backends report it:
+/// address, display name, admin flag, and the member
+/// label the member set for themselves in this group
+/// (row 65), when they set one.
+pub type GroupMemberRow = (String, String, bool, Option<String>);
 
 /// An event from the backend to the UI.
 ///
@@ -4332,18 +4595,102 @@ pub enum BackendEvent {
     GroupMembers {
         /// Group JID.
         chat_jid: String,
-        /// (jid, display name, is admin) rows. The display name
-        /// is the name the server rendered for the participant,
-        /// or empty when it rendered none; the host then resolves
-        /// a label from its own data or masks the identifier. It
-        /// is never the raw phone number or LID.
-        members: Vec<(String, String, bool)>,
+        /// (jid, display name, is admin, member label) rows.
+        /// The display name is the name the server rendered
+        /// for the participant, or empty when it rendered
+        /// none; the host then resolves a label from its own
+        /// data or masks the identifier. It is never the raw
+        /// phone number or LID. The member label is the
+        /// participant's own label in this group (row 65), or
+        /// `None` when they have not set one.
+        members: Vec<GroupMemberRow>,
         /// Whether this account is itself an admin of the
         /// group, computed by the backend from the account's
         /// own addresses against the member list (the app never
         /// guesses its own role from names or row order). Gates
         /// the admin-only message actions in the UI.
         own_admin: bool,
+        /// The account's own member label in this group, read
+        /// off its own participant row (row 65): the app
+        /// cannot pick its own row out of the list, so the
+        /// backend names the value. `None` when unset.
+        own_label: Option<String>,
+    },
+    /// The outcome of an add-with-history or a history-share
+    /// retry (row 64). The add outcome and the share outcome
+    /// are separate fields because a share can fail after the
+    /// members were added, and the app must say exactly that.
+    GroupHistoryReported {
+        /// Group JID.
+        chat_jid: String,
+        /// JIDs that were added (empty for a retry).
+        added: Vec<String>,
+        /// (jid, reason) pairs the server refused to add.
+        refused: Vec<(String, String)>,
+        /// The history share's own outcome.
+        report: HistoryShareReport,
+    },
+    /// This account's own member label in a group was set (or
+    /// cleared, when empty), answering `SetOwnMemberLabel`.
+    MemberLabelSet {
+        /// Group JID.
+        chat_jid: String,
+        /// The label now in effect (empty when cleared).
+        label: String,
+    },
+    /// A [`BackendCommand::SetOwnMemberLabel`] failed; the
+    /// previous label still stands.
+    MemberLabelFailed {
+        /// Group JID.
+        chat_jid: String,
+        /// What failed, in words.
+        message: String,
+    },
+    /// A group member's label changed, reported from the
+    /// member-label protocol message in the group (row 65).
+    /// `label` is `None` when the member cleared it.
+    MemberLabelChanged {
+        /// Group JID.
+        chat_jid: String,
+        /// The member whose label changed.
+        member_jid: String,
+        /// The new label, or `None` when cleared.
+        label: Option<String>,
+    },
+    /// A message was reported to the group's admins,
+    /// answering `ReportMessageToAdmins`. The protocol answer
+    /// confirms the report went out; it says nothing about
+    /// which ids the server accepted.
+    MessageReportedToAdmins {
+        /// Group JID.
+        chat_jid: String,
+        /// The reported message's protocol id.
+        message_id: String,
+    },
+    /// A [`BackendCommand::ReportMessageToAdmins`] failed;
+    /// no report went out.
+    ReportToAdminsFailed {
+        /// Group JID.
+        chat_jid: String,
+        /// The message that was not reported.
+        message_id: String,
+        /// What failed, in words.
+        message: String,
+    },
+    /// The messages reported to a group's admins, answering
+    /// `FetchReportedMessages` (row 65).
+    ReportedMessages {
+        /// Group JID.
+        chat_jid: String,
+        /// The outstanding reports.
+        reports: Vec<ReportedMessageEntry>,
+    },
+    /// A [`BackendCommand::FetchReportedMessages`] failed.
+    ReportedMessagesFailed {
+        /// Group JID.
+        chat_jid: String,
+        /// What failed, in words.
+        message: String,
     },
     /// A group's invite link, answering `FetchGroupInviteLink`.
     GroupInviteLink {

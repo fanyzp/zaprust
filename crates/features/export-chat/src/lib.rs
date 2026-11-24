@@ -127,6 +127,15 @@ fn body_text(msg: &Message) -> String {
         MessageKind::Location { name, .. } => format!("[location: {name}]"),
         MessageKind::Contact { name, .. } => format!("[contact: {name}]"),
         MessageKind::Carousel { cards, .. } => format!("[carousel: {} cards]", cards.len()),
+        MessageKind::Buttons { buttons, .. } => {
+            let labels: Vec<&str> = buttons.iter().map(|b| b.text.as_str()).collect();
+            format!("[buttons] {} ({})", msg.body, labels.join(", "))
+        }
+        MessageKind::ListMsg { sections, .. } => {
+            let rows: Vec<&str> =
+                sections.iter().flat_map(|s| s.rows.iter().map(|r| r.title.as_str())).collect();
+            format!("[list] {} ({})", msg.body, rows.join(", "))
+        }
         MessageKind::Order { item_count, .. } => format!("[order: {item_count} items]"),
         MessageKind::Sticker => "[sticker]".to_string(),
     };

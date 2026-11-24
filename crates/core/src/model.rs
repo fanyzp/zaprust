@@ -158,15 +158,39 @@ pub enum MessageKind {
         /// Contact phone/JID label.
         phone: String,
     },
-    /// A received carousel (interactive template) message:
-    /// a horizontally scrollable row of cards. Render-only,
-    /// carousels are a WhatsApp Business template format; the
-    /// pinned library exposes no public send path for them.
+    /// A carousel (interactive template) message: a row of
+    /// cards. Received carousels render their cards with the
+    /// buttons as static labels; the composer can also send
+    /// a carousel built from raw protos (its cards cap at
+    /// what the renderer shows).
     Carousel {
         /// Optional body text above the cards.
         body: String,
         /// The cards, in order.
         cards: Vec<CarouselCard>,
+    },
+    /// An interactive message with quick-reply buttons. The
+    /// body text is the message's own body. A received
+    /// message's buttons can be answered; the answer names
+    /// the button's wire id.
+    Buttons {
+        /// Footer line under the body (may be empty).
+        footer: String,
+        /// The buttons, in wire order.
+        buttons: Vec<MsgButton>,
+    },
+    /// An interactive list message: sections of pickable
+    /// rows under a title. The message body carries the
+    /// title; an answer names the row's wire id.
+    ListMsg {
+        /// Description under the title (may be empty).
+        description: String,
+        /// Label of the button that opens the list on a phone.
+        button_label: String,
+        /// Footer line (may be empty).
+        footer: String,
+        /// The sections, in wire order.
+        sections: Vec<MsgListSection>,
     },
     /// An order placed with a business: a summary card whose
     /// line items load on demand through the order-details
@@ -196,6 +220,36 @@ pub enum MessageKind {
     Sticker,
     /// A centred system notice (encryption notice, member joined, …).
     System,
+}
+
+/// One quick-reply button of a [`MessageKind::Buttons`]
+/// message.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MsgButton {
+    /// The button's wire id (an answer names it).
+    pub id: String,
+    /// The label shown on the button.
+    pub text: String,
+}
+
+/// One pickable row of a [`MessageKind::ListMsg`] section.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MsgListRow {
+    /// The row's wire id (an answer names it).
+    pub id: String,
+    /// The row's title.
+    pub title: String,
+    /// The row's description (may be empty).
+    pub description: String,
+}
+
+/// One section of a [`MessageKind::ListMsg`] message.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MsgListSection {
+    /// The section title (may be empty for a single section).
+    pub title: String,
+    /// The rows, in wire order.
+    pub rows: Vec<MsgListRow>,
 }
 
 /// One card of a [`MessageKind::Carousel`].

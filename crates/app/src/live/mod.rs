@@ -836,7 +836,7 @@ fn event_secret_registration(msg: &LiveMessage) -> Option<BackendCommand> {
         chat_jid: msg.chat_jid.clone(),
         message_id: msg.id.clone(),
         creator_jid: creator.clone(),
-        secret: <redacted>
+        secret: secret.clone(),
     })
 }
 

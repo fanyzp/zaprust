@@ -207,8 +207,9 @@ fn address_fused(bytes: &[u8], range: &Range<usize>) -> bool {
 }
 
 /// Word tokens in `text`: maximal runs of letters with
-/// internal apostrophes kept (don't, l'amour), returned as
-/// byte ranges. Anything else separates.
+/// internal apostrophes kept (don't, l'amour) and
+/// surrounding apostrophes trimmed ('besok', users'),
+/// returned as byte ranges. Anything else separates.
 fn tokenize(text: &str) -> Vec<Range<usize>> {
     let mut out = Vec::new();
     let mut start: Option<usize> = None;
@@ -226,9 +227,21 @@ fn tokenize(text: &str) -> Vec<Range<usize>> {
     if let Some(begin) = start {
         out.push(begin..text.len());
     }
-    // A trailing apostrophe is punctuation, not part of the
-    // word (users' -> users): trim it from every token.
+    // Surrounding apostrophes are punctuation, not part of
+    // the word: a leading one ('besok' -> besok, a quoted
+    // word checked as itself) and a trailing one (users' ->
+    // users) are trimmed from every token. Internal
+    // apostrophes stay (don't, l'amour).
     for range in &mut out {
+        while range.start < range.end {
+            let head = &text[range.start..range.end];
+            let Some(first) = head.chars().next() else { break };
+            if first == '\'' || first == '\u{2019}' {
+                range.start += first.len_utf8();
+            } else {
+                break;
+            }
+        }
         while range.end > range.start {
             let tail = &text[range.start..range.end];
             let Some(last) = tail.chars().next_back() else { break };
@@ -433,6 +446,35 @@ mod tests {
         assert_eq!(flagged, ["pembelajran"]);
         assert!(checker.misspellings("This message is ready.", None).is_empty());
         assert!(checker.misspellings("Kita akan menggunakan ini besok.", None).is_empty());
+    }
+
+    #[test]
+    fn single_quoted_words_are_checked_as_themselves() {
+        // The v1.6.24 verification's E2: tokenize kept a
+        // leading apostrophe in the token, so a correctly
+        // spelled word in single quotes ('besok') matched
+        // neither dictionary and was falsely underlined. A
+        // quoted word is checked as itself now: a correct
+        // one passes in both languages, a misspelled one
+        // still flags with the quotes outside the flagged
+        // range. Intra-word apostrophes are untouched:
+        // don't and users' behave exactly as before, and a
+        // token of nothing but apostrophes vanishes.
+        let checker = checker();
+        assert!(checker.misspellings("kata dia 'besok' ya", None).is_empty());
+        assert!(checker.misspellings("he said 'hello' twice", None).is_empty());
+        assert!(checker.misspellings("kata dia \u{2019}besok\u{2019} ya", None).is_empty());
+        let text = "kata dia 'besko' ya";
+        let flagged: Vec<&str> =
+            checker.misspellings(text, None).iter().map(|r| &text[r.clone()]).collect();
+        assert_eq!(flagged, ["besko"]);
+        let text = "he said 'helo' twice";
+        let flagged: Vec<&str> =
+            checker.misspellings(text, None).iter().map(|r| &text[r.clone()]).collect();
+        assert_eq!(flagged, ["helo"]);
+        assert!(checker.misspellings("we don't know", None).is_empty());
+        assert!(checker.misspellings("the users' group chat", None).is_empty());
+        assert!(checker.misspellings("an '' mark", None).is_empty());
     }
 
     #[test]

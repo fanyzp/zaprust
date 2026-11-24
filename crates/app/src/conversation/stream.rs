@@ -251,8 +251,8 @@ impl App {
                         let run = album_run_len(&self.conversation, i, &key_of);
                         let len = if run >= 2 { run } else { 1 };
                         let iter_idx = iterations.len();
-                        for m in i..i + len {
-                            iter_of_msg[m] = iter_idx;
+                        for slot in &mut iter_of_msg[i..i + len] {
+                            *slot = iter_idx;
                         }
                         iterations.push((i, len));
                         i += len;

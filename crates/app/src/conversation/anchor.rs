@@ -323,8 +323,8 @@ mod tests {
         let table = Heights::new(vec![Some(40.0), None, Some(30.0), None], 55.0);
         let prefix = table.prefix_sums();
         assert_eq!(prefix.len(), 5);
-        for i in 0..5 {
-            assert!(approx(prefix[i], table.offset_of(i)), "prefix {i}");
+        for (i, p) in prefix.iter().enumerate().take(5) {
+            assert!(approx(*p, table.offset_of(i)), "prefix {i}");
         }
         assert!(approx(prefix[4], table.total()));
     }

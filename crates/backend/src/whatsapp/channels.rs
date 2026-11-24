@@ -429,7 +429,7 @@ pub(super) async fn set_channel_muted(
 /// and the renewal lands ahead of it. A refused renewal
 /// ends the loop quietly: history fetch stays the
 /// guaranteed path, per the WatchChannel contract.
-pub(super) async fn watch_channel(client: whatsapp_rust::Client, jid: &str) {
+pub(super) async fn watch_channel(client: std::sync::Arc<whatsapp_rust::Client>, jid: &str) {
     let Ok(parsed) = jid.parse::<Jid>() else {
         return;
     };

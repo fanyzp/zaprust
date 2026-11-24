@@ -4,6 +4,12 @@ All notable changes to Zaprust are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com), versions
 follow [SemVer](https://semver.org).
 
+## [1.6.25] - 2026-11-25
+
+### fix:
+
+- The spell checker no longer underlines a correctly spelled word just because it is wrapped in single quotes. The tokenizer kept the opening quote as part of the word, so a quoted word matched neither dictionary; quoted words are now checked as themselves, in both languages, and a misspelled quoted word is still underlined. Words with apostrophes inside them (don't, users') behave exactly as before.
+
 ## [1.6.24] - 2026-11-25
 
 ### fix:

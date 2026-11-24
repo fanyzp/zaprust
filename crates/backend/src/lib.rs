@@ -42,6 +42,8 @@ use std::sync::Arc;
 
 #[cfg(feature = "calls")]
 pub(crate) mod audio;
+#[cfg(feature = "calls")]
+pub(crate) mod callvideo;
 pub mod fake;
 pub mod qr;
 #[cfg(feature = "whatsapp")]

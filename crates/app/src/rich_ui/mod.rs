@@ -105,12 +105,15 @@ impl App {
                 if jid.ends_with("@newsletter") {
                     // Channel reactions key on the update's
                     // server ID, not the protocol ID, and
-                    // settle through their own event pair; the
-                    // optimistic write above and the actor map
-                    // update are the same ones a chat reaction
-                    // makes. Without a server ID the update's
-                    // page is fetched and the user asked to
-                    // tap again, never a silent no-op.
+                    // settle through their own event pair. The
+                    // counts are aggregates with no actor list
+                    // behind them, so the optimistic write
+                    // above is mirrored verbatim and its
+                    // snapshot kept for the rollback, never
+                    // re-derived from the actor map. Without a
+                    // server ID the update's page is fetched
+                    // and the user asked to tap again, never a
+                    // silent no-op.
                     let server_id = self.live.as_ref().and_then(|s| {
                         s.server_ids
                             .iter()
@@ -120,7 +123,12 @@ impl App {
                     match server_id {
                         Some(server_id) => {
                             self.pending_reactions.entry(msg_id).or_insert_with(|| current.clone());
-                            self.apply_my_reaction_to_actors(chat_id, msg_id, new_mine.as_deref());
+                            if let (Some(prev), Some(new)) = (&previous_reactions, &new_reactions) {
+                                self.pending_channel_reactions
+                                    .entry(msg_id)
+                                    .or_insert_with(|| prev.clone());
+                                self.set_message_reactions(chat_id, msg_id, new.clone());
+                            }
                             self.send_backend(BackendCommand::ReactToChannelUpdate {
                                 jid,
                                 server_id,

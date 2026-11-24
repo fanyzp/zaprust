@@ -1658,6 +1658,13 @@ pub(crate) struct App {
     /// the server's echo of my reaction drops it (confirmed),
     /// and a ReactionFailed restores it verbatim (rolled back).
     pub(crate) pending_reactions: std::collections::HashMap<u64, Option<String>>,
+    /// Live mode, channels only: a channel update's aggregate
+    /// reaction counts before an optimistic reaction change.
+    /// Channel counts have no actor list to derive them from
+    /// (unlike chat reactions), so the rollback restores this
+    /// snapshot verbatim; ChannelReactionSet drops it.
+    pub(crate) pending_channel_reactions:
+        std::collections::HashMap<u64, Vec<(String, u32)>>,
     /// Live mode: the starred value of a message before a
     /// star change the backend has not yet settled. The entry
     /// is taken when the change is sent; a server report of
@@ -2367,6 +2374,7 @@ impl App {
             reaction_actors: std::collections::HashMap::new(),
             my_reactions: std::collections::HashMap::new(),
             pending_reactions: std::collections::HashMap::new(),
+            pending_channel_reactions: std::collections::HashMap::new(),
             pending_stars: std::collections::HashMap::new(),
             pending_pins: std::collections::HashMap::new(),
             pending_keeps: std::collections::HashMap::new(),

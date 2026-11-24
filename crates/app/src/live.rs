@@ -2905,6 +2905,7 @@ impl crate::state::App {
                     .and_then(|s| s.server_ids.get(&(chat_id, server_id)).copied())
                 {
                     self.pending_reactions.remove(&mid);
+                    self.pending_channel_reactions.remove(&mid);
                 }
             }
             BackendEvent::ChannelReactionFailed { jid, server_id, message } => {
@@ -2925,7 +2926,9 @@ impl crate::state::App {
                                 self.my_reactions.remove(&mid);
                             }
                         }
-                        self.apply_my_reaction_to_actors(chat_id, mid, previous.as_deref());
+                    }
+                    if let Some(counts) = self.pending_channel_reactions.remove(&mid) {
+                        self.set_message_reactions(chat_id, mid, counts);
                     }
                 }
                 self.notice = Some(Notice::error(human_error(&message)));
@@ -5652,6 +5655,32 @@ impl crate::state::App {
         }
     }
 
+    /// Sets a message's reaction counts outright, in the
+    /// session mirror and the open conversation. Channel
+    /// updates carry aggregate counts with no actor list
+    /// behind them, so their optimistic writes and rollbacks
+    /// set the counts directly instead of deriving them from
+    /// the actor map the way chat reactions do.
+    pub(crate) fn set_message_reactions(
+        &mut self,
+        chat_id: u64,
+        msg_id: u64,
+        counts: Vec<(String, u32)>,
+    ) {
+        if let Some(entry) = self.live.as_mut().and_then(|s| s.messages.get_mut(&chat_id)) {
+            for (_, m) in entry.iter_mut() {
+                if m.id == msg_id {
+                    m.reactions = counts.clone();
+                }
+            }
+        }
+        if self.selected_chat == chat_id {
+            if let Some(msg) = self.conversation.iter_mut().find(|m| m.id == msg_id) {
+                msg.reactions = counts;
+            }
+        }
+    }
+
     /// The receipt log's size cap: at most 4,096 message
     /// histories are kept. Past the cap the OLDEST histories
     /// drop, in first-insertion order, and the recent ones
@@ -5720,6 +5749,7 @@ impl crate::state::App {
         self.receipt_log_order.retain(|id| *id != msg_id);
         self.my_reactions.remove(&msg_id);
         self.pending_reactions.remove(&msg_id);
+        self.pending_channel_reactions.remove(&msg_id);
         // Pending action state for the forgotten message:
         // a star/pin/keep/vote outcome arriving later must
         // not resurrect bookkeeping for a message that is gone.

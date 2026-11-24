@@ -23,13 +23,25 @@ pub(crate) fn ellipsize(ui: &egui::Ui, text: &str, font: FontId, max_w: f32) -> 
     if max_w < ellipsis_w {
         return String::new();
     }
+    ellipsize_fit(text, |prefix| width(prefix) + ellipsis_w <= max_w)
+}
+
+/// The one truncation search behind every ellipsize variant
+/// (this module's single-line [`ellipsize`] and the bubble
+/// module's line-budgeted one): binary-searches the longest
+/// prefix of `text` for which `fits` holds, the predicate
+/// judging each prefix with the ellipsis counted in, then
+/// floors the cut to a grapheme boundary (P2-64) and appends
+/// the ellipsis. Callers guarantee the whole text does not fit
+/// and the empty prefix does, so the search always lands.
+pub(crate) fn ellipsize_fit(text: &str, fits: impl Fn(&str) -> bool) -> String {
     // Char-boundary byte offsets, binary-searched for the
-    // longest prefix that still leaves room for the ellipsis.
+    // longest prefix the predicate still accepts.
     let bounds: Vec<usize> = text.char_indices().map(|(i, _)| i).chain([text.len()]).collect();
     let (mut lo, mut hi) = (0usize, bounds.len() - 1);
     while lo < hi {
         let mid = (lo + hi).div_ceil(2);
-        if width(&text[..bounds[mid]]) + ellipsis_w <= max_w {
+        if fits(&text[..bounds[mid]]) {
             lo = mid;
         } else {
             hi = mid - 1;

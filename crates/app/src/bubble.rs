@@ -564,27 +564,16 @@ fn ellipsize_lines(ui: &egui::Ui, text: &str, font: FontId, wrap: f32, max_lines
     if rows(text) <= max_lines {
         return text.to_owned();
     }
-    let chars: Vec<char> = text.chars().collect();
-    let (mut lo, mut hi) = (0usize, chars.len());
-    while lo < hi {
-        let mid = (lo + hi).div_ceil(2);
-        let candidate: String = chars[..mid].iter().collect::<String>() + "\u{2026}";
-        if rows(&candidate) <= max_lines {
-            lo = mid;
-        } else {
-            hi = mid - 1;
-        }
-    }
-    // The cut lands on a grapheme boundary, never inside a
-    // cluster (P2-64): convert the char count to its byte
-    // offset, floor it with the shared helper, and take the
-    // prefix up to it.
-    let byte_end =
-        if lo == 0 { 0 } else { text.char_indices().nth(lo).map_or(text.len(), |(i, _)| i) };
-    let byte_end = crate::widgets::floor_grapheme_boundary(text, byte_end);
-    let mut out: String = text[..byte_end].to_owned();
-    out.push('\u{2026}');
-    out
+    // The search itself (longest fitting prefix, grapheme-safe
+    // cut, ellipsis appended) is the widgets module's one
+    // implementation; this variant only supplies the measure:
+    // the wrapped row count of the prefix with the ellipsis
+    // counted in.
+    crate::widgets::ellipsize_fit(text, |prefix| {
+        let mut candidate = prefix.to_owned();
+        candidate.push('\u{2026}');
+        rows(&candidate) <= max_lines
+    })
 }
 
 /// Deterministic avatar seed for a group sender's name (the

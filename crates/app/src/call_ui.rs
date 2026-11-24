@@ -913,7 +913,7 @@ impl App {
                                     Some(ref tex) => {
                                         let (sw, sh) = self.calls.media.stage_size;
                                         if sw > 0 {
-                                            let cap = if sections_on { 128.0 } else { 224.0 };
+                                            let cap = if sections_on { 112.0 } else { 224.0 };
                                             (width * sh as f32 / sw as f32).clamp(110.0, cap)
                                         } else {
                                             let _ = tex;
@@ -922,7 +922,7 @@ impl App {
                                     }
                                     None => {
                                         if sections_on {
-                                            128.0
+                                            112.0
                                         } else {
                                             168.0
                                         }
@@ -1020,7 +1020,13 @@ impl App {
                             // 20): a 1:1 call shows its chat, a
                             // group call its group, a link call
                             // the silhouette.
-                            let radius = if stage_on { 20.0 } else { 32.0 };
+                            let radius = if sections_on {
+                                16.0
+                            } else if stage_on {
+                                20.0
+                            } else {
+                                32.0
+                            };
                             let (rect, _) =
                                 ui.allocate_exact_size(Vec2::splat(radius * 2.0), Sense::hover());
                             let center = rect.center();
@@ -1305,7 +1311,7 @@ impl App {
                                         && (call.phase == CallUiPhase::Connecting
                                             || call.phase == CallUiPhase::Active)
                                     {
-                                        ui.add_space(SP_3);
+                                        ui.add_space(SP_2);
                                         ui.columns(2, |cols| {
                                             let (hand_bg, hand_glyph) = if call.hand_raised {
                                                 (rgb(t.accent), rgb(t.on_accent()))
@@ -1419,7 +1425,7 @@ impl App {
                     crate::widgets::paint_chat_avatar_photo(
                         ui.painter(),
                         center,
-                        14.0,
+                        12.0,
                         &chat,
                         photo,
                     );
@@ -1427,7 +1433,7 @@ impl App {
                 None => crate::widgets::paint_avatar(
                     ui.painter(),
                     center,
-                    14.0,
+                    12.0,
                     false,
                     (crate::live::jid_id(&participant.jid) % 251) as u8,
                 ),

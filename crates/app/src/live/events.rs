@@ -2463,6 +2463,12 @@ impl crate::state::App {
             }
             BackendEvent::CallParticipants { participants } => {
                 self.on_call_participants(participants);
+                // Roster names resolve through the group's
+                // member list; fetch it once for a group call
+                // instead of waiting for the invite picker.
+                if self.calls.active.as_ref().is_some_and(|c| c.group) {
+                    self.ensure_call_members();
+                }
             }
             BackendEvent::CallReaction { jid, emoji } => {
                 self.on_call_reaction(&jid, emoji);

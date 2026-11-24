@@ -3302,9 +3302,9 @@ mod tests {
         assert!(store.chats().unwrap().iter().all(|c| c.jid != gone.jid), "the chat row is gone");
         assert!(store.messages(&gone.jid).unwrap().is_empty(), "its messages go with it");
         // The other chats and their messages are untouched
-        // (five scripted chats since the owned channel joined
+        // (six scripted chats since the unlinked group joined
         // the roster, minus the deleted one).
-        assert_eq!(store.chats().unwrap().len(), 4);
+        assert_eq!(store.chats().unwrap().len(), 5);
         assert_eq!(store.messages(&kept.jid).unwrap().len(), 1);
         // Deleting a chat that is not there reports false.
         assert!(!store.delete_chat(&gone.jid).unwrap());

@@ -1525,6 +1525,104 @@ mod star_pin_tests {
         assert!(app.pending_poll_votes.is_empty(), "the wait is settled");
     }
 
+    fn alice_event_message() -> LiveMessage {
+        let mut msg = alice_group_message();
+        msg.kind = backend::LiveMessageKind::Event {
+            name: "Sunday hike".to_owned(),
+            description: String::new(),
+            start_time: 1_700_086_400,
+            end_time: 0,
+            location: "Trailhead".to_owned(),
+            join_link: String::new(),
+            scheduled_call: false,
+            extra_guests: false,
+            canceled: false,
+            my_rsvp: None,
+            going: 0,
+            maybe: 0,
+            not_going: 0,
+        };
+        msg.event_secret = Some(vec![5u8; 32]);
+        msg.event_creator = Some(ALICE_JID.to_owned());
+        msg
+    }
+
+    fn view_event(app: &App, mid: u64) -> (Option<core::model::EventRsvp>, u32, String) {
+        match &app.conversation.iter().find(|m| m.id == mid).unwrap().kind {
+            MessageKind::Event { my_rsvp, going, name, .. } => (*my_rsvp, *going, name.clone()),
+            _ => panic!("not an event"),
+        }
+    }
+
+    /// P7 section 27: a failed RSVP restores my previous
+    /// answer (here: none) and the tally that came with it.
+    #[test]
+    pub(super) fn failed_event_rsvp_restores_my_answer() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        let mid = open_message(&mut app, &tx, &ctx, alice_event_message());
+        app.respond_event(mid, core::model::EventRsvp::Going, 0);
+        assert_eq!(
+            view_event(&app, mid).0,
+            Some(core::model::EventRsvp::Going),
+            "the answer applies at once"
+        );
+        assert_eq!(view_event(&app, mid).1, 1, "and counts at once");
+        tx.send(BackendEvent::EventRespondFailed {
+            chat_jid: GROUP_JID.to_owned(),
+            message_id: "g1".to_owned(),
+            message: "Answering failed: connection lost".to_owned(),
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(view_event(&app, mid).0, None, "the failed RSVP restores my answer");
+        assert_eq!(view_event(&app, mid).1, 0, "and the tally");
+        assert!(notice_kind(&app) == Some(crate::state::NoticeKind::Error));
+        assert!(app.pending_event_rsvps.is_empty(), "the wait is settled");
+    }
+
+    /// P7: another participant's answer lands on the tallies.
+    #[test]
+    pub(super) fn incoming_event_response_counts_the_ballot() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        let mid = open_message(&mut app, &tx, &ctx, alice_event_message());
+        tx.send(BackendEvent::EventResponse {
+            chat_jid: GROUP_JID.to_owned(),
+            message_id: "g1".to_owned(),
+            responder_jid: "10000000007@s.whatsapp.net".to_owned(),
+            from_me: false,
+            response: backend::EventRsvp::Going,
+            extra_guest_count: None,
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(view_event(&app, mid).1, 1, "the ballot counts");
+        assert_eq!(view_event(&app, mid).0, None, "it is not my answer");
+    }
+
+    /// P7 section 27: a failed edit restores the event's
+    /// previous fields in the view.
+    #[test]
+    pub(super) fn failed_event_edit_restores_the_fields() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        let mut mine = alice_event_message();
+        mine.from_me = true;
+        let mid = open_message(&mut app, &tx, &ctx, mine);
+        app.open_event_edit(mid);
+        app.event_edit_draft.as_mut().unwrap().2.name = "Sunday hike (moved)".to_owned();
+        app.submit_event_edit();
+        assert_eq!(view_event(&app, mid).2, "Sunday hike (moved)", "the edit applies at once");
+        tx.send(BackendEvent::EventEditFailed {
+            chat_jid: GROUP_JID.to_owned(),
+            message_id: "g1".to_owned(),
+            message: "Editing failed: connection lost".to_owned(),
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(view_event(&app, mid).2, "Sunday hike", "the failed edit restores the name");
+        assert!(notice_kind(&app) == Some(crate::state::NoticeKind::Error));
+        assert!(app.pending_event_edits.is_empty(), "the wait is settled");
+    }
+
     /// A pin made on another device arrives as a
     /// MessagePinChanged report and lands on the message in
     /// the view, the mirror, and the archive.

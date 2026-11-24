@@ -171,9 +171,11 @@ impl App {
             let pointer_pos = resp.interact_pointer_pos();
             if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                 if let Some(pos) = pointer_pos {
-                    if pos.x < rect.left() + 64.0 {
-                        open_composer = true;
-                    } else if self.updates.mine.is_empty() {
+                    // The badge zone always opens the composer;
+                    // the rest of the row opens the viewer, or
+                    // the composer when there is nothing of mine
+                    // to view yet.
+                    if pos.x < rect.left() + 64.0 || self.updates.mine.is_empty() {
                         open_composer = true;
                     } else {
                         open_mine = true;
@@ -245,7 +247,7 @@ impl App {
             ui.allocate_exact_size(Vec2::new(ui.available_width(), STATUS_ROW_H), Sense::click());
         let hov = crate::anim::hover_factor(
             ui,
-            &format!("status_row_{}", row.author_jid),
+            format!("status_row_{}", row.author_jid),
             resp.hovered(),
         );
         if hov > 0.001 {
@@ -1346,7 +1348,7 @@ impl App {
         }
 
         let screen = ctx.content_rect();
-        let stage_w = (screen.width() - 32.0).min(430.0).max(200.0);
+        let stage_w = (screen.width() - 32.0).clamp(200.0, 430.0);
         let stage_x = screen.center().x - stage_w / 2.0;
         let bottom_h = if viewer.mine { 76.0 } else { 132.0 };
         let header_rect = egui::Rect::from_min_size(

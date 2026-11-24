@@ -122,6 +122,7 @@ impl eframe::App for App {
         self.draw_account_menu(ui);
         self.draw_my_profile(&ctx);
         self.draw_status_composer(&ctx);
+        self.draw_status_viewer(&ctx);
         self.draw_photo_viewer(ui);
         self.draw_photo_editor(&ctx);
         self.draw_call_overlay(&ctx);
@@ -138,11 +139,11 @@ fn viewer_backdrop() -> egui::Color32 {
     egui::Color32::from_rgba_unmultiplied(8, 10, 12, 242)
 }
 /// Primary text on the viewer stage.
-const VIEWER_TEXT: egui::Color32 = egui::Color32::from_rgb(234, 238, 241);
+pub(crate) const VIEWER_TEXT: egui::Color32 = egui::Color32::from_rgb(234, 238, 241);
 /// Secondary text on the viewer stage.
-const VIEWER_TEXT_SECONDARY: egui::Color32 = egui::Color32::from_rgb(200, 208, 214);
+pub(crate) const VIEWER_TEXT_SECONDARY: egui::Color32 = egui::Color32::from_rgb(200, 208, 214);
 /// Faint text on the viewer stage.
-const VIEWER_TEXT_FAINT: egui::Color32 = egui::Color32::from_rgb(160, 170, 178);
+pub(crate) const VIEWER_TEXT_FAINT: egui::Color32 = egui::Color32::from_rgb(160, 170, 178);
 
 impl App {
     /// Whether the content pane (the conversation, or the open
@@ -744,7 +745,6 @@ impl App {
         secs: u32,
         exiting: bool,
     ) -> f32 {
-        let t = self.tokens();
         let route = self.video_play_route(id);
         // A GIF loops and wears no transport: the player starts
         // playing on sight and restarts at the end.
@@ -759,6 +759,38 @@ impl App {
                 _ => {}
             }
         }
+        let (content_a, retry) =
+            self.paint_video_stage(ui, rect, id, view_once, secs, exiting, route, is_gif);
+        if retry {
+            self.retry_video_fetch(id, view_once);
+        }
+        content_a
+    }
+
+    /// Paints the video stage itself: the poster or decoded
+    /// frame, the transport when a player is running, and the
+    /// loading / failed / demo states of the fetch. Shared by
+    /// the photo viewer's video body and the status viewer:
+    /// the two surfaces differ in chrome and in which fetch a
+    /// retry re-runs, never in how a video presents. The retry
+    /// click is reported back (`true` in the second return
+    /// value) for the caller to dispatch against its own
+    /// message source; the first value is the painted
+    /// content's opacity factor, as in `draw_video_body`.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn paint_video_stage(
+        &mut self,
+        ui: &mut egui::Ui,
+        rect: egui::Rect,
+        id: u64,
+        view_once: bool,
+        secs: u32,
+        exiting: bool,
+        route: crate::media::VideoPlayRoute,
+        is_gif: bool,
+    ) -> (f32, bool) {
+        let t = self.tokens();
+        let mut retry_clicked = false;
         // The poster: the video's own thumbnail.
         let thumb = Self::video_thumb_texture(&mut self.media, self.live.as_ref(), ui.ctx(), id)
             .map(|(id, _aspect)| id);
@@ -838,10 +870,22 @@ impl App {
             .filter(|a| a.is_finite() && *a > 0.05);
         let aspect = frame_aspect.or(thumb_aspect).unwrap_or(600.0 / 400.0);
         let max_w = (rect.width() - 120.0).min(620.0);
-        let frame_rect = egui::Rect::from_center_size(
+        let mut frame_rect = egui::Rect::from_center_size(
             egui::Pos2::new(rect.center().x, rect.center().y - 24.0),
             egui::Vec2::new(max_w, max_w / aspect),
         );
+        // A tall video in a short stage (a portrait status in a
+        // short window) must fit the stage's height too: the
+        // frame shrinks to the height the stage can spare,
+        // keeping its aspect, instead of painting over the
+        // chrome above and below it.
+        let max_h = (rect.height() - 120.0).max(80.0);
+        if frame_rect.height() > max_h {
+            frame_rect = egui::Rect::from_center_size(
+                frame_rect.center(),
+                egui::Vec2::new(max_h * aspect, max_h),
+            );
+        }
         let painter = ui.painter().clone();
         painter.rect_filled(frame_rect, egui::CornerRadius::same(6), rgb(t.bg_panel_alt));
         let mut content_a = 0.0;
@@ -1016,7 +1060,7 @@ impl App {
                         .interact(frame_rect, egui::Id::unique("video_retry"), egui::Sense::click())
                         .on_hover_cursor(egui::CursorIcon::PointingHand);
                     if resp.clicked() && !exiting {
-                        self.retry_video_fetch(id, view_once);
+                        retry_clicked = true;
                     }
                 }
                 crate::media::VideoPlayRoute::Loading | crate::media::VideoPlayRoute::Idle => {
@@ -1059,7 +1103,7 @@ impl App {
                 note_color,
             );
         }
-        content_a
+        (content_a, retry_clicked)
     }
 }
 
@@ -1075,7 +1119,7 @@ fn video_clock(secs: f64) -> String {
 }
 
 /// A byte count in the viewer's facts line.
-fn video_size(bytes: u64) -> String {
+pub(crate) fn video_size(bytes: u64) -> String {
     if bytes >= 1024 * 1024 {
         format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
     } else if bytes >= 1024 {

@@ -492,6 +492,12 @@ pub(crate) fn message_id(chat_jid: &str, proto_id: &str) -> u64 {
     jid_id(&format!("{chat_jid}/{proto_id}"))
 }
 
+/// The broadcast address statuses are delivered under. Events
+/// addressed to it (a status revoke, a reaction to a status)
+/// belong to the Updates feed, never to a chat: no chat row may
+/// ever be built from this address.
+pub(crate) const STATUS_BROADCAST_JID: &str = "status@broadcast";
+
 /// Whether a display string is a raw identifier rather than a
 /// name: nine or more characters, all digits. The same predicate
 /// guards renames in the backend and the archive; identity
@@ -2452,75 +2458,89 @@ impl crate::state::App {
                 }
             }
             BackendEvent::ReactionUpdate { chat_jid, message_id: pid, actor, emoji } => {
-                let chat_id = jid_id(&chat_jid);
-                let mid = message_id(&chat_jid, &pid);
-                let key = format!("{chat_id}:{mid}");
-                if actor == "Me" {
-                    // The server has spoken for my reaction: any
-                    // optimistic change awaiting settlement is
-                    // confirmed by this report, whatever it says.
-                    self.pending_reactions.remove(&mid);
-                    if emoji.is_empty() {
-                        self.my_reactions.remove(&mid);
-                    } else {
-                        self.my_reactions.insert(mid, emoji.clone());
-                    }
-                }
-                {
-                    let actors = self.reaction_actors.entry(key.clone()).or_default();
-                    if emoji.is_empty() {
-                        actors.remove(&actor);
-                    } else {
-                        actors.insert(actor.clone(), emoji.clone());
-                    }
-                    let counts = count_reactions(actors);
-                    if let Some(entry) =
-                        self.live.as_mut().and_then(|s| s.messages.get_mut(&chat_id))
-                    {
-                        for (_, m) in entry.iter_mut() {
-                            if m.id == mid {
-                                m.reactions = counts.clone();
-                            }
+                // A reaction addressed to the status
+                // broadcast belongs to a status in the
+                // Updates feed, not to a chat message.
+                if chat_jid == STATUS_BROADCAST_JID {
+                    self.apply_status_reaction(&pid, &actor, &emoji);
+                } else {
+                    let chat_id = jid_id(&chat_jid);
+                    let mid = message_id(&chat_jid, &pid);
+                    let key = format!("{chat_id}:{mid}");
+                    if actor == "Me" {
+                        // The server has spoken for my reaction: any
+                        // optimistic change awaiting settlement is
+                        // confirmed by this report, whatever it says.
+                        self.pending_reactions.remove(&mid);
+                        if emoji.is_empty() {
+                            self.my_reactions.remove(&mid);
+                        } else {
+                            self.my_reactions.insert(mid, emoji.clone());
                         }
                     }
-                    if counts.is_empty() {
-                        // The last actor removed their reaction:
-                        // the entry itself goes too, so the map
-                        // holds only messages with live reactions
-                        // instead of an empty set per message ever
-                        // reacted to.
-                        self.reaction_actors.remove(&key);
+                    {
+                        let actors = self.reaction_actors.entry(key.clone()).or_default();
+                        if emoji.is_empty() {
+                            actors.remove(&actor);
+                        } else {
+                            actors.insert(actor.clone(), emoji.clone());
+                        }
+                        let counts = count_reactions(actors);
+                        if let Some(entry) =
+                            self.live.as_mut().and_then(|s| s.messages.get_mut(&chat_id))
+                        {
+                            for (_, m) in entry.iter_mut() {
+                                if m.id == mid {
+                                    m.reactions = counts.clone();
+                                }
+                            }
+                        }
+                        if counts.is_empty() {
+                            // The last actor removed their reaction:
+                            // the entry itself goes too, so the map
+                            // holds only messages with live reactions
+                            // instead of an empty set per message ever
+                            // reacted to.
+                            self.reaction_actors.remove(&key);
+                        }
                     }
-                }
-                if self.selected_chat == chat_id {
-                    self.sync_conversation();
+                    if self.selected_chat == chat_id {
+                        self.sync_conversation();
+                    }
                 }
             }
             BackendEvent::ReactionFailed { chat_jid, message_id: pid, message } => {
-                let chat_id = jid_id(&chat_jid);
-                let mid = message_id(&chat_jid, &pid);
-                // Same display treatment as the generic error
-                // path: backend text can embed server-supplied
-                // strings, so it is scrubbed before it can reach
-                // the notice banner.
-                let message = core::crash::scrub_for_display(&message);
-                tracing::warn!("reaction failed: {message}");
-                if let Some(previous) = self.pending_reactions.remove(&mid) {
-                    // The change never reached the server: put my
-                    // reaction back to what it was before it, in
-                    // the picker state and in the actor-derived
-                    // counts alike.
-                    match &previous {
-                        Some(emoji) => {
-                            self.my_reactions.insert(mid, emoji.clone());
+                // A failed reaction to a status rolls the
+                // status's optimistic reaction back, in the
+                // viewer, not a chat message's.
+                if chat_jid == STATUS_BROADCAST_JID {
+                    self.apply_status_reaction_failed(&pid, &message);
+                } else {
+                    let chat_id = jid_id(&chat_jid);
+                    let mid = message_id(&chat_jid, &pid);
+                    // Same display treatment as the generic error
+                    // path: backend text can embed server-supplied
+                    // strings, so it is scrubbed before it can reach
+                    // the notice banner.
+                    let message = core::crash::scrub_for_display(&message);
+                    tracing::warn!("reaction failed: {message}");
+                    if let Some(previous) = self.pending_reactions.remove(&mid) {
+                        // The change never reached the server: put my
+                        // reaction back to what it was before it, in
+                        // the picker state and in the actor-derived
+                        // counts alike.
+                        match &previous {
+                            Some(emoji) => {
+                                self.my_reactions.insert(mid, emoji.clone());
+                            }
+                            None => {
+                                self.my_reactions.remove(&mid);
+                            }
                         }
-                        None => {
-                            self.my_reactions.remove(&mid);
-                        }
+                        self.apply_my_reaction_to_actors(chat_id, mid, previous.as_deref());
                     }
-                    self.apply_my_reaction_to_actors(chat_id, mid, previous.as_deref());
+                    self.notice = Some(Notice::error(human_error(&message)));
                 }
-                self.notice = Some(Notice::error(human_error(&message)));
             }
             BackendEvent::StarFailed { chat_jid, message_id: pid, message } => {
                 let chat_id = jid_id(&chat_jid);
@@ -2675,11 +2695,23 @@ impl crate::state::App {
                 tracing::warn!("spam report failed: {message}");
                 self.notice = Some(Notice::error(human_error(&message)));
             }
-            BackendEvent::StatusPosted { text } => {
-                self.apply_status_posted(text);
+            BackendEvent::StatusPosted { text, message_id } => {
+                self.apply_status_posted(text, message_id);
+            }
+            BackendEvent::StatusMediaPosted { status } => {
+                self.apply_status_media_posted(*status);
             }
             BackendEvent::StatusPostFailed { message } => {
                 self.apply_status_post_failed(message);
+            }
+            BackendEvent::StatusReceived { status } => {
+                self.apply_status_received(*status);
+            }
+            BackendEvent::StatusDeleted { message_id } => {
+                self.apply_status_deleted(&message_id);
+            }
+            BackendEvent::StatusDeleteFailed { message_id, message } => {
+                self.apply_status_delete_failed(&message_id, message);
             }
             BackendEvent::PollVote { chat_jid, message_id: pid, voter_jid, from_me, selected } => {
                 if from_me {
@@ -2707,10 +2739,17 @@ impl crate::state::App {
                 }
             }
             BackendEvent::MessageRevoked { chat_jid, message_id: pid } => {
-                let chat_id = jid_id(&chat_jid);
-                let mid = message_id(&chat_jid, &pid);
-                self.pending_revokes.remove(&mid);
-                self.apply_revoke(chat_id, mid);
+                if chat_jid == STATUS_BROADCAST_JID {
+                    // A status revoke (my own delete landing, or
+                    // an author deleting their post): the status
+                    // leaves the feed or My Status.
+                    self.apply_status_revoked(&pid);
+                } else {
+                    let chat_id = jid_id(&chat_jid);
+                    let mid = message_id(&chat_jid, &pid);
+                    self.pending_revokes.remove(&mid);
+                    self.apply_revoke(chat_id, mid);
+                }
             }
             BackendEvent::DisappearingChanged { chat_jid, duration_secs } => {
                 let chat_id = jid_id(&chat_jid);

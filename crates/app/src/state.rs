@@ -508,6 +508,13 @@ pub(crate) enum UiConfirm {
     /// confirms like the other destructive actions; the
     /// deletion's result is reported, never swallowed.
     DeleteStickerPack { dir: std::path::PathBuf, name: String },
+    /// Delete one of my own status updates (design standard
+    /// section 24): the revoke fans out to the status's whole
+    /// audience and cannot be undone, so it confirms like the
+    /// other destructive actions. The status is named by its
+    /// protocol ID; the modal's body is generic because a
+    /// status has no title.
+    DeleteStatus { message_id: String },
     /// Log out: unlink this device from the account. Confirming
     /// sends the backend's disconnect command; the local chats
     /// stay in the archive on this computer.
@@ -633,21 +640,41 @@ pub(crate) enum VoiceFetchState {
     Failed,
 }
 
-/// Updates (status) state: my own posted status for this
-/// session, and the status composer modal's form state. Other
-/// people's statuses are not part of this state: the pinned
-/// library cannot fetch them, so the screen renders an honest
-/// empty state for the feed instead (see updates.rs).
+/// Updates (status) state: the received feed, my own posts,
+/// and the composer / viewer state. Session-scoped on purpose:
+/// statuses are receive-driven (there is no fetch for them)
+/// and expire 24 hours after posting, so nothing here is
+/// persisted; a restart's feed is whatever history sync
+/// redelivers at link time (see updates.rs).
 pub(crate) struct UpdatesState {
-    /// The text status I posted this session, once a post has
-    /// succeeded (through the backend, or locally in demo
-    /// mode). Session-scoped on purpose: nothing persists it,
-    /// so a restart starts from the add prompt again.
-    pub(crate) my_status: Option<String>,
+    /// Other people's statuses received this session, in
+    /// arrival order; the screen groups and sorts them for
+    /// display. Entries older than 24 hours are pruned as
+    /// events land and frames draw.
+    pub(crate) feed: Vec<StatusEntry>,
+    /// My own statuses this session: posted from this client,
+    /// or delivered back under the broadcast (including posts
+    /// made on the phone and redelivered by history sync).
+    pub(crate) mine: Vec<StatusEntry>,
+    /// Protocol IDs of feed statuses already opened in the
+    /// viewer this session: the feed's viewed split.
+    pub(crate) viewed: std::collections::HashSet<String>,
+    /// The status viewer overlay's state, while it is open.
+    pub(crate) viewer: Option<StatusViewer>,
     /// The status composer modal is open.
     pub(crate) composer_open: bool,
-    /// The status composer modal's text field.
+    /// The status composer modal's text field: the status
+    /// text, or the caption when a media file is staged.
     pub(crate) draft: String,
+    /// A media file staged in the composer (picked, not yet
+    /// posted). While one is staged, posting sends it instead
+    /// of a text status.
+    pub(crate) staged: Option<StagedStatusMedia>,
+    /// The staged media of a post in flight, kept so the
+    /// landed post carries its bytes for the session view
+    /// (the backend keeps no reference for a just-posted
+    /// status). Taken when the post settles.
+    pub(crate) pending_media: Option<StagedStatusMedia>,
     /// The status composer modal's inline error: a validation
     /// refusal, or the backend's answer after a failed live post.
     pub(crate) error: Option<String>,
@@ -656,6 +683,89 @@ pub(crate) struct UpdatesState {
     /// and inert meanwhile, so a failure lands inside it instead
     /// of behind a closed dialog.
     pub(crate) posting: bool,
+    /// The audience the most recent post used, kept so a
+    /// delete of that post can fan out to the same recipient
+    /// list (a status revoke is addressed like the post was).
+    pub(crate) last_audience: Vec<String>,
+    /// Counter for the locally minted IDs of demo-mode posts
+    /// (no session, so no protocol ID exists).
+    pub(crate) local_seq: u64,
+    /// Per-status reaction actors (protocol ID → actor →
+    /// emoji), the accounting behind each status's reaction
+    /// summary, kept like the chat path's actor map.
+    pub(crate) reaction_actors:
+        std::collections::HashMap<String, std::collections::HashMap<String, String>>,
+    /// My optimistic reactions awaiting the server's word
+    /// (protocol ID → the reaction it replaced), for the
+    /// failure rollback.
+    pub(crate) reaction_pending: std::collections::HashMap<String, Option<String>>,
+    /// The status timeline's clock anchor: the newest status
+    /// timestamp seen, with the instant it was seen. Ages and
+    /// the 24-hour prune read time as the anchor plus elapsed
+    /// real time, so a scripted timeline in test mode ages in
+    /// its own era instead of the wall clock emptying the
+    /// feed at once (the guarded-clock pattern, P1-53).
+    pub(crate) clock_anchor: Option<(i64, std::time::Instant)>,
+}
+
+/// One status in the feed or in My Status: the backend's
+/// value, plus the bytes of a media post made from this
+/// client this session (the only copy the viewer can play
+/// until the post is redelivered with references).
+#[derive(Clone)]
+pub(crate) struct StatusEntry {
+    /// The status itself.
+    pub(crate) status: backend::LiveStatus,
+    /// Media bytes of an own post, kept for the session view.
+    pub(crate) local_bytes: Option<Vec<u8>>,
+}
+
+/// The status viewer overlay's state: which list it walks,
+/// where in the author's run it stands, and the reply form.
+#[derive(Clone)]
+pub(crate) struct StatusViewer {
+    /// The author whose statuses are being viewed (my own JID
+    /// for the My Status run).
+    pub(crate) author_jid: String,
+    /// True when the run is my own statuses (the delete action
+    /// replaces the reply form).
+    pub(crate) mine: bool,
+    /// Index into the author's run, oldest first.
+    pub(crate) index: usize,
+    /// The reply draft (feed runs only).
+    pub(crate) reply: String,
+    /// An inline error inside the viewer: a failed delete or
+    /// a reaction the backend refused.
+    pub(crate) error: Option<String>,
+    /// A delete of the shown status is in flight.
+    pub(crate) deleting: bool,
+    /// The protocol ID of the item whose photo fetch was
+    /// dispatched for this viewing, so the fetch is sent once
+    /// per item instead of once per frame (a landed fetch
+    /// clears its in-flight mark, which must not re-arm the
+    /// dispatch). Reset when the item changes or a retry is
+    /// asked for.
+    pub(crate) dispatched: Option<String>,
+}
+
+/// A media file staged in the status composer: the picked
+/// file's bytes and the derived posting material (thumbnail,
+/// probed duration), ready for `PostMediaStatus`.
+pub(crate) struct StagedStatusMedia {
+    /// Photo or video.
+    pub(crate) kind: backend::MediaKind,
+    /// The picked file's name, for the staged chip.
+    pub(crate) name: String,
+    /// The file's bytes.
+    pub(crate) data: Vec<u8>,
+    /// The file's MIME type.
+    pub(crate) mime: String,
+    /// JPEG thumbnail bytes (the photo at preview fidelity,
+    /// or a real first frame of the video); empty when no
+    /// thumbnail could be made.
+    pub(crate) thumbnail: Vec<u8>,
+    /// Duration in seconds for a video (probed); 0 for a photo.
+    pub(crate) seconds: u32,
 }
 
 pub(crate) struct MediaState {
@@ -2012,11 +2122,21 @@ impl App {
                 active: None,
             },
             updates: UpdatesState {
-                my_status: None,
+                feed: Vec::new(),
+                mine: Vec::new(),
+                viewed: std::collections::HashSet::new(),
+                viewer: None,
                 composer_open: false,
                 draft: String::new(),
+                staged: None,
+                pending_media: None,
                 error: None,
                 posting: false,
+                last_audience: Vec::new(),
+                local_seq: 0,
+                reaction_actors: std::collections::HashMap::new(),
+                reaction_pending: std::collections::HashMap::new(),
+                clock_anchor: None,
             },
             composer: ComposerState {
                 draft: if args.demo_draft {

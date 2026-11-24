@@ -184,7 +184,7 @@ pub(super) async fn post_media_status(
             .map_err(|e| format!("{e}")),
         _ => client
             .status()
-            .send_video(upload, thumbnail, Some(seconds), caption, recipients, options)
+            .send_video(upload, thumbnail, seconds, caption, recipients, options)
             .await
             .map_err(|e| format!("{e}")),
     }

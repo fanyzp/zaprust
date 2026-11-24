@@ -753,6 +753,11 @@ impl App {
                 crate::i18n::tf("stickers.delete_pack_body", "name", name),
                 crate::i18n::t("common.delete"),
             ),
+            UiConfirm::DeleteStatus { .. } => (
+                crate::i18n::t("updates.delete_title"),
+                crate::i18n::t("updates.delete_body"),
+                crate::i18n::t("common.delete"),
+            ),
         };
         let mut decision: Option<bool> = None;
         if !exiting && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
@@ -878,6 +883,9 @@ impl App {
                 }
                 Some(UiConfirm::ReportSpam { chat_id, msg_id, .. }) => {
                     self.report_spam(chat_id, msg_id);
+                }
+                Some(UiConfirm::DeleteStatus { message_id }) => {
+                    self.delete_my_status(&message_id);
                 }
                 Some(UiConfirm::DeleteStickerPack { dir, .. }) => {
                     // The result is spoken either way: a pack

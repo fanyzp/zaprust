@@ -191,3 +191,77 @@ pub(crate) fn decode_photo(ctx: &egui::Context, bytes: &[u8]) -> Option<egui::Te
     let image = ColorImage::from_rgba_unmultiplied(size, rgba.as_raw());
     Some(ctx.load_texture("photo", image, egui::TextureOptions::LINEAR))
 }
+
+/// The JPEG thumbnail a status post carries: the image itself
+/// at preview fidelity (longest side capped at 320), the same
+/// material a sender's client embeds for its own posts.
+/// Returns empty bytes when the payload does not decode as an
+/// image: the post then goes out without a preview, which the
+/// backend accepts, rather than with a fabricated one.
+pub(crate) fn jpeg_thumbnail(bytes: &[u8]) -> Vec<u8> {
+    let Ok(img) = image::load_from_memory(bytes) else {
+        return Vec::new();
+    };
+    let img = if img.width() > 320 || img.height() > 320 {
+        img.resize(320, 320, image::imageops::FilterType::Triangle)
+    } else {
+        img
+    };
+    let rgb = img.to_rgb8();
+    let mut out = Vec::new();
+    let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 70);
+    if image::ImageEncoder::write_image(
+        encoder,
+        rgb.as_raw(),
+        rgb.width(),
+        rgb.height(),
+        image::ExtendedColorType::Rgb8,
+    )
+    .is_err()
+    {
+        return Vec::new();
+    }
+    out
+}
+
+/// The poster JPEG for a video status post: the video's own
+/// first decoded frame, capped at 320 on its longest side,
+/// made with the app's own demuxer and decoder (the playback
+/// pipeline, run for one frame). `None` when the file does not
+/// demux or decode: the post then goes out without a poster,
+/// the same honest floor as a chat video without a thumbnail.
+pub(crate) fn video_poster_jpeg(bytes: &[u8]) -> Option<Vec<u8>> {
+    let demuxed = crate::video::demux(bytes).ok()?;
+    let mut decoder = crate::video::VideoDecoder::new(&demuxed).ok()?;
+    let mut frame = None;
+    for unit in &demuxed.units {
+        let frames = decoder.decode_unit(unit);
+        if let Some(first) = frames.into_iter().next() {
+            frame = Some(first);
+            break;
+        }
+    }
+    let frame = match frame {
+        Some(frame) => Some(frame),
+        None => decoder.flush().ok().and_then(|frames| frames.into_iter().next()),
+    }?;
+    let img = image::RgbaImage::from_raw(frame.width, frame.height, frame.rgba)?;
+    let img = image::DynamicImage::ImageRgba8(img);
+    let img = if img.width() > 320 || img.height() > 320 {
+        img.resize(320, 320, image::imageops::FilterType::Triangle)
+    } else {
+        img
+    };
+    let rgb = img.to_rgb8();
+    let mut out = Vec::new();
+    let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 70);
+    image::ImageEncoder::write_image(
+        encoder,
+        rgb.as_raw(),
+        rgb.width(),
+        rgb.height(),
+        image::ExtendedColorType::Rgb8,
+    )
+    .ok()?;
+    Some(out)
+}

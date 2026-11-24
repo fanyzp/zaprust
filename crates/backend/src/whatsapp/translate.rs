@@ -3853,7 +3853,7 @@ mod live_pairing_fix_tests {
         let mut canceled_msg = wa::Message::default();
         canceled_msg.event_message = MessageField::some(canceled_proto);
         let (kind, _) = classify_message(&canceled_msg);
-        assert_eq!(body_for(&kind, false, None), "Launch dinner (canceled)");
+        assert_eq!(body_for(&kind, false, None), "Event canceled");
     }
 
     /// Typed summaries: an album header, a group invite, and a

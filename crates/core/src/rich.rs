@@ -496,6 +496,46 @@ mod tests {
     }
 
     #[test]
+    fn event_responses_aggregate_last_response_wins() {
+        use crate::model::EventRsvp::{Going, Maybe, NotGoing};
+        // Two responders answer; tallies derive from ballots.
+        let t = apply_event_response(None, &[], "a@s.whatsapp.net", false, Going);
+        assert_eq!((t.going, t.maybe, t.not_going), (1, 0, 0));
+        let t = apply_event_response(None, &t.ballots, "b@s.whatsapp.net", false, Maybe);
+        assert_eq!((t.going, t.maybe, t.not_going), (1, 1, 0));
+        // A changed mind moves the count, never doubles it.
+        let t = apply_event_response(None, &t.ballots, "a@s.whatsapp.net", false, NotGoing);
+        assert_eq!((t.going, t.maybe, t.not_going), (0, 1, 1));
+        // Re-applying the same answer is a no-op.
+        let t2 = apply_event_response(None, &t.ballots, "a@s.whatsapp.net", false, NotGoing);
+        assert_eq!(t, t2);
+        // My own answer lives outside the ballots and counts.
+        let t = apply_event_response(t.my_rsvp, &t.ballots, "", true, Going);
+        assert_eq!((t.going, t.maybe, t.not_going), (1, 1, 1));
+        assert_eq!(t.my_rsvp, Some(Going));
+        assert_eq!(t.ballots.len(), 2, "my ballot never enters the responder list");
+        // Retraction clears mine and recounts from the ballots.
+        let t = retract_event_response(&t.ballots);
+        assert_eq!((t.going, t.maybe, t.not_going), (0, 1, 1));
+        assert_eq!(t.my_rsvp, None);
+    }
+
+    #[test]
+    fn event_datetime_parser_is_strict() {
+        // 2026-11-29 19:00 UTC.
+        assert_eq!(parse_event_datetime("2026-11-29", "19:00"), Some(1_795_978_800));
+        assert_eq!(parse_event_datetime("2026-02-29", "10:00"), None, "2026 is not a leap year");
+        assert!(parse_event_datetime("2024-02-29", "10:00").is_some(), "2024 is a leap year");
+        assert_eq!(parse_event_datetime("2026-13-01", "10:00"), None);
+        assert_eq!(parse_event_datetime("2026-11-31", "10:00"), None);
+        assert_eq!(parse_event_datetime("2026-11-29", "24:00"), None);
+        assert_eq!(parse_event_datetime("2026-11-29", "19:60"), None);
+        assert_eq!(parse_event_datetime("29-11-2026", "19:00"), None);
+        assert_eq!(parse_event_datetime("2026-11-29", "7pm"), None);
+        assert_eq!(parse_event_datetime("", "19:00"), None);
+    }
+
+    #[test]
     fn open_graph_parses_fixture_variants() {
         let html = r#"<html><head>
             <meta property="og:title" content="Judul &amp; Berita">

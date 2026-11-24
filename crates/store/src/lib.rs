@@ -3909,6 +3909,100 @@ mod tests {
         );
     }
 
+    fn event_creation(chat_jid: &str, id: &str) -> LiveMessage {
+        let mut msg = LiveMessage::text(
+            id,
+            chat_jid,
+            Some("Sarah Miller".to_owned()),
+            "Rooftop dinner",
+            1_700_000_000,
+            false,
+        );
+        msg.kind = backend::LiveMessageKind::Event {
+            name: "Rooftop dinner".to_owned(),
+            description: String::new(),
+            start_time: 1_700_086_400,
+            end_time: 1_700_097_200,
+            location: "Skyline Rooftop".to_owned(),
+            join_link: String::new(),
+            scheduled_call: false,
+            extra_guests: true,
+            canceled: false,
+            my_rsvp: None,
+            going: 0,
+            maybe: 0,
+            not_going: 0,
+        };
+        msg.event_secret = Some(vec![9u8; 32]);
+        msg.event_creator = Some("10000000001@s.whatsapp.net".to_owned());
+        msg
+    }
+
+    /// P7: the creation secret, the creator and the ballots
+    /// ride with the archived event, so a later session can
+    /// answer it and tally its responses; field edits and
+    /// cancellations land without touching the tallies.
+    #[test]
+    fn event_secret_creator_ballots_and_fields_round_trip() {
+        let store = Store::open_in_memory().unwrap();
+        let chat = "10000000001@s.whatsapp.net";
+        store.upsert_message(&event_creation(chat, "event-1"), 0).unwrap();
+        store
+            .set_event_tally(
+                chat,
+                "event-1",
+                2,
+                1,
+                0,
+                Some(backend::EventRsvp::Going),
+                &[
+                    ("10000000001@s.whatsapp.net".to_owned(), backend::EventRsvp::Going),
+                    ("10000000007@s.whatsapp.net".to_owned(), backend::EventRsvp::Maybe),
+                ],
+            )
+            .unwrap();
+        store
+            .set_event_fields(
+                chat,
+                "event-1",
+                "Rooftop dinner (moved)",
+                "Bring a jacket",
+                1_700_100_000,
+                0,
+                "Harbor Terrace",
+                "",
+                false,
+                true,
+                true,
+            )
+            .unwrap();
+        let rows = store.messages(chat).unwrap();
+        assert_eq!(rows.len(), 1);
+        let (msg, _) = &rows[0];
+        assert_eq!(msg.event_secret.as_deref(), Some([9u8; 32].as_slice()));
+        assert_eq!(msg.event_creator.as_deref(), Some("10000000001@s.whatsapp.net"));
+        assert_eq!(msg.event_ballots.len(), 2);
+        let backend::LiveMessageKind::Event {
+            name,
+            start_time,
+            location,
+            canceled,
+            my_rsvp,
+            going,
+            maybe,
+            ..
+        } = &msg.kind
+        else {
+            panic!("the row reads back as an event");
+        };
+        assert_eq!(name, "Rooftop dinner (moved)");
+        assert_eq!(*start_time, 1_700_100_000);
+        assert_eq!(location, "Harbor Terrace");
+        assert!(canceled, "the cancellation lands");
+        assert_eq!(*my_rsvp, Some(backend::EventRsvp::Going), "edits keep my answer");
+        assert_eq!((*going, *maybe), (2, 1), "edits keep the tallies");
+    }
+
     /// Item 123: tallies written by vote aggregation are durable
     /// across a restart (a file-backed reopen), together with the
     /// secret that makes the poll votable in the new session.

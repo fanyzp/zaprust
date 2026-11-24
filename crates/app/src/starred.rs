@@ -55,6 +55,7 @@ fn chip_label(msg: &Message) -> Option<&'static str> {
         Some(PreviewMedia::Audio(_)) => Some("Audio"),
         Some(PreviewMedia::Document) => Some("Document"),
         Some(PreviewMedia::Poll) => Some("Poll"),
+        Some(PreviewMedia::Event) => Some("Event"),
         Some(PreviewMedia::Sticker) => Some("Sticker"),
         None => None,
     }

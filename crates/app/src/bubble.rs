@@ -2217,9 +2217,7 @@ pub(crate) fn message_bubble(
                         inner_w,
                     );
                     let clip = Rect::from_min_size(Pos2::new(x, cy), Vec2::new(inner_w, desc_h));
-                    painter.with_clip_rect(clip, |p| {
-                        p.galley(Pos2::new(x, cy), g, text_color);
-                    });
+                    painter.with_clip_rect(clip).galley(Pos2::new(x, cy), g, text_color);
                     cy += desc_h;
                 }
                 if !join_link.is_empty() {

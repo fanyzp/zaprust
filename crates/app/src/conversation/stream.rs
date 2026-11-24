@@ -1397,6 +1397,7 @@ fn iter_estimate(conversation: &[Message], first: usize, len: usize) -> f32 {
         core::model::MessageKind::Image { .. } => 320.0,
         core::model::MessageKind::Video { .. } => 300.0,
         core::model::MessageKind::Voice { .. } => 76.0,
+        core::model::MessageKind::Audio { .. } => 76.0,
         core::model::MessageKind::Poll { options, .. } => 120.0 + 36.0 * options.len() as f32,
         core::model::MessageKind::Event { .. } => 220.0,
         core::model::MessageKind::Document { .. } => 92.0,

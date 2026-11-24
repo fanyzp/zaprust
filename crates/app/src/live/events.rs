@@ -968,6 +968,7 @@ impl crate::state::App {
                 responder_jid,
                 from_me,
                 response,
+                ..
             } => {
                 if from_me {
                     // My own answer reported back settles the

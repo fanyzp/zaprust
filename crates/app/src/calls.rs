@@ -1454,6 +1454,7 @@ mod tests {
             channels_list_requested: false,
             history_armed: std::collections::HashSet::new(),
             poll_ballots: std::collections::HashMap::new(),
+            event_ballots: std::collections::HashMap::new(),
         });
         app.live_mode = true;
         app.chats = core::model::demo_chats();

@@ -4,6 +4,16 @@ All notable changes to Zaprust are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com), versions
 follow [SemVer](https://semver.org).
 
+## [1.6.23] - 2026-11-25
+
+### feat:
+
+- Interactive messages can be sent and answered. The attach menu's Interactive message builder composes three shapes: a buttons message (text, an optional footer, up to three buttons), a single-select list (title, description, sections of rows), and a carousel of up to two cards with quick-reply buttons. Received buttons and lists now render as themselves instead of flattened text: buttons are tappable chips, list rows are tappable rows, and tapping one sends the protocol's answer quoting the original. One honest limit: these payloads are assembled as raw protocol messages, and whether the service delivers them from an ordinary account, and how they render on the other side's phone, can only be proven by using them on a real account.
+- Groups can share their history with new members. The group panel's Add flow gains a "Share recent messages" switch: when it is on, adding a member also sends up to 100 recent text messages from this device's archive, converted into the protocol's history bundle. The result is reported per person (added, refused and why) and for the share itself (shared, skipped with the reason, or failed); a failed share that the protocol allows retrying keeps a Retry button in the panel. Only messages this device holds, that the protocol acknowledges, can be shared.
+- Member labels and reporting to admins arrive. A member's self-chosen label shows beside their name in the member list and updates live when they change it; your own label for the group is editable in the group panel. A message's menu in a group offers Report to admins (it asks first), and group admins get a Reported messages section in the panel listing what was reported, by whom, with the message text when this device holds it.
+- The composer checks spelling. Misspelled words get a wavy underline as you type, checked against bundled English and Indonesian dictionaries; a word passes when either language accepts it, the names of your chats and contacts count as known words, and links, addresses, codes and acronyms are never flagged. Settings > Chats > Writing holds the switch and a personal dictionary for words of your own.
+- Text can be selected across messages. Dragging over message text selects across bubbles; the selection highlights, Ctrl+C copies it (messages separated by newlines) when no input is focused, and Escape or a fresh click clears it. The selection covers message body text only, not quotes, names or card contents.
+
 ## [1.6.22] - 2026-11-25
 
 ### feat:

@@ -159,7 +159,7 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
 name = "app"
-version = "1.6.22"
+version = "1.6.23"
 dependencies = [
  "backend",
  "core",
@@ -181,6 +181,7 @@ dependencies = [
  "rfd",
  "serde_json",
  "sha2 0.10.9",
+ "spellbook",
  "stickers",
  "store",
  "symphonia-codec-aac",
@@ -470,7 +471,7 @@ checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
 name = "backend"
-version = "1.6.22"
+version = "1.6.23"
 dependencies = [
  "camera",
  "core",
@@ -480,6 +481,7 @@ dependencies = [
  "openh264",
  "qrcode",
  "serde",
+ "serde_json",
  "store",
  "tokio",
  "tracing",
@@ -821,7 +823,7 @@ dependencies = [
 
 [[package]]
 name = "camera"
-version = "1.6.22"
+version = "1.6.23"
 dependencies = [
  "libc",
 ]
@@ -1038,7 +1040,7 @@ dependencies = [
 
 [[package]]
 name = "core"
-version = "1.6.22"
+version = "1.6.23"
 dependencies = [
  "base64 0.22.1",
  "getrandom 0.3.4",
@@ -1869,7 +1871,7 @@ dependencies = [
 
 [[package]]
 name = "export-chat"
-version = "1.6.22"
+version = "1.6.23"
 dependencies = [
  "core",
 ]
@@ -2200,7 +2202,7 @@ dependencies = [
 
 [[package]]
 name = "giphy"
-version = "1.6.22"
+version = "1.6.23"
 dependencies = [
  "core",
  "reqwest",
@@ -5341,6 +5343,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "spellbook"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0d204abcbdf8e88729306a8d0ca01a79d8a49969fe1f84696909d6dbc4321c1a"
+dependencies = [
+ "foldhash 0.2.0",
+ "hashbrown 0.17.1",
+]
+
+[[package]]
 name = "sqlite-wasm-rs"
 version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5370,14 +5382,14 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
 name = "stickers"
-version = "1.6.22"
+version = "1.6.23"
 dependencies = [
  "image",
 ]
 
 [[package]]
 name = "store"
-version = "1.6.22"
+version = "1.6.23"
 dependencies = [
  "backend",
  "core",

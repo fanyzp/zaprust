@@ -80,6 +80,17 @@ pub(crate) struct Args {
 }
 
 impl Args {
+    /// Test constructor for code outside this module: the
+    /// plain demo dataset (no live session, no backend), the
+    /// same state this module's own tests build by setting
+    /// `live = false` directly.
+    #[cfg(test)]
+    pub(crate) fn for_test() -> Self {
+        let mut args = Self::parse();
+        args.live = false;
+        args
+    }
+
     pub(crate) fn parse() -> Self {
         let argv: Vec<String> = std::env::args().collect();
         let mut args = Self {

@@ -54,9 +54,7 @@ mod tests {
     fn stream_profile() {
         for n in [500_usize, 2000, 5000] {
             let ctx = egui::Context::default();
-            let mut args = Args::parse();
-            args.live = false;
-            let mut app = App::new(args, &ctx);
+            let mut app = App::new(Args::for_test(), &ctx);
             let chat = app.chats.first().expect("demo seeds chats").clone();
             app.selected_chat = chat.id;
             app.conversation = synthetic_conversation(n);
@@ -71,7 +69,7 @@ mod tests {
             };
             let draw = |app: &mut App, ctx: &egui::Context, time: f64| {
                 let chat = chat.clone();
-                ctx.run(input(time), |ctx| {
+                ctx.run_ui(input(time), |ctx| {
                     egui::CentralPanel::default().show(ctx, |ui| {
                         let mut actions = Vec::new();
                         let mut engaged = false;

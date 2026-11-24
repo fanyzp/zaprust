@@ -70,6 +70,8 @@ mod starred;
 mod state;
 #[cfg(test)]
 mod stream_profile;
+#[cfg(test)]
+mod text_probe;
 mod theme;
 mod tray;
 mod update;

@@ -705,6 +705,33 @@ pub(crate) fn fmt_day(timestamp: i64) -> String {
     }
 }
 
+/// The event card's when line for a unix-second start (and
+/// optional end): "29 November 2026 · 19:00", with the end
+/// appended as " – 22:00" on the same day or with its own
+/// date across days. Same UTC grid as [`fmt_day`]/[`fmt_time`].
+pub(crate) fn fmt_event_when(start_time: i64, end_time: Option<i64>) -> String {
+    let one = |ts: i64| {
+        let (y, m, d) = civil_from_days(ts.div_euclid(86_400));
+        format!("{d} {} {y} · {}", MONTH_NAMES[(m - 1) as usize], fmt_time(ts))
+    };
+    match end_time {
+        None => one(start_time),
+        Some(end) if end.div_euclid(86_400) == start_time.div_euclid(86_400) => {
+            format!("{} – {}", one(start_time), fmt_time(end))
+        }
+        Some(end) => format!("{} – {}", one(start_time), one(end)),
+    }
+}
+
+/// Splits a unix-second instant into the event form's strict
+/// text fields (`YYYY-MM-DD`, `HH:MM`), the inverse of
+/// `core::rich::parse_event_datetime`, for pre-filling the
+/// edit form.
+pub(crate) fn fmt_event_form_fields(timestamp: i64) -> (String, String) {
+    let (y, m, d) = civil_from_days(timestamp.div_euclid(86_400));
+    (format!("{y:04}-{m:02}-{d:02}"), fmt_time(timestamp))
+}
+
 /// The header's last-seen line for a unix timestamp, in the
 /// shape the demo data uses: today and yesterday get their
 /// word, older reports get the full date.

@@ -1723,33 +1723,33 @@ pub(super) async fn run_async(
                 } => {
                     match chat_jid.parse::<Jid>() {
                         Ok(jid) => {
-                            let mut builder =
-                                whatsapp_rust::EventCreationParams::builder().name(name);
-                            if !description.is_empty() {
-                                builder = builder.description(description);
-                            }
-                            if start_time > 0 {
-                                builder = builder.start_time(start_time);
-                            }
-                            if end_time > 0 {
-                                builder = builder.end_time(end_time);
-                            }
-                            if !location.is_empty() {
+                            // The builder is a typestate builder:
+                            // optional fields go through the
+                            // `maybe_` setters, which accept the
+                            // whole Option and keep one chain.
+                            let location_msg = if location.is_empty() {
+                                None
+                            } else {
                                 let mut loc =
                                     whatsapp_rust::prelude::wa::message::LocationMessage::default();
                                 loc.name = Some(location);
-                                builder = builder.location(loc);
-                            }
-                            if !join_link.is_empty() {
-                                builder = builder.join_link(join_link);
-                            }
-                            if scheduled_call {
-                                builder = builder.is_scheduled_call(true);
-                            }
-                            if extra_guests {
-                                builder = builder.extra_guests_allowed(true);
-                            }
-                            match client.events().create(jid.clone(), builder.build()).await {
+                                Some(loc)
+                            };
+                            let params = whatsapp_rust::EventCreationParams::builder()
+                                .name(name)
+                                .maybe_description(
+                                    if description.is_empty() { None } else { Some(description) },
+                                )
+                                .maybe_start_time(if start_time > 0 { Some(start_time) } else { None })
+                                .maybe_end_time(if end_time > 0 { Some(end_time) } else { None })
+                                .maybe_location(location_msg)
+                                .maybe_join_link(
+                                    if join_link.is_empty() { None } else { Some(join_link) },
+                                )
+                                .maybe_is_scheduled_call(scheduled_call.then_some(true))
+                                .maybe_extra_guests_allowed(extra_guests.then_some(true))
+                                .build();
+                            match client.events().create(jid.clone(), params).await {
                                 Ok(created) => {
                                     // Cache the creation secret so
                                     // this event stays answerable

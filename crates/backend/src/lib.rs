@@ -805,7 +805,7 @@ pub enum BackendCommand {
         /// JID of the event's creator.
         creator_jid: String,
         /// The creation secret bytes.
-        secret: <redacted>
+        secret: Vec<u8>,
     },
     /// Edit one of my own events, or cancel it. An event edit
     /// replaces the whole event payload (the protocol has no

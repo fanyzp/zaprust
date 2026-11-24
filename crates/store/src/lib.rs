@@ -955,6 +955,45 @@ impl Store {
                     )?;
                     tx.execute_batch("PRAGMA user_version = 13;")?;
                 }
+                13 => {
+                    // v14: labels and synced business quick
+                    // replies. Both are account state that
+                    // app-state sync replays at link time; the
+                    // tables are their local persistence, so
+                    // the sets render at launch and a change
+                    // made offline-visible survives a restart
+                    // like every other synced chat state.
+                    // Quick reply keywords ride as a JSON
+                    // array in one column: they are a small
+                    // ordered list, never queried by content.
+                    tx.execute_batch(
+                        "CREATE TABLE IF NOT EXISTS labels (
+                            id TEXT PRIMARY KEY,
+                            name TEXT NOT NULL DEFAULT '',
+                            color INTEGER NOT NULL DEFAULT 0,
+                            predefined_id INTEGER
+                        );
+                        CREATE TABLE IF NOT EXISTS chat_labels (
+                            label_id TEXT NOT NULL,
+                            chat_jid TEXT NOT NULL,
+                            PRIMARY KEY (label_id, chat_jid)
+                        );
+                        CREATE TABLE IF NOT EXISTS message_labels (
+                            label_id TEXT NOT NULL,
+                            chat_jid TEXT NOT NULL,
+                            message_id TEXT NOT NULL,
+                            PRIMARY KEY (label_id, chat_jid, message_id)
+                        );
+                        CREATE TABLE IF NOT EXISTS quick_replies (
+                            id TEXT PRIMARY KEY,
+                            shortcut TEXT NOT NULL DEFAULT '',
+                            message TEXT NOT NULL DEFAULT '',
+                            keywords TEXT NOT NULL DEFAULT '[]',
+                            count INTEGER NOT NULL DEFAULT 0
+                        );",
+                    )?;
+                    tx.execute_batch("PRAGMA user_version = 14;")?;
+                }
                 _ => return Err(StoreError::BadSchemaVersion(version)),
             }
             tx.commit()?;
@@ -2093,6 +2132,203 @@ impl Store {
         Ok(())
     }
 
+    /// Every label definition in the archive (schema v14),
+    /// in id order. Labels are account state replayed by
+    /// app-state sync at link time; this is their local
+    /// persistence, written through by the same events and
+    /// confirmed actions that change the app's set.
+    ///
+    /// # Errors
+    /// [`StoreError`] on SQLite failures.
+    pub fn labels(&self) -> Result<Vec<backend::LiveLabel>, StoreError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, name, color, predefined_id FROM labels ORDER BY id")?;
+        let rows = stmt.query_map([], |row| {
+            Ok(backend::LiveLabel {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                color: row.get(2)?,
+                predefined_id: row.get(3)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
+    /// Inserts or replaces one label definition.
+    ///
+    /// # Errors
+    /// [`StoreError`] on SQLite failures.
+    pub fn set_label(&self, label: &backend::LiveLabel) -> Result<(), StoreError> {
+        self.conn.execute(
+            "INSERT INTO labels (id, name, color, predefined_id) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(id) DO UPDATE SET name = ?2, color = ?3, predefined_id = ?4",
+            params![label.id, label.name, label.color, label.predefined_id],
+        )?;
+        Ok(())
+    }
+
+    /// Deletes one label definition and every association
+    /// it had, the prune the official clients perform when
+    /// a label goes away.
+    ///
+    /// # Errors
+    /// [`StoreError`] on SQLite failures.
+    pub fn delete_label(&self, label_id: &str) -> Result<(), StoreError> {
+        self.conn.execute("DELETE FROM chat_labels WHERE label_id = ?1", params![label_id])?;
+        self.conn.execute("DELETE FROM message_labels WHERE label_id = ?1", params![label_id])?;
+        self.conn.execute("DELETE FROM labels WHERE id = ?1", params![label_id])?;
+        Ok(())
+    }
+
+    /// Every chat label association, as (label id, chat
+    /// JID) pairs in label order.
+    ///
+    /// # Errors
+    /// [`StoreError`] on SQLite failures.
+    pub fn chat_labels(&self) -> Result<Vec<(String, String)>, StoreError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT label_id, chat_jid FROM chat_labels ORDER BY label_id, chat_jid")?;
+        let rows = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
+    /// Sets or clears one chat's label association.
+    ///
+    /// # Errors
+    /// [`StoreError`] on SQLite failures.
+    pub fn set_chat_label(
+        &self,
+        label_id: &str,
+        chat_jid: &str,
+        labeled: bool,
+    ) -> Result<(), StoreError> {
+        if labeled {
+            self.conn.execute(
+                "INSERT OR IGNORE INTO chat_labels (label_id, chat_jid) VALUES (?1, ?2)",
+                params![label_id, chat_jid],
+            )?;
+        } else {
+            self.conn.execute(
+                "DELETE FROM chat_labels WHERE label_id = ?1 AND chat_jid = ?2",
+                params![label_id, chat_jid],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Every message label association, as (label id, chat
+    /// JID, message id) triples in label order.
+    ///
+    /// # Errors
+    /// [`StoreError`] on SQLite failures.
+    pub fn message_labels(&self) -> Result<Vec<(String, String, String)>, StoreError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT label_id, chat_jid, message_id FROM message_labels
+             ORDER BY label_id, chat_jid, message_id",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
+    /// Sets or clears one message's label association.
+    ///
+    /// # Errors
+    /// [`StoreError`] on SQLite failures.
+    pub fn set_message_label(
+        &self,
+        label_id: &str,
+        chat_jid: &str,
+        message_id: &str,
+        labeled: bool,
+    ) -> Result<(), StoreError> {
+        if labeled {
+            self.conn.execute(
+                "INSERT OR IGNORE INTO message_labels (label_id, chat_jid, message_id)
+                 VALUES (?1, ?2, ?3)",
+                params![label_id, chat_jid, message_id],
+            )?;
+        } else {
+            self.conn.execute(
+                "DELETE FROM message_labels
+                 WHERE label_id = ?1 AND chat_jid = ?2 AND message_id = ?3",
+                params![label_id, chat_jid, message_id],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Every synced business quick reply in the archive
+    /// (schema v14), in id order.
+    ///
+    /// # Errors
+    /// [`StoreError`] on SQLite failures.
+    pub fn quick_replies(&self) -> Result<Vec<backend::LiveQuickReply>, StoreError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, shortcut, message, keywords, count FROM quick_replies ORDER BY id")?;
+        let rows = stmt.query_map([], |row| {
+            let keywords_json: String = row.get(3)?;
+            Ok(backend::LiveQuickReply {
+                id: row.get(0)?,
+                shortcut: row.get(1)?,
+                message: row.get(2)?,
+                keywords: serde_json::from_str(&keywords_json).unwrap_or_default(),
+                count: row.get(4)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
+    /// Inserts or replaces one quick reply.
+    ///
+    /// # Errors
+    /// [`StoreError`] on SQLite failures.
+    pub fn set_quick_reply(&self, reply: &backend::LiveQuickReply) -> Result<(), StoreError> {
+        // Serializing a string list cannot fail in
+        // practice; the fallback keeps the write total.
+        let keywords_json = serde_json::to_string(&reply.keywords).unwrap_or_else(|_| "[]".to_owned());
+        self.conn.execute(
+            "INSERT INTO quick_replies (id, shortcut, message, keywords, count)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(id) DO UPDATE SET shortcut = ?2, message = ?3, keywords = ?4, count = ?5",
+            params![reply.id, reply.shortcut, reply.message, keywords_json, reply.count],
+        )?;
+        Ok(())
+    }
+
+    /// Deletes one quick reply.
+    ///
+    /// # Errors
+    /// [`StoreError`] on SQLite failures.
+    pub fn delete_quick_reply(&self, id: &str) -> Result<(), StoreError> {
+        self.conn.execute("DELETE FROM quick_replies WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
     /// Records one completed call in the call history. The
     /// protocol call ID is unique: recording the same call twice
     /// (its end event and a missed-call event can both report it)
@@ -2977,6 +3213,49 @@ mod tests {
         let chats = store.chats().unwrap();
         let read = chats.iter().find(|c| c.jid == chat.jid).unwrap();
         assert!(!read.locked);
+    }
+
+    #[test]
+    fn labels_and_quick_replies_round_trip_through_the_archive() {
+        // Schema v14: label definitions, their chat and
+        // message associations, and the synced quick replies
+        // persist, and deleting a label prunes its
+        // associations with it.
+        let store = Store::open_in_memory().unwrap();
+        let label = backend::LiveLabel {
+            id: "7".to_owned(),
+            name: "Urgent".to_owned(),
+            color: 3,
+            predefined_id: None,
+        };
+        store.set_label(&label).unwrap();
+        store.set_chat_label("7", "123@s.whatsapp.net", true).unwrap();
+        store.set_message_label("7", "123@s.whatsapp.net", "M1", true).unwrap();
+        let reply = backend::LiveQuickReply {
+            id: "q1".to_owned(),
+            shortcut: "hours".to_owned(),
+            message: "We are open 8 to 5.".to_owned(),
+            keywords: vec!["open".to_owned(), "time".to_owned()],
+            count: 2,
+        };
+        store.set_quick_reply(&reply).unwrap();
+        assert_eq!(store.labels().unwrap(), vec![label]);
+        assert_eq!(
+            store.chat_labels().unwrap(),
+            vec![("7".to_owned(), "123@s.whatsapp.net".to_owned())]
+        );
+        assert_eq!(
+            store.message_labels().unwrap(),
+            vec![("7".to_owned(), "123@s.whatsapp.net".to_owned(), "M1".to_owned())]
+        );
+        assert_eq!(store.quick_replies().unwrap(), vec![reply]);
+        store.set_chat_label("7", "123@s.whatsapp.net", false).unwrap();
+        assert!(store.chat_labels().unwrap().is_empty());
+        store.delete_label("7").unwrap();
+        assert!(store.labels().unwrap().is_empty());
+        assert!(store.message_labels().unwrap().is_empty());
+        store.delete_quick_reply("q1").unwrap();
+        assert!(store.quick_replies().unwrap().is_empty());
     }
 
     #[test]

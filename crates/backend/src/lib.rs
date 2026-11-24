@@ -363,6 +363,259 @@ pub struct OwnProfile {
     pub photo: Option<Vec<u8>>,
 }
 
+/// One business category on a business profile, as the
+/// protocol reports it: a stable id and its display name.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct LiveBusinessCategory {
+    /// Category id (the value profile updates carry).
+    pub id: String,
+    /// Display name.
+    pub name: String,
+}
+
+/// One day's opening hours on a business profile. `mode` is
+/// the wire spelling: `open_24h`, `specific_hours`,
+/// `appointment_only`, or a closed day carries the mode the
+/// server sent; an unrecognized mode rides through verbatim
+/// so nothing the server said is silently rewritten.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct LiveBusinessDayHours {
+    /// Day name as the wire spells it (`monday` to `sunday`).
+    pub day: String,
+    /// Hour mode, wire spelling (see the type docs).
+    pub mode: String,
+    /// Opening time, minutes past local midnight
+    /// (`specific_hours` days only).
+    pub open_minutes: Option<u32>,
+    /// Closing time, minutes past local midnight
+    /// (`specific_hours` days only).
+    pub close_minutes: Option<u32>,
+}
+
+/// A business profile as the protocol reports it, for a
+/// business account (another contact's, or the account's
+/// own). An account with no business profile answers
+/// `None` at the command that asked, never an empty one of
+/// these: the distinction is the answer, not a gap in it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct LiveBusinessProfile {
+    /// Free-text description (empty when the business set
+    /// none).
+    pub description: String,
+    /// Contact email, when stated.
+    pub email: Option<String>,
+    /// Websites, in the profile's own order.
+    pub websites: Vec<String>,
+    /// Categories the business filed itself under.
+    pub categories: Vec<LiveBusinessCategory>,
+    /// Street address, when stated.
+    pub address: Option<String>,
+    /// IANA timezone of the opening hours, when stated.
+    pub hours_timezone: Option<String>,
+    /// Opening hours by day (only the days the profile
+    /// states; a day absent here has no stated hours).
+    pub hours: Vec<LiveBusinessDayHours>,
+}
+
+/// The opening-hours half of a business profile update.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LiveBusinessHoursUpdate {
+    /// IANA timezone name; `None` omits it from the delta.
+    pub timezone: Option<String>,
+    /// Free-text note shown under the hours; `None` omits
+    /// it from the delta.
+    pub note: Option<String>,
+    /// One entry per opening range; a day with two ranges
+    /// appears twice.
+    pub days: Vec<LiveBusinessDayHours>,
+}
+
+/// A delta to the account's own business profile, in the
+/// protocol's own shape: an outer `None` leaves the field
+/// untouched, `Some(None)` (text fields) or an empty list
+/// (list fields) clears it, and `Some(Some(text))` sets it.
+/// Only the fields the user actually changed are set by
+/// the caller, so a save can never clear a field the form
+/// did not show.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct LiveBusinessProfileUpdate {
+    /// Description delta.
+    pub description: Option<Option<String>>,
+    /// Email delta.
+    pub email: Option<Option<String>>,
+    /// Address delta.
+    pub address: Option<Option<String>>,
+    /// Websites replacement (`Some` replaces the whole
+    /// list; an empty list clears it).
+    pub websites: Option<Vec<String>>,
+    /// Category id replacement (`Some` replaces the whole
+    /// set with these ids; an empty list clears it). The
+    /// ids come from the profile's own current categories:
+    /// the protocol offers no category directory to a
+    /// linked device, so new categories cannot be offered.
+    pub categories: Option<Vec<String>>,
+    /// Opening-hours replacement.
+    pub hours: Option<LiveBusinessHoursUpdate>,
+}
+
+/// One product in a business catalog. Only `id` is
+/// guaranteed by the server; every other field is optional
+/// because the server omits rather than blanks.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct LiveProduct {
+    /// Product id.
+    pub id: String,
+    /// Display name.
+    pub name: Option<String>,
+    /// Description.
+    pub description: Option<String>,
+    /// Price in thousandths of the currency unit
+    /// (`1990` is 1.99), exact as the server sent it.
+    pub price_amount_1000: Option<i64>,
+    /// Sale price, same scale, while a sale runs.
+    pub sale_amount_1000: Option<i64>,
+    /// ISO 4217 currency code of the prices.
+    pub price_currency: Option<String>,
+    /// Availability, wire spelling (`IN_STOCK`,
+    /// `OUT_OF_STOCK`, `AVAILABLE_FOR_ANOTHER_POSTCODE`, or
+    /// a later spelling carried verbatim).
+    pub availability: Option<String>,
+    /// Whether the merchant hides this product from
+    /// customers. Hidden products are in the catalog data
+    /// but are not customer-facing; surfaces that present
+    /// the catalog to browse it skip them.
+    pub hidden: bool,
+    /// Image URL at display dimensions, when the product
+    /// has an image. The bytes are fetched separately
+    /// ([`BackendCommand::FetchProductImage`]).
+    pub image_url: Option<String>,
+}
+
+/// A named group of products within a catalog. The
+/// products are a prefix of the collection (the protocol
+/// returns the first page inline and offers no cursor
+/// into a collection), so a collection whose product
+/// count reaches the fetch limit may hold more than it
+/// shows; the surface says so rather than dressing a
+/// prefix as the whole.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct LiveCollection {
+    /// Collection id.
+    pub id: Option<String>,
+    /// Display name.
+    pub name: Option<String>,
+    /// The inline products (a prefix; see the type docs).
+    pub products: Vec<LiveProduct>,
+}
+
+/// One line item of an order, as a snapshot: the price is
+/// what was quoted when the order was placed.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct LiveOrderItem {
+    /// Product name.
+    pub name: Option<String>,
+    /// Unit price in thousandths of the currency unit.
+    pub price_amount_1000: Option<i64>,
+    /// ISO 4217 currency code of the price.
+    pub price_currency: Option<String>,
+    /// Quantity ordered.
+    pub quantity: Option<i64>,
+    /// The chosen variant as (dimension, value) pairs
+    /// (size, colour, and the like); empty for a product
+    /// with no variants.
+    pub variant: Vec<(String, String)>,
+}
+
+/// An order's line items and totals, fetched on demand
+/// for one order message.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct LiveOrder {
+    /// Line items, in the order's own order.
+    pub items: Vec<LiveOrderItem>,
+    /// Subtotal in thousandths of the currency unit.
+    pub subtotal_amount_1000: Option<i64>,
+    /// Total in thousandths of the currency unit.
+    pub total_amount_1000: Option<i64>,
+    /// ISO 4217 currency code of the totals.
+    pub currency: Option<String>,
+}
+
+/// One label definition, as app-state sync carries it.
+/// Labels are account state: they sync between the phone
+/// and every linked device, and a label's identity is its
+/// id; the name and color are its current statement.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct LiveLabel {
+    /// Label id (an opaque index key, not a JID).
+    pub id: String,
+    /// Display name.
+    pub name: String,
+    /// Color index into the label palette the official
+    /// clients draw from. The index is the synced truth;
+    /// rendering maps it through the app's palette table.
+    pub color: i32,
+    /// The predefined (built-in) label id this label
+    /// instantiates, when it is one of the protocol's
+    /// predefined labels.
+    pub predefined_id: Option<i32>,
+}
+
+/// A label mutation that failed, carried on
+/// [`BackendEvent::LabelActionFailed`] so the app can roll
+/// back exactly the apply it made. Mirrors the command
+/// payloads one to one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LabelAction {
+    /// A label create or rename/recolor (one upsert on the
+    /// wire).
+    Save {
+        /// Label id.
+        label_id: String,
+        /// Attempted name.
+        name: String,
+        /// Attempted color index.
+        color: i32,
+    },
+    /// A chat association change.
+    SetChat {
+        /// Label id.
+        label_id: String,
+        /// Chat JID.
+        chat_jid: String,
+        /// The association state attempted.
+        labeled: bool,
+    },
+    /// A message association change.
+    SetMessage {
+        /// Label id.
+        label_id: String,
+        /// Chat JID.
+        chat_jid: String,
+        /// Protocol ID of the message.
+        message_id: String,
+        /// The association state attempted.
+        labeled: bool,
+    },
+}
+
+/// One synced business quick reply: a `/shortcut` and the
+/// text it expands to. Account state, synced between the
+/// phone and linked devices like labels; not related to
+/// any local text-expansion the app may offer.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct LiveQuickReply {
+    /// Quick reply id (an opaque index key).
+    pub id: String,
+    /// The `/`-typed trigger, without the slash.
+    pub shortcut: String,
+    /// The expanded message text.
+    pub message: String,
+    /// Extra search terms the reply is indexed under.
+    pub keywords: Vec<String>,
+    /// Usage counter the official clients maintain.
+    pub count: i32,
+}
+
 /// The quoted message a reply points at, carried on outgoing
 /// `SendText` commands so the reply context reaches the wire.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1459,6 +1712,146 @@ pub enum BackendCommand {
         /// The reported message's timestamp (unix seconds).
         message_timestamp: i64,
     },
+    /// Fetch one chat partner's business profile. Answered
+    /// with [`BackendEvent::BusinessProfileFetched`] (whose
+    /// profile is `None` when the account has no business
+    /// profile: an answer, not an error) or
+    /// [`BackendEvent::BusinessProfileFetchFailed`].
+    FetchBusinessProfile {
+        /// Chat JID of the business.
+        chat_jid: String,
+    },
+    /// Fetch one page of a business's product catalog.
+    /// Answered with [`BackendEvent::CatalogFetched`],
+    /// whose cursor feeds the next page's `after`, or
+    /// [`BackendEvent::CatalogFetchFailed`].
+    FetchCatalog {
+        /// Chat JID of the business.
+        chat_jid: String,
+        /// Cursor of the page to fetch (`None` for the
+        /// first page).
+        after: Option<String>,
+    },
+    /// Fetch a business's catalog collections (each with
+    /// its first products inline). Answered with
+    /// [`BackendEvent::CollectionsFetched`] or
+    /// [`BackendEvent::CollectionsFetchFailed`].
+    FetchCollections {
+        /// Chat JID of the business.
+        chat_jid: String,
+    },
+    /// Fetch the bytes of one catalog product image (a
+    /// hosted URL the catalog itself supplied). Answered
+    /// with [`BackendEvent::ProductImageBytes`] or
+    /// [`BackendEvent::ProductImageFetchFailed`].
+    FetchProductImage {
+        /// The image URL, verbatim from the catalog data.
+        url: String,
+    },
+    /// Fetch one order's line items and totals. Both the
+    /// id and the token come from the order message
+    /// itself; the token is a per-order capability.
+    /// Answered with [`BackendEvent::OrderDetailsFetched`]
+    /// or [`BackendEvent::OrderDetailsFetchFailed`].
+    FetchOrderDetails {
+        /// Chat JID of the business the order was placed
+        /// with.
+        chat_jid: String,
+        /// Order id from the order message.
+        order_id: String,
+        /// Order token from the order message.
+        token: String,
+    },
+    /// Fetch the account's own business profile (the
+    /// editor's read). Answered with
+    /// [`BackendEvent::OwnBusinessProfileFetched`] (whose
+    /// profile is `None` when the account has no business
+    /// profile) or
+    /// [`BackendEvent::OwnBusinessProfileFetchFailed`].
+    FetchOwnBusinessProfile,
+    /// Apply a delta to the account's own business
+    /// profile. Answered with
+    /// [`BackendEvent::OwnBusinessProfileSaved`] or
+    /// [`BackendEvent::OwnBusinessProfileSaveFailed`].
+    UpdateOwnBusinessProfile {
+        /// The delta (only the changed fields are set).
+        update: LiveBusinessProfileUpdate,
+    },
+    /// Create a label or rename/recolor an existing one
+    /// (one upsert on the wire). The app applies it at
+    /// once; a failure answers
+    /// [`BackendEvent::LabelActionFailed`] carrying the
+    /// attempted action, and the app rolls back.
+    SaveLabel {
+        /// Label id (the caller generates it for a new
+        /// label; the wire treats it as an opaque key).
+        label_id: String,
+        /// Label name.
+        name: String,
+        /// Color index.
+        color: i32,
+    },
+    /// Delete a label. Destructive: the app confirms
+    /// first and applies only when
+    /// [`BackendEvent::LabelDeleted`] answers; a failure
+    /// answers [`BackendEvent::LabelDeleteFailed`] and
+    /// nothing changes anywhere.
+    DeleteLabel {
+        /// Label id.
+        label_id: String,
+    },
+    /// Add a label to a chat or remove it. The app
+    /// applies it at once; a failure answers
+    /// [`BackendEvent::LabelActionFailed`] and the app
+    /// rolls back.
+    SetChatLabel {
+        /// Label id.
+        label_id: String,
+        /// Chat JID.
+        chat_jid: String,
+        /// Whether the chat carries the label.
+        labeled: bool,
+    },
+    /// Add a label to one message or remove it. Same
+    /// apply and rollback discipline as
+    /// [`BackendCommand::SetChatLabel`].
+    SetMessageLabel {
+        /// Label id.
+        label_id: String,
+        /// Chat JID.
+        chat_jid: String,
+        /// Protocol ID of the message.
+        message_id: String,
+        /// Whether the message carries the label.
+        labeled: bool,
+    },
+    /// Create or edit a synced business quick reply (one
+    /// upsert on the wire). The app applies it at once; a
+    /// failure answers [`BackendEvent::QuickReplyFailed`]
+    /// and the app rolls back. The usage count is not the
+    /// caller's to set: the backend carries the count the
+    /// reply already has (0 for a new one), because the
+    /// wire's upsert replaces it.
+    SaveQuickReply {
+        /// Quick reply id (the caller generates it for a
+        /// new reply).
+        id: String,
+        /// The `/`-typed trigger, without the slash.
+        shortcut: String,
+        /// The expanded message text.
+        message: String,
+        /// Extra search terms.
+        keywords: Vec<String>,
+    },
+    /// Delete a synced business quick reply. The app
+    /// confirms first and applies only when
+    /// [`BackendEvent::QuickReplyDeleted`] answers; a
+    /// failure answers
+    /// [`BackendEvent::QuickReplyDeleteFailed`].
+    DeleteQuickReply {
+        /// Quick reply id.
+        id: String,
+    },
     /// Stop the backend worker.
     Shutdown,
 }
@@ -1540,6 +1933,30 @@ pub enum LiveMessageKind {
         latitude: f64,
         /// Longitude.
         longitude: f64,
+    },
+    /// An order placed with a business. The id and token
+    /// are the capability the order-details fetch needs:
+    /// an order cannot be read without the message that
+    /// announced it. The message body carries the order's
+    /// own words (its message or title) as usual.
+    Order {
+        /// Order id from the payload.
+        order_id: String,
+        /// Per-order token from the payload (may be empty
+        /// when the payload carried none; the details fetch
+        /// then has nothing to authorize with and the card
+        /// offers no fetch).
+        token: String,
+        /// Number of items the payload states.
+        item_count: u32,
+        /// Total in thousandths of the currency unit, as
+        /// the payload states it (0 when it states none).
+        total_amount_1000: i64,
+        /// ISO 4217 currency code of the total.
+        currency: String,
+        /// Order status, wire spelling (`INQUIRY`,
+        /// `ACCEPTED`, `DECLINED`; empty when unstated).
+        status: String,
     },
     /// A shared contact card.
     Contact {
@@ -3894,6 +4311,218 @@ pub enum BackendEvent {
     RecentStickerRemoved {
         /// The sticker's filehash identity.
         filehash: String,
+    },
+    /// A business profile arrived, answering
+    /// [`BackendCommand::FetchBusinessProfile`]. `None`
+    /// means the account has no business profile: an
+    /// answer, not an error.
+    BusinessProfileFetched {
+        /// Chat JID of the business.
+        chat_jid: String,
+        /// The profile, when the account has one.
+        profile: Option<LiveBusinessProfile>,
+    },
+    /// A business profile fetch failed.
+    BusinessProfileFetchFailed {
+        /// Chat JID of the business.
+        chat_jid: String,
+        /// Why the fetch failed, in user words.
+        message: String,
+    },
+    /// One page of a business catalog arrived, answering
+    /// [`BackendCommand::FetchCatalog`].
+    CatalogFetched {
+        /// Chat JID of the business.
+        chat_jid: String,
+        /// The page's products, in catalog order.
+        products: Vec<LiveProduct>,
+        /// Cursor for the next page; `None` on the last
+        /// page.
+        after_cursor: Option<String>,
+    },
+    /// A catalog fetch failed.
+    CatalogFetchFailed {
+        /// Chat JID of the business.
+        chat_jid: String,
+        /// Why the fetch failed, in user words.
+        message: String,
+    },
+    /// A business's catalog collections arrived,
+    /// answering [`BackendCommand::FetchCollections`].
+    CollectionsFetched {
+        /// Chat JID of the business.
+        chat_jid: String,
+        /// The collections, in the server's order.
+        collections: Vec<LiveCollection>,
+    },
+    /// A collections fetch failed.
+    CollectionsFetchFailed {
+        /// Chat JID of the business.
+        chat_jid: String,
+        /// Why the fetch failed, in user words.
+        message: String,
+    },
+    /// The bytes of one catalog product image arrived,
+    /// answering [`BackendCommand::FetchProductImage`].
+    ProductImageBytes {
+        /// The URL the bytes belong to.
+        url: String,
+        /// The image bytes.
+        bytes: Vec<u8>,
+    },
+    /// A product image fetch failed. Carries no message:
+    /// the surface falls back to its neutral tile and the
+    /// failure needs no words.
+    ProductImageFetchFailed {
+        /// The URL that failed.
+        url: String,
+    },
+    /// An order's details arrived, answering
+    /// [`BackendCommand::FetchOrderDetails`].
+    OrderDetailsFetched {
+        /// Chat JID of the business.
+        chat_jid: String,
+        /// Order id the details belong to.
+        order_id: String,
+        /// The order's line items and totals.
+        order: LiveOrder,
+    },
+    /// An order details fetch failed.
+    OrderDetailsFetchFailed {
+        /// Chat JID of the business.
+        chat_jid: String,
+        /// Order id that was asked for.
+        order_id: String,
+        /// Why the fetch failed, in user words.
+        message: String,
+    },
+    /// The account's own business profile arrived,
+    /// answering [`BackendCommand::FetchOwnBusinessProfile`].
+    /// `None` means the account has no business profile.
+    OwnBusinessProfileFetched {
+        /// The profile, when the account has one.
+        profile: Option<LiveBusinessProfile>,
+    },
+    /// The own business profile fetch failed.
+    OwnBusinessProfileFetchFailed {
+        /// Why the fetch failed, in user words.
+        message: String,
+    },
+    /// The own business profile delta was applied,
+    /// answering [`BackendCommand::UpdateOwnBusinessProfile`].
+    OwnBusinessProfileSaved,
+    /// The own business profile delta failed; nothing was
+    /// applied.
+    OwnBusinessProfileSaveFailed {
+        /// Why the save failed, in user words.
+        message: String,
+    },
+    /// A label was created, renamed, recolored, or
+    /// deleted, reported by app-state sync (a change made
+    /// on another linked device, the pairing-time full
+    /// sync replaying the account's set, or the echo of
+    /// this client's own save). `deleted` removes the
+    /// definition; associations it had are pruned by the
+    /// app the same way the official clients prune them.
+    LabelEdited {
+        /// Label id.
+        label_id: String,
+        /// New name (absent on a deletion).
+        name: Option<String>,
+        /// New color index (absent on a deletion).
+        color: Option<i32>,
+        /// Predefined label id, when this label is one of
+        /// the protocol's predefined labels.
+        predefined_id: Option<i32>,
+        /// Whether this report deletes the label.
+        deleted: bool,
+    },
+    /// A label was added to or removed from a chat,
+    /// reported by app-state sync.
+    ChatLabelChanged {
+        /// Label id.
+        label_id: String,
+        /// Chat JID.
+        chat_jid: String,
+        /// Whether the chat now carries the label.
+        labeled: bool,
+    },
+    /// A label was added to or removed from one message,
+    /// reported by app-state sync.
+    MessageLabelChanged {
+        /// Label id.
+        label_id: String,
+        /// Chat JID.
+        chat_jid: String,
+        /// Protocol ID of the message.
+        message_id: String,
+        /// Whether the message now carries the label.
+        labeled: bool,
+    },
+    /// A label was deleted, answering
+    /// [`BackendCommand::DeleteLabel`]. The app applies
+    /// the deletion (and prunes the label's associations)
+    /// only on this answer.
+    LabelDeleted {
+        /// Label id.
+        label_id: String,
+    },
+    /// A label deletion failed; nothing changed.
+    LabelDeleteFailed {
+        /// Label id.
+        label_id: String,
+        /// Why the deletion failed, in user words.
+        message: String,
+    },
+    /// A label mutation the app applied at once failed;
+    /// the app rolls back exactly the apply the carried
+    /// action names.
+    LabelActionFailed {
+        /// The attempted action.
+        action: LabelAction,
+        /// Why it failed, in user words.
+        message: String,
+    },
+    /// A synced business quick reply was created, edited,
+    /// or deleted, reported by app-state sync (another
+    /// device's change, the pairing-time full sync, or
+    /// the echo of this client's own save). On a deletion
+    /// only the id is meaningful.
+    QuickReplyEdited {
+        /// Quick reply id.
+        id: String,
+        /// The reply's shortcut (empty on a deletion).
+        shortcut: String,
+        /// The reply's message text (empty on a deletion).
+        message: String,
+        /// The reply's keywords.
+        keywords: Vec<String>,
+        /// The reply's usage count.
+        count: i32,
+        /// Whether this report deletes the reply.
+        deleted: bool,
+    },
+    /// A quick reply save the app applied at once failed;
+    /// the app restores the reply's previous state.
+    QuickReplyFailed {
+        /// Quick reply id.
+        id: String,
+        /// Why it failed, in user words.
+        message: String,
+    },
+    /// A quick reply was deleted, answering
+    /// [`BackendCommand::DeleteQuickReply`]. The app
+    /// applies the deletion only on this answer.
+    QuickReplyDeleted {
+        /// Quick reply id.
+        id: String,
+    },
+    /// A quick reply deletion failed; nothing changed.
+    QuickReplyDeleteFailed {
+        /// Quick reply id.
+        id: String,
+        /// Why the deletion failed, in user words.
+        message: String,
     },
     /// One call from the phone's own call history, delivered by
     /// the pairing-time history or a later app-state sync. The

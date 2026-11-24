@@ -66,6 +66,8 @@ mod settings;
 mod shell;
 mod starred;
 mod state;
+#[cfg(test)]
+mod stream_profile;
 mod theme;
 mod update;
 mod updates;

@@ -1443,8 +1443,7 @@ impl App {
                     ui.label(RichText::new(&participant.state).size(11.0).color(rgb(t.text_faint)));
                 }
                 if participant.sharing {
-                    let (rect, _) =
-                        ui.allocate_exact_size(Vec2::splat(18.0), egui::Sense::hover());
+                    let (rect, _) = ui.allocate_exact_size(Vec2::splat(18.0), egui::Sense::hover());
                     icons::draw(
                         ui.painter(),
                         Icon::ScreenShare,
@@ -1455,8 +1454,7 @@ impl App {
                     );
                 }
                 if participant.hand_raised {
-                    let (rect, _) =
-                        ui.allocate_exact_size(Vec2::splat(18.0), egui::Sense::hover());
+                    let (rect, _) = ui.allocate_exact_size(Vec2::splat(18.0), egui::Sense::hover());
                     icons::draw(
                         ui.painter(),
                         Icon::BackHand,

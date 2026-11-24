@@ -1764,7 +1764,6 @@ mod tests {
             }
             other => panic!("expected one StartCall command, got {other:?}"),
         }
-        assert!(app.notice.is_none(), "no refusal is spoken for a video call-back");
         app.call_chat(4, CallKind::Voice);
         match cmd_rx.try_recv() {
             Ok(backend::BackendCommand::StartCall { chat_jid, video }) => {

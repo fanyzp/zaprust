@@ -50,6 +50,15 @@ impl App {
         let mut picked_seed: Option<core::theme::Rgb> = None;
         let scoped = ui.scope(|ui| {
             settings_card(ui, t, |ui| {
+                // The name under the dots is the card's one label:
+                // it names the dot under the pointer while one is
+                // hovered, and the selected color otherwise. A
+                // per-dot hover tooltip used to do the naming
+                // instead, and it painted outside the card over
+                // the label, so two names showed at once with the
+                // tooltip pill hanging off the card's edge
+                // (VRF-02).
+                let mut hovered_name: Option<&str> = None;
                 ui.horizontal(|ui| {
                     for (name, seed) in core::theme::SEED_PRESETS {
                         let (rect, resp) =
@@ -73,8 +82,9 @@ impl App {
                         }
                         if resp.hovered() {
                             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                            hovered_name = Some(name);
                         }
-                        if resp.on_hover_text(name).clicked() {
+                        if resp.clicked() {
                             picked_seed = Some(seed);
                         }
                     }
@@ -84,7 +94,11 @@ impl App {
                     .iter()
                     .find(|(_, s)| *s == self.seed)
                     .map_or("Custom", |(n, _)| *n);
-                ui.label(RichText::new(current).size(12.0).color(rgb(t.text_secondary)));
+                ui.label(
+                    RichText::new(hovered_name.unwrap_or(current))
+                        .size(12.0)
+                        .color(rgb(t.text_secondary)),
+                );
             })
         });
         paint_highlight(

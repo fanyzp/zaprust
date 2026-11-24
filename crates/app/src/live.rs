@@ -2831,7 +2831,7 @@ impl crate::state::App {
                 }
                 self.channel_panel_notice = None;
             }
-            BackendEvent::ChannelFollowFailed { message } => {
+            BackendEvent::ChannelFollowFailed { message, .. } => {
                 let message = core::crash::scrub_for_display(&message);
                 tracing::warn!("channel follow failed: {message}");
                 self.channel_panel_notice = Some(human_error(&message));
@@ -2848,7 +2848,7 @@ impl crate::state::App {
                     }
                 }
             }
-            BackendEvent::ChannelUnfollowFailed { message } => {
+            BackendEvent::ChannelUnfollowFailed { message, .. } => {
                 let message = core::crash::scrub_for_display(&message);
                 tracing::warn!("channel unfollow failed: {message}");
                 self.notice = Some(Notice::error(human_error(&message)));
@@ -2897,7 +2897,7 @@ impl crate::state::App {
             BackendEvent::ChannelCountersUpdated { counters } => {
                 self.apply_channel_counters(&counters);
             }
-            BackendEvent::ChannelReactionSet { jid, server_id } => {
+            BackendEvent::ChannelReactionSet { jid, server_id, .. } => {
                 let chat_id = jid_id(&jid);
                 if let Some(mid) = self
                     .live
@@ -2940,7 +2940,7 @@ impl crate::state::App {
                 }
                 self.fetch_channel_page(&jid, None);
             }
-            BackendEvent::ChannelPollCreateFailed { message } => {
+            BackendEvent::ChannelPollFailed { message, .. } => {
                 let message = core::crash::scrub_for_display(&message);
                 tracing::warn!("channel poll create failed: {message}");
                 self.notice = Some(Notice::error(human_error(&message)));
@@ -3046,7 +3046,7 @@ impl crate::state::App {
                     session.channel_infos.insert(info.channel.jid.clone(), info);
                 }
             }
-            BackendEvent::ChannelInfoFailed { message } => {
+            BackendEvent::ChannelInfoFailed { message, .. } => {
                 let message = core::crash::scrub_for_display(&message);
                 tracing::warn!("channel info failed: {message}");
                 self.channel_info_for = None;
@@ -3063,7 +3063,7 @@ impl crate::state::App {
                     chat.muted = muted;
                 }
             }
-            BackendEvent::ChannelMuteFailed { message } => {
+            BackendEvent::ChannelMuteFailed { message, .. } => {
                 let message = core::crash::scrub_for_display(&message);
                 tracing::warn!("channel mute failed: {message}");
                 self.notice = Some(Notice::error(human_error(&message)));

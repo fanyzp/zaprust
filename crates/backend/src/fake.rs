@@ -1820,12 +1820,28 @@ impl Backend for FakeBackend {
                                 ..
                             } = &mut msg.kind
                             {
-                                *my_votes = poll_options
+                                // The server record moves
+                                // with my ballot: tallies gain
+                                // and lose my vote as the
+                                // selection changes, like the
+                                // real backend's next history
+                                // fetch reports.
+                                let new_votes: Vec<usize> = poll_options
                                     .iter()
                                     .enumerate()
                                     .filter(|(_, (name, _))| options.contains(name))
                                     .map(|(index, _)| index)
                                     .collect();
+                                for (index, (_, count)) in poll_options.iter_mut().enumerate() {
+                                    let was = my_votes.contains(&index);
+                                    let now = new_votes.contains(&index);
+                                    if now && !was {
+                                        *count += 1;
+                                    } else if was && !now {
+                                        *count = count.saturating_sub(1);
+                                    }
+                                }
+                                *my_votes = new_votes;
                                 voted = true;
                             }
                             let updated = msg.clone();
@@ -4023,6 +4039,346 @@ mod tests {
             }
         }
         out
+    }
+
+    /// Channels: the subscribed list answers with the
+    /// scripted metadata (roles included), an invite lookup
+    /// finds the discoverable channel as a Guest, following
+    /// files its chat row and flips the role, and unfollowing
+    /// takes it back out of the list.
+    #[test]
+    fn channel_list_lookup_follow_and_unfollow_flow() {
+        let ch = start(FakeBackend::auto());
+        linked(&ch);
+        ch.commands.send(BackendCommand::FetchChannels).unwrap();
+        let listed = collect_until(&ch, &|e| matches!(e, BackendEvent::ChannelsListed { .. }));
+        let BackendEvent::ChannelsListed { channels } = &listed[listed.len() - 1] else {
+            panic!("expected the channel list: {listed:?}");
+        };
+        assert_eq!(channels.len(), 2, "the two scripted subscriptions: {channels:?}");
+        let city = channels.iter().find(|c| c.jid == FAKE_CHANNEL_JID).expect("city news listed");
+        assert_eq!(city.role, crate::LiveChannelRole::Follower);
+        assert_eq!(city.followers, 12_483);
+        assert!(city.verified);
+        let own = channels
+            .iter()
+            .find(|c| c.jid == FAKE_OWN_CHANNEL_JID)
+            .expect("the owned channel listed");
+        assert_eq!(own.role, crate::LiveChannelRole::Owner);
+
+        ch.commands
+            .send(BackendCommand::LookupChannel { code: FAKE_DISCOVERABLE_INVITE.to_owned() })
+            .unwrap();
+        let found = collect_until(&ch, &|e| matches!(e, BackendEvent::ChannelFound { .. }));
+        let BackendEvent::ChannelFound { channel } = &found[found.len() - 1] else {
+            panic!("expected the found channel: {found:?}");
+        };
+        assert_eq!(channel.jid, FAKE_DISCOVERABLE_CHANNEL_JID);
+        assert_eq!(channel.role, crate::LiveChannelRole::Guest);
+        assert_eq!(channel.followers, 3_208);
+
+        ch.commands
+            .send(BackendCommand::FollowChannel { jid: FAKE_DISCOVERABLE_CHANNEL_JID.to_owned() })
+            .unwrap();
+        let followed =
+            collect_until(&ch, &|e| matches!(e, BackendEvent::ChannelFollowed { .. }));
+        assert!(
+            followed.iter().any(|e| matches!(e, BackendEvent::ChatUpsert(chat)
+                if chat.jid == FAKE_DISCOVERABLE_CHANNEL_JID)),
+            "following files the chat row first: {followed:?}"
+        );
+        let BackendEvent::ChannelFollowed { channel } = &followed[followed.len() - 1] else {
+            panic!("expected the follow answer: {followed:?}");
+        };
+        assert_eq!(channel.role, crate::LiveChannelRole::Follower);
+
+        ch.commands
+            .send(BackendCommand::UnfollowChannel { jid: FAKE_DISCOVERABLE_CHANNEL_JID.to_owned() })
+            .unwrap();
+        let unfollowed =
+            collect_until(&ch, &|e| matches!(e, BackendEvent::ChannelUnfollowed { .. }));
+        assert!(
+            matches!(&unfollowed[unfollowed.len() - 1], BackendEvent::ChannelUnfollowed { jid }
+                if jid == FAKE_DISCOVERABLE_CHANNEL_JID),
+            "the unfollow answers: {unfollowed:?}"
+        );
+        ch.commands.send(BackendCommand::FetchChannels).unwrap();
+        let listed = collect_until(&ch, &|e| matches!(e, BackendEvent::ChannelsListed { .. }));
+        let BackendEvent::ChannelsListed { channels } = &listed[listed.len() - 1] else {
+            panic!("expected the channel list: {listed:?}");
+        };
+        assert!(
+            channels.iter().all(|c| c.jid != FAKE_DISCOVERABLE_CHANNEL_JID),
+            "an unfollowed channel leaves the subscribed list: {channels:?}"
+        );
+        ch.commands.send(BackendCommand::Shutdown).unwrap();
+    }
+
+    /// An unknown invite code fails with its typed event,
+    /// and an injected follow failure changes no state: the
+    /// retry follows for real.
+    #[test]
+    fn channel_lookup_and_follow_failures_are_typed() {
+        let mut fake = FakeBackend::auto();
+        fake.fail_next = vec!["FollowChannel"];
+        let ch = start(fake);
+        linked(&ch);
+        ch.commands
+            .send(BackendCommand::LookupChannel { code: "NoSuchChannelCode".to_owned() })
+            .unwrap();
+        let failed =
+            collect_until(&ch, &|e| matches!(e, BackendEvent::ChannelLookupFailed { .. }));
+        assert!(
+            matches!(&failed[failed.len() - 1], BackendEvent::ChannelLookupFailed { .. }),
+            "an unknown code answers with the typed failure: {failed:?}"
+        );
+        ch.commands
+            .send(BackendCommand::FollowChannel { jid: FAKE_DISCOVERABLE_CHANNEL_JID.to_owned() })
+            .unwrap();
+        let failed =
+            collect_until(&ch, &|e| matches!(e, BackendEvent::ChannelFollowFailed { .. }));
+        assert!(
+            matches!(&failed[failed.len() - 1], BackendEvent::ChannelFollowFailed { .. }),
+            "the injected failure answers typed: {failed:?}"
+        );
+        ch.commands
+            .send(BackendCommand::FollowChannel { jid: FAKE_DISCOVERABLE_CHANNEL_JID.to_owned() })
+            .unwrap();
+        let followed =
+            collect_until(&ch, &|e| matches!(e, BackendEvent::ChannelFollowed { .. }));
+        assert!(
+            matches!(&followed[followed.len() - 1], BackendEvent::ChannelFollowed { channel }
+                if channel.role == crate::LiveChannelRole::Follower),
+            "the retry lands: {followed:?}"
+        );
+        ch.commands.send(BackendCommand::Shutdown).unwrap();
+    }
+
+    /// Channel history pages walk server IDs newest first,
+    /// two at a time, and the last page says the history is
+    /// exhausted.
+    #[test]
+    fn channel_history_pages_by_server_id() {
+        let ch = start(FakeBackend::auto());
+        linked(&ch);
+        let page = |ch: &BackendChannels, before: Option<u64>| {
+            ch.commands
+                .send(BackendCommand::FetchChannelHistory {
+                    jid: FAKE_CHANNEL_JID.to_owned(),
+                    count: 2,
+                    before,
+                })
+                .unwrap();
+            collect_until(ch, &|e| matches!(e, BackendEvent::ChannelHistoryFetched { .. }))
+        };
+        let first = page(&ch, None);
+        let ids: Vec<&str> = first
+            .iter()
+            .filter_map(|e| match e {
+                BackendEvent::MessageUpsert(m) => Some(m.id.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ids, ["fake-ch-5", "fake-ch-4"], "the newest page first: {first:?}");
+        assert!(
+            matches!(&first[first.len() - 1], BackendEvent::ChannelHistoryFetched { added: 2, end_of_history: false, .. }),
+            "more pages exist: {first:?}"
+        );
+        let second = page(&ch, Some(104));
+        let ids: Vec<&str> = second
+            .iter()
+            .filter_map(|e| match e {
+                BackendEvent::MessageUpsert(m) => Some(m.id.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ids, ["fake-ch-3", "fake-ch-2"], "the page before 104: {second:?}");
+        let third = page(&ch, Some(102));
+        assert!(
+            matches!(&third[third.len() - 1], BackendEvent::ChannelHistoryFetched { added: 1, end_of_history: true, .. }),
+            "the last page ends the history: {third:?}"
+        );
+        ch.commands.send(BackendCommand::Shutdown).unwrap();
+    }
+
+    /// A channel reaction and a poll vote settle through
+    /// their typed events, and the next history fetch carries
+    /// both in the server record: my reaction on the update,
+    /// my ballot and the moved tally on the poll.
+    #[test]
+    fn channel_reaction_and_poll_vote_land_in_the_record() {
+        let ch = start(FakeBackend::auto());
+        linked(&ch);
+        ch.commands
+            .send(BackendCommand::ReactToChannelUpdate {
+                jid: FAKE_CHANNEL_JID.to_owned(),
+                server_id: 101,
+                emoji: "❤️".to_owned(),
+            })
+            .unwrap();
+        let set = collect_until(&ch, &|e| matches!(e, BackendEvent::ChannelReactionSet { .. }));
+        assert!(
+            matches!(&set[set.len() - 1], BackendEvent::ChannelReactionSet { server_id: 101, .. }),
+            "the reaction settles: {set:?}"
+        );
+        ch.commands
+            .send(BackendCommand::VoteChannelPoll {
+                jid: FAKE_CHANNEL_JID.to_owned(),
+                server_id: 104,
+                options: vec!["Every weekend".to_owned()],
+            })
+            .unwrap();
+        let voted = collect_until(&ch, &|e| matches!(e, BackendEvent::ChannelPollVoted { .. }));
+        assert!(
+            matches!(&voted[voted.len() - 1], BackendEvent::ChannelPollVoted { server_id: 104, .. }),
+            "the vote settles: {voted:?}"
+        );
+        ch.commands
+            .send(BackendCommand::FetchChannelHistory {
+                jid: FAKE_CHANNEL_JID.to_owned(),
+                count: 30,
+                before: None,
+            })
+            .unwrap();
+        let history =
+            collect_until(&ch, &|e| matches!(e, BackendEvent::ChannelHistoryFetched { .. }));
+        let first = history
+            .iter()
+            .filter_map(|e| match e {
+                BackendEvent::MessageUpsert(m) if m.id == "fake-ch-1" => Some(m),
+                _ => None,
+            })
+            .next_back()
+            .expect("the first update is in the page");
+        assert_eq!(first.my_reaction.as_deref(), Some("❤️"), "my reaction is recorded");
+        let poll = history
+            .iter()
+            .filter_map(|e| match e {
+                BackendEvent::MessageUpsert(m) if m.id == "fake-ch-4" => Some(m),
+                _ => None,
+            })
+            .next_back()
+            .expect("the poll is in the page");
+        match &poll.kind {
+            crate::LiveMessageKind::Poll { options, my_votes, .. } => {
+                assert_eq!(my_votes, &vec![0], "my ballot is recorded");
+                assert_eq!(options[0].1, 413, "the tally moved by my vote");
+            }
+            other => panic!("expected the poll, got {other:?}"),
+        }
+        ch.commands.send(BackendCommand::Shutdown).unwrap();
+    }
+
+    /// The owned channel's admin powers: posting a poll,
+    /// editing and revoking an own update, and the info
+    /// fetch with its admin count and follower sample. A
+    /// follower channel refuses the poll with its typed
+    /// failure.
+    #[test]
+    fn channel_admin_powers_and_info() {
+        let ch = start(FakeBackend::auto());
+        linked(&ch);
+        ch.commands
+            .send(BackendCommand::CreateChannelPoll {
+                jid: FAKE_CHANNEL_JID.to_owned(),
+                question: "Follower poll?".to_owned(),
+                options: vec!["Yes".to_owned(), "No".to_owned()],
+                multiple: false,
+            })
+            .unwrap();
+        let refused = collect_until(&ch, &|e| matches!(e, BackendEvent::ChannelPollFailed { .. }));
+        assert!(
+            matches!(&refused[refused.len() - 1], BackendEvent::ChannelPollFailed { .. }),
+            "a follower cannot post a poll: {refused:?}"
+        );
+        ch.commands
+            .send(BackendCommand::CreateChannelPoll {
+                jid: FAKE_OWN_CHANNEL_JID.to_owned(),
+                question: "Ship the channels round this week?".to_owned(),
+                options: vec!["Ship it".to_owned(), "One more day".to_owned()],
+                multiple: false,
+            })
+            .unwrap();
+        let created =
+            collect_until(&ch, &|e| matches!(e, BackendEvent::ChannelPollCreated { .. }));
+        assert!(
+            created.iter().any(|e| matches!(e, BackendEvent::MessageUpsert(m)
+                if matches!(&m.kind, crate::LiveMessageKind::Poll { .. }))),
+            "the created poll lands as an upsert: {created:?}"
+        );
+        ch.commands
+            .send(BackendCommand::EditChannelUpdate {
+                jid: FAKE_OWN_CHANNEL_JID.to_owned(),
+                message_id: "fake-own-1".to_owned(),
+                text: "Build log: the release pipeline is green, again".to_owned(),
+            })
+            .unwrap();
+        let edited =
+            collect_until(&ch, &|e| matches!(e, BackendEvent::ChannelUpdateEdited { .. }));
+        assert!(
+            matches!(&edited[edited.len() - 1], BackendEvent::ChannelUpdateEdited { message_id, .. }
+                if message_id == "fake-own-1"),
+            "the edit settles: {edited:?}"
+        );
+        ch.commands
+            .send(BackendCommand::RevokeChannelUpdate {
+                jid: FAKE_OWN_CHANNEL_JID.to_owned(),
+                message_id: "fake-own-2".to_owned(),
+            })
+            .unwrap();
+        let revoked =
+            collect_until(&ch, &|e| matches!(e, BackendEvent::ChannelUpdateRevoked { .. }));
+        assert!(
+            matches!(&revoked[revoked.len() - 1], BackendEvent::ChannelUpdateRevoked { message_id, .. }
+                if message_id == "fake-own-2"),
+            "the revoke settles: {revoked:?}"
+        );
+        ch.commands
+            .send(BackendCommand::FetchChannelInfo { jid: FAKE_OWN_CHANNEL_JID.to_owned() })
+            .unwrap();
+        let info = collect_until(&ch, &|e| matches!(e, BackendEvent::ChannelInfoFetched { .. }));
+        let BackendEvent::ChannelInfoFetched { info } = &info[info.len() - 1] else {
+            panic!("expected the channel info: {info:?}");
+        };
+        assert_eq!(info.admin_count, Some(2));
+        assert_eq!(info.follower_names.len(), 3);
+        ch.commands.send(BackendCommand::Shutdown).unwrap();
+    }
+
+    /// Creating a channel answers with the created metadata
+    /// (Owner role), files its chat row first, and lists it
+    /// among the subscriptions afterwards.
+    #[test]
+    fn channel_create_flow() {
+        let ch = start(FakeBackend::auto());
+        linked(&ch);
+        ch.commands
+            .send(BackendCommand::CreateChannel {
+                name: "Harbor Builds".to_owned(),
+                description: "What the harbor crew is building".to_owned(),
+            })
+            .unwrap();
+        let created = collect_until(&ch, &|e| matches!(e, BackendEvent::ChannelCreated { .. }));
+        assert!(
+            created.iter().any(|e| matches!(e, BackendEvent::ChatUpsert(_))),
+            "the chat row is filed first: {created:?}"
+        );
+        let BackendEvent::ChannelCreated { channel } = &created[created.len() - 1] else {
+            panic!("expected the created channel: {created:?}");
+        };
+        assert_eq!(channel.name, "Harbor Builds");
+        assert_eq!(channel.role, crate::LiveChannelRole::Owner);
+        assert_eq!(channel.followers, 0);
+        ch.commands.send(BackendCommand::FetchChannels).unwrap();
+        let listed = collect_until(&ch, &|e| matches!(e, BackendEvent::ChannelsListed { .. }));
+        let BackendEvent::ChannelsListed { channels } = &listed[listed.len() - 1] else {
+            panic!("expected the channel list: {listed:?}");
+        };
+        assert!(
+            channels.iter().any(|c| c.name == "Harbor Builds"),
+            "the new channel is subscribed: {channels:?}"
+        );
+        ch.commands.send(BackendCommand::Shutdown).unwrap();
     }
 
     #[test]

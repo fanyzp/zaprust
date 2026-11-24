@@ -3801,6 +3801,66 @@ mod live_pairing_fix_tests {
         assert_eq!(unhandled_label(&wa::Message::default()), "Message");
     }
 
+    /// P0-09: a channel comment's body lives in its inner
+    /// message. The classifier and the text recovery both
+    /// descend into it, so a comment on a channel post
+    /// renders as its own words instead of the plain
+    /// placeholder every channel kind once collapsed to.
+    #[test]
+    fn channel_comment_descends_to_its_inner_message() {
+        let mut comment = wa::message::CommentMessage::default();
+        comment.message = MessageField::some(wa::Message::text("First comment on the post"));
+        let mut msg = wa::Message::default();
+        msg.comment_message = MessageField::some(comment);
+        let (kind, view_once) = classify_message(&msg);
+        assert!(!view_once);
+        assert!(matches!(kind, LiveMessageKind::Text), "got {kind:?}");
+        assert_eq!(structured_text(&msg).as_deref(), Some("First comment on the post"));
+        assert_eq!(
+            body_for(&kind, view_once, structured_text(&msg).as_deref()),
+            "First comment on the post"
+        );
+    }
+
+    /// A comment wrapping media classifies as the media it
+    /// wraps, with the media's own caption.
+    #[test]
+    fn channel_comment_around_a_photo_classifies_as_media() {
+        let mut comment = wa::message::CommentMessage::default();
+        comment.message = MessageField::some(image_proto(Some("the photo comment")));
+        let mut msg = wa::Message::default();
+        msg.comment_message = MessageField::some(comment);
+        let (kind, _) = classify_message(&msg);
+        assert!(
+            matches!(
+                kind,
+                LiveMessageKind::Media {
+                    media: MediaKind::Photo,
+                    ref caption,
+                    ..
+                } if caption == "the photo comment"
+            ),
+            "got {kind:?}"
+        );
+    }
+
+    /// An encrypted comment whose body this client cannot
+    /// read keeps its truthful label: the library decrypts
+    /// the comments it can before translation, so what
+    /// reaches the classifier in this envelope has no
+    /// readable body by construction.
+    #[test]
+    fn unreadable_encrypted_comment_keeps_its_label() {
+        let mut msg = wa::Message::default();
+        msg.enc_comment_message =
+            MessageField::some(wa::message::EncCommentMessage::default());
+        let (kind, _) = classify_message(&msg);
+        assert!(
+            matches!(kind, LiveMessageKind::Other(ref label) if label == "Channel comment"),
+            "got {kind:?}"
+        );
+    }
+
     /// An instant image is an ImageMessage in its own slot:
     /// it classifies as a photo with its caption, and its
     /// thumbnail and download reference extract like a

@@ -6,12 +6,12 @@
 //! languages, often in one message, and flagging the other
 //! language's words would make the feature noise.
 //!
-//! The checker never flags: tokens touching digits, URLs,
-//! emails or handles (a token adjacent to `.`, `@`, `/` or
-//! `:`), all-caps acronyms, the user's personal words, names
-//! the session knows (contacts and chat titles), and the word
-//! currently being typed (the caret's word is unfinished by
-//! definition).
+//! The checker never flags: tokens touching digits, tokens
+//! fused into a URL, email, handle or path (see
+//! `address_fused` for the exact test), all-caps acronyms,
+//! the user's personal words, names the session knows
+//! (contacts and chat titles), and the word currently being
+//! typed (the caret's word is unfinished by definition).
 
 use std::collections::HashSet;
 use std::ops::Range;
@@ -133,12 +133,12 @@ impl SpellChecker {
             {
                 continue;
             }
-            // URLs, emails, handles and paths: a token
-            // adjacent to `.`, `@`, `/` or `:` belongs to an
-            // address, not a sentence.
-            if before.is_some_and(|b| matches!(b, b'.' | b'@' | b'/' | b':'))
-                || after.is_some_and(|b| matches!(b, b'.' | b'@' | b'/' | b':'))
-            {
+            // URLs, emails, handles and paths: a token fused
+            // into an address-like string is not prose. The
+            // fusion test looks at both sides of the token
+            // (see `address_fused`): a sentence-final word in
+            // front of a full stop is prose and is checked.
+            if address_fused(bytes, &range) {
                 continue;
             }
             // All-caps runs are acronyms and initialisms.
@@ -151,6 +151,59 @@ impl SpellChecker {
         }
         out
     }
+}
+
+/// Whether the token at `range` is fused into an address-like
+/// string (a URL, an email, a handle, a path, a file name):
+/// text the checker must leave alone. Two shapes count. An
+/// `@` anywhere in the token's whitespace-delimited chunk
+/// marks an email or a handle, whichever side of it the token
+/// sits on. Otherwise the token must be joined through `.`,
+/// `/` or `:` to more address characters: punctuation directly
+/// beside the token that leads, through more of the same
+/// punctuation, to a letter or a digit (example.com,
+/// host/path, scheme://host). A sentence-final word fails
+/// both tests: its full stop leads to a space or to the end
+/// of the text, so the word is checked like any other. An
+/// earlier version exempted any token merely touching the
+/// punctuation, which blinded the checker to the last word
+/// of every sentence. Address characters are ASCII by
+/// definition, so the scan runs on bytes.
+fn address_fused(bytes: &[u8], range: &Range<usize>) -> bool {
+    const PUNCT: [u8; 3] = [b'.', b'/', b':'];
+    let mut lo = range.start;
+    while lo > 0 && !bytes[lo - 1].is_ascii_whitespace() {
+        lo -= 1;
+    }
+    let mut hi = range.end;
+    while hi < bytes.len() && !bytes[hi].is_ascii_whitespace() {
+        hi += 1;
+    }
+    if bytes[lo..hi].contains(&b'@') {
+        return true;
+    }
+    // Fused forward: the punctuation after the token leads to
+    // a letter or a digit before anything else intervenes.
+    let mut i = range.end;
+    if i < bytes.len() && PUNCT.contains(&bytes[i]) {
+        while i < bytes.len() && PUNCT.contains(&bytes[i]) {
+            i += 1;
+        }
+        if i < bytes.len() && bytes[i].is_ascii_alphanumeric() {
+            return true;
+        }
+    }
+    // Fused backward: the mirror image in front of the token.
+    let mut j = range.start;
+    if j > 0 && PUNCT.contains(&bytes[j - 1]) {
+        while j > 0 && PUNCT.contains(&bytes[j - 1]) {
+            j -= 1;
+        }
+        if j > 0 && bytes[j - 1].is_ascii_alphanumeric() {
+            return true;
+        }
+    }
+    false
 }
 
 /// Word tokens in `text`: maximal runs of letters with
@@ -348,12 +401,38 @@ mod tests {
             "kirim ke rifan@example.id besok",
             "kode OTP1234 dan H2O",
             "tanya @fanyzp nanti",
+            "buka file spell.rs dan laporan.pdf ya",
+            "lihat example.com dulu",
+            "rapat jam 12:30 besok",
         ] {
             assert!(
                 checker.misspellings(text, None).is_empty(),
                 "address-like text flagged: {text}"
             );
         }
+    }
+
+    #[test]
+    fn sentence_final_typos_are_flagged() {
+        // The blind spot the v1.6.23 independent verification
+        // found (its D1): the old address rule exempted any
+        // token touching a full stop, so the last word of
+        // every sentence escaped the checker. The seeded
+        // draft below is the verification's own capture text:
+        // all three typos must flag, in both languages, and
+        // a correctly spelled sentence-final word still
+        // passes.
+        let checker = checker();
+        let text = "Helo, the mesage is redy.";
+        let flagged: Vec<&str> =
+            checker.misspellings(text, None).iter().map(|r| &text[r.clone()]).collect();
+        assert_eq!(flagged, ["Helo", "mesage", "redy"]);
+        let text = "Kita mulai pembelajran.";
+        let flagged: Vec<&str> =
+            checker.misspellings(text, None).iter().map(|r| &text[r.clone()]).collect();
+        assert_eq!(flagged, ["pembelajran"]);
+        assert!(checker.misspellings("This message is ready.", None).is_empty());
+        assert!(checker.misspellings("Kita akan menggunakan ini besok.", None).is_empty());
     }
 
     #[test]

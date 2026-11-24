@@ -531,6 +531,156 @@ pub enum BackendCommand {
         /// Audience JIDs the revoke is encrypted for.
         recipients: Vec<String>,
     },
+    /// List the channels this account follows (and owns or
+    /// admins), with their server-reported metadata. Answered
+    /// with [`BackendEvent::ChannelsListed`] or
+    /// [`BackendEvent::ChannelsListFailed`].
+    FetchChannels,
+    /// Look up a channel by its invite code (the part after
+    /// `whatsapp.com/channel/`, or a full invite link; the
+    /// backend extracts the code). Answered with
+    /// [`BackendEvent::ChannelFound`] or
+    /// [`BackendEvent::ChannelLookupFailed`].
+    LookupChannel {
+        /// Invite code or full invite link.
+        code: String,
+    },
+    /// Follow a channel. Answered with
+    /// [`BackendEvent::ChannelFollowed`] (carrying the
+    /// channel with its new role) or
+    /// [`BackendEvent::ChannelFollowFailed`].
+    FollowChannel {
+        /// Channel JID.
+        jid: String,
+    },
+    /// Unfollow a channel. Answered with
+    /// [`BackendEvent::ChannelUnfollowed`] or
+    /// [`BackendEvent::ChannelUnfollowFailed`]. The channel's
+    /// chat stays in the roster history; the account simply
+    /// stops receiving new updates.
+    UnfollowChannel {
+        /// Channel JID.
+        jid: String,
+    },
+    /// Create a channel owned by this account. Answered with
+    /// [`BackendEvent::ChannelCreated`] or
+    /// [`BackendEvent::ChannelCreateFailed`].
+    CreateChannel {
+        /// Channel name.
+        name: String,
+        /// Channel description (may be empty).
+        description: String,
+    },
+    /// Fetch one page of a channel's history, newest first:
+    /// updates the account missed while it was away, with
+    /// their server IDs, reaction counts and poll tallies.
+    /// `before` pages further back by server ID (`None` asks
+    /// for the newest page). The page's messages are
+    /// delivered as ordinary [`BackendEvent::MessageUpsert`]s
+    /// for the channel's chat before
+    /// [`BackendEvent::ChannelHistoryFetched`] lands;
+    /// failures answer [`BackendEvent::ChannelHistoryFailed`].
+    FetchChannelHistory {
+        /// Channel JID.
+        jid: String,
+        /// Page size.
+        count: u32,
+        /// Server ID to page before; `None` for the newest page.
+        before: Option<u64>,
+    },
+    /// Arm live updates for a channel (reaction and poll
+    /// counters as they change) for the rest of the session.
+    /// Fire-and-forget: the subscription is a refresh
+    /// accelerator over the history fetch, which stays the
+    /// guaranteed path, so a subscription the server refuses
+    /// degrades to history-only and answers nothing.
+    WatchChannel {
+        /// Channel JID.
+        jid: String,
+    },
+    /// React to a channel update (an empty `emoji` removes
+    /// the reaction). Channel reactions key on the update's
+    /// server ID, not its protocol ID. Answered with
+    /// [`BackendEvent::ChannelReactionSet`] or
+    /// [`BackendEvent::ChannelReactionFailed`].
+    ReactToChannelUpdate {
+        /// Channel JID.
+        jid: String,
+        /// Server ID of the update.
+        server_id: u64,
+        /// Reaction emoji, or empty to remove.
+        emoji: String,
+    },
+    /// Post a poll to a channel this account admins. The
+    /// poll itself arrives back through the live-update and
+    /// history paths like any other update; this command
+    /// answers [`BackendEvent::ChannelPollCreated`] or
+    /// [`BackendEvent::ChannelPollFailed`] for the send
+    /// outcome only.
+    CreateChannelPoll {
+        /// Channel JID.
+        jid: String,
+        /// Poll question.
+        question: String,
+        /// Option labels (2-12).
+        options: Vec<String>,
+        /// Whether several options may be selected.
+        multiple: bool,
+    },
+    /// Vote on a channel poll. Channel poll votes key on the
+    /// poll's server ID and the option names (the backend
+    /// hashes them the way the protocol does); channel polls
+    /// are plaintext and carry no creation secret, unlike
+    /// chat polls. Answered with
+    /// [`BackendEvent::ChannelPollVoted`] or
+    /// [`BackendEvent::ChannelPollVoteFailed`].
+    VoteChannelPoll {
+        /// Channel JID.
+        jid: String,
+        /// Server ID of the poll update.
+        server_id: u64,
+        /// Names of the options to select (empty clears the vote).
+        options: Vec<String>,
+    },
+    /// Edit the text of an own channel update. Channel edits
+    /// key on the update's protocol ID. Answered with
+    /// [`BackendEvent::ChannelUpdateEdited`] or
+    /// [`BackendEvent::ChannelUpdateEditFailed`].
+    EditChannelUpdate {
+        /// Channel JID.
+        jid: String,
+        /// Protocol ID of the update.
+        message_id: String,
+        /// Replacement text.
+        text: String,
+    },
+    /// Revoke (delete for everyone) an own channel update.
+    /// Answered with [`BackendEvent::ChannelUpdateRevoked`]
+    /// or [`BackendEvent::ChannelUpdateRevokeFailed`].
+    RevokeChannelUpdate {
+        /// Channel JID.
+        jid: String,
+        /// Protocol ID of the update.
+        message_id: String,
+    },
+    /// Fetch a channel's info-panel payload: fresh metadata
+    /// plus, for admins and owners, the admin count and a
+    /// follower sample. Answered with
+    /// [`BackendEvent::ChannelInfoFetched`] or
+    /// [`BackendEvent::ChannelInfoFailed`].
+    FetchChannelInfo {
+        /// Channel JID.
+        jid: String,
+    },
+    /// Mute or unmute a followed channel's updates.
+    /// Answered with [`BackendEvent::ChannelMuteSet`] or
+    /// [`BackendEvent::ChannelMuteFailed`].
+    SetChannelMuted {
+        /// Channel JID.
+        jid: String,
+        /// True to mute.
+        muted: bool,
+    },
     /// Start an outgoing 1:1 call to a chat. `video` asks for a
     /// video call; backends without video wiring report that
     /// honestly instead of silently placing a voice call.
@@ -1639,6 +1789,15 @@ pub struct DocumentRef {
 pub struct LiveMessage {
     /// Protocol message ID (stable within its chat).
     pub id: String,
+    /// Server-assigned content ID, set only for channel
+    /// (newsletter) messages: channel reactions, channel poll
+    /// votes and channel counter updates all key on it, never
+    /// on the protocol ID. It is learned from channel history
+    /// fetches and channel live updates; a channel message
+    /// that arrived through the plain receive flow may not
+    /// carry one until the next history fetch lands. `None`
+    /// everywhere else.
+    pub server_id: Option<u64>,
     /// Chat JID the message belongs to.
     pub chat_jid: String,
     /// Sender display name; `None` means "me".
@@ -1851,6 +2010,7 @@ impl LiveMessage {
     ) -> Self {
         Self {
             id: id.into(),
+            server_id: None,
             chat_jid: chat_jid.into(),
             sender,
             body: body.into(),
@@ -1958,6 +2118,93 @@ pub struct LiveStatus {
     pub video_width: Option<u32>,
     /// For a video status: the frame height the payload states.
     pub video_height: Option<u32>,
+}
+
+/// This account's role in a channel, as the server reports it.
+/// `Guest` means the account does not follow the channel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LiveChannelRole {
+    /// Not following the channel.
+    Guest,
+    /// Following the channel.
+    Follower,
+    /// Can post and manage updates.
+    Admin,
+    /// Owns the channel.
+    Owner,
+}
+
+impl LiveChannelRole {
+    /// True when the account can post to the channel.
+    pub fn can_post(self) -> bool {
+        matches!(self, Self::Admin | Self::Owner)
+    }
+}
+
+/// A channel (newsletter), as the backend reports it. A
+/// channel's updates also live in the chat roster as an
+/// ordinary chat of kind Channel; this type carries the
+/// channel-specific facts the roster does not have (role,
+/// follower count, invite code) for the Channels surface and
+/// the channel info panel.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LiveChannel {
+    /// Channel JID (`...@newsletter`).
+    pub jid: String,
+    /// Channel name.
+    pub name: String,
+    /// Channel description (empty when the channel has none).
+    pub description: String,
+    /// Follower count as the server reports it.
+    pub followers: u64,
+    /// True when the server marks the channel verified.
+    pub verified: bool,
+    /// This account's role in the channel.
+    pub role: LiveChannelRole,
+    /// True when this account muted the channel's updates.
+    pub muted: bool,
+    /// The invite code (`whatsapp.com/channel/<code>`), when
+    /// the server reports one.
+    pub invite_code: Option<String>,
+    /// Unix timestamp (seconds) the channel was created;
+    /// 0 when the server did not report one.
+    pub created_at: i64,
+}
+
+/// The channel info panel's payload: the channel itself plus
+/// the admin-side facts the plain metadata does not carry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LiveChannelInfo {
+    /// The channel, freshly fetched.
+    pub channel: LiveChannel,
+    /// How many admins the channel has. Only answered for
+    /// admins and owners; `None` for everyone else.
+    pub admin_count: Option<u32>,
+    /// A sample of follower display names, fetched for
+    /// admins and owners (the server answers one bounded
+    /// page). Empty for followers, who are not entitled to
+    /// the list.
+    pub follower_names: Vec<String>,
+}
+
+/// Reaction and poll counters for one channel update, keyed
+/// by the update's server ID. Channel live updates carry
+/// counters only, never bodies; new posts arrive through the
+/// normal message flow.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LiveChannelCounters {
+    /// Channel JID the update belongs to.
+    pub jid: String,
+    /// Server ID of the update the counters belong to.
+    pub server_id: u64,
+    /// (emoji, count) reaction summary, replacing the
+    /// update's previous summary.
+    pub reactions: Vec<(String, u32)>,
+    /// (SHA-256 of the option name, votes) per poll option,
+    /// replacing the tallies of the update's poll options.
+    /// The app matches hashes against the option names it
+    /// already renders.
+    pub poll_votes: Vec<([u8; 32], u32)>,
 }
 
 /// An event from the backend to the UI.
@@ -2201,6 +2448,217 @@ pub enum BackendEvent {
         /// Protocol ID of the status that could not be deleted.
         message_id: String,
         /// Why the delete failed, in user words.
+        message: String,
+    },
+    /// The channel list landed (answering
+    /// [`BackendCommand::FetchChannels`]): every channel this
+    /// account follows, owns or admins, with fresh metadata.
+    /// Replaces the app's channel cache wholesale.
+    ChannelsListed {
+        /// The channels, in the server's order.
+        channels: Vec<LiveChannel>,
+    },
+    /// A [`BackendCommand::FetchChannels`] failed; the app
+    /// keeps the channel cache it already had.
+    ChannelsListFailed {
+        /// Why the list failed, in user words.
+        message: String,
+    },
+    /// A channel lookup by invite code landed (answering
+    /// [`BackendCommand::LookupChannel`]).
+    ChannelFound {
+        /// The channel behind the invite code.
+        channel: LiveChannel,
+    },
+    /// A [`BackendCommand::LookupChannel`] found nothing or
+    /// failed; `message` says which, in user words.
+    ChannelLookupFailed {
+        /// Why the lookup failed, in user words.
+        message: String,
+    },
+    /// A [`BackendCommand::FollowChannel`] landed: the
+    /// account now follows the channel.
+    ChannelFollowed {
+        /// The channel, with its post-follow role.
+        channel: LiveChannel,
+    },
+    /// A [`BackendCommand::FollowChannel`] failed; the
+    /// account's role in the channel is unchanged.
+    ChannelFollowFailed {
+        /// Channel JID that could not be followed.
+        jid: String,
+        /// Why the follow failed, in user words.
+        message: String,
+    },
+    /// A [`BackendCommand::UnfollowChannel`] landed: the
+    /// account no longer follows the channel.
+    ChannelUnfollowed {
+        /// Channel JID that was unfollowed.
+        jid: String,
+    },
+    /// A [`BackendCommand::UnfollowChannel`] failed; the
+    /// account still follows the channel.
+    ChannelUnfollowFailed {
+        /// Channel JID that could not be unfollowed.
+        jid: String,
+        /// Why the unfollow failed, in user words.
+        message: String,
+    },
+    /// A [`BackendCommand::CreateChannel`] landed: the
+    /// account owns a new channel.
+    ChannelCreated {
+        /// The new channel.
+        channel: LiveChannel,
+    },
+    /// A [`BackendCommand::CreateChannel`] failed; no
+    /// channel was created.
+    ChannelCreateFailed {
+        /// Why the creation failed, in user words.
+        message: String,
+    },
+    /// A channel history page landed (answering
+    /// [`BackendCommand::FetchChannelHistory`]): its
+    /// messages were already delivered as ordinary message
+    /// upserts for the channel's chat before this event.
+    ChannelHistoryFetched {
+        /// Channel JID the page belongs to.
+        jid: String,
+        /// How many updates the page carried.
+        added: u32,
+        /// True when the page was short or empty: the
+        /// channel has no older updates to page to.
+        end_of_history: bool,
+    },
+    /// A [`BackendCommand::FetchChannelHistory`] failed; the
+    /// channel's updates stay as they were and a later open
+    /// or scroll may retry.
+    ChannelHistoryFailed {
+        /// Channel JID the fetch was for.
+        jid: String,
+        /// Why the fetch failed, in user words.
+        message: String,
+    },
+    /// Reaction and poll counters for one channel update
+    /// changed (a channel live update, armed by
+    /// [`BackendCommand::WatchChannel`]). The app replaces
+    /// the named update's reaction summary and poll tallies
+    /// with these.
+    ChannelCountersUpdated {
+        /// The counters, keyed by the update's server ID.
+        counters: LiveChannelCounters,
+    },
+    /// A [`BackendCommand::ReactToChannelUpdate`] landed.
+    ChannelReactionSet {
+        /// Channel JID.
+        jid: String,
+        /// Server ID of the update.
+        server_id: u64,
+        /// The reaction now in effect (empty when removed).
+        emoji: String,
+    },
+    /// A [`BackendCommand::ReactToChannelUpdate`] failed;
+    /// the app's optimistic reaction for the update is
+    /// rolled back.
+    ChannelReactionFailed {
+        /// Channel JID.
+        jid: String,
+        /// Server ID of the update.
+        server_id: u64,
+        /// Why the reaction failed, in user words.
+        message: String,
+    },
+    /// A [`BackendCommand::CreateChannelPoll`] was accepted
+    /// by the server. The poll update itself arrives through
+    /// the live-update and history paths.
+    ChannelPollCreated {
+        /// Channel JID the poll was posted to.
+        jid: String,
+    },
+    /// A [`BackendCommand::CreateChannelPoll`] failed; no
+    /// poll was posted.
+    ChannelPollFailed {
+        /// Channel JID the poll was meant for.
+        jid: String,
+        /// Why the poll failed, in user words.
+        message: String,
+    },
+    /// A [`BackendCommand::VoteChannelPoll`] landed.
+    ChannelPollVoted {
+        /// Channel JID.
+        jid: String,
+        /// Server ID of the poll update.
+        server_id: u64,
+    },
+    /// A [`BackendCommand::VoteChannelPoll`] failed; the
+    /// app's optimistic vote is rolled back.
+    ChannelPollVoteFailed {
+        /// Channel JID.
+        jid: String,
+        /// Server ID of the poll update.
+        server_id: u64,
+        /// Why the vote failed, in user words.
+        message: String,
+    },
+    /// A [`BackendCommand::EditChannelUpdate`] landed.
+    ChannelUpdateEdited {
+        /// Channel JID.
+        jid: String,
+        /// Protocol ID of the edited update.
+        message_id: String,
+    },
+    /// A [`BackendCommand::EditChannelUpdate`] failed; the
+    /// update keeps its previous text.
+    ChannelUpdateEditFailed {
+        /// Channel JID.
+        jid: String,
+        /// Protocol ID of the update.
+        message_id: String,
+        /// Why the edit failed, in user words.
+        message: String,
+    },
+    /// A [`BackendCommand::RevokeChannelUpdate`] landed.
+    ChannelUpdateRevoked {
+        /// Channel JID.
+        jid: String,
+        /// Protocol ID of the revoked update.
+        message_id: String,
+    },
+    /// A [`BackendCommand::RevokeChannelUpdate`] failed; the
+    /// update stays published.
+    ChannelUpdateRevokeFailed {
+        /// Channel JID.
+        jid: String,
+        /// Protocol ID of the update.
+        message_id: String,
+        /// Why the revoke failed, in user words.
+        message: String,
+    },
+    /// A channel info payload landed (answering
+    /// [`BackendCommand::FetchChannelInfo`]).
+    ChannelInfoFetched {
+        /// The info payload.
+        info: LiveChannelInfo,
+    },
+    /// A [`BackendCommand::FetchChannelInfo`] failed.
+    ChannelInfoFailed {
+        /// Channel JID the fetch was for.
+        jid: String,
+        /// Why the fetch failed, in user words.
+        message: String,
+    },
+    /// A [`BackendCommand::SetChannelMuted`] landed.
+    ChannelMuteSet {
+        /// Channel JID.
+        jid: String,
+        /// The mute state now in effect.
+        muted: bool,
+    },
+    /// A [`BackendCommand::SetChannelMuted`] failed; the
+    /// channel's mute state is unchanged.
+    ChannelMuteFailed {
+        /// Channel JID.
+        jid: String,
+        /// Why the change failed, in user words.
         message: String,
     },
     /// A [`BackendCommand::PostTextStatus`] never reached the

@@ -715,7 +715,7 @@ mod tests {
     /// that paints twice (the reported overlap) would show up
     /// here as extra vertices. Every glyph of the showcase
     /// body, styled or plain, owns exactly one textured quad
-    /// (four vertices) whose corners are its logical rect, and
+    /// (four vertices) whose corners are its atlas cell rect, and
     /// spaces own none. Solid geometry (the mono background,
     /// the strike band) tessellates as single-uv triangles and
     /// is not counted as glyph paint.
@@ -759,7 +759,16 @@ mod tests {
                 if i + 1 < row.glyphs.len() {
                     assert_eq!(end, start + 4, "glyph {:?} owns exactly four vertices", glyph.chr);
                 }
-                let rect = glyph.logical_rect();
+                // The quad a glyph paints is its atlas cell
+                // placed at the glyph's position plus the
+                // cell's bearing offset.
+                let rect = eframe::egui::Rect::from_min_size(
+                    eframe::egui::Pos2::new(
+                        glyph.pos.x + glyph.uv_rect.offset[0],
+                        glyph.pos.y + glyph.uv_rect.offset[1],
+                    ),
+                    eframe::egui::Vec2::new(glyph.uv_rect.size[0], glyph.uv_rect.size[1]),
+                );
                 let (mut min_x, mut min_y) = (f32::MAX, f32::MAX);
                 let (mut max_x, mut max_y) = (f32::MIN, f32::MIN);
                 for v in verts {
@@ -773,7 +782,7 @@ mod tests {
                         && (min_y - rect.min.y).abs() <= 0.01
                         && (max_x - rect.max.x).abs() <= 0.01
                         && (max_y - rect.max.y).abs() <= 0.01,
-                    "glyph {:?} quad covers its logical rect",
+                    "glyph {:?} quad covers its atlas cell rect",
                     glyph.chr
                 );
             }

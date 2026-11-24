@@ -24,6 +24,10 @@ pub(super) fn channel_from_metadata(meta: &whatsapp_rust::NewsletterMetadata) ->
         Some(whatsapp_rust::NewsletterRole::Admin) => LiveChannelRole::Admin,
         Some(whatsapp_rust::NewsletterRole::Subscriber) => LiveChannelRole::Follower,
         Some(whatsapp_rust::NewsletterRole::Guest) | None => LiveChannelRole::Guest,
+        // The library's role enum is non-exhaustive; a role
+        // this client does not model is not a follow it can
+        // act on, so it reads as Guest.
+        Some(_) => LiveChannelRole::Guest,
     };
     LiveChannel {
         jid: meta.jid.to_string(),
@@ -425,11 +429,10 @@ pub(super) async fn set_channel_muted(
 /// and the renewal lands ahead of it. A refused renewal
 /// ends the loop quietly: history fetch stays the
 /// guaranteed path, per the WatchChannel contract.
-pub(super) async fn watch_channel(client: &whatsapp_rust::Client, jid: &str) {
+pub(super) async fn watch_channel(client: whatsapp_rust::Client, jid: &str) {
     let Ok(parsed) = jid.parse::<Jid>() else {
         return;
     };
-    let client = client.clone();
     tokio::spawn(async move {
         loop {
             match client.newsletter().subscribe_live_updates(parsed.clone()).await {

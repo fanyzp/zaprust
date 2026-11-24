@@ -1336,7 +1336,7 @@ pub(super) async fn run_async(
                 }
                 BackendCommand::WatchChannel { jid } => {
                     if watched_channels.insert(jid.clone()) {
-                        super::channels::watch_channel(&client, &jid).await;
+                        super::channels::watch_channel(client.clone(), &jid).await;
                     }
                 }
                 BackendCommand::ReactToChannelUpdate { jid, server_id, emoji } => {

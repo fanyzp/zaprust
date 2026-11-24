@@ -2,7 +2,7 @@
 //! context menu (archiving lives here, on the left).
 
 use crate::state::App;
-use crate::theme::{rgb, SP_1, SP_2};
+use crate::theme::{rgb, SP_1, SP_2, SP_2_5};
 use crate::widgets::chip;
 use core::filter::{filter_chats, ChatFilter};
 use core::model::{Chat, ChatKind};
@@ -268,7 +268,7 @@ impl App {
                         });
                     });
                 }
-                ui.add_space(10.0);
+                ui.add_space(SP_2_5);
                 // Search owns its own row below the title: the
                 // field sizes from the full row width now that the
                 // title row no longer shares it. The pill itself
@@ -1380,7 +1380,7 @@ impl App {
     /// anatomy), opening the hit's chat at the hit's message
     /// through the one stream locate path.
     pub(crate) fn draw_global_search_results(&mut self, ui: &mut egui::Ui, t: Tokens) {
-        ui.add_space(10.0);
+        ui.add_space(SP_2_5);
         ui.label(
             RichText::new(crate::i18n::t("search.messages"))
                 .font(crate::theme::semibold(12.0))

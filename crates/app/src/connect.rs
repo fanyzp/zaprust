@@ -8,7 +8,7 @@
 
 use crate::icons::{draw as draw_icon, Icon};
 use crate::state::{App, Notice, PairMode, Screen};
-use crate::theme::{rgb, SP_2, SP_3, SP_4, SP_6};
+use crate::theme::{rgb, SP_2, SP_3, SP_4, SP_6, SP_1_5, SP_2_5, SP_3_5, SP_4_5, SP_HALF};
 use crate::widgets::paint_avatar;
 use core::theme::Tokens;
 use eframe::egui::{
@@ -192,9 +192,9 @@ impl App {
                                         RichText::new(crate::i18n::t("connect.title"))
                                             .font(crate::theme::semibold(15.0)),
                                     );
-                                    ui.add_space(14.0);
+                                    ui.add_space(SP_3_5);
                                     steps_column(ui, t, steps, complete);
-                                    ui.add_space(14.0);
+                                    ui.add_space(SP_3_5);
                                     self.connect_status_line(ui, t, WIDE_STEPS_W);
                                 });
                                 ui.add_space(SP_6);
@@ -213,7 +213,7 @@ impl App {
                 // The country picker takes its width from this
                 // card, so it remembers the rect for next frame.
                 self.connect_card_rect = Some(card.response.rect);
-                col.add_space(18.0);
+                col.add_space(SP_4_5);
                 if !wide {
                     // The stepper doubles as the state slot: the
                     // status line under it names the current
@@ -221,7 +221,7 @@ impl App {
                     steps_stepper(&mut col, t, steps, complete);
                     col.add_space(SP_2);
                     self.connect_status_line(&mut col, t, COL_W);
-                    col.add_space(14.0);
+                    col.add_space(SP_3_5);
                 }
                 // The other pairing path, as a real secondary
                 // button under the status line.
@@ -361,7 +361,7 @@ impl App {
                 );
                 if waiting {
                     crate::widgets::spinner(&mut slot, 14.0);
-                    slot.add_space(6.0);
+                    slot.add_space(SP_1_5);
                 }
                 slot.add(
                     egui::Label::new(RichText::new(status_text).size(12.0).color(rgb(color)))
@@ -392,7 +392,7 @@ impl App {
             }
             PairMode::Code if self.pair_code_shown => {
                 crate::widgets::spinner(&mut slot, 14.0);
-                slot.add_space(6.0);
+                slot.add_space(SP_1_5);
                 slot.add(
                     egui::Label::new(
                         RichText::new(crate::i18n::t("connect.waiting_code_entry"))
@@ -551,7 +551,7 @@ impl App {
             self.connect_logged_out_panel(ui, t);
             return;
         }
-        ui.add_space(6.0);
+        ui.add_space(SP_1_5);
         if self.pair_code_shown {
             ui.label(
                 RichText::new(crate::i18n::t("connect.enter_code_on_phone")).size(15.0).strong(),
@@ -605,7 +605,7 @@ impl App {
                             // The gap lives between tiles only, so
                             // the row's outer edges stay flush.
                             if i < 3 {
-                                ui.add_space(2.0);
+                                ui.add_space(SP_HALF);
                             }
                         }
                     });
@@ -638,7 +638,7 @@ impl App {
             ui.label(
                 RichText::new(crate::i18n::t("connect.enter_phone_number")).size(15.0).strong(),
             );
-            ui.add_space(10.0);
+            ui.add_space(SP_2_5);
             let country = crate::countries::by_iso(&self.pair_country_iso)
                 .unwrap_or_else(|| crate::countries::default_country());
             // The country selector: the selected country's flag,
@@ -1091,7 +1091,7 @@ impl App {
                                     );
                                 });
                             });
-                        ui.add_space(6.0);
+                        ui.add_space(SP_1_5);
                         // My profile: the signed-in user's own
                         // profile editor (name, about, photo).
                         let (mrect, mresp) =
@@ -1121,7 +1121,7 @@ impl App {
                             self.account_menu_open = false;
                             self.open_my_profile();
                         }
-                        ui.add_space(6.0);
+                        ui.add_space(SP_1_5);
                         let (rrect, rresp) =
                             ui.allocate_exact_size(Vec2::new(size.x - 28.0, 44.0), Sense::click());
                         if rresp.hovered() {
@@ -1169,7 +1169,7 @@ impl App {
                             self.screen = Screen::Connect;
                         }
                         if self.can_log_out() {
-                            ui.add_space(6.0);
+                            ui.add_space(SP_1_5);
                             // Log out: unlinks this device. A
                             // destructive action, so the row only
                             // parks the house confirmation; the

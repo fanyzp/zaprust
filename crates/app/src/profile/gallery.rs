@@ -12,7 +12,7 @@
 
 use crate::icons::Icon;
 use crate::state::GallerySection;
-use crate::theme::{rgb, SP_2};
+use crate::theme::{rgb, SP_2, SP_2_5, SP_HALF};
 use core::model::{Message, MessageKind};
 use core::theme::Tokens;
 use eframe::egui::{self, Color32, CornerRadius, Pos2, Rect, RichText, Sense, Vec2};
@@ -120,7 +120,7 @@ pub(super) fn profile_gallery_body(
             }
         }
     });
-    ui.add_space(10.0);
+    ui.add_space(SP_2_5);
     match section {
         GallerySection::Media => media_section(ui, t, media, live, demo_allowed, source, actions),
         GallerySection::Links => links_section(ui, t, source, actions),
@@ -355,7 +355,7 @@ fn links_section(ui: &mut egui::Ui, t: Tokens, source: &[Message], _actions: &mu
         if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
             let _ = open::that(&link.url);
         }
-        ui.add_space(2.0);
+        ui.add_space(SP_HALF);
     }
 }
 
@@ -413,6 +413,6 @@ fn docs_section(ui: &mut egui::Ui, t: Tokens, source: &[Message], actions: &mut 
         if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
             actions.locate = Some(msg.id);
         }
-        ui.add_space(2.0);
+        ui.add_space(SP_HALF);
     }
 }

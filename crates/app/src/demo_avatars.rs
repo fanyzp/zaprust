@@ -183,6 +183,12 @@ mod tests {
             avatar_missing: HashMap::new(),
             avatar_requested: std::collections::HashSet::new(),
             history: std::collections::HashMap::new(),
+            channel_meta: std::collections::HashMap::new(),
+            channel_infos: std::collections::HashMap::new(),
+            server_ids: std::collections::HashMap::new(),
+            channel_history: std::collections::HashMap::new(),
+            pending_channel_votes: std::collections::HashMap::new(),
+            channels_list_requested: false,
             history_armed: std::collections::HashSet::new(),
             poll_ballots: HashMap::new(),
         }

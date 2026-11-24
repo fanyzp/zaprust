@@ -5,7 +5,7 @@
 //! recorder wiring live here, since both are composer attachments.
 
 use super::*;
-use crate::theme::{rgb, SP_2, SP_3};
+use crate::theme::{rgb, SP_2, SP_2_5, SP_3};
 use core::model::{Message, MessageKind};
 use core::theme::Tokens;
 use eframe::egui::{Align, CornerRadius, Layout, Margin, Pos2, RichText, Sense, Stroke, Vec2};
@@ -965,9 +965,9 @@ impl App {
                                 }
                             });
                         });
-                        ui.add_space(10.0);
+                        ui.add_space(SP_2_5);
                         self.editor_preview(ui, t);
-                        ui.add_space(10.0);
+                        ui.add_space(SP_2_5);
                         // Controls: rotate, then the aspect
                         // presets as chips.
                         ui.horizontal(|ui| {

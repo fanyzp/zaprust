@@ -7,7 +7,7 @@
 //! solely inside an explicitly opted-in bundle.
 
 use crate::state::{App, Notice, Screen};
-use crate::theme::SP_2;
+use crate::theme::{SP_2, SP_1_5, SP_2_5};
 use backend::BackendEvent;
 use core::debug;
 use eframe::egui::{self, RichText};
@@ -358,7 +358,7 @@ impl App {
                         self.debug.reveal_bodies = v;
                     }
                 });
-                ui.add_space(10.0);
+                ui.add_space(SP_2_5);
                 self.trace_section(ui, "Event stream", &["backend", "archive", "ui"]);
                 self.trace_section(ui, "Messages & receipts", &["message", "receipt"]);
                 self.trace_section(ui, "Gate & tool calls", &["gate"]);
@@ -418,7 +418,7 @@ impl App {
                      dir under debug/, nothing is uploaded anywhere; attach \
                      it to a GitHub issue yourself if you want to share it.",
                 );
-                ui.add_space(6.0);
+                ui.add_space(SP_1_5);
                 let mut include = self.debug.include_bodies;
                 if ui.checkbox(&mut include, "Include message bodies in the timeline").changed() {
                     self.debug.include_bodies = include;

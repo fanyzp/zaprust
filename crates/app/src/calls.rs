@@ -31,7 +31,7 @@
 //! two never mix.
 
 use crate::state::{App, Screen};
-use crate::theme::{rgb, SP_1, SP_2, SP_3};
+use crate::theme::{rgb, SP_1, SP_2, SP_3, SP_1_5, SP_2_5, SP_3_5};
 use core::filter::ChatFilter;
 use core::model::{CallDirection, CallEntry, CallKind, Chat, ChatKind};
 use eframe::egui::{
@@ -700,7 +700,7 @@ impl App {
                         }
                     });
                 });
-                ui.add_space(10.0);
+                ui.add_space(SP_2_5);
                 // The All / Missed filter as a chip row, the
                 // same strip portrait uses.
                 calls_filter_chips(ui, t, &mut self.calls.missed_only);
@@ -713,7 +713,7 @@ impl App {
                     &crate::i18n::t("calls.search_hint"),
                     &mut self.calls.search,
                 );
-                ui.add_space(10.0);
+                ui.add_space(SP_2_5);
                 // Shortcut circles at panel width, the same row
                 // portrait carries: recent contacts and the
                 // favorites filter over the log.
@@ -729,7 +729,7 @@ impl App {
                 if picker {
                     new_call = true;
                 }
-                ui.add_space(10.0);
+                ui.add_space(SP_2_5);
                 // The content region takes the rest of the
                 // panel; there is no footer text under it (the
                 // new call button explains itself).
@@ -872,7 +872,7 @@ impl App {
                         &mut self.calls.search,
                     );
                 }
-                ui.add_space(10.0);
+                ui.add_space(SP_2_5);
                 // The All / Missed filter as a chip row, the
                 // same strip the desktop panel uses.
                 calls_filter_chips(ui, t, &mut self.calls.missed_only);
@@ -891,7 +891,7 @@ impl App {
                 if picker {
                     new_call = true;
                 }
-                ui.add_space(14.0);
+                ui.add_space(SP_3_5);
                 if source_empty {
                     calls_empty_state(ui, t);
                 } else if rows.is_empty() {
@@ -1010,7 +1010,7 @@ impl App {
                         ui.label(
                             RichText::new(crate::i18n::t("calls.new_call")).size(12.0).strong(),
                         );
-                        ui.add_space(6.0);
+                        ui.add_space(SP_1_5);
                         crate::widgets::text_field(
                             ui,
                             t,
@@ -1018,7 +1018,7 @@ impl App {
                             &crate::i18n::t("calls.search_hint"),
                             sheet_w - 48.0,
                         );
-                        ui.add_space(6.0);
+                        ui.add_space(SP_1_5);
                         if no_targets {
                             ui.label(
                                 RichText::new(crate::i18n::t("calls.picker_empty"))
@@ -1446,6 +1446,12 @@ mod tests {
             avatar_missing: std::collections::HashMap::new(),
             avatar_requested: std::collections::HashSet::new(),
             history: std::collections::HashMap::new(),
+            channel_meta: std::collections::HashMap::new(),
+            channel_infos: std::collections::HashMap::new(),
+            server_ids: std::collections::HashMap::new(),
+            channel_history: std::collections::HashMap::new(),
+            pending_channel_votes: std::collections::HashMap::new(),
+            channels_list_requested: false,
             history_armed: std::collections::HashSet::new(),
             poll_ballots: std::collections::HashMap::new(),
         });

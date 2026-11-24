@@ -15,7 +15,7 @@
 //! the rest of demo mode does.
 
 use crate::icons::Icon;
-use crate::theme::{rgb, SP_3, SP_4};
+use crate::theme::{rgb, SP_3, SP_4, SP_1_5, SP_2_5};
 use crate::widgets::{button, button_enabled, text_field, Btn};
 use core::theme::Tokens;
 use eframe::egui::{self, RichText, Stroke, Vec2};
@@ -550,7 +550,7 @@ fn draw_editor_form(
                 )
             },
         );
-        ui.add_space(10.0);
+        ui.add_space(SP_2_5);
         crate::widgets::form_field(
             ui,
             t,
@@ -567,7 +567,7 @@ fn draw_editor_form(
             },
         );
     });
-    ui.add_space(10.0);
+    ui.add_space(SP_2_5);
     crate::widgets::form_field(ui, t, &crate::i18n::t("profile.my_photo"), None, |ui| {
         ui.horizontal(|ui| {
             if button_enabled(
@@ -606,7 +606,7 @@ fn draw_editor_form(
         });
     });
     if state.photo_error {
-        ui.add_space(6.0);
+        ui.add_space(SP_1_5);
         ui.label(
             RichText::new(crate::i18n::t("profile.my_photo_error")).size(10.0).color(rgb(t.danger)),
         );
@@ -614,7 +614,7 @@ fn draw_editor_form(
     if mode == MyProfileMode::Live {
         match &state.save_phase {
             SavePhase::Saving => {
-                ui.add_space(10.0);
+                ui.add_space(SP_2_5);
                 crate::widgets::loading_row(
                     ui,
                     &crate::i18n::t("profile.my_saving"),
@@ -623,7 +623,7 @@ fn draw_editor_form(
                 );
             }
             SavePhase::Failed(message) => {
-                ui.add_space(10.0);
+                ui.add_space(SP_2_5);
                 ui.label(RichText::new(message.clone()).size(12.0).color(rgb(t.danger)));
             }
             SavePhase::Idle => {}

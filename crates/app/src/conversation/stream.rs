@@ -48,7 +48,7 @@ impl App {
             .auto_shrink([false, false])
             .stick_to_bottom(!self.qa_scroll_top && self.scroll_to_message.is_none())
             .show(&mut child, |ui| {
-                ui.add_space(10.0);
+                ui.add_space(SP_2_5);
                 // The older-history loading row (design
                 // standard section 22): painted only while a
                 // page request for this chat is outstanding

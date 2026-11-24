@@ -46,7 +46,7 @@ pub(crate) fn scroll_bottom_button_top(full_bottom: f32, stack_h: f32, size: f32
 
 use crate::bubble::{message_bubble, BubbleAction, MediaCtx};
 use crate::state::{App, Notice};
-use crate::theme::{rgb, SP_1, SP_2};
+use crate::theme::{rgb, SP_1, SP_2, SP_1_5, SP_2_5, SP_HALF};
 use core::model::{Delivery, Message};
 use core::theme::Tokens;
 use eframe::egui::{
@@ -203,7 +203,7 @@ impl App {
                                 // where the state is managed
                                 // (section 24): a label row, not
                                 // an action.
-                                ui.add_space(2.0);
+                                ui.add_space(SP_HALF);
                                 ui.label(
                                     egui::RichText::new(crate::i18n::tf(
                                         "conversation.muted_until",
@@ -617,7 +617,7 @@ impl App {
                                 .font(crate::theme::semibold(12.0))
                                 .color(rgb(t.text_primary)),
                         );
-                        ui.add_space(6.0);
+                        ui.add_space(SP_1_5);
                         ui.horizontal(|ui| {
                             let resp = crate::widgets::text_field(
                                 ui,
@@ -641,7 +641,7 @@ impl App {
                             }
                         });
                         if self.chat_search.date_error {
-                            ui.add_space(6.0);
+                            ui.add_space(SP_1_5);
                             ui.label(
                                 RichText::new(crate::i18n::t("search.date_invalid"))
                                     .size(12.0)
@@ -1005,7 +1005,7 @@ impl App {
                                             .size(12.0)
                                             .color(rgb(t.text_secondary)),
                                     );
-                                    ui.add_space(10.0);
+                                    ui.add_space(SP_2_5);
                                     if crate::widgets::button(
                                         ui,
                                         t,

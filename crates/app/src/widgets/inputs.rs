@@ -1,7 +1,7 @@
 //! Text inputs and form controls: text fields, selects, number fields,
 //! form rows, radio rows, switches and the search pill.
 
-use crate::theme::rgb;
+use crate::theme::{rgb, SP_HALF};
 use core::theme::Tokens;
 use eframe::egui::{self, Color32, CornerRadius, FontId, Pos2, RichText, Sense, Stroke, Vec2};
 
@@ -324,7 +324,7 @@ pub(crate) fn search_pill(
         .inner_margin(egui::Margin::symmetric(12, 9))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.add_space(2.0);
+                ui.add_space(SP_HALF);
                 {
                     let (irect, _) = ui.allocate_exact_size(Vec2::splat(20.0), Sense::hover());
                     crate::icons::draw(

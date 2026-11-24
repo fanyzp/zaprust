@@ -3011,9 +3011,9 @@ impl crate::state::App {
                 }
                 self.notice = Some(Notice::error(human_error(&message)));
             }
-            BackendEvent::ChannelUpdateRevoked { jid, message_id } => {
+            BackendEvent::ChannelUpdateRevoked { jid, message_id: pid } => {
                 let chat_id = jid_id(&jid);
-                let mid = message_id(&jid, &message_id);
+                let mid = message_id(&jid, &pid);
                 self.pending_revokes.remove(&mid);
                 self.apply_revoke(chat_id, mid);
             }

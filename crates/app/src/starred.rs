@@ -9,7 +9,7 @@
 //! asking the stream to scroll to and highlight that message.
 
 use crate::state::{App, Screen};
-use crate::theme::{rgb, SP_2};
+use crate::theme::{rgb, SP_2, SP_2_5};
 use core::filter::ChatFilter;
 use core::model::{Chat, Message, MessageKind, PreviewMedia};
 use eframe::egui::{self, CornerRadius, FontId, Margin, Pos2, RichText, Sense, Vec2};
@@ -242,7 +242,7 @@ impl App {
                             .color(rgb(t.text_primary)),
                     );
                 });
-                ui.add_space(10.0);
+                ui.add_space(SP_2_5);
                 // Search pill, the shared list-panel component.
                 crate::widgets::search_pill(
                     ui,

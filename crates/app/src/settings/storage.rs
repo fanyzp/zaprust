@@ -60,7 +60,7 @@ impl App {
                 }
                 x += w;
             }
-            ui.add_space(6.0);
+            ui.add_space(SP_1_5);
             for (label, v, swatch) in [
                 ("Archive database & messages", fmt_bytes(archive), rgb(t.accent)),
                 ("Linked account data", fmt_bytes(session), rgb(accent_light)),

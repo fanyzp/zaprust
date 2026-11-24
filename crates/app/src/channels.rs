@@ -606,7 +606,7 @@ impl App {
             .resizable(false)
             .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
             .frame(
-                egui::Frame::window(&ctx.style())
+                egui::Frame::new()
                     .fill(rgb(t.bg_panel))
                     .corner_radius(egui::CornerRadius::same(20))
                     .inner_margin(Margin::same(16)),
@@ -731,7 +731,7 @@ impl App {
             .resizable(false)
             .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
             .frame(
-                egui::Frame::window(&ctx.style())
+                egui::Frame::new()
                     .fill(rgb(t.bg_panel))
                     .corner_radius(egui::CornerRadius::same(20))
                     .inner_margin(Margin::same(16)),

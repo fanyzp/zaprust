@@ -2929,7 +2929,7 @@ mod live_pairing_fix_tests {
     };
     use crate::{BackendEvent, EventSink, LiveChatKind, LiveMessageKind, MediaKind};
     use whatsapp_rust::prelude::wa;
-    use whatsapp_rust::prelude::MessageField;
+    use whatsapp_rust::prelude::{MessageBuilderExt, MessageField};
 
     fn image_proto(caption: Option<&str>) -> wa::Message {
         let mut image = wa::message::ImageMessage::default();

@@ -274,7 +274,7 @@ impl App {
                                             );
                                         }
                                     });
-                                    ui.add_space(2.0);
+                                    ui.add_space(SP_HALF);
                                 }
                                 if let Some((_, qsender, qbody)) = self.composer.reply_to.clone() {
                                     // The reply bar speaks the
@@ -328,7 +328,7 @@ impl App {
                                             },
                                         );
                                     });
-                                    ui.add_space(2.0);
+                                    ui.add_space(SP_HALF);
                                 }
                                 if self.composer.editing_id.is_some() {
                                     // A slim state bar, not an

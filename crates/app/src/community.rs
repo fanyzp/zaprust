@@ -29,7 +29,7 @@
 //! `App::join_community_group`.
 
 use crate::state::{App, Notice};
-use crate::theme::{rgb, SP_1, SP_2, SP_3, SP_6, SP_SECTION};
+use crate::theme::{rgb, SP_1, SP_2, SP_3, SP_6, SP_SECTION, SP_1_5};
 use crate::widgets::icon_button;
 use core::model::{
     demo_announcement_chat, demo_announcement_messages, demo_communities,
@@ -1004,7 +1004,7 @@ impl App {
                                 .strong()
                                 .color(rgb(t.text_primary)),
                         );
-                        ui.add_space(6.0);
+                        ui.add_space(SP_1_5);
                         ui.label(
                             RichText::new(crate::i18n::t("community.name_label"))
                                 .size(12.0)

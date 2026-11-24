@@ -1,7 +1,7 @@
 //! Feedback and text helpers: spinners, loading rows, empty states,
 //! text truncation and the panel edge seam.
 
-use crate::theme::{rgb, SP_6};
+use crate::theme::{rgb, SP_6, SP_1_5};
 use core::theme::{Rgb, Tokens};
 use eframe::egui::{self, Color32, FontId, Pos2, RichText, Stroke};
 
@@ -152,11 +152,11 @@ pub(crate) fn soft_right_edge(ui: &egui::Ui, rect: egui::Rect, t: Tokens) {
 pub(crate) fn soft_separator(ui: &mut egui::Ui, t: Tokens) {
     let c = rgb(t.border);
     let inset = crate::theme::LIST_PANEL_INSET_X as f32;
-    ui.add_space(6.0);
+    ui.add_space(SP_1_5);
     let rect = ui.available_rect_before_wrap();
     ui.painter().line_segment(
         [Pos2::new(rect.left() + inset, rect.top()), Pos2::new(rect.right() - inset, rect.top())],
         Stroke::new(1.0_f32, egui::Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), 100)),
     );
-    ui.add_space(6.0);
+    ui.add_space(SP_1_5);
 }

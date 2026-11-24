@@ -74,12 +74,12 @@ impl App {
                     match self.picker.tab.as_str() {
                         "gif" => {
                             self.picker_tab_row(ui, t, "gif");
-                            ui.add_space(6.0);
+                            ui.add_space(SP_1_5);
                             self.picker_gif_tab(ui);
                         }
                         "stickers" => {
                             self.picker_tab_row(ui, t, "stickers");
-                            ui.add_space(6.0);
+                            ui.add_space(SP_1_5);
                             self.picker_stickers_tab(ui);
                         }
                         _ => self.picker_emoji_tab(ui, t),
@@ -152,7 +152,7 @@ impl App {
                         }
                     }
                 });
-                ui.add_space(6.0);
+                ui.add_space(SP_1_5);
             }
             for group in crate::rich_ui::emoji::GROUPS {
                 let hits: Vec<&(&str, &str)> =
@@ -170,7 +170,7 @@ impl App {
                         }
                     }
                 });
-                ui.add_space(6.0);
+                ui.add_space(SP_1_5);
             }
             if let Some(emoji) = used {
                 emoji::note_used(&mut self.picker.emoji_recents, &emoji);
@@ -466,7 +466,7 @@ impl App {
             });
         }
         self.request_sticker_previews(missing);
-        ui.add_space(10.0);
+        ui.add_space(SP_2_5);
         ui.label(
             RichText::new(crate::i18n::t("pickers.new_pack_name"))
                 .size(12.0)

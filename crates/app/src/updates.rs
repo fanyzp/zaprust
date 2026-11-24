@@ -26,7 +26,7 @@
 //! family, opened from a feed row or from My Status.
 
 use crate::state::{App, Notice, PhotoFetchState, StagedStatusMedia, StatusEntry, StatusViewer};
-use crate::theme::{rgb, SP_1, SP_2, SP_3, SP_4};
+use crate::theme::{rgb, SP_1, SP_2, SP_3, SP_4, SP_1_5};
 use eframe::egui::{self, Align2, CornerRadius, FontId, Margin, Pos2, RichText, Sense, Vec2};
 
 /// Height of the My Status row and of a feed row: avatar disc
@@ -1111,7 +1111,7 @@ impl App {
                                 .size(15.0)
                                 .strong(),
                         );
-                        ui.add_space(6.0);
+                        ui.add_space(SP_1_5);
                         if let Some(staged) = &self.updates.staged {
                             // The staged file's chip: kind icon,
                             // name, size, and the remove action.
@@ -1159,7 +1159,7 @@ impl App {
                                     unstage = true;
                                 }
                             });
-                            ui.add_space(6.0);
+                            ui.add_space(SP_1_5);
                         }
                         crate::widgets::text_field(
                             ui,
@@ -1173,7 +1173,7 @@ impl App {
                             280.0,
                         );
                         if self.updates.staged.is_none() {
-                            ui.add_space(6.0);
+                            ui.add_space(SP_1_5);
                             if crate::widgets::button(
                                 ui,
                                 t,
@@ -1648,7 +1648,7 @@ impl App {
                                     }
                                 }
                             });
-                            ui.add_space(6.0);
+                            ui.add_space(SP_1_5);
                             ui.horizontal(|ui| {
                                 let field_w = (stage_w - 24.0 - 52.0).max(80.0);
                                 let t = self.tokens();

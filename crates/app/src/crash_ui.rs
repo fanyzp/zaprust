@@ -3,7 +3,7 @@
 //! via the `open` crate; falls back to copying the URL + a note).
 
 use crate::state::{App, Notice, NoticeKind};
-use crate::theme::rgb;
+use crate::theme::{rgb, SP_1_5, SP_2_5, SP_HALF};
 use eframe::egui::{self, CornerRadius, Margin, Pos2, RichText, Stroke, Vec2};
 
 /// Opens `url` in the system browser. On failure, copies the URL to
@@ -114,7 +114,7 @@ impl App {
                                 ui.horizontal(|ui| {
                                     if notice.kind == NoticeKind::Busy {
                                         crate::widgets::spinner(ui, 14.0);
-                                        ui.add_space(2.0);
+                                        ui.add_space(SP_HALF);
                                     }
                                     let mut label = RichText::new(&notice.text).size(12.0);
                                     if notice.kind == NoticeKind::Error {
@@ -178,7 +178,7 @@ impl App {
                         .size(12.0)
                         .color(rgb(t.text_secondary)),
                 );
-                ui.add_space(6.0);
+                ui.add_space(SP_1_5);
                 ui.horizontal(|ui| {
                     if crate::widgets::button(
                         ui,
@@ -292,7 +292,7 @@ impl App {
                     .show(ui, |ui| {
                         ui.set_width(size.x - 28.0);
                         ui.label(RichText::new("Crash report").size(15.0).strong());
-                        ui.add_space(6.0);
+                        ui.add_space(SP_1_5);
                         ui.label(
                             RichText::new(format!(
                                 "Zaprust {} ran into a problem and closed. \
@@ -303,7 +303,7 @@ impl App {
                             .size(12.0)
                             .color(rgb(t.text_secondary)),
                         );
-                        ui.add_space(10.0);
+                        ui.add_space(SP_2_5);
                         ui.horizontal(|ui| {
                             if crate::widgets::button(
                                 ui,

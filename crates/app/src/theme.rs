@@ -16,14 +16,36 @@ pub(crate) const RADIUS_MICRO: u8 = 8;
 /// in the app snaps to (promoted from the profile dock, where
 /// the ladder was first named; audit P2-23). Steps are named
 /// by their rung, and SP_SECTION is the wider gap above a
-/// section. A gap that is not one of these values is a
-/// deliberate optical adjustment, not a step.
+/// section.
+///
+/// The ladder's half steps (P2-23 remainder, closed in
+/// v1.6.17): the tight gaps between a title and its subtitle,
+/// a label and its field, and rows inside one group kept
+/// landing exactly between rungs (6 between 4 and 8, 10
+/// between 8 and 12, and so on, at dozens of sites). Those
+/// midpoints are named steps of their own, SP_1_5 through
+/// SP_4_5, plus SP_HALF, the hairline gap inside composite
+/// controls. A gap in the app is one of the named steps,
+/// full or half; a numeric add_space literal is reserved
+/// for positional offsets (placing a block inside a fixed
+/// slot, aligning a column), never for a gap between two
+/// elements.
 pub(crate) const SP_1: f32 = 4.0;
 pub(crate) const SP_2: f32 = 8.0;
 pub(crate) const SP_3: f32 = 12.0;
 pub(crate) const SP_4: f32 = 16.0;
 pub(crate) const SP_6: f32 = 24.0;
 pub(crate) const SP_SECTION: f32 = 20.0;
+/// Hairline gap inside composite controls (2 px).
+pub(crate) const SP_HALF: f32 = 2.0;
+/// Half step between SP_1 and SP_2 (6 px).
+pub(crate) const SP_1_5: f32 = 6.0;
+/// Half step between SP_2 and SP_3 (10 px).
+pub(crate) const SP_2_5: f32 = 10.0;
+/// Half step between SP_3 and SP_4 (14 px).
+pub(crate) const SP_3_5: f32 = 14.0;
+/// Half step between SP_4 and SP_SECTION (18 px).
+pub(crate) const SP_4_5: f32 = 18.0;
 
 /// Canonical type scale (design standard): 10 caption, 12
 /// label, 15 body, 19 heading, 23 title, 29 display. Hand-rolled

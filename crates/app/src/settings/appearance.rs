@@ -89,7 +89,7 @@ impl App {
                         }
                     }
                 });
-                ui.add_space(6.0);
+                ui.add_space(SP_1_5);
                 let current = core::theme::SEED_PRESETS
                     .iter()
                     .find(|(_, s)| *s == self.seed)
@@ -152,7 +152,7 @@ impl App {
             self.appearance_advanced_open = !self.appearance_advanced_open;
         }
         if self.appearance_advanced_open {
-            ui.add_space(6.0);
+            ui.add_space(SP_1_5);
             let scoped = ui.scope(|ui| {
                 settings_card(ui, t, |ui| {
                     let mut changed = false;
@@ -251,7 +251,7 @@ impl App {
                         .size(12.0)
                         .color(rgb(t.text_secondary)),
                 );
-                ui.add_space(6.0);
+                ui.add_space(SP_1_5);
                 ui.horizontal(|ui| {
                     for (setting, key) in [
                         (crate::motion::MotionSetting::Full, "appearance.motion_full"),
@@ -283,7 +283,7 @@ impl App {
                         .size(12.0)
                         .color(rgb(t.text_secondary)),
                 );
-                ui.add_space(6.0);
+                ui.add_space(SP_1_5);
                 ui.horizontal(|ui| {
                     for (id, name) in crate::i18n::LOCALES {
                         if chip(ui, name, self.language == *id, t).clicked() {

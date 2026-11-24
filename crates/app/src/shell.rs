@@ -2,7 +2,7 @@
 //! collapsed-sidebar strip.
 
 use crate::state::{effective_pixels_per_point, layout_mode_for_content, App, LayoutMode, Screen};
-use crate::theme::{apply_visuals, rgb, SP_3};
+use crate::theme::{apply_visuals, rgb, SP_3, SP_1_5, SP_2_5, SP_3_5};
 use crate::widgets::rail_button;
 use core::filter::total_unread;
 use eframe::egui::{self, Align, Layout, Margin, RichText, Sense, Vec2};
@@ -263,7 +263,7 @@ impl App {
                         rgb(t.text_faint),
                         rgb(t.bg_chat),
                     );
-                    ui.add_space(10.0);
+                    ui.add_space(SP_2_5);
                     ui.label(
                         RichText::new(crate::i18n::t("conversation.select_chat"))
                             .size(15.0)
@@ -315,7 +315,7 @@ impl App {
             .show(root, |ui| {
                 ui.vertical_centered(|ui| {
                     // No app logo, the rail starts straight with navigation.
-                    ui.add_space(14.0);
+                    ui.add_space(SP_3_5);
                     let rail_labels = [
                         (Screen::Chats, crate::icons::Icon::Chat, crate::i18n::t("nav.chats")),
                         (Screen::Calls, crate::icons::Icon::Phone, crate::i18n::t("nav.calls")),
@@ -366,7 +366,7 @@ impl App {
                             // sync an earlier version ran here was
                             // removed on purpose).
                         }
-                        ui.add_space(6.0);
+                        ui.add_space(SP_1_5);
                     }
                     ui.with_layout(Layout::bottom_up(Align::Center), |ui| {
                         ui.add_space(SP_3);
@@ -397,7 +397,7 @@ impl App {
                             }
                             resp.on_hover_text(crate::i18n::t("nav.accounts"));
                         }
-                        ui.add_space(6.0);
+                        ui.add_space(SP_1_5);
                         let settings_label = crate::i18n::t("nav.settings");
                         if rail_button(
                             ui,
@@ -409,7 +409,7 @@ impl App {
                         ) {
                             self.screen = Screen::Settings;
                         }
-                        ui.add_space(6.0);
+                        ui.add_space(SP_1_5);
                     });
                 });
             });
@@ -434,7 +434,7 @@ impl App {
                     {
                         self.sidebar_collapsed = false;
                     }
-                    ui.add_space(10.0);
+                    ui.add_space(SP_2_5);
                     // The list marker under the expand button:
                     // the bundled menu glyph, not a text
                     // hamburger character.

@@ -20,7 +20,7 @@ mod privacy;
 mod storage;
 
 use crate::state::{App, Notice};
-use crate::theme::{rgb, SP_1, SP_2, SP_4, SP_SECTION};
+use crate::theme::{rgb, SP_1, SP_2, SP_4, SP_SECTION, SP_1_5, SP_2_5, SP_3_5, SP_4_5};
 use crate::widgets::{
     avatar, chip, form_row, number_field, radio_row, select, switch, text_field_password,
     FORM_CONTROL_W,
@@ -432,7 +432,7 @@ impl App {
                 ui.label(
                     RichText::new(title).font(crate::theme::semibold(crate::theme::TEXT_HEADING)),
                 );
-                ui.add_space(10.0);
+                ui.add_space(SP_2_5);
                 if title == "Settings" {
                     ui.horizontal(|ui| {
                         avatar(ui, false, 46.0, t);
@@ -449,7 +449,7 @@ impl App {
                     // header and list share one flat panel, and
                     // spacing separates them (design standard,
                     // hairline discipline).
-                    ui.add_space(18.0);
+                    ui.add_space(SP_4_5);
                 }
                 for item in panel_items(title) {
                     let selected = title == "Settings" && self.settings_tab == item;
@@ -537,7 +537,7 @@ impl App {
                             .font(crate::theme::semibold(19.0)),
                     );
                 });
-                ui.add_space(14.0);
+                ui.add_space(SP_3_5);
                 if self.single_pane && !self.settings_page_open {
                     // Single-pane, category list: the nav takes
                     // the whole width (scrollable, for short
@@ -598,7 +598,7 @@ impl App {
                     "Data & Storage" => self.page_storage(ui, t),
                     _ => self.page_about(ui, t),
                 }
-                ui.add_space(18.0);
+                ui.add_space(SP_4_5);
             });
         });
     }
@@ -625,7 +625,7 @@ impl App {
             &crate::i18n::t("settings.search"),
             search_w,
         );
-        ui.add_space(10.0);
+        ui.add_space(SP_2_5);
         let query = self.settings_search.trim().to_lowercase();
         if query.is_empty() {
             for item in panel_items("Settings") {
@@ -769,7 +769,7 @@ fn page_header(ui: &mut egui::Ui, title: &str) {
 /// Small caps group label above a card.
 fn group_label(ui: &mut egui::Ui, t: core::theme::Tokens, text: &str) {
     ui.label(RichText::new(text.to_uppercase()).size(10.0).strong().color(rgb(t.text_secondary)));
-    ui.add_space(6.0);
+    ui.add_space(SP_1_5);
 }
 
 /// One grouped settings card (radius 12, soft shadow, 18px padding).

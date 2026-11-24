@@ -462,7 +462,7 @@ impl App {
                         ui.label(
                             RichText::new(crate::i18n::t("menu.message_info")).size(15.0).strong(),
                         );
-                        ui.add_space(6.0);
+                        ui.add_space(SP_1_5);
                         if entries.is_empty() {
                             // The state glyph comes from the icon
                             // font, like the ticks in the bubble
@@ -738,7 +738,7 @@ impl App {
                         ui.label(
                             RichText::new(crate::i18n::t("groups.new_title")).size(15.0).strong(),
                         );
-                        ui.add_space(6.0);
+                        ui.add_space(SP_1_5);
                         ui.label(
                             RichText::new(crate::i18n::t("groups.name_label"))
                                 .size(12.0)
@@ -791,7 +791,7 @@ impl App {
                                 create = true;
                             }
                         });
-                        ui.add_space(6.0);
+                        ui.add_space(SP_1_5);
                         if crate::widgets::button(
                             ui,
                             t,
@@ -863,7 +863,7 @@ impl App {
                         ui.label(
                             RichText::new(crate::i18n::t("groups.join_title")).size(15.0).strong(),
                         );
-                        ui.add_space(6.0);
+                        ui.add_space(SP_1_5);
                         ui.label(
                             RichText::new(crate::i18n::t("groups.join_label"))
                                 .size(12.0)
@@ -964,7 +964,7 @@ impl App {
                                 .size(15.0)
                                 .strong(),
                         );
-                        ui.add_space(6.0);
+                        ui.add_space(SP_1_5);
                         ui.label(
                             RichText::new(crate::i18n::t("chats.phone_label"))
                                 .size(12.0)

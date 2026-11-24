@@ -15,7 +15,7 @@ use core::model::{Message, MessageKind};
 use eframe::egui::{self, Align2, CornerRadius, Margin, RichText, Vec2};
 
 use crate::state::{App, Notice, UiConfirm};
-use crate::theme::{rgb, SP_1, SP_2};
+use crate::theme::{rgb, SP_1, SP_2, SP_1_5, SP_2_5};
 
 /// The six quick reactions offered by the picker (WhatsApp's set).
 pub(crate) const QUICK_REACTIONS: [&str; 6] = ["👍", "❤️", "😂", "😮", "😢", "🙏"];
@@ -624,7 +624,7 @@ impl App {
                         RichText::new(crate::i18n::t("attach.location"))
                             .font(crate::theme::semibold(15.0)),
                     );
-                    ui.add_space(6.0);
+                    ui.add_space(SP_1_5);
                     ui.label(
                         RichText::new(crate::i18n::t("attach.location_name"))
                             .font(crate::theme::medium(12.0)),
@@ -731,7 +731,7 @@ impl App {
                             RichText::new(crate::i18n::t("attach.contact"))
                                 .font(crate::theme::semibold(15.0)),
                         );
-                        ui.add_space(6.0);
+                        ui.add_space(SP_1_5);
                         if contacts.is_empty() {
                             ui.label(
                                 RichText::new(crate::i18n::t("attach.contact_empty"))
@@ -752,7 +752,7 @@ impl App {
                                 picked = Some((name.clone(), phone.clone()));
                             }
                         }
-                        ui.add_space(6.0);
+                        ui.add_space(SP_1_5);
                         if crate::widgets::button(
                             ui,
                             t,
@@ -903,13 +903,13 @@ impl App {
                             // destructive act, the stars are a
                             // separate decision the user makes
                             // here, not a default taken for them.
-                            ui.add_space(6.0);
+                            ui.add_space(SP_1_5);
                             ui.checkbox(
                                 &mut self.clear_keep_starred,
                                 crate::i18n::t("chat.keep_starred"),
                             );
                         }
-                        ui.add_space(10.0);
+                        ui.add_space(SP_2_5);
                         // Dialog convention: the safe action
                         // first (left), the destructive action
                         // last (right), never adjacent to the

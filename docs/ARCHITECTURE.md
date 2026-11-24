@@ -204,8 +204,15 @@ the release signing public key and refuses a release whose
 signature does not verify, so a substituted checksum file
 cannot bless a substituted binary.
 On Linux, an AppImage path from the environment is
-only treated as the install target when it exists and is a
-file.
+only treated as the install target when it exists, is a
+file, and proves it is this app's own AppImage: an ELF
+carrying the AppImage type-2 marker, or the running
+executable itself. Anything else falls back to the
+executable path, so a stale or hostile variable cannot
+decide which file an update overwrites. The downloaded
+binary itself is verified by size and SHA-256 against
+the signed SHA256SUMS (above), never by an identity
+check.
 
 ## Errors
 

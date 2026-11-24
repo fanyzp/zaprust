@@ -939,7 +939,7 @@ pub(super) async fn run_async(
                         let cached = lock_cache(&event_secrets)
                             .get(&(chat_jid.clone(), target_id.to_string()))
                             .cloned();
-                        if let Some((creator, secret)) = cached {
+                        if let Some((_, secret)) = cached {
                             let editor = ctx.info.source.sender.clone();
                             let original_sender = envelope.original_sender_for_dispatch(
                                 ctx.info.source.is_from_me,
@@ -1913,49 +1913,62 @@ pub(super) async fn run_async(
                                 .to_owned(),
                         ),
                         Some((creator, secret)) => {
-                            let target = build_message_target(&chat_jid, &message_id, None, true)
-                                .and_then(|(jid, sender, mid)| {
-                                    whatsapp_rust::MessageRef::new(&jid, mid, sender.as_ref(), true)
-                                        .map(|t| (jid, t))
-                                        .map_err(|_| "That message reference is invalid.".to_owned())
-                                });
-                            match (target, creator.parse::<Jid>(), whatsapp_rust::MessageSecret::try_from(secret.as_slice())) {
-                                (Ok((_jid, target)), Ok(creator_jid), Ok(secret)) => {
-                                    let mut event =
-                                        whatsapp_rust::prelude::wa::message::EventMessage::default();
-                                    event.name = Some(name);
-                                    if !description.is_empty() {
-                                        event.description = Some(description);
-                                    }
-                                    if start_time > 0 {
-                                        event.start_time = Some(start_time);
-                                    }
-                                    if end_time > 0 {
-                                        event.end_time = Some(end_time);
-                                    }
-                                    if !location.is_empty() {
-                                        let mut loc = whatsapp_rust::prelude::wa::message::LocationMessage::default();
-                                        loc.name = Some(location);
-                                        event.location = whatsapp_rust::prelude::MessageField::some(loc);
-                                    }
-                                    if !join_link.is_empty() {
-                                        event.join_link = Some(join_link);
-                                    }
-                                    if scheduled_call {
-                                        event.is_schedule_call = Some(true);
-                                    }
-                                    if extra_guests {
-                                        event.extra_guests_allowed = Some(true);
-                                    }
-                                    if canceled {
-                                        event.is_canceled = Some(true);
-                                    }
-                                    let mut content = whatsapp_rust::prelude::wa::Message::default();
-                                    content.event_message = whatsapp_rust::prelude::MessageField::some(event);
-                                    let request = whatsapp_rust::EditRequest::new(target, content)
-                                        .with_secret(&creator_jid, &secret);
-                                    if let Err(e) = client.edit_message(request).await {
-                                        fail(format!("Editing the event failed: {}", error_words(&e)));
+                            // The reference borrows the parsed
+                            // parts, so they are destructured and
+                            // used in this scope (the same shape
+                            // as the plain message edit arm).
+                            match (
+                                build_message_target(&chat_jid, &message_id, None, true),
+                                creator.parse::<Jid>(),
+                                whatsapp_rust::MessageSecret::try_from(secret.as_slice()),
+                            ) {
+                                (Ok((jid, sender, mid)), Ok(creator_jid), Ok(secret)) => {
+                                    match whatsapp_rust::MessageRef::new(
+                                        &jid,
+                                        mid,
+                                        sender.as_ref(),
+                                        true,
+                                    ) {
+                                        Ok(target) => {
+                                            let mut event = whatsapp_rust::prelude::wa::message::EventMessage::default();
+                                            event.name = Some(name);
+                                            if !description.is_empty() {
+                                                event.description = Some(description);
+                                            }
+                                            if start_time > 0 {
+                                                event.start_time = Some(start_time);
+                                            }
+                                            if end_time > 0 {
+                                                event.end_time = Some(end_time);
+                                            }
+                                            if !location.is_empty() {
+                                                let mut loc = whatsapp_rust::prelude::wa::message::LocationMessage::default();
+                                                loc.name = Some(location);
+                                                event.location = whatsapp_rust::prelude::MessageField::some(loc);
+                                            }
+                                            if !join_link.is_empty() {
+                                                event.join_link = Some(join_link);
+                                            }
+                                            if scheduled_call {
+                                                event.is_schedule_call = Some(true);
+                                            }
+                                            if extra_guests {
+                                                event.extra_guests_allowed = Some(true);
+                                            }
+                                            if canceled {
+                                                event.is_canceled = Some(true);
+                                            }
+                                            let mut content = whatsapp_rust::prelude::wa::Message::default();
+                                            content.event_message = whatsapp_rust::prelude::MessageField::some(event);
+                                            let request = whatsapp_rust::EditRequest::new(target, content)
+                                                .with_secret(&creator_jid, &secret);
+                                            if let Err(e) = client.edit_message(request).await {
+                                                fail(format!("Editing the event failed: {}", error_words(&e)));
+                                            }
+                                        }
+                                        Err(_) => {
+                                            fail("That message reference is invalid.".to_owned());
+                                        }
                                     }
                                 }
                                 (Err(e), _, _) => fail(e),

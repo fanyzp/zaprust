@@ -6282,6 +6282,12 @@ mod tests {
         let fake = FakeBackend { fail_next: vec!["StartGroupCall"], ..FakeBackend::auto() };
         let ch = start(fake);
         linked(&ch);
+        // The linked script leaves its scripted incoming call
+        // ringing; decline it so no call is in progress.
+        ch.commands.send(BackendCommand::RejectCall).unwrap();
+        collect_until(&ch, &|e| {
+            matches!(e, BackendEvent::CallChanged { phase: crate::CallPhase::Ended, .. })
+        });
         ch.commands
             .send(BackendCommand::StartGroupCall {
                 chat_jid: FAKE_GROUP_JID.to_owned(),

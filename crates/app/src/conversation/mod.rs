@@ -82,6 +82,12 @@ impl App {
         let exiting = !self.header_menu_open;
         let t = self.tokens();
         let chat = self.selected().clone();
+        // A channel's header menu swaps the chat-only rows
+        // (timed mutes, clear, delete) for the channel's own:
+        // a single mute toggle through the channel contract,
+        // and unfollow as the destructive action.
+        let is_channel = chat.kind == core::model::ChatKind::Channel;
+        let channel_meta = if is_channel { self.channel_meta_for(chat.id) } else { None };
         let export_active = self.feature_active("export-chat");
         let mut close = false;
         let mut action: Option<&'static str> = None;
@@ -168,7 +174,24 @@ impl App {
                         };
                         row(ui, crate::icons::Icon::Pin, &pin_label, "pinchat");
                         ui.add_space(SP_1);
-                        if chat.muted {
+                        if is_channel {
+                            let muted = channel_meta.as_ref().is_some_and(|m| m.muted);
+                            if muted {
+                                row(
+                                    ui,
+                                    crate::icons::Icon::Bell,
+                                    &crate::i18n::t("channels.unmute"),
+                                    "channelmute",
+                                );
+                            } else {
+                                row(
+                                    ui,
+                                    crate::icons::Icon::BellOff,
+                                    &crate::i18n::t("channels.mute"),
+                                    "channelmute",
+                                );
+                            }
+                        } else if chat.muted {
                             row(
                                 ui,
                                 crate::icons::Icon::Bell,
@@ -230,19 +253,41 @@ impl App {
                         // colour on icon and label alike (design
                         // standard section 24); the neutral row
                         // closure above must not render them.
-                        if row_danger(
-                            ui,
-                            crate::icons::Icon::Delete,
-                            &crate::i18n::t("chat.clear_title"),
-                        ) {
-                            action = Some("clear");
-                        }
-                        if row_danger(
-                            ui,
-                            crate::icons::Icon::Delete,
-                            &crate::i18n::t("chat.delete_title"),
-                        ) {
-                            action = Some("delete");
+                        if is_channel {
+                            // A channel's destructive action
+                            // is leaving it: unfollow, behind
+                            // the confirmation modal. The
+                            // owner cannot unfollow their own
+                            // channel, and a guest has nothing
+                            // to leave.
+                            if matches!(
+                                channel_meta.as_ref().map(|m| m.role),
+                                Some(
+                                    backend::LiveChannelRole::Follower
+                                        | backend::LiveChannelRole::Admin
+                                )
+                            ) && row_danger(
+                                ui,
+                                crate::icons::Icon::Delete,
+                                &crate::i18n::t("channels.unfollow"),
+                            ) {
+                                action = Some("unfollow");
+                            }
+                        } else {
+                            if row_danger(
+                                ui,
+                                crate::icons::Icon::Delete,
+                                &crate::i18n::t("chat.clear_title"),
+                            ) {
+                                action = Some("clear");
+                            }
+                            if row_danger(
+                                ui,
+                                crate::icons::Icon::Delete,
+                                &crate::i18n::t("chat.delete_title"),
+                            ) {
+                                action = Some("delete");
+                            }
                         }
                     });
             });
@@ -254,7 +299,28 @@ impl App {
         );
         match action {
             Some("profile") => {
-                self.profile_open = true;
+                if is_channel {
+                    self.open_channel_info(chat.id);
+                } else {
+                    self.profile_open = true;
+                }
+                close = true;
+            }
+            Some("channelmute") => {
+                let muted = channel_meta.as_ref().is_some_and(|m| m.muted);
+                if let Some(jid) = self.live_jid(chat.id) {
+                    self.send_backend(backend::BackendCommand::SetChannelMuted {
+                        jid,
+                        muted: !muted,
+                    });
+                }
+                close = true;
+            }
+            Some("unfollow") => {
+                self.ui_confirm = Some(crate::state::UiConfirm::UnfollowChannel {
+                    chat_id: chat.id,
+                    name: chat.title.clone(),
+                });
                 close = true;
             }
             Some("export") => {
@@ -772,7 +838,14 @@ impl App {
                             }
                             let header_photo = self.chat_avatar_photo(ui.ctx(), &chat);
                             if header_avatar(ui, &chat, header_photo) {
-                                self.profile_open = true;
+                                // A channel's identity surface
+                                // is its info dialog, not the
+                                // contact/group profile dock.
+                                if chat.kind == core::model::ChatKind::Channel {
+                                    self.open_channel_info(chat.id);
+                                } else {
+                                    self.profile_open = true;
+                                }
                             }
                             ui.vertical(|ui| {
                                 ui.horizontal(|ui| {
@@ -787,7 +860,11 @@ impl App {
                                         .on_hover_text(crate::i18n::t("conversation.view_profile"))
                                         .clicked()
                                     {
-                                        self.profile_open = true;
+                                        if chat.kind == core::model::ChatKind::Channel {
+                                            self.open_channel_info(chat.id);
+                                        } else {
+                                            self.profile_open = true;
+                                        }
                                     }
                                     if chat.verified {
                                         let (r, _) = ui
@@ -829,8 +906,23 @@ impl App {
                                         crate::anim::typing_dots(ui, rgb(t.accent));
                                     });
                                 } else {
+                                    // A channel's subtitle is
+                                    // its follower count when
+                                    // the metadata has landed;
+                                    // the generic subtitle is
+                                    // the fallback until then.
+                                    let subtitle =
+                                        if chat.kind == core::model::ChatKind::Channel {
+                                            self.channel_meta_for(chat.id)
+                                                .map(|m| {
+                                                    crate::channels::followers_text(m.followers)
+                                                })
+                                                .unwrap_or_else(|| self.header_subtitle(&chat))
+                                        } else {
+                                            self.header_subtitle(&chat)
+                                        };
                                     ui.label(
-                                        RichText::new(self.header_subtitle(&chat))
+                                        RichText::new(subtitle)
                                             .size(12.0)
                                             .color(rgb(t.text_secondary)),
                                     );
@@ -849,15 +941,19 @@ impl App {
                                 {
                                     self.header_menu_open = !self.header_menu_open;
                                 }
-                                if crate::widgets::icon_button(
-                                    ui,
-                                    t,
-                                    crate::icons::Icon::Phone,
-                                    28.0,
-                                    "Voice call",
-                                    None,
-                                )
-                                .clicked()
+                                // Channels cannot be called:
+                                // the call action is not
+                                // offered on a channel header.
+                                if chat.kind != core::model::ChatKind::Channel
+                                    && crate::widgets::icon_button(
+                                        ui,
+                                        t,
+                                        crate::icons::Icon::Phone,
+                                        28.0,
+                                        "Voice call",
+                                        None,
+                                    )
+                                    .clicked()
                                 {
                                     self.start_call_from_header();
                                 }
@@ -937,7 +1033,15 @@ impl App {
                     &mut pending_actions,
                     &mut engaged,
                 );
-                self.draw_composer(ui, full_rect, t, now, &mut engaged);
+                // A channel the user cannot post to swaps the
+                // composer for the follower bar: channels are
+                // one-way, and a composer that cannot send
+                // would be a dead control.
+                if let Some(role) = self.channel_composer_blocked(&chat) {
+                    self.draw_channel_follower_bar(ui, &chat, role);
+                } else {
+                    self.draw_composer(ui, full_rect, t, now, &mut engaged);
+                }
                 self.draw_scroll_bottom(ui, full_rect, &chat, &scroll_out, t, &mut engaged);
                 // Switch fade overlay: bg_chat at fading alpha over
                 // the whole panel; gone (and not repainting) once

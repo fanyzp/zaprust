@@ -84,6 +84,7 @@ impl eframe::App for App {
                 match self.screen {
                     Screen::Starred => self.draw_starred_panel(ui),
                     Screen::Calls => self.draw_calls_panel(ui),
+                    Screen::Channels => self.draw_channels_panel(ui),
                     Screen::Communities => self.draw_communities_panel(ui),
                     _ => self.draw_chat_list(ui),
                 }

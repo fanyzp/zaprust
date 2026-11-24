@@ -375,6 +375,38 @@ pub(crate) struct LiveSession {
     /// exhausted; absence is idle. Session-scoped by
     /// construction: a new session re-earns every latch.
     pub(crate) history: HashMap<u64, HistoryFetch>,
+    /// Channel metadata by JID (role, followers, invite code),
+    /// fed by the backend's channel events. The roster carries
+    /// the channel's chat; this carries what the Channels
+    /// surface and the channel conversation need beyond it.
+    pub(crate) channel_meta: HashMap<String, backend::LiveChannel>,
+    /// Channel info payloads by JID, from the last info fetch
+    /// per channel (admin count and the follower sample are
+    /// not part of the plain metadata).
+    pub(crate) channel_infos: HashMap<String, backend::LiveChannelInfo>,
+    /// Channel updates by (chat ID, server ID) to numeric
+    /// message ID, extended by every upsert that carries a
+    /// server ID: channel reactions, channel poll votes and
+    /// channel counter updates all key on the server ID,
+    /// never the protocol ID, and server IDs are only unique
+    /// within their channel. Session-scoped: a channel's
+    /// history fetch on open re-earns them after a restart.
+    pub(crate) server_ids: HashMap<(u64, u64), u64>,
+    /// Per-chat channel-history fetch state, the HistoryFetch
+    /// discipline on the channel pagination: present while a
+    /// page request is outstanding or the channel's history
+    /// is exhausted; absence is idle.
+    pub(crate) channel_history: HashMap<u64, HistoryFetch>,
+    /// Optimistic channel poll votes by numeric message ID:
+    /// the selection the app showed before a vote command, so
+    /// a ChannelPollVoteFailed can restore it (the
+    /// pending_reactions discipline for channel polls).
+    pub(crate) pending_channel_votes: HashMap<u64, Vec<usize>>,
+    /// The subscribed-channel list has been requested this
+    /// session: the Channels panel asks once, and the answer
+    /// (or its failure, shown in the panel) is what it shows
+    /// until the panel's own retry.
+    pub(crate) channels_list_requested: bool,
     /// Chats whose scroll-trigger for an older page is armed
     /// (design standard section 22): armed when a chat opens
     /// and after the stream has scrolled away from the top,
@@ -1198,6 +1230,12 @@ impl crate::state::App {
             avatar_missing: HashMap::new(),
             avatar_requested: std::collections::HashSet::new(),
             history: HashMap::new(),
+            channel_meta: HashMap::new(),
+            channel_infos: HashMap::new(),
+            server_ids: HashMap::new(),
+            channel_history: HashMap::new(),
+            pending_channel_votes: HashMap::new(),
+            channels_list_requested: false,
             history_armed: std::collections::HashSet::new(),
             poll_ballots: HashMap::new(),
         };
@@ -2754,6 +2792,281 @@ impl crate::state::App {
                     self.pending_revokes.remove(&mid);
                     self.apply_revoke(chat_id, mid);
                 }
+            }
+            // Channels (parity P5): metadata, discovery,
+            // membership, history pagination state, live
+            // counters, and the typed settle/rollback pairs of
+            // design standard section 27. Successes land as
+            // state changes the surface already shows; failures
+            // surface where the action was attempted (the
+            // panel notice, the create form, or the banner).
+            BackendEvent::ChannelsListed { channels } => {
+                if let Some(session) = &mut self.live {
+                    for channel in channels {
+                        session.channel_meta.insert(channel.jid.clone(), channel);
+                    }
+                }
+            }
+            BackendEvent::ChannelsListFailed { message } => {
+                let message = core::crash::scrub_for_display(&message);
+                tracing::warn!("channels list failed: {message}");
+                self.channel_panel_notice = Some(human_error(&message));
+            }
+            BackendEvent::ChannelFound { channel } => {
+                self.channel_panel_notice = None;
+                self.channel_found = Some(channel);
+            }
+            BackendEvent::ChannelLookupFailed { message } => {
+                let message = core::crash::scrub_for_display(&message);
+                tracing::warn!("channel lookup failed: {message}");
+                self.channel_found = None;
+                self.channel_panel_notice = Some(human_error(&message));
+            }
+            BackendEvent::ChannelFollowed { channel } => {
+                if let Some(session) = &mut self.live {
+                    session.channel_meta.insert(channel.jid.clone(), channel.clone());
+                }
+                if self.channel_found.as_ref().is_some_and(|c| c.jid == channel.jid) {
+                    self.channel_found = Some(channel);
+                }
+                self.channel_panel_notice = None;
+            }
+            BackendEvent::ChannelFollowFailed { message } => {
+                let message = core::crash::scrub_for_display(&message);
+                tracing::warn!("channel follow failed: {message}");
+                self.channel_panel_notice = Some(human_error(&message));
+            }
+            BackendEvent::ChannelUnfollowed { jid } => {
+                if let Some(session) = &mut self.live {
+                    if let Some(meta) = session.channel_meta.get_mut(&jid) {
+                        meta.role = backend::LiveChannelRole::Guest;
+                    }
+                }
+                if self.channel_found.as_ref().is_some_and(|c| c.jid == jid) {
+                    if let Some(found) = &mut self.channel_found {
+                        found.role = backend::LiveChannelRole::Guest;
+                    }
+                }
+            }
+            BackendEvent::ChannelUnfollowFailed { message } => {
+                let message = core::crash::scrub_for_display(&message);
+                tracing::warn!("channel unfollow failed: {message}");
+                self.notice = Some(Notice::error(human_error(&message)));
+            }
+            BackendEvent::ChannelCreated { channel } => {
+                if let Some(session) = &mut self.live {
+                    session.channel_meta.insert(channel.jid.clone(), channel.clone());
+                }
+                self.channel_create_open = false;
+                self.channel_create_name.clear();
+                self.channel_create_desc.clear();
+                self.channel_create_error = None;
+                // The backend filed the channel's chat row
+                // ahead of this event; open it.
+                let chat_id = jid_id(&channel.jid);
+                if self.chats.iter().any(|c| c.id == chat_id) {
+                    self.select_chat_now(chat_id);
+                }
+            }
+            BackendEvent::ChannelCreateFailed { message } => {
+                let message = core::crash::scrub_for_display(&message);
+                tracing::warn!("channel create failed: {message}");
+                self.channel_create_error = Some(human_error(&message));
+            }
+            BackendEvent::ChannelHistoryFetched { jid, end_of_history, .. } => {
+                let chat_id = jid_id(&jid);
+                if let Some(session) = &mut self.live {
+                    if end_of_history {
+                        session.channel_history.insert(chat_id, HistoryFetch::Exhausted);
+                    } else {
+                        session.channel_history.remove(&chat_id);
+                    }
+                }
+            }
+            BackendEvent::ChannelHistoryFailed { jid, message } => {
+                let chat_id = jid_id(&jid);
+                let message = core::crash::scrub_for_display(&message);
+                tracing::warn!("channel history failed: {message}");
+                // Back to idle: the next open or scroll to
+                // the top asks again, like a failed chat
+                // history page.
+                if let Some(session) = &mut self.live {
+                    session.channel_history.remove(&chat_id);
+                }
+            }
+            BackendEvent::ChannelCountersUpdated { counters } => {
+                self.apply_channel_counters(&counters);
+            }
+            BackendEvent::ChannelReactionSet { jid, server_id } => {
+                let chat_id = jid_id(&jid);
+                if let Some(mid) = self
+                    .live
+                    .as_ref()
+                    .and_then(|s| s.server_ids.get(&(chat_id, server_id)).copied())
+                {
+                    self.pending_reactions.remove(&mid);
+                }
+            }
+            BackendEvent::ChannelReactionFailed { jid, server_id, message } => {
+                let chat_id = jid_id(&jid);
+                let message = core::crash::scrub_for_display(&message);
+                tracing::warn!("channel reaction failed: {message}");
+                let mid = self
+                    .live
+                    .as_ref()
+                    .and_then(|s| s.server_ids.get(&(chat_id, server_id)).copied());
+                if let Some(mid) = mid {
+                    if let Some(previous) = self.pending_reactions.remove(&mid) {
+                        match &previous {
+                            Some(emoji) => {
+                                self.my_reactions.insert(mid, emoji.clone());
+                            }
+                            None => {
+                                self.my_reactions.remove(&mid);
+                            }
+                        }
+                        self.apply_my_reaction_to_actors(chat_id, mid, previous.as_deref());
+                    }
+                }
+                self.notice = Some(Notice::error(human_error(&message)));
+            }
+            BackendEvent::ChannelPollCreated { jid, .. } => {
+                // No local echo exists for a channel poll:
+                // pull the newest page so the poll lands in
+                // the stream from the backend's own record.
+                let chat_id = jid_id(&jid);
+                if let Some(session) = &mut self.live {
+                    session.channel_history.remove(&chat_id);
+                }
+                self.fetch_channel_page(&jid, None);
+            }
+            BackendEvent::ChannelPollCreateFailed { message } => {
+                let message = core::crash::scrub_for_display(&message);
+                tracing::warn!("channel poll create failed: {message}");
+                self.notice = Some(Notice::error(human_error(&message)));
+            }
+            BackendEvent::ChannelPollVoted { jid, server_id } => {
+                let chat_id = jid_id(&jid);
+                let mid = self
+                    .live
+                    .as_ref()
+                    .and_then(|s| s.server_ids.get(&(chat_id, server_id)).copied());
+                if let Some(mid) = mid {
+                    if let Some(session) = &mut self.live {
+                        session.pending_channel_votes.remove(&mid);
+                    }
+                }
+            }
+            BackendEvent::ChannelPollVoteFailed { jid, server_id, message } => {
+                let chat_id = jid_id(&jid);
+                let message = core::crash::scrub_for_display(&message);
+                tracing::warn!("channel poll vote failed: {message}");
+                let mid = self
+                    .live
+                    .as_ref()
+                    .and_then(|s| s.server_ids.get(&(chat_id, server_id)).copied());
+                if let Some(mid) = mid {
+                    let previous = self
+                        .live
+                        .as_mut()
+                        .and_then(|s| s.pending_channel_votes.remove(&mid));
+                    if let Some(previous) = previous {
+                        self.set_poll_my_votes(chat_id, mid, &previous);
+                    }
+                }
+                self.notice = Some(Notice::error(human_error(&message)));
+            }
+            BackendEvent::ChannelUpdateEdited { jid, .. } => {
+                // Converge on the backend's record of the
+                // edit, like a created poll.
+                let chat_id = jid_id(&jid);
+                if let Some(session) = &mut self.live {
+                    session.channel_history.remove(&chat_id);
+                }
+                self.fetch_channel_page(&jid, None);
+            }
+            BackendEvent::ChannelUpdateEditFailed { jid, message_id: pid, message } => {
+                let chat_id = jid_id(&jid);
+                let mid = message_id(&jid, &pid);
+                let message = core::crash::scrub_for_display(&message);
+                tracing::warn!("channel update edit failed: {message}");
+                if let Some((body, edited)) = self.pending_edits.remove(&mid) {
+                    // The edit never reached the server: the
+                    // update keeps its previous body, in the
+                    // session mirror and the open view alike
+                    // (the failed chat edit's discipline).
+                    if let Some(entry) =
+                        self.live.as_mut().and_then(|s| s.messages.get_mut(&chat_id))
+                    {
+                        for (_, m) in entry.iter_mut() {
+                            if m.id == mid {
+                                m.body = body.clone();
+                                m.edited = edited;
+                            }
+                        }
+                    }
+                    if self.selected_chat == chat_id {
+                        self.sync_conversation();
+                    }
+                }
+                self.notice = Some(Notice::error(human_error(&message)));
+            }
+            BackendEvent::ChannelUpdateRevoked { jid, message_id } => {
+                let chat_id = jid_id(&jid);
+                let mid = message_id(&jid, &message_id);
+                self.pending_revokes.remove(&mid);
+                self.apply_revoke(chat_id, mid);
+            }
+            BackendEvent::ChannelUpdateRevokeFailed { jid, message_id: pid, message } => {
+                let chat_id = jid_id(&jid);
+                let mid = message_id(&jid, &pid);
+                let message = core::crash::scrub_for_display(&message);
+                tracing::warn!("channel update revoke failed: {message}");
+                if let Some(previous) = self.pending_revokes.remove(&mid) {
+                    if let Some(entry) =
+                        self.live.as_mut().and_then(|s| s.messages.get_mut(&chat_id))
+                    {
+                        for (_, m) in entry.iter_mut() {
+                            if m.id == mid {
+                                m.deleted = previous;
+                            }
+                        }
+                    }
+                    if self.selected_chat == chat_id {
+                        self.sync_conversation();
+                    }
+                }
+                self.notice = Some(Notice::error(human_error(&message)));
+            }
+            BackendEvent::ChannelInfoFetched { info } => {
+                if let Some(session) = &mut self.live {
+                    session
+                        .channel_meta
+                        .insert(info.channel.jid.clone(), info.channel.clone());
+                    session.channel_infos.insert(info.channel.jid.clone(), info);
+                }
+            }
+            BackendEvent::ChannelInfoFailed { message } => {
+                let message = core::crash::scrub_for_display(&message);
+                tracing::warn!("channel info failed: {message}");
+                self.channel_info_for = None;
+                self.notice = Some(Notice::error(human_error(&message)));
+            }
+            BackendEvent::ChannelMuteSet { jid, muted } => {
+                let chat_id = jid_id(&jid);
+                if let Some(session) = &mut self.live {
+                    if let Some(meta) = session.channel_meta.get_mut(&jid) {
+                        meta.muted = muted;
+                    }
+                }
+                if let Some(chat) = self.chats.iter_mut().find(|c| c.id == chat_id) {
+                    chat.muted = muted;
+                }
+            }
+            BackendEvent::ChannelMuteFailed { message } => {
+                let message = core::crash::scrub_for_display(&message);
+                tracing::warn!("channel mute failed: {message}");
+                self.notice = Some(Notice::error(human_error(&message)));
             }
             BackendEvent::DisappearingChanged { chat_jid, duration_secs } => {
                 let chat_id = jid_id(&chat_jid);
@@ -4933,6 +5246,9 @@ impl crate::state::App {
         let mut new_incoming = false;
         if let Some(session) = &mut self.live {
             let msg_id = message_id(&live.chat_jid, &live.id);
+            if let Some(server_id) = live.server_id {
+                session.server_ids.insert((chat_id, server_id), msg_id);
+            }
             if let Some(reference) = &live.photo_ref {
                 session.photo_refs.insert(msg_id, reference.clone());
             }
@@ -7329,6 +7645,153 @@ impl crate::state::App {
     /// there. A chat that cannot be anchored (nothing archived
     /// yet) is left idle and disarmed, never marked fetching
     /// for a request that was not sent.
+    /// Asks the backend for one page of a channel's history
+    /// (the newest page when `before` is None, else the page
+    /// older than that server ID), under the channel_history
+    /// latch: a page already in flight is never duplicated,
+    /// and an exhausted channel is never re-asked.
+    pub(crate) fn fetch_channel_page(&mut self, jid: &str, before: Option<u64>) {
+        let chat_id = jid_id(jid);
+        let Some(session) = &mut self.live else {
+            return;
+        };
+        match session.channel_history.get(&chat_id) {
+            Some(HistoryFetch::Fetching) | Some(HistoryFetch::Exhausted) => return,
+            None => {}
+        }
+        session.channel_history.insert(chat_id, HistoryFetch::Fetching);
+        self.send_backend(BackendCommand::FetchChannelHistory {
+            jid: jid.to_owned(),
+            count: 30,
+            before,
+        });
+    }
+
+    /// Opens a channel's backend record: live updates are
+    /// armed (the backend dedupes repeat watches) and, while
+    /// the channel's history state is idle, its newest page
+    /// is fetched, because the roster only carries the latest
+    /// post. Called from chat selection for channel chats.
+    pub(crate) fn open_channel(&mut self, chat_id: u64) {
+        let Some(jid) = self.live_jid(chat_id) else {
+            return;
+        };
+        // The role drives the composer; if this channel's
+        // metadata has not landed yet, ask for the list that
+        // carries it.
+        let meta_missing = self
+            .live
+            .as_ref()
+            .is_some_and(|s| !s.channel_meta.contains_key(&jid));
+        if meta_missing {
+            if let Some(session) = &mut self.live {
+                session.channels_list_requested = true;
+            }
+            self.send_backend(BackendCommand::FetchChannels);
+        }
+        self.send_backend(BackendCommand::WatchChannel { jid: jid.clone() });
+        let idle = self
+            .live
+            .as_ref()
+            .is_some_and(|s| !s.channel_history.contains_key(&chat_id));
+        if idle {
+            self.fetch_channel_page(&jid, None);
+        }
+    }
+
+    /// The stream's scroll-to-top trigger for a channel: the
+    /// page older than the oldest server ID on hand. Channels
+    /// page on server IDs, not protocol anchors, so this is
+    /// separate from the chat history path.
+    pub(crate) fn request_older_channel_page(&mut self, chat_id: u64) {
+        let Some(jid) = self.live_jid(chat_id) else {
+            return;
+        };
+        let before = self.live.as_ref().and_then(|s| {
+            s.server_ids
+                .keys()
+                .filter(|(cid, _)| *cid == chat_id)
+                .map(|(_, sid)| *sid)
+                .min()
+        });
+        self.fetch_channel_page(&jid, before);
+    }
+
+    /// Applies one channel live-update counter payload: the
+    /// update is resolved by (chat, server ID), its reaction
+    /// counts are replaced, and its poll tallies are matched
+    /// back to option names by their protocol hash. Counters
+    /// for an update this session has not loaded change
+    /// nothing; the next history fetch carries the same
+    /// numbers from the server's record.
+    pub(crate) fn apply_channel_counters(&mut self, counters: &backend::LiveChannelCounters) {
+        use sha2::Digest as _;
+        let chat_id = jid_id(&counters.jid);
+        let Some(mid) = self
+            .live
+            .as_ref()
+            .and_then(|s| s.server_ids.get(&(chat_id, counters.server_id)).copied())
+        else {
+            return;
+        };
+        let mut changed = false;
+        if let Some(session) = &mut self.live {
+            if let Some(msgs) = session.messages.get_mut(&chat_id) {
+                if let Some((_, msg)) = msgs.iter_mut().find(|(_, m)| m.id == mid) {
+                    msg.reactions = counters.reactions.clone();
+                    if let core::model::MessageKind::Poll { options, .. } = &mut msg.kind {
+                        for (hash, count) in &counters.poll_votes {
+                            for (name, votes) in options.iter_mut() {
+                                if sha2::Sha256::digest(name.as_bytes()).as_slice() == hash.as_slice() {
+                                    *votes = *count;
+                                }
+                            }
+                        }
+                    }
+                    changed = true;
+                }
+            }
+        }
+        if changed && self.selected_chat == chat_id {
+            self.sync_conversation();
+        }
+    }
+
+    /// Sets my selection on a channel poll message in the
+    /// session store and, when it is the open conversation,
+    /// the visible copy: the rollback half of the channel
+    /// vote pair. Tallies move by the difference between the
+    /// current selection and the one being restored, the
+    /// same arithmetic a fresh vote applies.
+    pub(crate) fn set_poll_my_votes(&mut self, chat_id: u64, msg_id: u64, votes: &[usize]) {
+        fn apply(msg: &mut Message, votes: &[usize]) {
+            if let MessageKind::Poll { options, my_votes, .. } = &mut msg.kind {
+                for (idx, (_, count)) in options.iter_mut().enumerate() {
+                    let was = my_votes.contains(&idx);
+                    let now = votes.contains(&idx);
+                    if now && !was {
+                        *count += 1;
+                    } else if was && !now {
+                        *count = count.saturating_sub(1);
+                    }
+                }
+                *my_votes = votes.to_vec();
+            }
+        }
+        if let Some(session) = &mut self.live {
+            if let Some(msgs) = session.messages.get_mut(&chat_id) {
+                if let Some((_, msg)) = msgs.iter_mut().find(|(_, m)| m.id == msg_id) {
+                    apply(msg, votes);
+                }
+            }
+        }
+        if self.selected_chat == chat_id {
+            if let Some(msg) = self.conversation.iter_mut().find(|m| m.id == msg_id) {
+                apply(msg, votes);
+            }
+        }
+    }
+
     pub(crate) fn request_older_page(&mut self, chat_id: u64) {
         if let Some(session) = &mut self.live {
             session.history_armed.remove(&chat_id);
@@ -7811,6 +8274,12 @@ mod burst_drain_tests {
             avatar_missing: HashMap::new(),
             avatar_requested: std::collections::HashSet::new(),
             history: HashMap::new(),
+            channel_meta: HashMap::new(),
+            channel_infos: HashMap::new(),
+            server_ids: HashMap::new(),
+            channel_history: HashMap::new(),
+            pending_channel_votes: HashMap::new(),
+            channels_list_requested: false,
             history_armed: std::collections::HashSet::new(),
             poll_ballots: HashMap::new(),
         });
@@ -10930,6 +11399,12 @@ mod chat_state_routing_tests {
             avatar_missing: HashMap::new(),
             avatar_requested: std::collections::HashSet::new(),
             history: HashMap::new(),
+            channel_meta: HashMap::new(),
+            channel_infos: HashMap::new(),
+            server_ids: HashMap::new(),
+            channel_history: HashMap::new(),
+            pending_channel_votes: HashMap::new(),
+            channels_list_requested: false,
             history_armed: std::collections::HashSet::new(),
             poll_ballots: HashMap::new(),
         });
@@ -12662,6 +13137,12 @@ mod mirror_pruning_tests {
             avatar_missing: HashMap::new(),
             avatar_requested: std::collections::HashSet::new(),
             history: HashMap::new(),
+            channel_meta: HashMap::new(),
+            channel_infos: HashMap::new(),
+            server_ids: HashMap::new(),
+            channel_history: HashMap::new(),
+            pending_channel_votes: HashMap::new(),
+            channels_list_requested: false,
             history_armed: std::collections::HashSet::new(),
             poll_ballots: HashMap::new(),
         });
@@ -13230,6 +13711,12 @@ mod qr_gate_tests {
             avatar_missing: HashMap::new(),
             avatar_requested: std::collections::HashSet::new(),
             history: HashMap::new(),
+            channel_meta: HashMap::new(),
+            channel_infos: HashMap::new(),
+            server_ids: HashMap::new(),
+            channel_history: HashMap::new(),
+            pending_channel_votes: HashMap::new(),
+            channels_list_requested: false,
             history_armed: std::collections::HashSet::new(),
             poll_ballots: HashMap::new(),
         };
@@ -13462,6 +13949,12 @@ mod logout_tests {
             avatar_missing: HashMap::new(),
             avatar_requested: std::collections::HashSet::new(),
             history: HashMap::new(),
+            channel_meta: HashMap::new(),
+            channel_infos: HashMap::new(),
+            server_ids: HashMap::new(),
+            channel_history: HashMap::new(),
+            pending_channel_votes: HashMap::new(),
+            channels_list_requested: false,
             history_armed: std::collections::HashSet::new(),
             poll_ballots: HashMap::new(),
         });
@@ -13704,6 +14197,12 @@ mod reaction_tests {
             avatar_missing: HashMap::new(),
             avatar_requested: std::collections::HashSet::new(),
             history: HashMap::new(),
+            channel_meta: HashMap::new(),
+            channel_infos: HashMap::new(),
+            server_ids: HashMap::new(),
+            channel_history: HashMap::new(),
+            pending_channel_votes: HashMap::new(),
+            channels_list_requested: false,
             history_armed: std::collections::HashSet::new(),
         });
         app.live_mode = true;
@@ -14048,6 +14547,12 @@ mod star_pin_tests {
             avatar_missing: HashMap::new(),
             avatar_requested: std::collections::HashSet::new(),
             history: HashMap::new(),
+            channel_meta: HashMap::new(),
+            channel_infos: HashMap::new(),
+            server_ids: HashMap::new(),
+            channel_history: HashMap::new(),
+            pending_channel_votes: HashMap::new(),
+            channels_list_requested: false,
             history_armed: std::collections::HashSet::new(),
         });
         app.live_mode = true;

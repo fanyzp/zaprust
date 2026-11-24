@@ -52,6 +52,18 @@ impl App {
         };
         let mine = msg.sender.is_none();
         let is_text = msg.kind == MessageKind::Text;
+        // A channel update's menu is the subset the channel
+        // contract backs: react, copy, and (for the channel's
+        // own posts) edit and delete for everyone, plus media
+        // save. Reply, forward, star, pin, report and
+        // delete-for-me have no channel command behind them,
+        // so they are not offered here instead of failing
+        // after the click.
+        let in_channel = self
+            .chats
+            .iter()
+            .find(|c| c.id == self.selected_chat)
+            .is_some_and(|c| c.kind == core::model::ChatKind::Channel);
         // Admin delete (design standard section 24): in a group
         // where my account is an admin, another member's message
         // can be deleted for everyone. The role comes from the
@@ -81,14 +93,15 @@ impl App {
                 show_popup(self.popup_frame(), self.tokens, ui, |ui| {
                     ui.set_width(220.0);
                     ui.add_enabled_ui(!exiting, |ui| {
-                        if crate::widgets::menu_item_icon(
-                            ui,
-                            t,
-                            Some(crate::icons::Icon::Reply),
-                            "Reply",
-                            None,
-                        )
-                        .clicked()
+                        if !in_channel
+                            && crate::widgets::menu_item_icon(
+                                ui,
+                                t,
+                                Some(crate::icons::Icon::Reply),
+                                "Reply",
+                                None,
+                            )
+                            .clicked()
                         {
                             self.composer.reply_to = Some((
                                 msg.id,
@@ -148,18 +161,20 @@ impl App {
                             self.delete_for_everyone(msg.id);
                             close = true;
                         }
-                        if crate::widgets::menu_item_danger(
-                            ui,
-                            t,
-                            crate::icons::Icon::Delete,
-                            "Delete for me",
-                        )
-                        .clicked()
+                        if !in_channel
+                            && crate::widgets::menu_item_danger(
+                                ui,
+                                t,
+                                crate::icons::Icon::Delete,
+                                "Delete for me",
+                            )
+                            .clicked()
                         {
                             self.delete_for_me(msg.id);
                             close = true;
                         }
                         if mine
+                            && !in_channel
                             && crate::widgets::menu_item_icon(
                                 ui,
                                 t,
@@ -185,6 +200,7 @@ impl App {
                         // it (the actions refuse as a backstop).
                         let view_once = msg.is_view_once();
                         if !view_once
+                            && !in_channel
                             && crate::widgets::menu_item_icon(
                                 ui,
                                 t,
@@ -197,7 +213,7 @@ impl App {
                             self.forward_from = Some(msg.id);
                             close = true;
                         }
-                        if msg.starred {
+                        if !in_channel && msg.starred {
                             if crate::widgets::menu_item_icon_tinted(
                                 ui,
                                 t,
@@ -210,13 +226,14 @@ impl App {
                                 self.toggle_star_message(msg.id);
                                 close = true;
                             }
-                        } else if crate::widgets::menu_item_icon(
-                            ui,
-                            t,
-                            Some(crate::icons::Icon::Star),
-                            "Star",
-                            None,
-                        )
+                        } else if !in_channel
+                            && crate::widgets::menu_item_icon(
+                                ui,
+                                t,
+                                Some(crate::icons::Icon::Star),
+                                "Star",
+                                None,
+                            )
                         .clicked()
                         {
                             self.toggle_star_message(msg.id);
@@ -235,7 +252,7 @@ impl App {
                             self.toggle_keep_message(msg.id);
                             close = true;
                         }
-                        if msg.pinned {
+                        if !in_channel && msg.pinned {
                             if crate::widgets::menu_item_icon(
                                 ui,
                                 t,
@@ -248,7 +265,7 @@ impl App {
                                 self.toggle_pin_message(msg.id, backend::PinDuration::Days7);
                                 close = true;
                             }
-                        } else {
+                        } else if !in_channel {
                             // The pin duration is part of the pin
                             // itself (section 24): the three
                             // durations the wire offers, chosen
@@ -274,6 +291,7 @@ impl App {
                             }
                         }
                         if !mine
+                            && !in_channel
                             && self.live.is_some()
                             && crate::widgets::menu_item_danger(
                                 ui,
@@ -577,6 +595,16 @@ impl App {
                 show_popup(self.popup_frame(), self.tokens, ui, |ui| {
                     ui.set_width(230.0);
                     ui.add_enabled_ui(!exiting, |ui| {
+                        // In a channel, the attach menu keeps
+                        // the items the channel contract backs
+                        // (media, documents, polls): location
+                        // and contact posts have no channel
+                        // command behind them.
+                        let in_channel = self
+                            .chats
+                            .iter()
+                            .find(|c| c.id == self.selected_chat)
+                            .is_some_and(|c| c.kind == core::model::ChatKind::Channel);
                         if crate::widgets::menu_item_icon(
                             ui,
                             t,
@@ -601,14 +629,15 @@ impl App {
                             self.pick_document(ctx);
                             close = true;
                         }
-                        if crate::widgets::menu_item_icon(
-                            ui,
-                            t,
-                            Some(crate::icons::Icon::LocationOn),
-                            &crate::i18n::t("attach.location"),
-                            None,
-                        )
-                        .clicked()
+                        if !in_channel
+                            && crate::widgets::menu_item_icon(
+                                ui,
+                                t,
+                                Some(crate::icons::Icon::LocationOn),
+                                &crate::i18n::t("attach.location"),
+                                None,
+                            )
+                            .clicked()
                         {
                             self.composer.location_draft = Some(crate::state::LocationDraft {
                                 name: String::new(),
@@ -617,14 +646,15 @@ impl App {
                             });
                             close = true;
                         }
-                        if crate::widgets::menu_item_icon(
-                            ui,
-                            t,
-                            Some(crate::icons::Icon::Person),
-                            &crate::i18n::t("attach.contact"),
-                            None,
-                        )
-                        .clicked()
+                        if !in_channel
+                            && crate::widgets::menu_item_icon(
+                                ui,
+                                t,
+                                Some(crate::icons::Icon::Person),
+                                &crate::i18n::t("attach.contact"),
+                                None,
+                            )
+                            .clicked()
                         {
                             self.contact_picker_open = true;
                             close = true;
@@ -638,11 +668,22 @@ impl App {
                         )
                         .clicked()
                         {
-                            self.composer.poll_draft = Some(crate::state::PollDraft {
-                                question: String::new(),
-                                options: vec![String::new(), String::new()],
-                                multiple: false,
-                            });
+                            if in_channel {
+                                // A channel poll posts through
+                                // the channel contract, with
+                                // its own composer.
+                                self.channel_poll_for = Some(self.selected_chat);
+                                self.channel_poll_question.clear();
+                                self.channel_poll_options =
+                                    vec![String::new(), String::new()];
+                                self.channel_poll_multiple = false;
+                            } else {
+                                self.composer.poll_draft = Some(crate::state::PollDraft {
+                                    question: String::new(),
+                                    options: vec![String::new(), String::new()],
+                                    multiple: false,
+                                });
+                            }
                             close = true;
                         }
                         crate::widgets::soft_separator(ui, t);

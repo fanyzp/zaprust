@@ -61,6 +61,15 @@ impl App {
     /// Toggles my reaction on a message (demo + live).
     pub(crate) fn apply_reaction(&mut self, msg_id: u64, emoji: &str) {
         let current = self.my_reactions.get(&msg_id).cloned();
+        // The message's counts before the optimistic write: a
+        // channel update whose server ID is not loaded yet
+        // cannot be reacted to, and its rollback restores
+        // exactly this.
+        let previous_reactions = self
+            .conversation
+            .iter()
+            .find(|m| m.id == msg_id)
+            .map(|m| m.reactions.clone());
         let mut new_reactions: Option<Vec<(String, u32)>> = None;
         let mut new_mine: Option<String> = None;
         if let Some(msg) = self.conversation.iter_mut().find(|m| m.id == msg_id) {
@@ -95,6 +104,71 @@ impl App {
                 .iter()
                 .find(|m| m.id == msg_id)
                 .is_some_and(|m| m.sender.is_none());
+            if let Some(jid) =
+                self.live.as_ref().and_then(|s| s.jids.get(&chat_id).cloned())
+            {
+                if jid.ends_with("@newsletter") {
+                    // Channel reactions key on the update's
+                    // server ID, not the protocol ID, and
+                    // settle through their own event pair; the
+                    // optimistic write above and the actor map
+                    // update are the same ones a chat reaction
+                    // makes. Without a server ID the update's
+                    // page is fetched and the user asked to
+                    // tap again, never a silent no-op.
+                    let server_id = self.live.as_ref().and_then(|s| {
+                        s.server_ids
+                            .iter()
+                            .find(|((cid, _), mid)| *cid == chat_id && **mid == msg_id)
+                            .map(|((_, sid), _)| *sid)
+                    });
+                    match server_id {
+                        Some(server_id) => {
+                            self.pending_reactions
+                                .entry(msg_id)
+                                .or_insert_with(|| current.clone());
+                            self.apply_my_reaction_to_actors(
+                                chat_id,
+                                msg_id,
+                                new_mine.as_deref(),
+                            );
+                            self.send_backend(BackendCommand::ReactToChannelUpdate {
+                                jid,
+                                server_id,
+                                emoji: new_mine.clone().unwrap_or_default(),
+                            });
+                        }
+                        None => {
+                            // Nothing was sent: undo the
+                            // optimistic write above, so the
+                            // bubble never shows a reaction
+                            // the server does not have.
+                            if let Some(msg) =
+                                self.conversation.iter_mut().find(|m| m.id == msg_id)
+                            {
+                                if let Some(prev) = &previous_reactions {
+                                    msg.reactions = prev.clone();
+                                }
+                            }
+                            match &current {
+                                Some(e) => {
+                                    self.my_reactions.insert(msg_id, e.clone());
+                                }
+                                None => {
+                                    self.my_reactions.remove(&msg_id);
+                                }
+                            }
+                            self.fetch_channel_page(&jid, None);
+                            self.notice = Some(Notice::info(
+                                "Loading this channel's updates. Try the reaction again in a moment."
+                                    .to_owned(),
+                            ));
+                        }
+                    }
+                    self.reaction_picker_id = None;
+                    return;
+                }
+            }
             if let (Some(jid), Some(proto)) = (
                 self.live.as_ref().and_then(|s| s.jids.get(&chat_id).cloned()),
                 self.protocol_ids.get(&msg_id).cloned(),
@@ -191,11 +265,23 @@ impl App {
                 if let Some(previous) = previous {
                     self.pending_edits.entry(msg_id).or_insert(previous);
                 }
-                self.send_backend(BackendCommand::EditMessage {
-                    chat_jid: jid,
-                    message_id: proto,
-                    new_body: new_body.to_owned(),
-                });
+                if jid.ends_with("@newsletter") {
+                    // A channel update edits through the
+                    // channel contract (the wire ID keys it);
+                    // its failure restores from the same
+                    // pending snapshot.
+                    self.send_backend(BackendCommand::EditChannelUpdate {
+                        jid,
+                        message_id: proto,
+                        text: new_body.to_owned(),
+                    });
+                } else {
+                    self.send_backend(BackendCommand::EditMessage {
+                        chat_jid: jid,
+                        message_id: proto,
+                        new_body: new_body.to_owned(),
+                    });
+                }
             }
         }
     }
@@ -245,12 +331,22 @@ impl App {
                 self.pending_revokes
                     .entry(msg_id)
                     .or_insert(msg.as_ref().is_some_and(|m| m.deleted));
-                self.send_backend(BackendCommand::RevokeMessage {
-                    chat_jid: jid,
-                    message_id: proto,
-                    sender_jid,
-                    from_me,
-                });
+                if jid.ends_with("@newsletter") {
+                    // A channel update revokes through the
+                    // channel contract; its failure restores
+                    // from the same pending snapshot.
+                    self.send_backend(BackendCommand::RevokeChannelUpdate {
+                        jid,
+                        message_id: proto,
+                    });
+                } else {
+                    self.send_backend(BackendCommand::RevokeMessage {
+                        chat_jid: jid,
+                        message_id: proto,
+                        sender_jid,
+                        from_me,
+                    });
+                }
             }
         }
     }
@@ -490,6 +586,8 @@ impl App {
     /// the quote chip.
     pub(crate) fn draw_conversation_popups(&mut self, ctx: &egui::Context) {
         self.draw_create_group_dialog(ctx);
+        self.draw_channel_info_dialog(ctx);
+        self.draw_channel_poll_composer(ctx);
         self.draw_join_group_dialog(ctx);
         self.draw_new_chat_dialog(ctx);
         self.draw_ui_confirm(ctx);
@@ -743,6 +841,11 @@ impl App {
                 crate::i18n::tf("chat.delete_body", "name", name),
                 crate::i18n::t("common.delete"),
             ),
+            UiConfirm::UnfollowChannel { name, .. } => (
+                crate::i18n::t("channels.unfollow_title"),
+                crate::i18n::tf("channels.unfollow_body", "name", name),
+                crate::i18n::t("channels.unfollow_confirm"),
+            ),
             UiConfirm::ReportSpam { name, .. } => (
                 crate::i18n::t("chat.report_title"),
                 crate::i18n::tf("chat.report_body", "name", name),
@@ -880,6 +983,9 @@ impl App {
                 }
                 Some(UiConfirm::DeleteChat { chat_id, .. }) => {
                     self.delete_chat(chat_id);
+                }
+                Some(UiConfirm::UnfollowChannel { chat_id, .. }) => {
+                    self.unfollow_channel(chat_id);
                 }
                 Some(UiConfirm::ReportSpam { chat_id, msg_id, .. }) => {
                     self.report_spam(chat_id, msg_id);

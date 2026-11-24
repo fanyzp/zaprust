@@ -903,7 +903,7 @@ impl App {
     /// live layer's typing instants (fresh for a few seconds),
     /// the demo layer's named typing, and the per-chat parked
     /// composer drafts (the open chat's draft is the live one).
-    fn row_state_for(&self, chat: &Chat) -> Option<RowState> {
+    pub(crate) fn row_state_for(&self, chat: &Chat) -> Option<RowState> {
         if self.live_mode {
             if self.live_typing.get(&chat.id).is_some_and(|at| at.elapsed().as_secs() < 6) {
                 return Some(RowState::Typing(None));

@@ -799,11 +799,27 @@ impl App {
                     session.history_armed.insert(chat.id);
                 }
             } else if offset_y <= 24.0 && !self.conversation.is_empty() {
-                let may_fetch = self.live.as_ref().is_some_and(|s| {
-                    s.history_armed.contains(&chat.id) && !s.history.contains_key(&chat.id)
-                });
-                if may_fetch {
-                    self.request_older_page(chat.id);
+                if chat.kind == core::model::ChatKind::Channel {
+                    // Channels page on server IDs through
+                    // their own latch, not the chat anchor
+                    // path.
+                    let may_fetch = self.live.as_ref().is_some_and(|s| {
+                        s.history_armed.contains(&chat.id)
+                            && !s.channel_history.contains_key(&chat.id)
+                    });
+                    if may_fetch {
+                        if let Some(session) = &mut self.live {
+                            session.history_armed.remove(&chat.id);
+                        }
+                        self.request_older_channel_page(chat.id);
+                    }
+                } else {
+                    let may_fetch = self.live.as_ref().is_some_and(|s| {
+                        s.history_armed.contains(&chat.id) && !s.history.contains_key(&chat.id)
+                    });
+                    if may_fetch {
+                        self.request_older_page(chat.id);
+                    }
                 }
             }
         }

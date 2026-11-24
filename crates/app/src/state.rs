@@ -497,6 +497,11 @@ pub(crate) enum UiConfirm {
     /// its messages go, on every device. Nothing about it is
     /// recoverable from this client.
     DeleteChat { chat_id: u64, name: String },
+    /// Unfollow a channel (design standard section 24): the
+    /// channel leaves the roster and its updates stop arriving;
+    /// following again needs the invite link, so it confirms
+    /// like the other destructive actions.
+    UnfollowChannel { chat_id: u64, name: String },
     /// Report a message as spam (design standard section 24):
     /// the report goes to WhatsApp with the message's identity;
     /// confirming sends it. The chat and message are named so
@@ -1814,6 +1819,38 @@ pub(crate) struct App {
     /// back to that home while it is set and the open chat still
     /// belongs to the community.
     pub(crate) community_origin: Option<u64>,
+    /// The Channels panel's find-by-invite form is open.
+    pub(crate) channel_find_open: bool,
+    /// The find-by-invite form's input (a link or a bare code).
+    pub(crate) channel_find_text: String,
+    /// The channel the last invite lookup found, shown as a
+    /// preview card in the Channels panel until it is followed
+    /// or the form closes.
+    pub(crate) channel_found: Option<backend::LiveChannel>,
+    /// The Channels panel's own inline message (a lookup or
+    /// follow outcome the panel states in place, where the
+    /// action was attempted, instead of a global banner).
+    pub(crate) channel_panel_notice: Option<String>,
+    /// The "New channel" form is open.
+    pub(crate) channel_create_open: bool,
+    /// The "New channel" form's name field.
+    pub(crate) channel_create_name: String,
+    /// The "New channel" form's description field.
+    pub(crate) channel_create_desc: String,
+    /// The "New channel" form's inline validation error.
+    pub(crate) channel_create_error: Option<String>,
+    /// The channel info panel is open for this chat id.
+    pub(crate) channel_info_for: Option<u64>,
+    /// The channel poll composer's target chat id, while the
+    /// composer is open (admins post polls from the channel
+    /// conversation's attach menu).
+    pub(crate) channel_poll_for: Option<u64>,
+    /// The channel poll composer's question field.
+    pub(crate) channel_poll_question: String,
+    /// The channel poll composer's option fields.
+    pub(crate) channel_poll_options: Vec<String>,
+    /// The channel poll composer's multiple-answers toggle.
+    pub(crate) channel_poll_multiple: bool,
     /// The "New community" form is open (the Communities overview
     /// panel's lead row opens it).
     pub(crate) community_create_open: bool,
@@ -2392,6 +2429,19 @@ impl App {
             zip_export_rx: None,
             detached_chat: None,
             community_origin: None,
+            channel_find_open: false,
+            channel_find_text: String::new(),
+            channel_found: None,
+            channel_panel_notice: None,
+            channel_create_open: false,
+            channel_create_name: String::new(),
+            channel_create_desc: String::new(),
+            channel_create_error: None,
+            channel_info_for: None,
+            channel_poll_for: None,
+            channel_poll_question: String::new(),
+            channel_poll_options: vec![String::new(), String::new()],
+            channel_poll_multiple: false,
             community_create_open: false,
             community_create_name: String::new(),
             community_create_error: None,
@@ -2703,6 +2753,18 @@ impl App {
             // before it.
             if let Some(session) = &mut self.live {
                 session.history_armed.insert(id);
+            }
+            // A channel opens on its backend record: live
+            // updates armed and the newest history page
+            // fetched (the roster alone only carries the
+            // latest post).
+            let is_channel = self
+                .chats
+                .iter()
+                .find(|c| c.id == id)
+                .is_some_and(|c| c.kind == core::model::ChatKind::Channel);
+            if is_channel {
+                self.open_channel(id);
             }
         } else {
             // The detached slot (the community announcement chat)

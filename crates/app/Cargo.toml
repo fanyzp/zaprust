@@ -36,6 +36,10 @@ egui = { version = "0.37", features = ["default_fonts"] }
 epaint = { version = "0.37", features = ["monochrome_emoji_fonts", "color_fonts"] }
 
 serde_json = "1"
+# Channel live-update counters key poll tallies by the
+# SHA-256 of the option name (the protocol's option hash);
+# the app matches them back to the options it renders.
+sha2 = "0.10"
 # No default features: the defaults add gzip content decoding, which
 # the update checker does not need (servers fall back to identity
 # encoding). Only the rustls TLS stack is kept, matching the feature

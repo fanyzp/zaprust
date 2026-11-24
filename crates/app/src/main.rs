@@ -38,6 +38,7 @@ mod attach;
 mod bubble;
 mod call_ui;
 mod calls;
+mod channels;
 mod chat_list;
 mod community;
 mod connect;

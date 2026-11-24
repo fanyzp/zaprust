@@ -5,6 +5,18 @@ use super::*;
 impl App {
     /// Casts or changes my vote on a poll message (demo + live).
     pub(crate) fn vote_poll(&mut self, msg_id: u64, idx: usize) {
+        // Channel polls vote through the channel contract:
+        // the ballot is the set of option names, keyed by the
+        // update's server ID, with its own settle/rollback
+        // pair.
+        if self.live_mode {
+            if let Some(jid) = self.live_jid(self.selected_chat) {
+                if jid.ends_with("@newsletter") {
+                    self.vote_channel_poll(msg_id, idx);
+                    return;
+                }
+            }
+        }
         let chat_id = self.selected_chat;
         // My selection before this vote, captured before any
         // apply moves it: a PollVoteFailed re-applies it as my
@@ -57,6 +69,69 @@ impl App {
                 self.apply_poll_vote(&jid, &proto, "", true, &new_options);
             }
         }
+    }
+
+    /// Casts or changes my vote on a channel poll: the same
+    /// optimistic apply as a chat poll, then the channel
+    /// command with the selected option names. Without the
+    /// update's server ID the vote cannot be keyed, so the
+    /// newest page is fetched and the user asked to tap
+    /// again once it lands, instead of a vote that would
+    /// silently go nowhere.
+    pub(crate) fn vote_channel_poll(&mut self, msg_id: u64, idx: usize) {
+        let chat_id = self.selected_chat;
+        let Some(jid) = self.live_jid(chat_id) else {
+            return;
+        };
+        let server_id = self.live.as_ref().and_then(|s| {
+            s.server_ids
+                .iter()
+                .find(|((cid, _), mid)| *cid == chat_id && **mid == msg_id)
+                .map(|((_, sid), _)| *sid)
+        });
+        let Some(server_id) = server_id else {
+            self.fetch_channel_page(&jid, None);
+            self.notice = Some(Notice::info(
+                "Loading this channel's updates. Try the vote again in a moment.".to_owned(),
+            ));
+            return;
+        };
+        let previous_votes =
+            self.conversation.iter().find(|m| m.id == msg_id).and_then(|m| match &m.kind {
+                MessageKind::Poll { my_votes, .. } => Some(my_votes.clone()),
+                _ => None,
+            });
+        let Some(previous) = previous_votes else {
+            return;
+        };
+        let mut option_names: Vec<String> = Vec::new();
+        if let Some(msg) = self.conversation.iter_mut().find(|m| m.id == msg_id) {
+            if let MessageKind::Poll { options, multiple, my_votes, .. } = &mut msg.kind {
+                let (opts, mine) = core::rich::apply_vote(options, my_votes, *multiple, idx);
+                *options = opts;
+                *my_votes = mine;
+                option_names = my_votes.iter().filter_map(|i| options.get(*i)).map(|(name, _)| name.clone()).collect();
+            }
+        }
+        // Mirror the optimistic vote into the session store,
+        // the conversation's source on the next sync.
+        if let Some(session) = &mut self.live {
+            session.pending_channel_votes.entry(msg_id).or_insert(previous);
+            if let Some(msgs) = session.messages.get_mut(&chat_id) {
+                if let Some((_, msg)) = msgs.iter_mut().find(|(_, m)| m.id == msg_id) {
+                    if let MessageKind::Poll { options, multiple, my_votes, .. } = &mut msg.kind {
+                        let (opts, mine) = core::rich::apply_vote(options, my_votes, *multiple, idx);
+                        *options = opts;
+                        *my_votes = mine;
+                    }
+                }
+            }
+        }
+        self.send_backend(BackendCommand::VoteChannelPoll {
+            jid,
+            server_id,
+            options: option_names,
+        });
     }
 
     /// Sends a poll built in the composer builder.

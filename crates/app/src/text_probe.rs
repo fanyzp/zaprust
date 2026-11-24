@@ -24,7 +24,7 @@ const PROBES: &[(&str, &str)] = &[
 
 fn report(ctx: &egui::Context, stack: &str) {
     // Fonts exist only after the first frame pass.
-    ctx.run(egui::RawInput::default(), |_| {});
+    ctx.run_ui(egui::RawInput::default(), |_| {});
     ctx.fonts_mut(|fonts| {
         let chars = fonts.characters(&egui::FontFamily::Proportional).clone();
         for (name, text) in PROBES {

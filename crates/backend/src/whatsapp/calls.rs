@@ -10,7 +10,7 @@ use whatsapp_rust::wacore::types::events::Event;
 use crate::{BackendEvent, EventSink};
 
 #[cfg(feature = "calls")]
-use super::util::lock_cache;
+use super::util::{error_words, lock_cache};
 
 /// The ringing incoming call, kept as the whole protocol event
 /// so accept/reject can borrow the offer out of it.
@@ -184,7 +184,7 @@ pub(super) async fn start_outgoing_call(
     let jid = match chat_jid.parse::<Jid>() {
         Ok(j) => j,
         Err(e) => {
-            events.emit(BackendEvent::Error { message: format!("Invalid chat address: {e}") });
+            events.emit(BackendEvent::Error { message: "Invalid chat address".to_owned() });
             return;
         }
     };
@@ -219,7 +219,7 @@ pub(super) async fn start_outgoing_call(
         }
         Err(e) => {
             audio.shutdown();
-            events.emit(BackendEvent::Error { message: format!("Starting the call failed: {e}") });
+            events.emit(BackendEvent::Error { message: format!("Starting the call failed: {}", error_words(&e)) });
         }
     }
 }
@@ -289,7 +289,7 @@ pub(super) async fn accept_incoming_call(
         }
         Err(e) => {
             audio.shutdown();
-            events.emit(BackendEvent::Error { message: format!("Accepting the call failed: {e}") });
+            events.emit(BackendEvent::Error { message: format!("Accepting the call failed: {}", error_words(&e)) });
         }
     }
 }

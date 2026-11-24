@@ -166,10 +166,10 @@ pub(super) fn build_message_target(
     sender_jid: Option<&String>,
     _from_me: bool,
 ) -> Result<(Jid, Option<Jid>, whatsapp_rust::MessageId), String> {
-    let chat = chat_jid.parse::<Jid>().map_err(|e| format!("Invalid chat address: {e}"))?;
+    let chat = chat_jid.parse::<Jid>().map_err(|e| "Invalid chat address".to_owned())?;
     let sender = sender_jid.and_then(|s| s.parse::<Jid>().ok());
     let mid = whatsapp_rust::MessageId::new(message_id)
-        .map_err(|e| format!("Invalid message id: {e}"))?;
+        .map_err(|e| "Invalid message id".to_owned())?;
     Ok((chat, sender, mid))
 }
 
@@ -178,7 +178,7 @@ pub(super) fn build_message_target(
 pub(super) fn parse_address(text: &str) -> Result<Jid, String> {
     let text = text.trim();
     if text.contains('@') {
-        text.parse::<Jid>().map_err(|e| format!("Invalid address: {e}"))
+        text.parse::<Jid>().map_err(|e| "Invalid address".to_owned())
     } else {
         let digits: String = text.chars().filter(char::is_ascii_digit).collect();
         if digits.len() < 7 {
@@ -345,9 +345,58 @@ fn media_part<'p>(
     None
 }
 
+/// The backend boundary's error whitelist (audit P2-34): a raw
+/// library error never crosses into an event message. This
+/// classifier maps a raw error to one of a fixed set of
+/// category fragments; the call site keeps its own action
+/// prefix ("Sending failed: " plus the fragment), and the raw
+/// error is logged here so nothing is lost. Local I/O errors
+/// never come through here: the call sites that create folders
+/// and files keep the OS wording, which is the wording that
+/// helps there. A fragment is a fixed point of the classifier,
+/// so an error already classified by an inner layer (a send
+/// helper's "upload: ..." string, say) classifies to the same
+/// words again at the outer layer instead of degrading.
+pub(super) fn error_words<E: std::fmt::Display + ?Sized>(error: &E) -> &'static str {
+    let raw = error.to_string();
+    tracing::warn!("backend error at the boundary: {raw}");
+    let m = raw.to_lowercase();
+    if m.contains("timed out") || m.contains("timeout") || m.contains("deadline") {
+        "it took too long; check the connection and try again"
+    } else if m.contains("connection")
+        || m.contains("network")
+        || m.contains("socket")
+        || m.contains("dns")
+        || m.contains("broken pipe")
+        || m.contains("stream closed")
+    {
+        "the connection had a problem; check the internet and try again"
+    } else if m.contains("not authorized")
+        || m.contains("forbidden")
+        || m.contains("401")
+        || m.contains("403")
+    {
+        "WhatsApp refused it for this account"
+    } else if (m.contains("rate") && m.contains("limit"))
+        || m.contains("too many requests")
+        || m.contains("429")
+    {
+        "WhatsApp is rate limiting this account; wait a while and try again"
+    } else if m.contains("item-not-found") || m.contains("not found") || m.contains("404") {
+        "it no longer exists"
+    } else if m.contains("too large") || m.contains("limit exceeded") || m.contains("exceeds") {
+        "it is too large"
+    } else if m.contains("invalid") && (m.contains("jid") || m.contains("address")) {
+        "the address was not accepted"
+    } else {
+        "it failed; try again"
+    }
+}
+
 /// Maps a library download error to the user-facing message: a
-/// budget refusal is the size cap speaking, everything else is a
-/// plain failure. A writer-cleanup failure wraps the real cause, so
+/// budget refusal is the size cap speaking, everything else goes
+/// through the boundary whitelist like every other library
+/// error. A writer-cleanup failure wraps the real cause, so
 /// look one level in.
 fn download_error_message(error: whatsapp_rust::download::ClientDownloadError) -> String {
     use whatsapp_rust::download::{ClientDownloadError, DownloadPolicyError};
@@ -356,7 +405,7 @@ fn download_error_message(error: whatsapp_rust::download::ClientDownloadError) -
             too_large_message()
         }
         ClientDownloadError::WriterCleanup { failure, .. } => download_error_message(*failure),
-        other => format!("Download failed: {other}"),
+        other => format!("Download failed: {}", error_words(&other)),
     }
 }
 

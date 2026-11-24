@@ -255,7 +255,7 @@ pub(super) async fn update_own_profile(
         // and the sync follows. The re-read after the save shows
         // the name either way.
         let outcome =
-            profile.set_push_name(name).await.map_err(|e| format!("Profile change failed: {e}"))?;
+            profile.set_push_name(name).await.map_err(|e| format!("Profile change failed: {}", super::util::error_words(&e)))?;
         match outcome {
             whatsapp_rust::PushNameOutcome::Synced
             | whatsapp_rust::PushNameOutcome::SyncPending { .. } => {}
@@ -268,12 +268,12 @@ pub(super) async fn update_own_profile(
     if let Some(about) = about {
         let about = about.trim();
         if about.is_empty() {
-            profile.clear_text_status().await.map_err(|e| format!("Profile change failed: {e}"))?;
+            profile.clear_text_status().await.map_err(|e| format!("Profile change failed: {}", super::util::error_words(&e)))?;
         } else {
             profile
                 .set_text_status(about, None, TextStatusExpiry::Never)
                 .await
-                .map_err(|e| format!("Profile change failed: {e}"))?;
+                .map_err(|e| format!("Profile change failed: {}", super::util::error_words(&e)))?;
         }
     }
     if let Some(photo) = photo {
@@ -282,13 +282,13 @@ pub(super) async fn update_own_profile(
                 profile
                     .set_profile_picture(jpeg)
                     .await
-                    .map_err(|e| format!("Profile change failed: {e}"))?;
+                    .map_err(|e| format!("Profile change failed: {}", super::util::error_words(&e)))?;
             }
             None => {
                 profile
                     .remove_profile_picture()
                     .await
-                    .map_err(|e| format!("Profile change failed: {e}"))?;
+                    .map_err(|e| format!("Profile change failed: {}", super::util::error_words(&e)))?;
             }
         }
     }
@@ -337,7 +337,7 @@ pub(super) async fn set_group_picture(
             "The picture change could not reach the server. Check the connection and try again."
                 .to_owned()
         } else {
-            format!("The picture change failed: {e}")
+            format!("The picture change failed: {}", super::util::error_words(&e))
         }
     })
 }
@@ -381,7 +381,7 @@ pub(super) async fn lookup_contact(client: &Client, digits: &str) -> ContactOutc
     let results = match client.contacts().is_on_whatsapp(std::slice::from_ref(&jid)).await {
         Ok(results) => results,
         Err(e) => {
-            return ContactOutcome::Failed(format!("The lookup did not reach the server: {e}"));
+            return ContactOutcome::Failed(format!("The lookup did not reach the server: {}", super::util::error_words(&e)));
         }
     };
     let Some(result) = results.into_iter().next() else {

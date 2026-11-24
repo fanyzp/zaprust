@@ -245,11 +245,8 @@ impl App {
         let t = self.tokens();
         let (rect, resp) =
             ui.allocate_exact_size(Vec2::new(ui.available_width(), STATUS_ROW_H), Sense::click());
-        let hov = crate::anim::hover_factor(
-            ui,
-            format!("status_row_{}", row.author_jid),
-            resp.hovered(),
-        );
+        let hov =
+            crate::anim::hover_factor(ui, format!("status_row_{}", row.author_jid), resp.hovered());
         if hov > 0.001 {
             ui.painter().rect_filled(
                 rect,

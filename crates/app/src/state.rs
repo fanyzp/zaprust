@@ -81,6 +81,10 @@ pub(crate) struct Args {
     /// QA hook (--lock-prompt): open the locked-folder code
     /// prompt over the chat list (screenshots).
     lock_prompt: bool,
+    /// QA hook (--locked-open): start with the locked
+    /// folder's gate passed (screenshots; the folder still
+    /// needs a lock code to exist in the data home).
+    locked_open: bool,
     /// QA hook (--blocked): open Settings on the
     /// blocked-contacts page (screenshots).
     blocked_page: bool,
@@ -135,6 +139,7 @@ impl Args {
             calls_missed: false,
             calls_picker: false,
             lock_prompt: false,
+            locked_open: false,
             blocked_page: false,
             saturation: 1.0,
             contrast: 1.0,
@@ -173,6 +178,9 @@ impl Args {
                 }
                 "--lock-prompt" => {
                     args.lock_prompt = true;
+                }
+                "--locked-open" => {
+                    args.locked_open = true;
                 }
                 "--blocked" => {
                     args.blocked_page = true;
@@ -2614,7 +2622,7 @@ impl App {
             app_lock_enabled: false,
             app_locked_now: false,
             lock_logout_armed: false,
-            folder_unlocked: false,
+            folder_unlocked: args.locked_open,
             code_prompt: if args.lock_prompt { Some(CodePrompt::OpenFolder) } else { None },
             code_entry: String::new(),
             code_entry_repeat: String::new(),

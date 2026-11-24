@@ -210,13 +210,21 @@ impl App {
                             .color(rgb(t.text_secondary)),
                     );
                     ui.add_space(SP_2_5);
-                    let field = crate::widgets::text_field_password(
-                        ui,
-                        t,
-                        &mut self.code_entry,
-                        &crate::i18n::t("locked.code_hint"),
-                        240.0,
-                    );
+                    // The field's frame fills its allocation,
+                    // so the allocation is what sets the width:
+                    // a fixed 240 pt slot, centered by the
+                    // layout, never the whole window.
+                    let field = ui
+                        .allocate_ui(Vec2::new(240.0, 38.0), |ui| {
+                            crate::widgets::text_field_password(
+                                ui,
+                                t,
+                                &mut self.code_entry,
+                                &crate::i18n::t("locked.code_hint"),
+                                240.0,
+                            )
+                        })
+                        .inner;
                     if !field.has_focus() && self.code_error.is_none() {
                         field.request_focus();
                     }

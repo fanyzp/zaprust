@@ -15681,3 +15681,404 @@ mod start_fresh_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
+
+#[cfg(test)]
+mod channel_tests {
+    use super::*;
+    use crate::state::{App, Args};
+
+    const CHANNEL_JID: &str = "10000000003@newsletter";
+    const OWN_JID: &str = "10000000008@newsletter";
+
+    /// An app in live mode on a hand-fed backend channel, the
+    /// same harness shape as the other live test modules.
+    fn live_app() -> (
+        App,
+        std::sync::mpsc::Sender<BackendEvent>,
+        egui::Context,
+        std::sync::mpsc::Receiver<BackendCommand>,
+    ) {
+        let ctx = egui::Context::default();
+        crate::theme::install_fonts(&ctx);
+        let mut app = App::new(Args::parse(), &ctx);
+        app.live_start_error = None;
+        app.logged_out = false;
+        let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<BackendCommand>();
+        let (evt_tx, evt_rx) = std::sync::mpsc::channel::<BackendEvent>();
+        app.live = Some(LiveSession {
+            channels: BackendChannels { commands: cmd_tx, events: evt_rx },
+            status: LinkStatus::Linked,
+            qr: None,
+            qr_expires_at: None,
+            pair_code: None,
+            pair_code_at: None,
+            account: "Test account".to_owned(),
+            connected_at: None,
+            syncing: false,
+            sync_last_activity: None,
+            synced_once: false,
+            store: Some(store::Store::open_in_memory().unwrap()),
+            jids: HashMap::new(),
+            messages: HashMap::new(),
+            times: HashMap::new(),
+            fake: true,
+            logout_requested: false,
+            flags: HashMap::new(),
+            engaged_chats: std::collections::HashSet::new(),
+            poll_ballots: HashMap::new(),
+            photo_refs: HashMap::new(),
+            voice_refs: HashMap::new(),
+            video_refs: HashMap::new(),
+            video_thumbs: HashMap::new(),
+            poster_refs: HashMap::new(),
+            video_dims: HashMap::new(),
+            document_refs: HashMap::new(),
+            gif_videos: std::collections::HashSet::new(),
+            sticker_anim: HashMap::new(),
+            sticker_thumbs: HashMap::new(),
+            document_thumbs: HashMap::new(),
+            location_thumbs: HashMap::new(),
+            preview_thumbs: HashMap::new(),
+            view_once_ids: std::collections::HashSet::new(),
+            verified_names: HashMap::new(),
+            verified_checked: std::collections::HashSet::new(),
+            sticker_refs: HashMap::new(),
+            photo_thumbs: HashMap::new(),
+            message_mentions: HashMap::new(),
+            names: HashMap::new(),
+            avatar_bytes: HashMap::new(),
+            avatar_missing: HashMap::new(),
+            avatar_requested: std::collections::HashSet::new(),
+            history: HashMap::new(),
+            channel_meta: HashMap::new(),
+            channel_infos: HashMap::new(),
+            server_ids: HashMap::new(),
+            channel_history: HashMap::new(),
+            pending_channel_votes: HashMap::new(),
+            channels_list_requested: false,
+            history_armed: std::collections::HashSet::new(),
+        });
+        app.live_mode = true;
+        (app, evt_tx, ctx, cmd_rx)
+    }
+
+    fn drain_all(app: &mut App, ctx: &egui::Context) {
+        for _ in 0..64 {
+            app.poll_backend(ctx);
+            if app.event_queue.is_empty() {
+                return;
+            }
+        }
+        panic!("the event queue did not drain");
+    }
+
+    fn sent_commands(cmd_rx: &std::sync::mpsc::Receiver<BackendCommand>) -> Vec<BackendCommand> {
+        let mut out = Vec::new();
+        while let Ok(cmd) = cmd_rx.try_recv() {
+            out.push(cmd);
+        }
+        out
+    }
+
+    fn channel_chat(jid: &str, title: &str) -> BackendEvent {
+        BackendEvent::ChatUpsert(LiveChat {
+            jid: jid.to_owned(),
+            title: title.to_owned(),
+            kind: LiveChatKind::Channel,
+            preview: String::new(),
+            preview_sender: None,
+            timestamp: 1_700_000_100,
+            unread: 0,
+            archived: false,
+            pinned: false,
+            ephemeral_secs: 0,
+            muted: false,
+            mute_until: 0,
+            parent_jid: None,
+            is_parent: false,
+        })
+    }
+
+    fn channel_meta(jid: &str, role: backend::LiveChannelRole) -> backend::LiveChannel {
+        backend::LiveChannel {
+            jid: jid.to_owned(),
+            name: "City News".to_owned(),
+            description: "City news and events".to_owned(),
+            followers: 12_483,
+            verified: true,
+            role,
+            muted: false,
+            invite_code: Some("CityNewsDemo".to_owned()),
+            created_at: 1_680_000_000,
+        }
+    }
+
+    /// Files the channel's chat row and opens it; returns the
+    /// chat id. Opening sends the watch and first history
+    /// page commands, which the command receiver holds.
+    fn open_channel(
+        app: &mut App,
+        tx: &std::sync::mpsc::Sender<BackendEvent>,
+        ctx: &egui::Context,
+        jid: &str,
+    ) -> u64 {
+        tx.send(channel_chat(jid, "City News")).unwrap();
+        drain_all(app, ctx);
+        let chat_id = jid_id(jid);
+        app.select_chat_now(chat_id);
+        chat_id
+    }
+
+    fn poll_message() -> LiveMessage {
+        let mut msg = LiveMessage::text(
+            "fake-ch-4",
+            CHANNEL_JID,
+            Some("City News".to_owned()),
+            "",
+            1_699_995_000,
+            false,
+        );
+        msg.server_id = Some(104);
+        msg.kind = backend::LiveMessageKind::Poll {
+            question: "Should the night market run every weekend?".to_owned(),
+            options: vec![("Every weekend".to_owned(), 412), ("Once a month".to_owned(), 187)],
+            multiple: false,
+            my_votes: Vec::new(),
+            correct: None,
+        };
+        msg
+    }
+
+    fn mirror_message(app: &App, chat_id: u64, mid: u64) -> Message {
+        app.live
+            .as_ref()
+            .unwrap()
+            .messages
+            .get(&chat_id)
+            .unwrap()
+            .iter()
+            .find(|(_, m)| m.id == mid)
+            .unwrap()
+            .1
+            .clone()
+    }
+
+    /// The subscribed list caches metadata by JID, and the
+    /// history latch settles: an unfinished page returns the
+    /// chat to idle, an exhausted one latches.
+    #[test]
+    fn channels_listed_caches_meta_and_history_latch_settles() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        let chat_id = open_channel(&mut app, &tx, &ctx, CHANNEL_JID);
+        assert_eq!(
+            app.live.as_ref().unwrap().channel_history.get(&chat_id),
+            Some(&HistoryFetch::Fetching),
+            "opening a channel starts its first history page"
+        );
+        tx.send(BackendEvent::ChannelsListed {
+            channels: vec![channel_meta(CHANNEL_JID, backend::LiveChannelRole::Follower)],
+        })
+        .unwrap();
+        tx.send(BackendEvent::ChannelHistoryFetched {
+            jid: CHANNEL_JID.to_owned(),
+            added: 5,
+            end_of_history: false,
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        let session = app.live.as_ref().unwrap();
+        assert_eq!(
+            session.channel_meta.get(CHANNEL_JID).map(|m| m.followers),
+            Some(12_483),
+            "the metadata is cached by JID"
+        );
+        assert!(
+            !session.channel_history.contains_key(&chat_id),
+            "an unfinished page returns the latch to idle"
+        );
+        app.fetch_channel_page(CHANNEL_JID, Some(102));
+        tx.send(BackendEvent::ChannelHistoryFetched {
+            jid: CHANNEL_JID.to_owned(),
+            added: 1,
+            end_of_history: true,
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(
+            app.live.as_ref().unwrap().channel_history.get(&chat_id),
+            Some(&HistoryFetch::Exhausted),
+            "the last page latches the history as exhausted"
+        );
+    }
+
+    /// A live counter payload resolves its update by server
+    /// ID and replaces the reaction counts and the poll
+    /// tallies (matched back to options by protocol hash).
+    #[test]
+    fn channel_counters_apply_by_server_id() {
+        use sha2::Digest as _;
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        let chat_id = open_channel(&mut app, &tx, &ctx, CHANNEL_JID);
+        tx.send(BackendEvent::MessageUpsert(poll_message())).unwrap();
+        drain_all(&mut app, &ctx);
+        let mid = message_id(CHANNEL_JID, "fake-ch-4");
+        let hash = |name: &str| -> [u8; 32] { sha2::Sha256::digest(name.as_bytes()).into() };
+        tx.send(BackendEvent::ChannelCountersUpdated {
+            counters: backend::LiveChannelCounters {
+                jid: CHANNEL_JID.to_owned(),
+                server_id: 104,
+                reactions: vec![("👍".to_owned(), 3)],
+                poll_votes: vec![(hash("Every weekend"), 413), (hash("Once a month"), 187)],
+            },
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        let msg = mirror_message(&app, chat_id, mid);
+        assert_eq!(msg.reactions, vec![("👍".to_owned(), 3)], "the counts are replaced");
+        match &msg.kind {
+            MessageKind::Poll { options, .. } => {
+                assert_eq!(options[0].1, 413, "the hash-matched tally moved");
+                assert_eq!(options[1].1, 187, "the other tally is untouched");
+            }
+            other => panic!("expected the poll, got {other:?}"),
+        }
+        let visible = app.conversation.iter().find(|m| m.id == mid).expect("the poll is open");
+        assert_eq!(visible.reactions, vec![("👍".to_owned(), 3)], "the open view follows");
+    }
+
+    /// A channel poll vote is optimistic and keyed by server
+    /// ID; its failure restores the previous selection and
+    /// tallies, and speaks through the banner.
+    #[test]
+    fn channel_poll_vote_failure_rolls_back() {
+        let (mut app, tx, ctx, cmd_rx) = live_app();
+        let chat_id = open_channel(&mut app, &tx, &ctx, CHANNEL_JID);
+        tx.send(BackendEvent::MessageUpsert(poll_message())).unwrap();
+        drain_all(&mut app, &ctx);
+        let mid = message_id(CHANNEL_JID, "fake-ch-4");
+        let _ = sent_commands(&cmd_rx);
+        app.vote_poll(mid, 0);
+        let sent = sent_commands(&cmd_rx);
+        assert!(
+            sent.iter().any(|c| matches!(c, BackendCommand::VoteChannelPoll { server_id: 104, options, .. } if options == &vec!["Every weekend".to_owned()])),
+            "the vote goes out as option names on the server ID: {sent:?}"
+        );
+        let msg = app.conversation.iter().find(|m| m.id == mid).unwrap();
+        match &msg.kind {
+            MessageKind::Poll { options, my_votes, .. } => {
+                assert_eq!(my_votes, &vec![0], "the optimistic ballot shows");
+                assert_eq!(options[0].1, 413, "the optimistic tally moved");
+            }
+            other => panic!("expected the poll, got {other:?}"),
+        }
+        tx.send(BackendEvent::ChannelPollVoteFailed {
+            jid: CHANNEL_JID.to_owned(),
+            server_id: 104,
+            message: "That vote could not be sent: connection lost".to_owned(),
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        let msg = mirror_message(&app, chat_id, mid);
+        match &msg.kind {
+            MessageKind::Poll { options, my_votes, .. } => {
+                assert!(my_votes.is_empty(), "the ballot is restored");
+                assert_eq!(options[0].1, 412, "the tally is restored");
+            }
+            other => panic!("expected the poll, got {other:?}"),
+        }
+        assert_eq!(
+            app.notice.as_ref().map(|n| n.kind),
+            Some(crate::state::NoticeKind::Error),
+            "the failure reaches the banner"
+        );
+    }
+
+    /// A channel reaction sends the channel command with the
+    /// update's server ID; its failure restores the previous
+    /// reaction state.
+    #[test]
+    fn channel_reaction_failure_rolls_back() {
+        let (mut app, tx, ctx, cmd_rx) = live_app();
+        let chat_id = open_channel(&mut app, &tx, &ctx, CHANNEL_JID);
+        let mut msg = LiveMessage::text(
+            "fake-ch-1",
+            CHANNEL_JID,
+            Some("City News".to_owned()),
+            "Morning briefing",
+            1_699_900_000,
+            false,
+        );
+        msg.server_id = Some(101);
+        msg.reactions = vec![("👍".to_owned(), 14)];
+        tx.send(BackendEvent::MessageUpsert(msg)).unwrap();
+        drain_all(&mut app, &ctx);
+        let mid = message_id(CHANNEL_JID, "fake-ch-1");
+        let _ = sent_commands(&cmd_rx);
+        app.apply_reaction(mid, "❤️");
+        let sent = sent_commands(&cmd_rx);
+        assert!(
+            sent.iter().any(|c| matches!(c, BackendCommand::ReactToChannelUpdate { server_id: 101, emoji, .. } if emoji == "❤️")),
+            "the reaction goes out on the server ID: {sent:?}"
+        );
+        assert_eq!(app.my_reactions.get(&mid).map(String::as_str), Some("❤️"));
+        tx.send(BackendEvent::ChannelReactionFailed {
+            jid: CHANNEL_JID.to_owned(),
+            server_id: 101,
+            message: "That reaction could not be sent: connection lost".to_owned(),
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(!app.my_reactions.contains_key(&mid), "my reaction is rolled back");
+        let msg = mirror_message(&app, chat_id, mid);
+        assert_eq!(msg.reactions, vec![("👍".to_owned(), 14)], "the counts are restored");
+    }
+
+    /// A created channel opens: the create form closes and
+    /// the new channel's chat becomes the selection.
+    #[test]
+    fn channel_created_opens_the_new_channel() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        app.channel_create_open = true;
+        tx.send(channel_chat(OWN_JID, "Weekend Builds")).unwrap();
+        tx.send(BackendEvent::ChannelCreated { channel: channel_meta(OWN_JID, backend::LiveChannelRole::Owner) })
+            .unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(!app.channel_create_open, "the form closes");
+        assert_eq!(app.selected_chat, jid_id(OWN_JID), "the new channel opens");
+        assert_eq!(
+            app.live.as_ref().unwrap().channel_meta.get(OWN_JID).map(|m| m.role),
+            Some(backend::LiveChannelRole::Owner),
+            "the created metadata is cached"
+        );
+    }
+
+    /// Following from the panel's preview card caches the
+    /// followed metadata and clears the panel notice; a
+    /// lookup failure lands in the panel, in place.
+    #[test]
+    fn channel_follow_and_lookup_failure_lands_in_the_panel() {
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        tx.send(BackendEvent::ChannelLookupFailed {
+            message: "That channel could not be found. Check the link and try again.".to_owned(),
+        })
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(app.channel_found.is_none(), "no card for a failed lookup");
+        assert!(
+            app.channel_panel_notice.as_deref().is_some_and(|n| n.contains("could not be found")),
+            "the failure is stated in the panel: {:?}",
+            app.channel_panel_notice
+        );
+        tx.send(BackendEvent::ChannelFound { channel: channel_meta(CHANNEL_JID, backend::LiveChannelRole::Guest) })
+            .unwrap();
+        tx.send(BackendEvent::ChannelFollowed { channel: channel_meta(CHANNEL_JID, backend::LiveChannelRole::Follower) })
+            .unwrap();
+        drain_all(&mut app, &ctx);
+        assert!(app.channel_panel_notice.is_none(), "the follow clears the panel notice");
+        assert_eq!(
+            app.channel_found.as_ref().map(|c| c.role),
+            Some(backend::LiveChannelRole::Follower),
+            "the card flips to following"
+        );
+    }
+}

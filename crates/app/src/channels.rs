@@ -269,19 +269,16 @@ impl App {
                                     let role = meta.as_ref().map(|m| m.role);
                                     if role != Some(backend::LiveChannelRole::Owner)
                                         && role.is_some()
-                                    {
-                                        if crate::widgets::menu_item_danger(
+                                        && crate::widgets::menu_item_danger(
                                             ui,
                                             t,
                                             crate::icons::Icon::Delete,
                                             &crate::i18n::t("channels.unfollow"),
                                         )
                                         .clicked()
-                                        {
-                                            row_pick =
-                                                Some((chat.id, ChannelPick::Unfollow));
-                                            ui.close();
-                                        }
+                                    {
+                                        row_pick = Some((chat.id, ChannelPick::Unfollow));
+                                        ui.close();
                                     }
                                 }
                             });

@@ -1230,7 +1230,8 @@ impl Store {
         // the archived tallies, my answer and the ballots are
         // the state of record and survive it.
         let mut event_ballots: Vec<(String, backend::EventRsvp)> = msg.event_ballots.clone();
-        let existing_event = if matches!(stored_kind, Some(backend::LiveMessageKind::Event { .. })) {
+        let existing_event = if matches!(stored_kind, Some(backend::LiveMessageKind::Event { .. }))
+        {
             Self::read_message_data(conn, &msg.chat_jid, &msg.id)?
                 .filter(|data| matches!(data.kind, Some(backend::LiveMessageKind::Event { .. })))
         } else {

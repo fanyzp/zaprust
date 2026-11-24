@@ -45,7 +45,11 @@ fn validate_event_draft(draft: &EventDraft) -> Result<EventFields, &'static str>
     };
     let clean = |s: &str| {
         let s = s.trim();
-        if s.is_empty() { None } else { Some(s.to_owned()) }
+        if s.is_empty() {
+            None
+        } else {
+            Some(s.to_owned())
+        }
     };
     Ok(EventFields {
         name,
@@ -99,10 +103,11 @@ impl App {
         guests: Option<i32>,
     ) {
         let chat_id = self.selected_chat;
-        let previous = self.conversation.iter().find(|m| m.id == msg_id).and_then(|m| match &m.kind {
-            MessageKind::Event { my_rsvp, .. } => Some(*my_rsvp),
-            _ => None,
-        });
+        let previous =
+            self.conversation.iter().find(|m| m.id == msg_id).and_then(|m| match &m.kind {
+                MessageKind::Event { my_rsvp, .. } => Some(*my_rsvp),
+                _ => None,
+            });
         let Some(previous) = previous else {
             return;
         };
@@ -406,8 +411,11 @@ impl App {
             return;
         };
         let exiting = !open;
-        let mut exit_draft =
-            if exiting { ctx.data(|d| d.get_temp::<EventDraft>(egui::Id::unique(snap_key))) } else { None };
+        let mut exit_draft = if exiting {
+            ctx.data(|d| d.get_temp::<EventDraft>(egui::Id::unique(snap_key)))
+        } else {
+            None
+        };
         let mut submit = false;
         let mut cancel = false;
         egui::Area::new(egui::Id::unique(area_key))
@@ -463,7 +471,12 @@ impl App {
                     });
                 });
             });
-        crate::anim::popup_transform(ctx, egui::Id::unique(area_key), ctx.content_rect().center(), menu_p);
+        crate::anim::popup_transform(
+            ctx,
+            egui::Id::unique(area_key),
+            ctx.content_rect().center(),
+            menu_p,
+        );
         if exiting {
             // The exit run only replays the last frame of the
             // form; its buttons and fields edit the snapshot.
@@ -520,7 +533,13 @@ fn event_form_fields(ui: &mut egui::Ui, t: core::theme::Tokens, draft: &mut Even
         &crate::i18n::t("event.end_hint"),
         field_w,
     );
-    crate::widgets::text_field(ui, t, &mut draft.location, &crate::i18n::t("event.location"), field_w);
+    crate::widgets::text_field(
+        ui,
+        t,
+        &mut draft.location,
+        &crate::i18n::t("event.location"),
+        field_w,
+    );
     crate::widgets::text_field(ui, t, &mut draft.link, &crate::i18n::t("event.link"), field_w);
     ui.checkbox(&mut draft.scheduled_call, crate::i18n::t("event.scheduled_call"));
     ui.checkbox(&mut draft.extra_guests, crate::i18n::t("event.extra_guests"));

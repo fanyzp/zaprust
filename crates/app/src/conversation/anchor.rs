@@ -268,10 +268,8 @@ mod tests {
     /// covers every row intersecting the viewport.
     #[test]
     fn spacers_conserve_the_total_and_cover_the_viewport() {
-        let table = Heights::new(
-            vec![Some(40.0), None, Some(30.0), Some(80.0), None, Some(50.0)],
-            55.0,
-        );
+        let table =
+            Heights::new(vec![Some(40.0), None, Some(30.0), Some(80.0), None, Some(50.0)], 55.0);
         for offset in [0.0, 39.0, 40.0, 95.0, 200.0, 259.0] {
             for viewport in [60.0, 130.0, 400.0] {
                 let (start, end, top, bottom) = table.visible_range(offset, viewport, 2);
@@ -280,7 +278,10 @@ mod tests {
                     approx(top + rendered + bottom, table.total()),
                     "spacers conserve the total at offset {offset} viewport {viewport}"
                 );
-                assert!(approx(top, table.offset_of(start)), "the top spacer is the range's prefix");
+                assert!(
+                    approx(top, table.offset_of(start)),
+                    "the top spacer is the range's prefix"
+                );
                 let (first, _) = table.anchor_at(offset);
                 assert!(start <= first && first < end, "the top row is rendered");
                 let mut last = first;

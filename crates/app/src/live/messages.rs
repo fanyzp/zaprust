@@ -263,9 +263,8 @@ impl crate::state::App {
             if let Some(store) = self.live.as_ref().and_then(|s| s.store.as_ref()) {
                 if let Ok(rows) = store.messages(chat_jid) {
                     if let Some((archived, _)) = rows.into_iter().find(|(m, _)| m.id == event_id) {
-                        if let backend::LiveMessageKind::Event {
-                            my_rsvp: archived_mine, ..
-                        } = &archived.kind
+                        if let backend::LiveMessageKind::Event { my_rsvp: archived_mine, .. } =
+                            &archived.kind
                         {
                             let t = core::rich::apply_event_response(
                                 archived_mine.map(crate::live::to_rsvp),
@@ -426,12 +425,8 @@ impl crate::state::App {
         else {
             return;
         };
-        let (name, description, location, join_link) = (
-            name.clone(),
-            description.clone(),
-            location.clone(),
-            join_link.clone(),
-        );
+        let (name, description, location, join_link) =
+            (name.clone(), description.clone(), location.clone(), join_link.clone());
         let (start_time, end_time, scheduled_call, extra_guests, canceled) =
             (*start_time, *end_time, *scheduled_call, *extra_guests, *canceled);
         let merge = |kind: &mut core::model::MessageKind| {

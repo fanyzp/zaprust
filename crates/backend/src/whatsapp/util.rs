@@ -46,8 +46,9 @@ pub(super) type PollSecrets = std::sync::Arc<
 /// whose secret none of those paths supplied answers responses
 /// and edits with an honest error, and its incoming responses
 /// are dropped undecrypted. Secrets are never logged.
-pub(super) type EventSecrets =
-    std::sync::Arc<std::sync::Mutex<std::collections::HashMap<(String, String), (String, Vec<u8>)>>>;
+pub(super) type EventSecrets = std::sync::Arc<
+    std::sync::Mutex<std::collections::HashMap<(String, String), (String, Vec<u8>)>>,
+>;
 
 /// Cap for the event-secret cache, with the same bound and the
 /// same eviction safety as [`POLL_SECRETS_CAP`].
@@ -69,9 +70,7 @@ pub(super) fn cap_event_secrets(secrets: &EventSecrets) {
 /// message, or None for anything else. The secret is the
 /// `message_secret` of the message context info, exactly as
 /// for polls ([`received_poll_secret`]).
-pub(super) fn received_event_secret(
-    msg: &whatsapp_rust::prelude::wa::Message,
-) -> Option<Vec<u8>> {
+pub(super) fn received_event_secret(msg: &whatsapp_rust::prelude::wa::Message) -> Option<Vec<u8>> {
     msg.event_message.as_option()?;
     msg.message_context_info
         .as_option()
@@ -82,7 +81,7 @@ pub(super) fn received_event_secret(
 /// Extracts an event response's routing and ciphertext from a
 /// protocol message: the event's message ID (from the
 /// response's creation message key) and the encrypted payload
-/// + IV. Returns `None` for anything that is not an event
+/// with its IV. Returns `None` for anything that is not an event
 /// response carrying both parts. Decryption itself needs the
 /// creator and responder JIDs in their wire forms, so it
 /// happens in the session's message handler, not here.

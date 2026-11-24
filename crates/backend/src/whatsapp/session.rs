@@ -884,29 +884,28 @@ pub(super) async fn run_async(
                         .cloned();
                     if let Some((creator, secret)) = cached {
                         let responder = ctx.info.source.sender.clone();
-                        let creator_str = creator
-                            .parse::<Jid>()
-                            .map(|j| j.to_non_ad_string())
-                            .unwrap_or(creator);
-                        let decoded = whatsapp_rust::wacore::event::decrypt_event_response_with_secret(
-                            &payload,
-                            &iv,
-                            &secret,
-                            &event_id,
-                            &creator_str,
-                            &responder.to_non_ad_string(),
-                        );
+                        let creator_str =
+                            creator.parse::<Jid>().map(|j| j.to_non_ad_string()).unwrap_or(creator);
+                        let decoded =
+                            whatsapp_rust::wacore::event::decrypt_event_response_with_secret(
+                                &payload,
+                                &iv,
+                                &secret,
+                                &event_id,
+                                &creator_str,
+                                &responder.to_non_ad_string(),
+                            );
                         if let Ok(decoded) = decoded {
                             let response = match decoded.response {
-                                Some(
-                                    whatsapp_rust::EventResponseType::Going,
-                                ) => Some(crate::EventRsvp::Going),
-                                Some(
-                                    whatsapp_rust::EventResponseType::Maybe,
-                                ) => Some(crate::EventRsvp::Maybe),
-                                Some(
-                                    whatsapp_rust::EventResponseType::NotGoing,
-                                ) => Some(crate::EventRsvp::NotGoing),
+                                Some(whatsapp_rust::EventResponseType::Going) => {
+                                    Some(crate::EventRsvp::Going)
+                                }
+                                Some(whatsapp_rust::EventResponseType::Maybe) => {
+                                    Some(crate::EventRsvp::Maybe)
+                                }
+                                Some(whatsapp_rust::EventResponseType::NotGoing) => {
+                                    Some(crate::EventRsvp::NotGoing)
+                                }
                                 _ => None,
                             };
                             if let Some(response) = response {
@@ -962,10 +961,8 @@ pub(super) async fn run_async(
                                 {
                                     if let Some(event) = edited.event_message.as_option() {
                                         sink.emit(
-                                            super::translate::event_fields(event).into_edited(
-                                                chat_jid,
-                                                target_id.to_string(),
-                                            ),
+                                            super::translate::event_fields(event)
+                                                .into_edited(chat_jid, target_id.to_string()),
                                         );
                                         return;
                                     }
@@ -1737,15 +1734,23 @@ pub(super) async fn run_async(
                             };
                             let params = whatsapp_rust::EventCreationParams::builder()
                                 .name(name)
-                                .maybe_description(
-                                    if description.is_empty() { None } else { Some(description) },
-                                )
-                                .maybe_start_time(if start_time > 0 { Some(start_time) } else { None })
+                                .maybe_description(if description.is_empty() {
+                                    None
+                                } else {
+                                    Some(description)
+                                })
+                                .maybe_start_time(if start_time > 0 {
+                                    Some(start_time)
+                                } else {
+                                    None
+                                })
                                 .maybe_end_time(if end_time > 0 { Some(end_time) } else { None })
                                 .maybe_location(location_msg)
-                                .maybe_join_link(
-                                    if join_link.is_empty() { None } else { Some(join_link) },
-                                )
+                                .maybe_join_link(if join_link.is_empty() {
+                                    None
+                                } else {
+                                    Some(join_link)
+                                })
                                 .maybe_is_scheduled_call(scheduled_call.then_some(true))
                                 .maybe_extra_guests_allowed(extra_guests.then_some(true))
                                 .build();
@@ -1847,10 +1852,7 @@ pub(super) async fn run_async(
                                 }
                             }
                             Err(e) => {
-                                fail(format!(
-                                    "Invalid event creator address: {}",
-                                    error_words(&e)
-                                ));
+                                fail(format!("Invalid event creator address: {}", error_words(&e)));
                             }
                         },
                         (None, _) => fail(
@@ -1944,7 +1946,8 @@ pub(super) async fn run_async(
                                             if !location.is_empty() {
                                                 let mut loc = whatsapp_rust::prelude::wa::message::LocationMessage::default();
                                                 loc.name = Some(location);
-                                                event.location = whatsapp_rust::prelude::MessageField::some(loc);
+                                                event.location =
+                                                    whatsapp_rust::prelude::MessageField::some(loc);
                                             }
                                             if !join_link.is_empty() {
                                                 event.join_link = Some(join_link);
@@ -1958,12 +1961,18 @@ pub(super) async fn run_async(
                                             if canceled {
                                                 event.is_canceled = Some(true);
                                             }
-                                            let mut content = whatsapp_rust::prelude::wa::Message::default();
-                                            content.event_message = whatsapp_rust::prelude::MessageField::some(event);
-                                            let request = whatsapp_rust::EditRequest::new(target, content)
-                                                .with_secret(&creator_jid, &secret);
+                                            let mut content =
+                                                whatsapp_rust::prelude::wa::Message::default();
+                                            content.event_message =
+                                                whatsapp_rust::prelude::MessageField::some(event);
+                                            let request =
+                                                whatsapp_rust::EditRequest::new(target, content)
+                                                    .with_secret(&creator_jid, &secret);
                                             if let Err(e) = client.edit_message(request).await {
-                                                fail(format!("Editing the event failed: {}", error_words(&e)));
+                                                fail(format!(
+                                                    "Editing the event failed: {}",
+                                                    error_words(&e)
+                                                ));
                                             }
                                         }
                                         Err(_) => {
@@ -1973,10 +1982,16 @@ pub(super) async fn run_async(
                                 }
                                 (Err(e), _, _) => fail(e),
                                 (_, Err(e), _) => {
-                                    fail(format!("Invalid event creator address: {}", error_words(&e)));
+                                    fail(format!(
+                                        "Invalid event creator address: {}",
+                                        error_words(&e)
+                                    ));
                                 }
                                 (_, _, Err(_)) => {
-                                    fail("The event's archived creation secret is malformed.".to_owned());
+                                    fail(
+                                        "The event's archived creation secret is malformed."
+                                            .to_owned(),
+                                    );
                                 }
                             }
                         }

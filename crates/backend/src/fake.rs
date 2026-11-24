@@ -755,14 +755,8 @@ pub fn scripted_messages() -> Vec<LiveMessage> {
     event.event_ballots = vec![(FAKE_DM_JID.to_owned(), crate::EventRsvp::Going)];
     // My own event in the same chat: the edit and cancel
     // targets for the demo, with no answers yet.
-    let mut my_event = LiveMessage::text(
-        "fake-event-mine-1",
-        FAKE_DM_JID,
-        None,
-        "",
-        1_700_000_285,
-        true,
-    );
+    let mut my_event =
+        LiveMessage::text("fake-event-mine-1", FAKE_DM_JID, None, "", 1_700_000_285, true);
     my_event.kind = crate::LiveMessageKind::Event {
         name: "Release retrospective".to_owned(),
         description: String::new(),
@@ -2497,7 +2491,12 @@ impl Backend for FakeBackend {
                             .push(format!("event_secret_registration:{chat_jid}:{message_id}"));
                     }
                 }
-                BackendCommand::RespondEvent { chat_jid, message_id, response, extra_guest_count } => {
+                BackendCommand::RespondEvent {
+                    chat_jid,
+                    message_id,
+                    response,
+                    extra_guest_count,
+                } => {
                     // The contract matches the real backend: an
                     // answer is answered by an EventResponse event
                     // carrying my new current answer (last-response-
@@ -2600,8 +2599,9 @@ impl Backend for FakeBackend {
                         events.emit(BackendEvent::EventEditFailed {
                             chat_jid,
                             message_id,
-                            message: "Editing the event failed: that event is not part of this chat."
-                                .to_owned(),
+                            message:
+                                "Editing the event failed: that event is not part of this chat."
+                                    .to_owned(),
                         });
                     }
                 }
@@ -4449,7 +4449,14 @@ mod tests {
             .unwrap();
         let answered = collect_until(&ch, &|e| matches!(e, BackendEvent::EventResponse { .. }));
         assert!(
-            matches!(&answered[answered.len() - 1], BackendEvent::EventResponse { from_me: true, response: crate::EventRsvp::Going, .. }),
+            matches!(
+                &answered[answered.len() - 1],
+                BackendEvent::EventResponse {
+                    from_me: true,
+                    response: crate::EventRsvp::Going,
+                    ..
+                }
+            ),
             "my answer echoes back: {answered:?}"
         );
         ch.commands

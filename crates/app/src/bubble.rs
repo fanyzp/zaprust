@@ -1115,7 +1115,8 @@ pub(crate) fn message_bubble(
             let show_guests = event_show_guests(*extra_guests, *my_rsvp, *canceled);
             // The RSVP row needs room for three buttons; the
             // card never goes narrower than that.
-            content_w = content_w.max(body_galley.size().x).max(if *canceled { 0.0 } else { 280.0 });
+            content_w =
+                content_w.max(body_galley.size().x).max(if *canceled { 0.0 } else { 280.0 });
             kind_h = event_card_h(
                 body_galley.size().y,
                 desc_h,
@@ -2181,8 +2182,13 @@ pub(crate) fn message_bubble(
                     bubble_color,
                 );
                 let when = crate::live::fmt_event_when(*start_time, *end_time);
-                let g =
-                    layout_text(ui, &when, FontId::proportional(INNER_BODY_SIZE), secondary, inner_w - 20.0);
+                let g = layout_text(
+                    ui,
+                    &when,
+                    FontId::proportional(INNER_BODY_SIZE),
+                    secondary,
+                    inner_w - 20.0,
+                );
                 painter.galley(Pos2::new(x + 20.0, cy + 2.0), g, secondary);
                 cy += EVENT_LINE_H;
                 if !location.is_empty() {
@@ -2330,7 +2336,8 @@ pub(crate) fn message_bubble(
                         painter.galley(Pos2::new(x + 34.0, cy + 3.0), g, secondary);
                         let count = format!("{}", layout.event_guests);
                         let cw = measure_text(ui, &count, FontId::proportional(13.0));
-                        let g = layout_text(ui, &count, FontId::proportional(13.0), text_color, 30.0);
+                        let g =
+                            layout_text(ui, &count, FontId::proportional(13.0), text_color, 30.0);
                         painter.galley(Pos2::new(x + inner_w - 34.0 - cw, cy + 3.0), g, text_color);
                         painter.circle_filled(
                             Pos2::new(x + inner_w - 13.0, cy + 12.0),

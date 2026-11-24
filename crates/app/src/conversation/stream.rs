@@ -281,8 +281,7 @@ impl App {
                     };
                     let prefix_h = ui.cursor().top() - content_top;
                     let offset_rows = (self.stream_last_offset - prefix_h).max(0.0);
-                    let stick_engaged =
-                        !self.qa_scroll_top && self.scroll_to_message.is_none();
+                    let stick_engaged = !self.qa_scroll_top && self.scroll_to_message.is_none();
                     let win_offset = if stick_engaged
                         && (self.stream_was_bottom || self.stream_last_viewport == 0.0)
                     {
@@ -560,7 +559,7 @@ impl App {
                     if msg.kind == core::model::MessageKind::System {
                         system_chip(ui, t, &msg.body);
                         ui.add_space(RUN_GAP_SPACE);
-                    if windowed {
+                        if windowed {
                             let settled = (ui.cursor().top() - iter_top - iter_rise).max(0.0);
                             self.stream_heights.insert(
                                 crate::conversation::anchor::RowKey::Row(
@@ -568,7 +567,7 @@ impl App {
                                 ),
                                 settled,
                             );
-                        if anchor_fix.is_some_and(|(ti, _)| ti == iter_idx) {
+                            if anchor_fix.is_some_and(|(ti, _)| ti == iter_idx) {
                                 anchor_fix_rect = Some(egui::Rect::from_min_size(
                                     egui::Pos2::new(rect.left(), iter_top),
                                     egui::Vec2::new(rect.width(), ui.cursor().top() - iter_top),
@@ -924,20 +923,20 @@ impl App {
                         RUN_TIGHT_SPACE
                     });
                     if windowed {
-                            let settled = (ui.cursor().top() - iter_top - iter_rise).max(0.0);
-                            self.stream_heights.insert(
-                                crate::conversation::anchor::RowKey::Row(
-                                    self.conversation[iterations[iter_idx].0].id,
-                                ),
-                                settled,
-                            );
+                        let settled = (ui.cursor().top() - iter_top - iter_rise).max(0.0);
+                        self.stream_heights.insert(
+                            crate::conversation::anchor::RowKey::Row(
+                                self.conversation[iterations[iter_idx].0].id,
+                            ),
+                            settled,
+                        );
                         if anchor_fix.is_some_and(|(ti, _)| ti == iter_idx) {
-                                anchor_fix_rect = Some(egui::Rect::from_min_size(
-                                    egui::Pos2::new(rect.left(), iter_top),
-                                    egui::Vec2::new(rect.width(), ui.cursor().top() - iter_top),
-                                ));
-                            }
+                            anchor_fix_rect = Some(egui::Rect::from_min_size(
+                                egui::Pos2::new(rect.left(), iter_top),
+                                egui::Vec2::new(rect.width(), ui.cursor().top() - iter_top),
+                            ));
                         }
+                    }
                     idx += 1;
                 }
                 if windowed && trailing_spacer > 0.0 {

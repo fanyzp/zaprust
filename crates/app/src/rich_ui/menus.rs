@@ -178,12 +178,11 @@ impl App {
                                 )
                                 .clicked()
                                 {
-                                    self.ui_confirm =
-                                        Some(crate::state::UiConfirm::CancelEvent {
-                                            chat_id: self.selected_chat,
-                                            msg_id: msg.id,
-                                            name: event_name.clone(),
-                                        });
+                                    self.ui_confirm = Some(crate::state::UiConfirm::CancelEvent {
+                                        chat_id: self.selected_chat,
+                                        msg_id: msg.id,
+                                        name: event_name.clone(),
+                                    });
                                     close = true;
                                 }
                             }

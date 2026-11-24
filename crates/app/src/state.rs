@@ -1730,15 +1730,13 @@ pub(crate) struct App {
     /// retracts mine when there was none), which recomputes
     /// the tally back (rolled back). The event counterpart of
     /// `pending_poll_votes`.
-    pub(crate) pending_event_rsvps:
-        std::collections::HashMap<u64, Option<backend::EventRsvp>>,
+    pub(crate) pending_event_rsvps: std::collections::HashMap<u64, Option<backend::EventRsvp>>,
     /// Live mode: an event's full kind before an edit the
     /// backend has not yet settled, per event message ID. An
     /// EventEdited report drops the entry (confirmed); an
     /// EventEditFailed re-applies the stored kind (rolled
     /// back).
-    pub(crate) pending_event_edits:
-        std::collections::HashMap<u64, core::model::MessageKind>,
+    pub(crate) pending_event_edits: std::collections::HashMap<u64, core::model::MessageKind>,
     /// The event edit form, when open: the chat and message it
     /// targets plus the draft pre-filled from the event. Bound
     /// to the message, not the open chat, so a chat switch
@@ -1865,8 +1863,7 @@ pub(crate) struct App {
     /// `conversation::anchor`). Measured rows replace their
     /// estimates as they render; the map is dropped when the
     /// open chat changes.
-    pub(crate) stream_heights:
-        std::collections::HashMap<crate::conversation::anchor::RowKey, f32>,
+    pub(crate) stream_heights: std::collections::HashMap<crate::conversation::anchor::RowKey, f32>,
     /// P2-67 windowing: the scroll anchor captured at the end
     /// of the last stream draw (row key + intra-row offset),
     /// the scroll offset it was captured at, and the chat it

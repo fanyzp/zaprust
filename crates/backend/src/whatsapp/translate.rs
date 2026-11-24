@@ -3818,8 +3818,10 @@ mod live_pairing_fix_tests {
         event_proto.end_time = Some(1_700_097_200);
         event_proto.join_link = Some("https://meet.example.com/launch".to_owned());
         event_proto.extra_guests_allowed = Some(true);
-        event_proto.location =
-            Some(Box::new(wa::message::LocationMessage { name: Some("Rooftop".to_owned()), ..Default::default() }));
+        event_proto.location = Some(Box::new(wa::message::LocationMessage {
+            name: Some("Rooftop".to_owned()),
+            ..Default::default()
+        }));
         let mut event = wa::Message::default();
         event.event_message = MessageField::some(event_proto);
         let (kind, _) = classify_message(&event);

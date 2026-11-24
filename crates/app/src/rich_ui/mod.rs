@@ -6,9 +6,9 @@
 //! share the same code paths wherever the backend supports them.
 
 pub(crate) mod emoji;
+mod event;
 mod menus;
 mod pickers;
-mod event;
 mod poll;
 
 use backend::BackendCommand;

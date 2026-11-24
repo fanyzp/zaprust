@@ -460,18 +460,47 @@ pub(crate) fn install_fonts(ctx: &egui::Context) {
             std::sync::Arc::new(egui::FontData::from_owned(bytes)),
         );
     }
+    // Noto Sans Arabic and Hebrew subsets: fallback faces for
+    // the two scripts neither Inter nor egui's built-in fonts
+    // cover at all (without them, Arabic and Hebrew text
+    // paints as replacement glyphs). Registered per weight so
+    // the medium/semibold/bold families keep their weight for
+    // those scripts too; appended last in every family, so
+    // text the existing faces cover renders exactly as before.
+    for (name, bytes) in [
+        ("noto-arabic", &include_bytes!("../assets/fonts/noto-arabic-Regular.ttf")[..]),
+        ("noto-arabic-bold", &include_bytes!("../assets/fonts/noto-arabic-Bold.ttf")[..]),
+        ("noto-hebrew", &include_bytes!("../assets/fonts/noto-hebrew-Regular.ttf")[..]),
+        ("noto-hebrew-bold", &include_bytes!("../assets/fonts/noto-hebrew-Bold.ttf")[..]),
+    ] {
+        fonts
+            .font_data
+            .insert(name.to_owned(), std::sync::Arc::new(egui::FontData::from_static(bytes)));
+    }
     let prop = fonts.families.entry(egui::FontFamily::Proportional).or_default();
     prop.insert(0, "inter".to_owned());
     if fonts.font_data.contains_key(crate::emoji_font::FONT_NAME) {
         prop.insert(1, crate::emoji_font::FONT_NAME.to_owned());
     }
+    prop.push("noto-arabic".to_owned());
+    prop.push("noto-hebrew".to_owned());
     fonts.families.insert(
         egui::FontFamily::Name("medium".into()),
-        vec!["inter-medium".to_owned(), "inter".to_owned()],
+        vec![
+            "inter-medium".to_owned(),
+            "inter".to_owned(),
+            "noto-arabic".to_owned(),
+            "noto-hebrew".to_owned(),
+        ],
     );
     fonts.families.insert(
         egui::FontFamily::Name("semibold".into()),
-        vec!["inter-semibold".to_owned(), "inter".to_owned()],
+        vec![
+            "inter-semibold".to_owned(),
+            "inter".to_owned(),
+            "noto-arabic-bold".to_owned(),
+            "noto-hebrew-bold".to_owned(),
+        ],
     );
     fonts.font_data.insert(
         "bold".to_owned(),
@@ -487,7 +516,12 @@ pub(crate) fn install_fonts(ctx: &egui::Context) {
     );
     fonts.families.insert(
         egui::FontFamily::Name("bold".into()),
-        vec!["inter-bold".to_owned(), "bold".to_owned()],
+        vec![
+            "inter-bold".to_owned(),
+            "bold".to_owned(),
+            "noto-arabic-bold".to_owned(),
+            "noto-hebrew-bold".to_owned(),
+        ],
     );
     fonts.families.insert(egui::FontFamily::Name("oblique".into()), vec!["oblique".to_owned()]);
     // Material Symbols Rounded, subset to the app's icon set by

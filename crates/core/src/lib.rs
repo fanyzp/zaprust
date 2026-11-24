@@ -17,6 +17,7 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+pub mod bidi;
 pub mod crash;
 pub mod credentials;
 pub mod debug;

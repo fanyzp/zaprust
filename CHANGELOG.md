@@ -4,6 +4,16 @@ All notable changes to Zaprust are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com), versions
 follow [SemVer](https://semver.org).
 
+## [1.6.18] - 2026-11-24
+
+### feat:
+
+- Communities grow their management surface. A community home now lists the community's members for everyone in it. Admins can promote or demote other admins from a member's menu, and remove a member from the whole community at once (the parent group and every linked group), behind a confirmation. The home also carries the community's invite link with copy and reset, a Manage groups section that links your other admin groups into the community and creates new subgroups, per-group unlinking behind a kebab menu and a confirmation (the group keeps its members and messages and carries on as an ordinary group), and a Deactivate community action, also confirmed, that removes the community while its groups survive as standalone groups. Transferring community ownership is not offered: the library this client is built on exposes no such call, and the docs say so rather than faking it.
+
+### fix:
+
+- Under the hood, the live session code moved out of a single 16,000-line file into focused modules (session lifecycle, event application, message and media handling, profile and privacy, archive extraction), and two helpers that existed in duplicate (the chat-row text shortener and the changed-chat store write) now exist once each. No behavior changes: the full gate suite passes and before/after screenshots of the chat list, a conversation, calls, and settings show no visual difference.
+
 ## [1.6.17] - 2026-11-24
 
 ### feat:

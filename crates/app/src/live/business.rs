@@ -795,7 +795,7 @@ pub(crate) fn quick_reply_matches(
         .iter()
         .filter(|r| {
             r.shortcut.to_lowercase().starts_with(&token)
-                || r.keywords.iter().any(|k| k.to_lowercase().contains(&token))
+                || r.keywords.iter().any(|k| k.to_lowercase().starts_with(&token))
         })
         .cloned()
         .collect();
@@ -1131,7 +1131,7 @@ mod tests {
                 id: "2".into(),
                 shortcut: "ship".into(),
                 message: "Ships today.".into(),
-                keywords: vec!["delivery".into()],
+                keywords: vec!["shipping".into(), "delivery".into()],
                 count: 9,
             },
         ];

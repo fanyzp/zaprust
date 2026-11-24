@@ -346,6 +346,22 @@ pub(super) fn translate_event(
                 archived: archive_action_state(&update.action),
             });
         }
+        Event::LockChatUpdate(update) => {
+            // App-state sync reporting the account's chat-lock
+            // state for one chat: a lock or unlock from another
+            // device, or the state as a full sync delivers it
+            // (the link-time import of the phone's locked set
+            // rides this path). This is the only wire path that
+            // knows lock; message arrivals do not carry it. The
+            // library's dispatcher only fires this event when
+            // the action's locked field is present (an omitted
+            // field is malformed there, not an unlock), so the
+            // state read is exact.
+            sink.emit(BackendEvent::LockChanged {
+                chat_jid: update.jid.to_string(),
+                locked: update.action.locked.unwrap_or(false),
+            });
+        }
         Event::StarUpdate(update) => {
             // App-state sync reporting the account's star state
             // for one message: a star or unstar from another
@@ -1085,6 +1101,7 @@ fn translate_history_conversation(
         timestamp,
         unread: conv.unread_count.unwrap_or(0),
         archived: conv.archived.unwrap_or(false),
+        locked: false,
         pinned: conv.pinned.is_some_and(|p| p > 0),
         ephemeral_secs: conv.ephemeral_expiration.unwrap_or(0),
         muted: conv.mute_end_time.is_some_and(|end| i64::try_from(end).unwrap_or(0) > now_secs),
@@ -1702,6 +1719,7 @@ pub(super) fn translate_message(
         timestamp,
         unread: 0,
         archived: false,
+        locked: false,
         pinned: false,
         // A message arrival does not carry the chat's timer;
         // the app keeps the value it already has (see the field

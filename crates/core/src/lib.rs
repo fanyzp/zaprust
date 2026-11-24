@@ -21,6 +21,7 @@ pub mod crash;
 pub mod credentials;
 pub mod debug;
 pub mod filter;
+pub mod lockcode;
 pub mod model;
 pub mod net;
 pub mod rich;

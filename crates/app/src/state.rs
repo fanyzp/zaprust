@@ -78,6 +78,12 @@ pub(crate) struct Args {
     /// QA hook (--calls-picker): open the Calls panel's new
     /// call contact picker (screenshots).
     calls_picker: bool,
+    /// QA hook (--lock-prompt): open the locked-folder code
+    /// prompt over the chat list (screenshots).
+    lock_prompt: bool,
+    /// QA hook (--blocked): open Settings on the
+    /// blocked-contacts page (screenshots).
+    blocked_page: bool,
 }
 
 impl Args {
@@ -128,6 +134,8 @@ impl Args {
             community: None,
             calls_missed: false,
             calls_picker: false,
+            lock_prompt: false,
+            blocked_page: false,
             saturation: 1.0,
             contrast: 1.0,
             seed: core::theme::DEFAULT_SEED,
@@ -162,6 +170,12 @@ impl Args {
                 }
                 "--calls-picker" => {
                     args.calls_picker = true;
+                }
+                "--lock-prompt" => {
+                    args.lock_prompt = true;
+                }
+                "--blocked" => {
+                    args.blocked_page = true;
                 }
                 "--demo" => {
                     // Offline demo dataset, no network, no backend.
@@ -331,6 +345,7 @@ pub(crate) enum Screen {
     Communities,
     Starred,
     Archived,
+    Locked,
     Updates,
     Settings,
     Connect,
@@ -347,6 +362,7 @@ impl Screen {
             "communities" => Some(Self::Communities),
             "starred" => Some(Self::Starred),
             "archived" => Some(Self::Archived),
+            "locked" => Some(Self::Locked),
             "updates" | "status" => Some(Self::Updates),
             "settings" => Some(Self::Settings),
             "connect" | "link" => Some(Self::Connect),
@@ -360,6 +376,7 @@ impl Screen {
             Self::Channels => ChatFilter::Channels,
             Self::Groups => ChatFilter::Groups,
             Self::Archived => ChatFilter::Archived,
+            Self::Locked => ChatFilter::Locked,
             _ => ChatFilter::All,
         }
     }
@@ -370,7 +387,7 @@ impl Screen {
     /// own header identity (back chevron plus its own title, no
     /// generic chip row) instead of rendering as the Chats list.
     pub(crate) fn is_filtered_list(self) -> bool {
-        matches!(self, Self::Channels | Self::Groups | Self::Archived)
+        matches!(self, Self::Channels | Self::Groups | Self::Archived | Self::Locked)
     }
 
     /// The locale key for a filtered destination's own header
@@ -380,6 +397,7 @@ impl Screen {
             Self::Channels => "nav.channels",
             Self::Groups => "nav.groups",
             Self::Archived => "nav.archived",
+            Self::Locked => "nav.locked",
             _ => "nav.chats",
         }
     }
@@ -396,6 +414,7 @@ impl Screen {
                 | Self::Channels
                 | Self::Groups
                 | Self::Archived
+                | Self::Locked
                 | Self::Starred
                 | Self::Calls
                 | Self::Communities
@@ -486,6 +505,37 @@ pub(crate) fn effective_pixels_per_point(zoom_percent: u32, mode: LayoutMode) ->
 pub(crate) enum PairMode {
     Qr,
     Code,
+}
+
+/// What a code prompt unlocks when the entered code
+/// verifies. The prompt is the app's modal code entry: the
+/// locked-chats folder gate, and the create-code flow that
+/// runs before a first lock when no code exists yet (the
+/// folder and the app lock share one code; see
+/// core::lockcode for what the code does and does not
+/// protect).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CodePrompt {
+    /// Enter the code to open the locked-chats folder.
+    OpenFolder,
+    /// Create the code (no code is set yet), then open the
+    /// locked-chats folder.
+    CreateThenFolder,
+    /// Create the code (no code is set yet), then lock this
+    /// chat.
+    CreateThenLock(u64),
+}
+
+/// Why the code prompt's last submit failed, rendered inline
+/// in the prompt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CodeError {
+    /// The entered code does not match the stored verifier.
+    Wrong,
+    /// The two create fields do not agree.
+    Mismatch,
+    /// The new code is shorter than the minimum length.
+    TooShort,
 }
 
 /// A destructive action parked for the house confirmation
@@ -1665,6 +1715,62 @@ pub(crate) struct App {
     /// reports the server's list: the persisted copy only covers
     /// the time before that fetch lands.
     pub(crate) blocked_chats: std::collections::HashSet<u64>,
+    /// The stored lock-code verifier (salt and digest only,
+    /// loaded from the settings file; the code itself is
+    /// never stored). One code gates both the locked-chats
+    /// folder and the app lock.
+    pub(crate) lock_code: Option<core::lockcode::LockCode>,
+    /// Whether the app starts behind the lock screen
+    /// (Settings > Privacy & Security; needs a code).
+    pub(crate) app_lock_enabled: bool,
+    /// Whether this session is currently behind the lock
+    /// screen: armed at start when the app lock is on, or by
+    /// Lock now. While set, the shell draws only the lock
+    /// screen and notifications carry no content.
+    pub(crate) app_locked_now: bool,
+    /// Whether the locked-chats folder gate has been passed
+    /// for the current visit to the Locked screen; cleared
+    /// whenever the screen is left, so entering the folder
+    /// always asks for the code.
+    pub(crate) folder_unlocked: bool,
+    /// The open code prompt, if any.
+    pub(crate) code_prompt: Option<CodePrompt>,
+    /// The code typed into the code prompt or lock screen.
+    pub(crate) code_entry: String,
+    /// The repeat field of the prompt's create form.
+    pub(crate) code_entry_repeat: String,
+    /// The code prompt's inline failure, if the last submit
+    /// failed.
+    pub(crate) code_error: Option<CodeError>,
+    /// Settings lock-code form: the current-code field shown
+    /// when a code exists and is being changed or removed.
+    pub(crate) lock_current_entry: String,
+    /// Settings lock-code form: the new-code field.
+    pub(crate) lock_new_entry: String,
+    /// Settings lock-code form: its inline failure key (an
+    /// i18n key), if the last submit failed.
+    pub(crate) lock_form_error: Option<&'static str>,
+    /// Whether the settings panel shows the blocked-contacts
+    /// page instead of the selected tab's page.
+    pub(crate) settings_blocked_open: bool,
+    /// Whether the blocked page's block-a-contact picker is
+    /// open.
+    pub(crate) block_picker_open: bool,
+    /// Whether Zaprust stays resident in the system tray when
+    /// its window closes (Settings > Notifications; Linux
+    /// only, and only while a tray host answers).
+    pub(crate) tray_residence: bool,
+    /// A real quit was chosen (the tray menu's Quit, or the
+    /// app is already closing): window close stops hiding to
+    /// the tray and closes for real.
+    pub(crate) quit_requested: bool,
+    /// Commands from the tray thread (Open / Quit), drained
+    /// each frame; None until the tray starts.
+    pub(crate) tray_commands:
+        Option<std::sync::mpsc::Receiver<crate::tray::TrayCommand>>,
+    /// The unread count last pushed to the tray title, so the
+    /// title only changes when the count does.
+    pub(crate) tray_last_unread: u32,
     /// Profile panel group-edit form state.
     pub(crate) profile_form_for: Option<u64>,
     /// A destructive action waiting on the house confirmation
@@ -1769,6 +1875,13 @@ pub(crate) struct App {
     /// action owns.
     pub(crate) pending_chat_actions:
         std::collections::HashMap<(u64, &'static str), (bool, bool, bool, i64)>,
+    /// Live mode: a chat's locked flag before a lock action
+    /// the backend has not yet settled, keyed by chat ID. A
+    /// matching LockChanged report drops the entry; a
+    /// ChatActionFailed for a lock action restores the flag.
+    /// Kept apart from pending_chat_actions because that
+    /// snapshot predates the lock field.
+    pub(crate) pending_lock_actions: std::collections::HashMap<u64, bool>,
     /// Live mode: a chat's unread count before a mark-unread
     /// the backend has not yet settled. A ChatReadChanged drops
     /// the entry; a MarkUnreadFailed restores the count.
@@ -2489,6 +2602,27 @@ impl App {
                 error: None,
             },
             blocked_chats: std::collections::HashSet::new(),
+            lock_code: None,
+            app_lock_enabled: false,
+            app_locked_now: false,
+            folder_unlocked: false,
+            code_prompt: if args.lock_prompt {
+                Some(CodePrompt::OpenFolder)
+            } else {
+                None
+            },
+            code_entry: String::new(),
+            code_entry_repeat: String::new(),
+            code_error: None,
+            lock_current_entry: String::new(),
+            lock_new_entry: String::new(),
+            lock_form_error: None,
+            settings_blocked_open: args.blocked_page,
+            block_picker_open: false,
+            tray_residence: false,
+            quit_requested: false,
+            tray_commands: None,
+            tray_last_unread: 0,
             profile_form_for: None,
             ui_confirm: None,
             clear_keep_starred: true,
@@ -2523,6 +2657,7 @@ impl App {
             event_edit_draft: None,
             event_guests: std::collections::HashMap::new(),
             pending_chat_actions: std::collections::HashMap::new(),
+            pending_lock_actions: std::collections::HashMap::new(),
             pending_unread: std::collections::HashMap::new(),
             pending_blocks: std::collections::HashMap::new(),
             pending_group_info: std::collections::HashMap::new(),

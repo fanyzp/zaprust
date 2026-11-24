@@ -1777,6 +1777,14 @@ pub struct LiveChat {
     /// made on the server arrive as
     /// [`BackendEvent::ArchiveChanged`] instead.
     pub archived: bool,
+    /// Locked (chat lock; the app hides the chat everywhere
+    /// except the locked folder). Like archive, a
+    /// message-arrival upsert does not learn it from the
+    /// wire, so the app keeps a known lock state across
+    /// upserts that report `false`; lock changes made on the
+    /// server arrive as [`BackendEvent::LockChanged`]
+    /// instead.
+    pub locked: bool,
     /// Pinned to the top of the chat list. Like archive, a
     /// message-arrival upsert does not learn it from the wire,
     /// so the app keeps a known pin across upserts that report
@@ -1828,6 +1836,13 @@ pub enum ChatAction {
     MuteUntil(i64),
     /// Unmute notifications.
     Unmute,
+    /// Move the chat into the account's locked chats folder
+    /// (chat lock). Only the lock state syncs; the code that
+    /// gates the folder is a local secret of the phone (and,
+    /// in this client, of this app) and never travels.
+    Lock,
+    /// Move the chat back out of the locked chats folder.
+    Unlock,
 }
 
 /// How long a message pin lasts, in the protocol's three
@@ -3175,6 +3190,20 @@ pub enum BackendEvent {
         chat_jid: String,
         /// Whether the chat is archived now.
         archived: bool,
+    },
+    /// A chat's lock state changed on the server: locked or
+    /// unlocked from another device, or the account state as
+    /// a full sync reports it (the link-time delivery of the
+    /// phone's locked set rides this path). This is the
+    /// authoritative path for lock changes made elsewhere; a
+    /// lock set from this client goes out as
+    /// [`BackendCommand::ChatAction`] and applies locally at
+    /// once, without waiting for this event.
+    LockChanged {
+        /// Chat JID.
+        chat_jid: String,
+        /// Whether the chat is locked now.
+        locked: bool,
     },
     /// A message's star state changed on the server: starred or
     /// unstarred from another device, or the account state as a

@@ -1403,6 +1403,16 @@ impl crate::state::App {
                 self.pending_chat_actions.remove(&(chat_id, "archive"));
                 self.apply_archive_changed(chat_id, archived);
             }
+            BackendEvent::LockChanged { chat_jid, locked } => {
+                // The account's lock state for this chat, from
+                // the lock action's own echo or from another
+                // device: authoritative over the upsert mirror,
+                // and the confirming report for a pending lock
+                // action of our own (section 27).
+                let chat_id = jid_id(&chat_jid);
+                self.pending_lock_actions.remove(&chat_id);
+                self.apply_lock_changed(chat_id, locked);
+            }
             BackendEvent::StarChanged { chat_jid, message_id: pid, starred } => {
                 self.stamp_sync_activity();
                 let chat_id = jid_id(&chat_jid);
@@ -1447,8 +1457,17 @@ impl crate::state::App {
                     backend::ChatAction::Mute
                     | backend::ChatAction::MuteUntil(_)
                     | backend::ChatAction::Unmute => "mute",
+                    backend::ChatAction::Lock | backend::ChatAction::Unlock => "lock",
                 };
-                if let Some(snapshot) = self.pending_chat_actions.remove(&(chat_id, group)) {
+                if group == "lock" {
+                    if let Some(was_locked) = self.pending_lock_actions.remove(&chat_id) {
+                        // The lock change never reached the
+                        // server: the flag goes back to its
+                        // snapshot, in the mirror and the
+                        // archive alike.
+                        self.restore_lock_action(chat_id, was_locked);
+                    }
+                } else if let Some(snapshot) = self.pending_chat_actions.remove(&(chat_id, group)) {
                     // The action never reached the server: the
                     // fields it owns go back to the snapshot, in
                     // the mirror and the archive alike.
@@ -2555,6 +2574,16 @@ impl crate::state::App {
                 merged.pinned = known.pinned;
             }
         }
+        // Same protection for lock: arrival upserts never carry
+        // it, so an uninformed `false` must not unlock a chat
+        // this client knows is locked. LockChanged is the
+        // authoritative path; the fake's lock echoes carry the
+        // full state and still land.
+        if !merged.locked {
+            if let Some(known) = self.chats.iter().find(|c| c.id == id) {
+                merged.locked = known.locked;
+            }
+        }
         if !merged.archived {
             if let Some(known) = self.chats.iter().find(|c| c.id == id) {
                 merged.archived = known.archived;
@@ -2643,6 +2672,7 @@ impl crate::state::App {
             // invisible until restart (logic review F14).
             chat.archived = fresh.archived;
             chat.pinned = fresh.pinned;
+            chat.locked = fresh.locked;
             chat.ephemeral_secs = fresh.ephemeral_secs;
             chat.muted = fresh.muted;
         } else {

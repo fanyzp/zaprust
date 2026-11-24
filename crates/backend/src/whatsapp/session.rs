@@ -2515,6 +2515,8 @@ pub(super) async fn run_async(
                                     actions.mute_chat_until(&jid, until_ms).await
                                 }
                                 ChatAction::Unmute => actions.unmute_chat(&jid).await,
+                                ChatAction::Lock => actions.lock_chat(&jid).await,
+                                ChatAction::Unlock => actions.unlock_chat(&jid).await,
                             };
                             if let Err(e) = result {
                                 fail(format!("That chat action failed: {}", error_words(&e)));
@@ -2797,6 +2799,7 @@ pub(super) async fn run_async(
                                             timestamp: unix_now(),
                                             unread: 0,
                                             archived: false,
+                                            locked: false,
                                             pinned: false,
                                             ephemeral_secs: 0,
                                             muted: false,
@@ -2894,6 +2897,7 @@ pub(super) async fn run_async(
                                         timestamp: unix_now(),
                                         unread: 0,
                                         archived: false,
+                                        locked: false,
                                         pinned: false,
                                         ephemeral_secs: 0,
                                         muted: false,
@@ -3314,6 +3318,7 @@ pub(super) async fn run_async(
                                 timestamp: 0,
                                 unread: 0,
                                 archived: false,
+                                locked: false,
                                 pinned: false,
                                 ephemeral_secs: 0,
                                 muted: false,

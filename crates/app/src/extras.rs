@@ -283,6 +283,25 @@ impl App {
         // settings file written without this key must not
         // silently turn previews on (audit finding 11).
         self.notify_preview = v["notify_preview"].as_bool().unwrap_or(false);
+        // The lock code's persisted parts: salt and digest
+        // only, never the code (see core::lockcode). A
+        // malformed pair loads as no code, the state every
+        // surface treats as "no code set". The app lock arms
+        // at start only when both a code and the switch are
+        // present: a settings file that lost its code must
+        // not lock the owner out of a gate nothing can open
+        // (the logout recovery exists for a forgotten code,
+        // not for a vanished one).
+        self.lock_code = match (v["lock_salt"].as_str(), v["lock_hash"].as_str()) {
+            (Some(salt), Some(hash)) => core::lockcode::LockCode::from_parts(salt, hash),
+            _ => None,
+        };
+        self.app_lock_enabled =
+            v["app_lock_enabled"].as_bool().unwrap_or(false) && self.lock_code.is_some();
+        if self.app_lock_enabled {
+            self.app_locked_now = true;
+        }
+        self.tray_residence = v["tray_residence"].as_bool().unwrap_or(false);
         // Legacy blocked-contact copy. Builds before
         // the A6 fix persisted the blocked set here, as
         // chat ids; the set's home is now the encrypted
@@ -471,6 +490,15 @@ impl App {
             "notify_groups": self.notify_groups,
             "notify_sound": self.notify_sound,
             "notify_preview": self.notify_preview,
+            // The lock code's verifier parts (salt + digest;
+            // the code itself is never written anywhere), the
+            // app-lock switch, and the tray switch. The lock
+            // keys are omitted entirely when no code is set, so
+            // removing the code removes its trace.
+            "lock_salt": self.lock_code.as_ref().map(|c| c.salt()),
+            "lock_hash": self.lock_code.as_ref().map(|c| c.digest()),
+            "app_lock_enabled": self.app_lock_enabled,
+            "tray_residence": self.tray_residence,
             // No "blocked_chats" here: the set persists in the
             // encrypted archive store, not in this plaintext file
             // (privacy audit A6). Omitting the field also scrubs

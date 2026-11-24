@@ -162,7 +162,7 @@ impl From<std::io::Error> for StoreError {
 }
 
 /// The newest schema version this build migrates to.
-pub const SCHEMA_VERSION: i64 = 12;
+pub const SCHEMA_VERSION: i64 = 13;
 
 /// `store_meta` key recording that the one-time freelist purge
 /// (see [`Store::open`]) has run for this archive. The purge
@@ -942,6 +942,19 @@ impl Store {
                     )?;
                     tx.execute_batch("PRAGMA user_version = 12;")?;
                 }
+                12 => {
+                    // v13: the chat-lock flag joins the other
+                    // chat-actions state on the chat row, so a
+                    // locked chat stays locked (and hidden)
+                    // across restarts.
+                    add_column_if_missing(
+                        &tx,
+                        "chats",
+                        "locked",
+                        "ALTER TABLE chats ADD COLUMN locked INTEGER NOT NULL DEFAULT 0",
+                    )?;
+                    tx.execute_batch("PRAGMA user_version = 13;")?;
+                }
                 _ => return Err(StoreError::BadSchemaVersion(version)),
             }
             tx.commit()?;
@@ -962,8 +975,8 @@ impl Store {
     /// above is the same idea for names.
     pub fn upsert_chat(&self, chat: &LiveChat) -> Result<(), StoreError> {
         self.conn.execute(
-            "INSERT INTO chats (jid, title, kind, preview, preview_sender, timestamp, unread, archived, pinned, ephemeral_secs, muted, mute_until)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+            "INSERT INTO chats (jid, title, kind, preview, preview_sender, timestamp, unread, archived, pinned, ephemeral_secs, muted, mute_until, locked)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
              ON CONFLICT(jid) DO UPDATE SET
                 title = CASE WHEN (length(excluded.title) >= 9 AND excluded.title NOT GLOB '*[^0-9]*')
                                   AND NOT (length(chats.title) >= 9 AND chats.title NOT GLOB '*[^0-9]*')
@@ -980,7 +993,8 @@ impl Store {
                 pinned = excluded.pinned,
                 ephemeral_secs = excluded.ephemeral_secs,
                 muted = excluded.muted,
-                mute_until = excluded.mute_until",
+                mute_until = excluded.mute_until,
+                locked = excluded.locked",
             params![
                 chat.jid,
                 chat.title,
@@ -994,6 +1008,7 @@ impl Store {
                 i64::from(chat.ephemeral_secs),
                 i64::from(chat.muted),
                 chat.mute_until,
+                i64::from(chat.locked),
             ],
         )?;
         Ok(())
@@ -2014,7 +2029,7 @@ impl Store {
     /// [`StoreError`] on SQLite failures.
     pub fn chats(&self) -> Result<Vec<LiveChat>, StoreError> {
         let mut stmt = self.conn.prepare(
-            "SELECT jid, title, kind, preview, preview_sender, timestamp, unread, archived, pinned, ephemeral_secs, muted, mute_until
+            "SELECT jid, title, kind, preview, preview_sender, timestamp, unread, archived, pinned, ephemeral_secs, muted, mute_until, locked
              FROM chats ORDER BY timestamp DESC",
         )?;
         let rows = stmt.query_map([], |row| {
@@ -2027,6 +2042,7 @@ impl Store {
                 timestamp: row.get(5)?,
                 unread: u32::try_from(row.get::<_, i64>(6)?).unwrap_or(0),
                 archived: row.get::<_, i64>(7)? != 0,
+                locked: row.get::<_, i64>(12)? != 0,
                 pinned: row.get::<_, i64>(8)? != 0,
                 ephemeral_secs: u32::try_from(row.get::<_, i64>(9)?).unwrap_or(0),
                 muted: row.get::<_, i64>(10)? != 0,
@@ -2942,6 +2958,25 @@ mod tests {
         let read = chats.iter().find(|c| c.jid == chat.jid).unwrap();
         assert!(read.muted);
         assert_eq!(read.mute_until, 1_700_028_800);
+    }
+
+    #[test]
+    fn locked_flag_round_trips_through_the_archive() {
+        // Schema v13: the chat-lock flag persists on the chat
+        // row, so a locked chat is still locked (and hidden)
+        // after a restart, and an upsert can unlock it again.
+        let store = Store::open_in_memory().unwrap();
+        let mut chat = scripted_chats()[0].clone();
+        chat.locked = true;
+        store.upsert_chat(&chat).unwrap();
+        let chats = store.chats().unwrap();
+        let read = chats.iter().find(|c| c.jid == chat.jid).unwrap();
+        assert!(read.locked);
+        chat.locked = false;
+        store.upsert_chat(&chat).unwrap();
+        let chats = store.chats().unwrap();
+        let read = chats.iter().find(|c| c.jid == chat.jid).unwrap();
+        assert!(!read.locked);
     }
 
     #[test]
@@ -4110,6 +4145,7 @@ mod tests {
             timestamp: 1_700_000_000,
             unread: 0,
             archived: false,
+            locked: false,
             pinned: false,
             ephemeral_secs: 0,
             muted: false,

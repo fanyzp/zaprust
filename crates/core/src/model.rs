@@ -750,6 +750,14 @@ pub struct Chat {
     /// Whether the chat is archived (hidden from the main list,
     /// shown under the Archived filter).
     pub archived: bool,
+    /// Whether the chat is locked (chat lock): hidden from
+    /// every list except the locked folder, which sits behind
+    /// the local lock code. The lock state is account state
+    /// and syncs like archive; the code that gates the folder
+    /// is local to this client and never syncs. Older
+    /// archives carry no field and default to unlocked.
+    #[serde(default)]
+    pub locked: bool,
     /// Disappearing-messages timer for this chat, in seconds:
     /// new messages disappear this long after they are sent.
     /// `0` is off. One of [`EPHEMERAL_OPTIONS`]. Older archives
@@ -970,6 +978,7 @@ pub fn demo_announcement_chat() -> Chat {
         meta_ai: false,
         community: Some("Downtown Community".to_owned()),
         archived: false,
+        locked: false,
         ephemeral_secs: 0,
         messages: Vec::new(),
     }
@@ -1411,6 +1420,7 @@ fn group(
         meta_ai: false,
         community: None,
         archived: false,
+        locked: false,
         ephemeral_secs: 0,
         messages: Vec::new(),
     }
@@ -1439,6 +1449,7 @@ fn dm(id: u64, title: &str, subtitle: &str, preview: &str, time: &str, unread: u
         meta_ai: false,
         community: None,
         archived: false,
+        locked: false,
         ephemeral_secs: 0,
         messages: Vec::new(),
     }
@@ -1475,6 +1486,7 @@ fn channel(
         meta_ai: false,
         community: None,
         archived: false,
+        locked: false,
         ephemeral_secs: 0,
         messages: Vec::new(),
     }

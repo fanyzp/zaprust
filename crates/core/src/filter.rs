@@ -22,6 +22,9 @@ pub enum ChatFilter {
     Channels,
     /// Only archived chats (the main list hides them everywhere else).
     Archived,
+    /// Only locked chats (the locked folder; every other list
+    /// hides them, exactly as it hides archived chats).
+    Locked,
 }
 
 impl ChatFilter {
@@ -29,6 +32,12 @@ impl ChatFilter {
     #[must_use]
     pub fn matches(self, chat: &Chat) -> bool {
         match self {
+            Self::Locked => chat.locked,
+            // Locked chats leave every other list until
+            // unlocked: the folder behind the lock code is
+            // their only home, and a chat that is both
+            // archived and locked belongs to the folder.
+            _ if chat.locked => false,
             Self::Archived => chat.archived,
             // Archived chats leave every other list until unarchived.
             _ if chat.archived => false,
@@ -66,9 +75,18 @@ pub fn filter_chats<'a>(chats: &'a [Chat], filter: ChatFilter, query: &str) -> V
 }
 
 /// Total unread across chats (for the tray / rail badge).
+/// Locked chats are excluded: their unread count is itself
+/// behind the lock code, so the badge must not carry it.
 #[must_use]
 pub fn total_unread(chats: &[Chat]) -> u32 {
-    chats.iter().map(|c| c.unread).sum()
+    chats.iter().filter(|c| !c.locked).map(|c| c.unread).sum()
+}
+
+/// How many chats are locked (the locked folder's entry
+/// count; a count of chats, not of their messages).
+#[must_use]
+pub fn locked_count(chats: &[Chat]) -> u32 {
+    chats.iter().filter(|c| c.locked).count() as u32
 }
 
 /// How many archived chats still have unread messages (the
@@ -289,6 +307,42 @@ fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
 mod tests {
     use super::*;
     use crate::model::demo_chats;
+
+    #[test]
+    fn locked_chats_live_only_in_the_locked_filter() {
+        let mut chats = demo_chats();
+        let target = chats.iter_mut().find(|c| !c.archived).unwrap();
+        target.locked = true;
+        target.unread = 5;
+        let locked_id = target.id;
+        // The folder admits it; every other filter hides it.
+        assert!(ChatFilter::Locked.matches(&chats.iter().find(|c| c.id == locked_id).unwrap()));
+        for filter in [
+            ChatFilter::All,
+            ChatFilter::Unread,
+            ChatFilter::Private,
+            ChatFilter::Favorites,
+            ChatFilter::Groups,
+            ChatFilter::Channels,
+            ChatFilter::Archived,
+        ] {
+            assert!(
+                !filter.matches(chats.iter().find(|c| c.id == locked_id).unwrap()),
+                "{filter:?} must hide a locked chat"
+            );
+        }
+        // The badge total excludes the locked chat's unread,
+        // and the folder count sees exactly it.
+        let baseline: u32 =
+            chats.iter().filter(|c| c.id != locked_id && !c.locked).map(|c| c.unread).sum();
+        assert_eq!(total_unread(&chats), baseline);
+        assert_eq!(locked_count(&chats), 1);
+        // Both archived and locked: the folder owns it.
+        let both = chats.iter_mut().find(|c| c.id == locked_id).unwrap();
+        both.archived = true;
+        assert!(ChatFilter::Locked.matches(both));
+        assert!(!ChatFilter::Archived.matches(both));
+    }
 
     #[test]
     fn search_matches_visible_text_only() {

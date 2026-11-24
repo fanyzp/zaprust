@@ -51,6 +51,22 @@ pub const FAKE_MARATHON_JID: &str = "10000000005@s.whatsapp.net";
 fn marathon_enabled() -> bool {
     std::env::var_os("ZAPRUST_FAKE_MARATHON").is_some()
 }
+
+/// Whether the lock-fixture chats are scripted: a locked DM
+/// and a blocked promo DM, for the chat-lock and
+/// blocked-contacts surfaces. Gated like the marathon chat
+/// so the standard fixtures (and every screenshot pair built
+/// on them) are unchanged unless a capture asks for them.
+fn lock_fixture_enabled() -> bool {
+    std::env::var_os("ZAPRUST_FAKE_LOCKED").is_some()
+}
+
+/// JID of the scripted locked DM (lock-fixture gate only).
+pub const FAKE_LOCKED_DM_JID: &str = "10000000031@s.whatsapp.net";
+/// JID of the scripted blocked promo DM (lock-fixture gate
+/// only): the account blocked it before this session, so the
+/// connect-time blocklist carries it.
+pub const FAKE_PROMO_JID: &str = "10000000032@s.whatsapp.net";
 /// JID of the scripted group chat.
 pub const FAKE_GROUP_JID: &str = "10000000002@g.us";
 /// JID of the scripted channel.
@@ -356,6 +372,7 @@ pub fn scripted_chats() -> Vec<LiveChat> {
             timestamp: 1_700_000_300,
             unread: 1,
             archived: false,
+            locked: false,
             pinned: false,
             ephemeral_secs: 0,
             muted: false,
@@ -372,6 +389,7 @@ pub fn scripted_chats() -> Vec<LiveChat> {
             timestamp: 1_700_000_200,
             unread: 0,
             archived: false,
+            locked: false,
             pinned: false,
             ephemeral_secs: 0,
             muted: false,
@@ -388,6 +406,7 @@ pub fn scripted_chats() -> Vec<LiveChat> {
             timestamp: 1_700_000_100,
             unread: 4,
             archived: false,
+            locked: false,
             pinned: false,
             ephemeral_secs: 0,
             muted: false,
@@ -404,6 +423,7 @@ pub fn scripted_chats() -> Vec<LiveChat> {
             timestamp: 1_699_999_000,
             unread: 0,
             archived: false,
+            locked: false,
             pinned: false,
             ephemeral_secs: 0,
             muted: false,
@@ -420,6 +440,7 @@ pub fn scripted_chats() -> Vec<LiveChat> {
             timestamp: 1_700_000_050,
             unread: 0,
             archived: false,
+            locked: false,
             pinned: false,
             ephemeral_secs: 0,
             muted: false,
@@ -436,6 +457,7 @@ pub fn scripted_chats() -> Vec<LiveChat> {
             timestamp: 1_700_000_020,
             unread: 0,
             archived: false,
+            locked: false,
             pinned: false,
             ephemeral_secs: 0,
             muted: false,
@@ -444,6 +466,42 @@ pub fn scripted_chats() -> Vec<LiveChat> {
             is_parent: false,
         },
     ];
+    if lock_fixture_enabled() {
+        chats.push(LiveChat {
+            jid: FAKE_LOCKED_DM_JID.to_owned(),
+            title: "Emma Collins (live demo)".to_owned(),
+            kind: LiveChatKind::Dm,
+            preview: "The spare key is under the blue pot".to_owned(),
+            preview_sender: None,
+            timestamp: 1_700_000_250,
+            unread: 2,
+            archived: false,
+            locked: true,
+            pinned: false,
+            ephemeral_secs: 0,
+            muted: false,
+            mute_until: 0,
+            parent_jid: None,
+            is_parent: false,
+        });
+        chats.push(LiveChat {
+            jid: FAKE_PROMO_JID.to_owned(),
+            title: "Promo Blast (live demo)".to_owned(),
+            kind: LiveChatKind::Dm,
+            preview: "You won a prize! Claim it now".to_owned(),
+            preview_sender: None,
+            timestamp: 1_699_999_500,
+            unread: 0,
+            archived: false,
+            locked: false,
+            pinned: false,
+            ephemeral_secs: 0,
+            muted: false,
+            mute_until: 0,
+            parent_jid: None,
+            is_parent: false,
+        });
+    }
     if marathon_enabled() {
         chats.push(LiveChat {
             jid: FAKE_MARATHON_JID.to_owned(),
@@ -454,6 +512,7 @@ pub fn scripted_chats() -> Vec<LiveChat> {
             timestamp: 1_699_000_000 + 599 * 1_500,
             unread: 0,
             archived: false,
+            locked: false,
             pinned: false,
             ephemeral_secs: 0,
             muted: false,
@@ -977,6 +1036,40 @@ pub fn scripted_messages() -> Vec<LiveMessage> {
     ]
 }
 
+/// The scripted messages of the lock-fixture chats (the
+/// locked DM and the blocked promo DM), delivered with the
+/// linked script under the same gate as the chats
+/// themselves.
+#[must_use]
+pub fn scripted_lock_fixture_messages() -> Vec<LiveMessage> {
+    vec![
+        LiveMessage::text(
+            "fake-locked-1",
+            FAKE_LOCKED_DM_JID,
+            Some("Emma Collins".to_owned()),
+            "Moved the house paperwork to the drawer by the door",
+            1_700_000_240,
+            false,
+        ),
+        LiveMessage::text(
+            "fake-locked-2",
+            FAKE_LOCKED_DM_JID,
+            Some("Emma Collins".to_owned()),
+            "The spare key is under the blue pot",
+            1_700_000_250,
+            false,
+        ),
+        LiveMessage::text(
+            "fake-promo-9",
+            FAKE_PROMO_JID,
+            Some("Promo Blast".to_owned()),
+            "You won a prize! Claim it now",
+            1_699_999_500,
+            false,
+        ),
+    ]
+}
+
 /// The scripted messages for the group chat: a location share and a
 /// received carousel sample (render-only rich types).
 #[must_use]
@@ -1415,7 +1508,12 @@ impl Backend for FakeBackend {
         // Blocked contact JIDs, mirroring the server-side list the
         // real backend fetches at connect: BlockContact mutates it
         // and the full list is re-emitted as a Blocklist event.
+        // The lock fixture starts with the promo sender blocked,
+        // as the account left it before this session.
         let mut blocked_state: std::collections::HashSet<String> = std::collections::HashSet::new();
+        if lock_fixture_enabled() {
+            blocked_state.insert(FAKE_PROMO_JID.to_owned());
+        }
         // The account's privacy settings, mirroring the real
         // backend's fetch: SetPrivacy mutates one entry and the
         // full map is re-emitted, as the real refetch reports it.
@@ -1815,6 +1913,7 @@ impl Backend for FakeBackend {
                             timestamp: 1_700_000_400,
                             unread: 0,
                             archived: false,
+                            locked: false,
                             pinned: false,
                             ephemeral_secs: 0,
                             muted: false,
@@ -1890,6 +1989,7 @@ impl Backend for FakeBackend {
                             timestamp: 1_700_000_400,
                             unread: 0,
                             archived: false,
+                            locked: false,
                             pinned: false,
                             ephemeral_secs: 0,
                             muted: false,
@@ -3110,6 +3210,8 @@ impl Backend for FakeBackend {
                                 chat.muted = false;
                                 chat.mute_until = 0;
                             }
+                            crate::ChatAction::Lock => chat.locked = true,
+                            crate::ChatAction::Unlock => chat.locked = false,
                         }
                         let chat = chat.clone();
                         events.emit(BackendEvent::ChatUpsert(chat.clone()));
@@ -3138,6 +3240,12 @@ impl Backend for FakeBackend {
                                     chat_jid: chat.jid.clone(),
                                     muted: chat.muted,
                                     mute_until: chat.mute_until,
+                                });
+                            }
+                            crate::ChatAction::Lock | crate::ChatAction::Unlock => {
+                                events.emit(BackendEvent::LockChanged {
+                                    chat_jid: chat.jid.clone(),
+                                    locked: chat.locked,
                                 });
                             }
                         }
@@ -3188,6 +3296,7 @@ impl Backend for FakeBackend {
                             timestamp: 1_700_000_500,
                             unread: 0,
                             archived: false,
+                            locked: false,
                             pinned: false,
                             ephemeral_secs: 0,
                             muted: false,
@@ -3205,6 +3314,7 @@ impl Backend for FakeBackend {
                         timestamp: 1_700_000_500,
                         unread: 0,
                         archived: false,
+                        locked: false,
                         pinned: false,
                         ephemeral_secs: 0,
                         muted: false,
@@ -3311,6 +3421,7 @@ impl Backend for FakeBackend {
                         timestamp: 1_700_000_500,
                         unread: 0,
                         archived: false,
+                        locked: false,
                         pinned: false,
                         ephemeral_secs: 0,
                         muted: false,
@@ -3600,6 +3711,7 @@ impl Backend for FakeBackend {
                             timestamp: 1_700_000_600,
                             unread: 0,
                             archived: false,
+                            locked: false,
                             pinned: false,
                             ephemeral_secs: 0,
                             muted: false,
@@ -3900,6 +4012,7 @@ impl Backend for FakeBackend {
                                 timestamp: 0,
                                 unread: 0,
                                 archived: false,
+                                locked: false,
                                 pinned: false,
                                 ephemeral_secs: 0,
                                 muted: false,
@@ -4122,6 +4235,11 @@ fn emit_linked_script(
             events.emit(BackendEvent::MessageUpsert(msg));
         }
     }
+    if lock_fixture_enabled() {
+        for msg in scripted_lock_fixture_messages() {
+            events.emit(BackendEvent::MessageUpsert(msg));
+        }
+    }
     // The scripted statuses, as the real backend delivers them:
     // live arrivals and history redelivery both surface as
     // StatusReceived, so the linked script (which stands in for
@@ -4143,8 +4261,13 @@ fn emit_linked_script(
     // after reading the profile back at connect.
     events.emit(BackendEvent::OwnProfile(own_profile.clone()));
     // Baseline blocklist, as the real backend reports it after
-    // fetching the account's list at connect: nobody blocked.
-    events.emit(BackendEvent::Blocklist(Vec::new()));
+    // fetching the account's list at connect: nobody blocked,
+    // or the lock fixture's promo sender under its gate.
+    events.emit(BackendEvent::Blocklist(if lock_fixture_enabled() {
+        vec![FAKE_PROMO_JID.to_owned()]
+    } else {
+        Vec::new()
+    }));
     // One scripted incoming voice call from the DM contact, so
     // the whole call surface (ring, accept, talk, end, log entry)
     // is exercised in test mode without a phone. Registered in

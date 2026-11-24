@@ -418,6 +418,7 @@ pub(super) async fn lookup_contact(client: &Client, digits: &str) -> ContactOutc
             timestamp: 0,
             unread: 0,
             archived: false,
+            locked: false,
             pinned: false,
             ephemeral_secs: 0,
             muted: false,

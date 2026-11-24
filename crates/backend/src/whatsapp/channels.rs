@@ -103,6 +103,7 @@ fn fresh_channel_chat(channel: &LiveChannel) -> LiveChat {
         timestamp: super::util::unix_now(),
         unread: 0,
         archived: false,
+        locked: false,
         pinned: false,
         ephemeral_secs: 0,
         muted: channel.muted,

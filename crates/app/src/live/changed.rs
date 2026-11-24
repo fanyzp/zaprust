@@ -108,6 +108,29 @@ impl crate::state::App {
         self.persist_chat_row(chat_id);
     }
 
+    /// Applies a confirmed lock-state change (own echo,
+    /// another device, or the link-time import) to the mirror
+    /// and the archive: the one writer for the flag outside
+    /// the optimistic apply and its rollback.
+    pub(crate) fn apply_lock_changed(&mut self, chat_id: u64, locked: bool) {
+        self.mutate_mirror_chat(chat_id, |c| c.locked = locked);
+        self.persist_chat_row(chat_id);
+    }
+
+    /// Puts the lock flag back after a lock action failed:
+    /// the change never reached the server, so the snapshot
+    /// value is the truth again, in the mirror and the
+    /// archive alike (section 27).
+    pub(crate) fn restore_lock_action(&mut self, chat_id: u64, was_locked: bool) {
+        if let Some(c) = self.chats.iter_mut().find(|c| c.id == chat_id) {
+            c.locked = was_locked;
+        }
+        if let Some(c) = self.detached_chat.as_mut().filter(|c| c.id == chat_id) {
+            c.locked = was_locked;
+        }
+        self.persist_chat_row(chat_id);
+    }
+
     /// Applies a star change the server reported (a star or
     /// unstar done on another device, or the account state from
     /// a full sync). The reported value wins over the local

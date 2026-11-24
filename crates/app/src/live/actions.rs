@@ -125,6 +125,139 @@ impl crate::state::App {
         self.apply_message_upsert(&placeholder);
     }
 
+    /// Applies a chat lock or unlock: locally at once (the
+    /// chat leaves or re-enters the ordinary lists
+    /// immediately), and through the backend in live mode,
+    /// where the lock state syncs to the account like archive
+    /// and pin do. The confirming report is LockChanged; a
+    /// ChatActionFailed for the action restores the flag from
+    /// the pending snapshot (design standard section 27).
+    pub(crate) fn apply_lock_chat(&mut self, chat_id: u64, locked: bool) {
+        let in_chats = self.chats.iter().any(|c| c.id == chat_id);
+        let was_locked = self
+            .chats
+            .iter()
+            .find(|c| c.id == chat_id)
+            .or_else(|| self.detached_chat.as_ref().filter(|c| c.id == chat_id))
+            .map_or(locked, |c| c.locked);
+        if locked == was_locked {
+            return;
+        }
+        if self.live.is_some() {
+            self.pending_lock_actions.entry(chat_id).or_insert(was_locked);
+        }
+        if let Some(c) = self.chats.iter_mut().find(|c| c.id == chat_id) {
+            c.locked = locked;
+        } else if let Some(c) = self.detached_chat.as_mut().filter(|c| c.id == chat_id) {
+            c.locked = locked;
+        }
+        if in_chats && self.live.is_some() {
+            if let Some(jid) = self.live_jid(chat_id) {
+                use backend::{BackendCommand, ChatAction};
+                self.send_backend(BackendCommand::ChatAction {
+                    chat_jid: jid,
+                    action: if locked { ChatAction::Lock } else { ChatAction::Unlock },
+                });
+            }
+        }
+        // Write the new state through to the archive, the same
+        // write the confirmed path performs (a no-op without a
+        // live session, like the sibling actions).
+        if in_chats {
+            self.persist_chat_row(chat_id);
+        }
+    }
+
+    /// The lock entry point the menus call. Locking with no
+    /// code set first runs the create-code prompt: the folder
+    /// the chat is about to join is gated by that code, and an
+    /// ungated folder never exists. Unlocking never asks for
+    /// the code: the menu is only reachable where the chat is
+    /// already visible.
+    pub(crate) fn request_lock_chat(&mut self, chat_id: u64, locked: bool) {
+        if locked && self.lock_code.is_none() {
+            self.open_code_prompt(crate::state::CodePrompt::CreateThenLock(chat_id));
+            return;
+        }
+        self.apply_lock_chat(chat_id, locked);
+    }
+
+    /// Opens the code prompt fresh: empty fields, no stale
+    /// error.
+    pub(crate) fn open_code_prompt(&mut self, prompt: crate::state::CodePrompt) {
+        self.code_prompt = Some(prompt);
+        self.code_entry.clear();
+        self.code_entry_repeat.clear();
+        self.code_error = None;
+    }
+
+    /// Closes the code prompt and wipes the typed code.
+    pub(crate) fn close_code_prompt(&mut self) {
+        self.code_prompt = None;
+        self.code_entry.clear();
+        self.code_entry_repeat.clear();
+        self.code_error = None;
+    }
+
+    /// Enters the locked-chats folder: the screen opens
+    /// either way, but its body stays behind the gate until
+    /// the code passes, so this raises the prompt (the entry
+    /// form, or the create form when no code exists yet).
+    pub(crate) fn request_locked_folder(&mut self) {
+        self.screen = crate::state::Screen::Locked;
+        if !self.folder_unlocked {
+            self.open_code_prompt(if self.lock_code.is_some() {
+                crate::state::CodePrompt::OpenFolder
+            } else {
+                crate::state::CodePrompt::CreateThenFolder
+            });
+        }
+    }
+
+    /// Submits the open code prompt: verifies the entered
+    /// code, or creates the code from the create form, then
+    /// performs the action the prompt was opened for. A
+    /// failed submit keeps the prompt open with its inline
+    /// error.
+    pub(crate) fn submit_code_prompt(&mut self) {
+        let Some(prompt) = self.code_prompt.clone() else {
+            return;
+        };
+        match prompt {
+            crate::state::CodePrompt::OpenFolder => {
+                if self.lock_code.as_ref().is_some_and(|c| c.verify(&self.code_entry)) {
+                    self.folder_unlocked = true;
+                    self.close_code_prompt();
+                } else {
+                    self.code_error = Some(crate::state::CodeError::Wrong);
+                }
+            }
+            crate::state::CodePrompt::CreateThenFolder
+            | crate::state::CodePrompt::CreateThenLock(_) => {
+                if self.code_entry.chars().count() < core::lockcode::MIN_CODE_LEN {
+                    self.code_error = Some(crate::state::CodeError::TooShort);
+                    return;
+                }
+                if self.code_entry != self.code_entry_repeat {
+                    self.code_error = Some(crate::state::CodeError::Mismatch);
+                    return;
+                }
+                self.lock_code = Some(core::lockcode::LockCode::new(&self.code_entry));
+                self.persist_settings();
+                match prompt {
+                    crate::state::CodePrompt::CreateThenFolder => {
+                        self.folder_unlocked = true;
+                    }
+                    crate::state::CodePrompt::CreateThenLock(chat_id) => {
+                        self.apply_lock_chat(chat_id, true);
+                    }
+                    crate::state::CodePrompt::OpenFolder => {}
+                }
+                self.close_code_prompt();
+            }
+        }
+    }
+
     /// Applies archive/pin/mute state to one chat: locally at once,
     /// and through the backend in live mode (the archive store is
     /// written by the same path, so the state survives restarts).

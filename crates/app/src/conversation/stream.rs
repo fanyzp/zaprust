@@ -48,6 +48,17 @@ impl App {
             self.stream_last_viewport = 0.0;
             self.stream_was_bottom = true;
         }
+        // QA hook (--scroll-to N): locate the Nth message of
+        // the conversation once, through the same one-shot
+        // locate the search jump uses.
+        if let Some(n) = self.qa_scroll_to {
+            if self.scroll_to_message.is_none() {
+                if let Some(msg) = self.conversation.get(n.saturating_sub(1)) {
+                    self.scroll_to_message = Some(msg.id);
+                    self.qa_scroll_to = None;
+                }
+            }
+        }
         let locate_pending = self.scroll_to_message.is_some();
         // Display fetches for photo messages whose real bytes are
         // not here yet. The paint loop below borrows the

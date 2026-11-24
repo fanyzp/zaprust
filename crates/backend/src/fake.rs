@@ -40,6 +40,17 @@ pub const FAKE_QR_PAYLOAD: &str = "2@FAKE0PAYLOAD,AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
 pub const FAKE_OWN_JID: &str = "10000000000@s.whatsapp.net";
 /// JID of the scripted DM chat.
 pub const FAKE_DM_JID: &str = "10000000001@s.whatsapp.net";
+/// JID of the scripted marathon chat: 600 generated messages
+/// for exercising the conversation stream's windowing. Only
+/// present when the ZAPRUST_FAKE_MARATHON environment variable
+/// is set, so the standard scripted roster (and every
+/// screenshot pair built on it) is unchanged by default.
+pub const FAKE_MARATHON_JID: &str = "10000000005@s.whatsapp.net";
+
+/// Whether the marathon fixture joins the scripted roster.
+fn marathon_enabled() -> bool {
+    std::env::var_os("ZAPRUST_FAKE_MARATHON").is_some()
+}
 /// JID of the scripted group chat.
 pub const FAKE_GROUP_JID: &str = "10000000002@g.us";
 /// JID of the scripted channel.
@@ -335,7 +346,7 @@ fn default_members() -> Vec<(String, String, bool)> {
 /// The scripted chats, in display order.
 #[must_use]
 pub fn scripted_chats() -> Vec<LiveChat> {
-    vec![
+    let mut chats = vec![
         LiveChat {
             jid: FAKE_DM_JID.to_owned(),
             title: "Sarah Miller (live demo)".to_owned(),
@@ -432,7 +443,26 @@ pub fn scripted_chats() -> Vec<LiveChat> {
             parent_jid: None,
             is_parent: false,
         },
-    ]
+    ];
+    if marathon_enabled() {
+        chats.push(LiveChat {
+            jid: FAKE_MARATHON_JID.to_owned(),
+            title: "Marathon Thread (live demo)".to_owned(),
+            kind: LiveChatKind::Dm,
+            preview: "Marathon message 600: the finish line".to_owned(),
+            preview_sender: None,
+            timestamp: 1_699_000_000 + 599 * 1_500,
+            unread: 0,
+            archived: false,
+            pinned: false,
+            ephemeral_secs: 0,
+            muted: false,
+            mute_until: 0,
+            parent_jid: None,
+            is_parent: false,
+        });
+    }
+    chats
 }
 
 /// JID of the scripted discoverable channel: not followed,
@@ -677,6 +707,75 @@ pub fn scripted_statuses() -> Vec<LiveStatus> {
 /// link message with a scripted preview, and one message that a
 /// later scripted revoke targets.
 #[must_use]
+/// The marathon fixture: 600 deterministic messages over
+/// ten days, alternating sides, with varied lengths, one poll
+/// and one event, so the windowed stream path (and its day
+/// dividers) can be exercised end to end. Message bodies carry
+/// their ordinal, so a screenshot can be checked against the
+/// fixture: message N says "Marathon message N".
+pub fn scripted_marathon_messages() -> Vec<LiveMessage> {
+    let base = 1_699_000_000_i64;
+    let mut out = Vec::new();
+    for i in 1..=600_i64 {
+        let from_me = i % 2 == 0;
+        let body = match i % 10 {
+            0 => format!(
+                "Marathon message {i}. This is one of the long ones: it wraps over several lines so the stream measures a tall bubble, with a second sentence to fill the width and a third for good measure."
+            ),
+            5 => format!("Marathon message {i}.\nA second line follows the first."),
+            _ => format!("Marathon message {i}"),
+        };
+        let mut msg = LiveMessage::text(
+            format!("marathon-{i}"),
+            FAKE_MARATHON_JID,
+            if from_me { None } else { Some("Marathon Partner".to_owned()) },
+            body,
+            base + (i - 1) * 1_500,
+            from_me,
+        );
+        if !from_me {
+            msg.sender_jid = Some(FAKE_MARATHON_JID.to_owned());
+        }
+        if i == 300 {
+            msg.kind = crate::LiveMessageKind::Poll {
+                question: "Marathon checkpoint: keep going?".to_owned(),
+                options: vec![("Yes".to_owned(), 4), ("Almost there".to_owned(), 2)],
+                multiple: false,
+                my_votes: vec![0],
+                correct: None,
+            };
+            msg.poll_secret = Some(vec![3u8; 32]);
+            msg.poll_creator = Some(FAKE_MARATHON_JID.to_owned());
+        }
+        if i == 450 {
+            msg.kind = crate::LiveMessageKind::Event {
+                name: "Marathon finish line party".to_owned(),
+                description: "At the park gate".to_owned(),
+                start_time: base + 700_000,
+                end_time: base + 710_800,
+                location: "City park".to_owned(),
+                join_link: String::new(),
+                scheduled_call: false,
+                extra_guests: true,
+                canceled: false,
+                my_rsvp: Some(crate::EventRsvp::Going),
+                going: 3,
+                maybe: 1,
+                not_going: 0,
+            };
+            msg.event_secret = Some(vec![5u8; 32]);
+            msg.event_creator = Some(FAKE_MARATHON_JID.to_owned());
+            msg.event_ballots = vec![
+                (FAKE_MARATHON_JID.to_owned(), crate::EventRsvp::Going),
+                ("10000000007@s.whatsapp.net".to_owned(), crate::EventRsvp::Going),
+                ("10000000008@s.whatsapp.net".to_owned(), crate::EventRsvp::Maybe),
+            ];
+        }
+        out.push(msg);
+    }
+    out
+}
+
 pub fn scripted_messages() -> Vec<LiveMessage> {
     // The poll sits after the three-photo album run: the archive
     // returns messages in timestamp order, so the scripted vector
@@ -1330,6 +1429,7 @@ impl Backend for FakeBackend {
                 .into_iter()
                 .chain(scripted_group_messages())
                 .chain(scripted_channel_history())
+                .chain(if marathon_enabled() { scripted_marathon_messages() } else { Vec::new() })
                 .map(|m| ((m.chat_jid.clone(), m.id.clone()), m))
                 .collect();
         // The channel directory state: FetchChannels reports
@@ -1351,6 +1451,7 @@ impl Backend for FakeBackend {
         let mut events_map: std::collections::HashMap<String, LiveMessage> = scripted_messages()
             .into_iter()
             .chain(scripted_group_messages())
+            .chain(if marathon_enabled() { scripted_marathon_messages() } else { Vec::new() })
             .filter(|m| matches!(m.kind, crate::LiveMessageKind::Event { .. }))
             .map(|m| (m.id.clone(), m))
             .collect();
@@ -4014,6 +4115,11 @@ fn emit_linked_script(
     }
     for msg in scripted_group_messages() {
         events.emit(BackendEvent::MessageUpsert(msg));
+    }
+    if marathon_enabled() {
+        for msg in scripted_marathon_messages() {
+            events.emit(BackendEvent::MessageUpsert(msg));
+        }
     }
     // The scripted statuses, as the real backend delivers them:
     // live arrivals and history redelivery both surface as

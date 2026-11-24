@@ -65,6 +65,7 @@ pub(crate) struct Args {
     seed: Rgb,
     debug: bool,
     select_chat: Option<u64>,
+    scroll_to: Option<usize>,
     picker: Option<String>,
     profile: bool,
     header_menu: bool,
@@ -120,6 +121,7 @@ impl Args {
             fake_linked: false,
             debug: false,
             select_chat: None,
+            scroll_to: None,
             picker: None,
             profile: false,
             header_menu: false,
@@ -258,6 +260,16 @@ impl Args {
                 "--select-chat" => {
                     if let Some(v) = argv.get(i + 1) {
                         args.select_chat = v.parse().ok();
+                        i += 1;
+                    }
+                }
+                "--scroll-to" => {
+                    // QA hook: open the selected conversation
+                    // located at the Nth message (1-based), the
+                    // same locate the search jump uses
+                    // (screenshots of a windowed stream's middle).
+                    if let Some(v) = argv.get(i + 1) {
+                        args.scroll_to = v.parse().ok();
                         i += 1;
                     }
                 }
@@ -1419,6 +1431,9 @@ pub(crate) struct App {
     /// QA hook (--scroll-top): open conversations at the top
     /// instead of sticking to the newest message.
     pub(crate) qa_scroll_top: bool,
+    /// QA hook (--scroll-to N): locate the Nth message of the
+    /// first conversation opened, once.
+    pub(crate) qa_scroll_to: Option<usize>,
     /// QA hook (--community-scroll <px>): the community home's
     /// initial vertical scroll offset.
     pub(crate) qa_community_scroll: f32,
@@ -2331,6 +2346,7 @@ impl App {
             settings_highlight: None,
             appearance_advanced_open: false,
             qa_scroll_top: args.scroll_top,
+            qa_scroll_to: args.scroll_to,
             qa_community_scroll: args.community_scroll,
             zoom_percent: 100,
             enter_sends: true,

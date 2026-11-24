@@ -4,6 +4,15 @@ All notable changes to Zaprust are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com), versions
 follow [SemVer](https://semver.org).
 
+## [1.6.21] - 2026-11-24
+
+### feat:
+
+- Business profiles and catalogs are viewable. A business contact's info panel gains a Business section (description, email, websites, categories, address, and opening hours per day) and a catalog view: collections as sections when the business uses them, otherwise the product list with Load more, product photos included. An order message renders as an order card (items, total, status) that opens the order's line items.
+- Labels arrive, synced with your other devices. The Labels panel (from the chat list) creates, renames, and recolors labels and deletes them behind a confirmation. Chats and individual messages get labels from their menus; labeled chats show tag chips in the list, labeled messages show a tag line under the bubble, and the chat list can be filtered to one label. Changes made on your phone show up here, and changes made here show up there. Labels persist in the local archive.
+- Business quick replies sync too. Settings > Business lists and edits them (deleting asks first), and typing a slash in the composer, like /hours, offers the matching replies; picking one fills the composer with its text.
+- Your own business profile is editable in Settings > Business: description, email, address, websites, timezone, and opening hours. Two honest limits: categories can be kept or removed but not added, because the library this client is built on offers no list of categories to pick from; and there is no cover photo control, because the upload it needs is not implemented in that library.
+
 ## [1.6.20] - 2026-11-24
 
 ### feat:

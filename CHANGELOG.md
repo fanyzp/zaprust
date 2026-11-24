@@ -4,6 +4,13 @@ All notable changes to Zaprust are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com), versions
 follow [SemVer](https://semver.org).
 
+## [1.6.24] - 2026-11-25
+
+### fix:
+
+- The spell checker now catches the last word of a sentence. Its address rule used to exempt any word touching a full stop, so a misspelling at the end of a sentence was never underlined. The rule now exempts only words fused into an address-like string (a domain, a file name, a path, an email, a handle); links, addresses, codes and acronyms are still never flagged, and correctly spelled sentence-final words still pass in both languages.
+- The chat list filter chips no longer rest with the last chip clipped at the panel edge. The chip row now flows whole chips onto a second row when the panel is too narrow for one row, so every filter (All, Unread, Personal, Favorites, Groups, and Archived when it applies) is fully visible at any panel width, in either language, whatever the counts grow to.
+
 ## [1.6.23] - 2026-11-25
 
 ### feat:

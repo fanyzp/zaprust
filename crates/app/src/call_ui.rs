@@ -913,8 +913,12 @@ impl App {
                                     Some(ref tex) => {
                                         let (sw, sh) = self.calls.media.stage_size;
                                         if sw > 0 {
-                                            let cap = if sections_on { 96.0 } else { 224.0 };
-                                            (width * sh as f32 / sw as f32).clamp(110.0, cap)
+                                            let (floor, cap) = if sections_on {
+                                                (80.0, 96.0)
+                                            } else {
+                                                (110.0, 224.0)
+                                            };
+                                            (width * sh as f32 / sw as f32).clamp(floor, cap)
                                         } else {
                                             let _ = tex;
                                             168.0

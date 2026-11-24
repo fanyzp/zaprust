@@ -145,6 +145,19 @@ pub(crate) struct CallUi {
     pub stage_sender: Option<String>,
 }
 
+/// How a call sits in the world: who started it, and
+/// whether a group or a link stands behind it. Bundled so
+/// [`CallUi::fresh`] stays readable.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct CallShape {
+    /// This device placed the call.
+    pub outgoing: bool,
+    /// A group or call-link call.
+    pub group: bool,
+    /// A call-link call (no chat behind it).
+    pub link: bool,
+}
+
 impl CallUi {
     /// A call in its first phase, with every control at rest.
     fn fresh(
@@ -153,9 +166,7 @@ impl CallUi {
         title: String,
         video: bool,
         phase: CallUiPhase,
-        outgoing: bool,
-        group: bool,
-        link: bool,
+        shape: CallShape,
     ) -> Self {
         Self {
             call_id: call_id.to_owned(),
@@ -169,13 +180,13 @@ impl CallUi {
             speaker: false,
             reason: None,
             ended_at: None,
-            outgoing,
+            outgoing: shape.outgoing,
             started_at: crate::state::now_unix() as i64,
             connected: false,
             declined: false,
             ended_elsewhere: false,
             action_pending: false,
-            group,
+            group: shape.group,
             participants: Vec::new(),
             reactions: std::collections::HashMap::new(),
             my_reaction: None,
@@ -187,7 +198,7 @@ impl CallUi {
             video_remote: false,
             video_note: None,
             stage_sender: None,
-            link,
+            link: shape.link,
         }
     }
 
@@ -404,9 +415,7 @@ impl App {
             title,
             video,
             CallUiPhase::Incoming,
-            false,
-            group,
-            false,
+            CallShape { outgoing: false, group, link: false },
         ));
     }
 
@@ -470,9 +479,7 @@ impl App {
                 title,
                 self.calls.outgoing_video,
                 CallUiPhase::Ringing,
-                true,
-                group,
-                false,
+                CallShape { outgoing: true, group, link: false },
             ));
             // The remembered kind has been adopted; the next
             // outgoing call sets it again when it starts.
@@ -492,9 +499,7 @@ impl App {
                 crate::i18n::t("call.link_title"),
                 self.calls.outgoing_video,
                 CallUiPhase::Connecting,
-                true,
-                true,
-                true,
+                CallShape { outgoing: true, group: true, link: true },
             ));
             self.calls.outgoing_video = false;
             return;

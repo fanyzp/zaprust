@@ -374,6 +374,14 @@ pub struct QuotedRef {
     pub sender_jid: Option<String>,
     /// Short text excerpt of the quoted body for the preview.
     pub excerpt: String,
+    /// The chat the quoted message lives in, when that is not
+    /// the chat the reply is sent to: a reply to a status quotes
+    /// a message whose home is `status@broadcast` while the
+    /// reply itself is sent to the author's direct chat. The
+    /// outgoing builder stamps it on the quote context (the
+    /// protocol's cross-chat quote marker); `None` for an
+    /// ordinary same-chat quote, which carries no marker.
+    pub remote_jid: Option<String>,
 }
 
 /// A command from the UI to the backend. `PartialEq` only: the
@@ -473,6 +481,54 @@ pub enum BackendCommand {
         /// The status text.
         text: String,
         /// Audience JIDs (direct-chat partners of the account).
+        recipients: Vec<String>,
+    },
+    /// Post a photo or video status update. Like
+    /// [`BackendCommand::PostTextStatus`] the caller supplies
+    /// the audience; the media bytes travel with the command,
+    /// the way [`BackendCommand::SendMedia`] carries them. The
+    /// caller also supplies the JPEG thumbnail the receiving
+    /// clients present (the photo itself at preview fidelity,
+    /// or a real frame of the video); an empty thumbnail is
+    /// accepted and simply leaves the post without a preview
+    /// image. Answered with [`BackendEvent::StatusMediaPosted`]
+    /// on success and [`BackendEvent::StatusPostFailed`] on
+    /// failure (the one failure event for every status post, so
+    /// a refused post of either kind settles the same composer).
+    /// An empty payload, an unsupported kind, or an empty
+    /// recipient list is refused with `StatusPostFailed`, never
+    /// posted.
+    PostMediaStatus {
+        /// Photo or video; every other kind is refused.
+        kind: MediaKind,
+        /// The media bytes.
+        data: Vec<u8>,
+        /// MIME type of the payload.
+        mime: String,
+        /// Caption, may be empty.
+        caption: String,
+        /// JPEG thumbnail bytes, may be empty (see the command
+        /// docs).
+        thumbnail: Vec<u8>,
+        /// Duration in seconds for a video; ignored for a photo.
+        seconds: u32,
+        /// Audience JIDs (direct-chat partners of the account).
+        recipients: Vec<String>,
+    },
+    /// Delete (revoke) one of my own status updates. The
+    /// revoke is itself a status fan-out, so the caller
+    /// supplies the audience the post was encrypted for: the
+    /// app passes the recipient list it used for a post made
+    /// this session, or its current direct-chat partners for a
+    /// status posted from another device (the best audience it
+    /// can name; a device that was not in the original audience
+    /// simply never sees the revoke). Answered with
+    /// [`BackendEvent::StatusDeleted`] on success and
+    /// [`BackendEvent::StatusDeleteFailed`] on failure.
+    DeleteStatus {
+        /// Protocol ID of the status to delete.
+        message_id: String,
+        /// Audience JIDs the revoke is encrypted for.
         recipients: Vec<String>,
     },
     /// Start an outgoing 1:1 call to a chat. `video` asks for a
@@ -1842,7 +1898,83 @@ impl LiveMessage {
     }
 }
 
+/// One status (story) update, received or posted. A status is
+/// not a message in a conversation: it is delivered under the
+/// broadcast address `status@broadcast`, it belongs to its
+/// author alone, and it expires 24 hours after it was posted.
+/// It therefore travels as its own type instead of entering the
+/// chat machinery as a [`LiveMessage`] with a fake chat; the
+/// app keeps received statuses in session state (the Updates
+/// feed), never in the chat archive. The media references work
+/// exactly like a message's: the bytes are fetched with the
+/// ordinary fetch commands addressed to `status@broadcast`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LiveStatus {
+    /// Protocol message ID (stable within the broadcast).
+    pub id: String,
+    /// JID of the status author.
+    pub author_jid: String,
+    /// Author display name as the backend resolved it; `None`
+    /// means the author is this account.
+    pub author_name: Option<String>,
+    /// Plain-text body: the status text, or a media caption, or
+    /// the typed kind label when the post carries no words.
+    pub body: String,
+    /// Unix timestamp (seconds) the status was posted.
+    pub timestamp: i64,
+    /// True when this account posted the status.
+    pub from_me: bool,
+    /// Rich content kind (text by default), classified exactly
+    /// like a message's.
+    pub kind: LiveMessageKind,
+    /// For a text status: the background colour the author
+    /// picked, as an ARGB word (the wire's `backgroundArgb`).
+    /// `None` for media statuses and for text payloads that
+    /// carried no colour.
+    pub background_argb: Option<u32>,
+    /// (emoji, count) reaction summary, fed by reaction updates
+    /// addressed to the broadcast.
+    pub reactions: Vec<(String, u32)>,
+    /// My own reaction, if any.
+    pub my_reaction: Option<String>,
+    /// For a photo status: the reference its bytes can be
+    /// re-downloaded from (see [`PhotoRef`]).
+    pub photo_ref: Option<PhotoRef>,
+    /// For a photo status: the JPEG thumbnail the author's
+    /// client embedded in the payload, the photo at preview
+    /// fidelity.
+    pub photo_thumbnail: Option<Vec<u8>>,
+    /// For a video status: the reference its bytes can be
+    /// re-downloaded from (see [`VideoRef`]).
+    pub video_ref: Option<VideoRef>,
+    /// For a video status: the embedded JPEG thumbnail (a real
+    /// frame of the video), its visual identity until the bytes
+    /// are fetched and played.
+    pub video_thumbnail: Option<Vec<u8>>,
+    /// For a video status: the reference its hosted poster can
+    /// be downloaded from, when the payload carried one.
+    pub poster_ref: Option<PosterRef>,
+    /// For a video status: the frame width the payload states.
+    pub video_width: Option<u32>,
+    /// For a video status: the frame height the payload states.
+    pub video_height: Option<u32>,
+}
+
 /// An event from the backend to the UI.
+///
+/// Parity between backends (the real session and the fake) is
+/// defined over event shapes and state convergence: for the
+/// same command, every backend answers with the same typed
+/// events, applies the same refusal rules, and converges the
+/// app to the same state. Timing is deliberately NOT part of
+/// the contract: the real session's confirmations wait on the
+/// server (and the `*Changed` events below are the adoption
+/// channel for changes made elsewhere), while the fake
+/// simulates that echo at zero latency. A test that needs a
+/// specific failure uses the fake's failure injection; the
+/// connection-lifecycle events (pairing expiry, bans, transport
+/// loss, crashes) are produced only by a real transport or the
+/// process supervisor and are not simulated by any backend.
 #[derive(Debug, Clone, PartialEq)]
 // The PrivacyState payload (a settings map) makes this enum
 // large, but events are infrequent and channel-passed by value
@@ -2025,10 +2157,51 @@ pub enum BackendEvent {
     },
     /// A [`BackendCommand::PostTextStatus`] reached the server:
     /// the text status is posted. The app adopts `text` as its
-    /// current status for the rest of the session.
+    /// current status for the rest of the session, and keeps
+    /// `message_id` so the post can be revoked with
+    /// [`BackendCommand::DeleteStatus`].
     StatusPosted {
         /// The status text that was posted.
         text: String,
+        /// Protocol ID of the posted status.
+        message_id: String,
+    },
+    /// A [`BackendCommand::PostMediaStatus`] reached the server:
+    /// the photo or video status is posted. Carries the full
+    /// [`LiveStatus`] so the app adopts the post into My Status
+    /// exactly like a received one: viewable in this session and
+    /// deletable by its protocol ID.
+    StatusMediaPosted {
+        /// The posted status.
+        status: Box<LiveStatus>,
+    },
+    /// A status update arrived: someone in the account's
+    /// audience posted one, the account's own post was delivered
+    /// back, or history sync redelivered one the server still
+    /// holds. Statuses arrive while the client is linked (and
+    /// through history sync at link time); there is no fetch for
+    /// them, so a status posted and expired while the client was
+    /// offline never appears. Re-delivery of a status the app
+    /// already holds carries the same ID and replaces it.
+    StatusReceived {
+        /// The received status.
+        status: Box<LiveStatus>,
+    },
+    /// A [`BackendCommand::DeleteStatus`] reached the server:
+    /// one of my own statuses is revoked. The app drops it from
+    /// My Status.
+    StatusDeleted {
+        /// Protocol ID of the deleted status.
+        message_id: String,
+    },
+    /// A [`BackendCommand::DeleteStatus`] never reached the
+    /// server. The status stays in My Status and the app shows
+    /// `message` where the delete was attempted.
+    StatusDeleteFailed {
+        /// Protocol ID of the status that could not be deleted.
+        message_id: String,
+        /// Why the delete failed, in user words.
+        message: String,
     },
     /// A [`BackendCommand::PostTextStatus`] never reached the
     /// server: the text was empty, the audience was empty or

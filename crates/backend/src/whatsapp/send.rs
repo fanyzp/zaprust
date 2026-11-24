@@ -145,6 +145,69 @@ pub(super) async fn post_text_status(
         .map_err(|e| format!("{e}"))
 }
 
+/// Posts a photo or video status through the library's status
+/// API. The media uploads through the same path a chat send
+/// uses; the caller supplies the thumbnail the receiving
+/// clients present (a status wears the preview its author's
+/// client made for it: the photo at preview fidelity, or a
+/// real frame of the video). An empty thumbnail is accepted by
+/// the library and simply leaves the post without a preview.
+/// Returns the send result so the caller can adopt the post
+/// under its assigned protocol ID.
+pub(super) async fn post_media_status(
+    client: &whatsapp_rust::Client,
+    kind: crate::MediaKind,
+    data: Vec<u8>,
+    caption: &str,
+    thumbnail: Vec<u8>,
+    seconds: u32,
+    recipients: &[Jid],
+) -> Result<SendResult, String> {
+    use whatsapp_rust::wacore::download::MediaType;
+
+    let media_type = match kind {
+        crate::MediaKind::Photo => MediaType::Image,
+        crate::MediaKind::Video => MediaType::Video,
+        _ => return Err("only a photo or a video can be a status".to_owned()),
+    };
+    let upload = client
+        .upload(data, media_type, whatsapp_rust::upload::UploadOptions::new())
+        .await
+        .map_err(|e| format!("upload: {e}"))?;
+    let options = whatsapp_rust::StatusSendOptions::default();
+    let caption = if caption.is_empty() { None } else { Some(caption) };
+    match kind {
+        crate::MediaKind::Photo => client
+            .status()
+            .send_image(upload, thumbnail, caption, recipients, options)
+            .await
+            .map_err(|e| format!("{e}")),
+        _ => client
+            .status()
+            .send_video(upload, thumbnail, Some(seconds), caption, recipients, options)
+            .await
+            .map_err(|e| format!("{e}")),
+    }
+}
+
+/// Revokes one of my own statuses through the library's status
+/// API. A revoke is itself a status fan-out, encrypted for the
+/// same audience the post went to, so the caller supplies that
+/// recipient list. Returns the send result for symmetry with
+/// the post paths.
+pub(super) async fn delete_status(
+    client: &whatsapp_rust::Client,
+    message_id: &str,
+    recipients: &[Jid],
+) -> Result<SendResult, String> {
+    let id = whatsapp_rust::MessageId::new(message_id).map_err(|e| format!("{e}"))?;
+    client
+        .status()
+        .revoke(id, recipients, whatsapp_rust::StatusSendOptions::default())
+        .await
+        .map_err(|e| format!("{e}"))
+}
+
 /// Builds the outgoing text message: bare text, or extendedText
 /// carrying the reply context (the quoted message's protocol id, its
 /// author as the participant, and a text preview of its body). A
@@ -162,6 +225,13 @@ pub(super) fn outgoing_text_message(
             context.stanza_id = Some(q.message_id.clone());
             context.participant =
                 Some(q.sender_jid.clone().unwrap_or_else(|| chat_jid.to_string()));
+            // A cross-chat quote (a status reply: the quoted
+            // post lives in `status@broadcast`, the reply in the
+            // author's direct chat) carries the quoted message's
+            // home as remote_jid; the protocol emits that field
+            // for cross-chat quotes only, so a same-chat quote
+            // leaves it unset.
+            context.remote_jid = q.remote_jid.clone();
             context.quoted_message = MessageField::some(wa::Message::text(q.excerpt.clone()));
             wa::Message::text_with_context(body, context)
         }

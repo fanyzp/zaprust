@@ -27,7 +27,7 @@ use std::time::Duration;
 
 use crate::{
     Backend, BackendCommand, BackendConfig, BackendEvent, EventSink, LiveChat, LiveChatKind,
-    LiveMessage, OwnProfile,
+    LiveMessage, LiveStatus, OwnProfile,
 };
 
 /// The payload the fake backend asks the UI to render as a QR code.
@@ -396,6 +396,93 @@ pub fn scripted_chats() -> Vec<LiveChat> {
             mute_until: 0,
             parent_jid: None,
             is_parent: true,
+        },
+    ]
+}
+
+/// A real 1-second H.264 MP4 (128x96, 10 fps), generated with
+/// ffmpeg's testsrc: the same generated fixture the app crate's
+/// player tests demux, copied so the fake can serve video bytes
+/// and downloads (P2-44) that actually decode and play.
+const FIXTURE_MP4: &[u8] = include_bytes!("testdata/tiny.mp4");
+
+/// The scripted status feed: one text, one photo and one video
+/// post from scripted people, plus one earlier post of the
+/// account's own, so the Updates screen's feed, viewer and My
+/// Status delete flow are all exercisable in test mode. Media
+/// references are `None`, the same convention as the scripted
+/// chat media: the demo fetch path serves fixture bytes by
+/// message ID, and the waiting fake fails honestly.
+#[must_use]
+pub fn scripted_statuses() -> Vec<LiveStatus> {
+    let base = LiveStatus {
+        id: String::new(),
+        author_jid: String::new(),
+        author_name: None,
+        body: String::new(),
+        timestamp: 0,
+        from_me: false,
+        kind: crate::LiveMessageKind::Text,
+        background_argb: None,
+        reactions: Vec::new(),
+        my_reaction: None,
+        photo_ref: None,
+        photo_thumbnail: None,
+        video_ref: None,
+        video_thumbnail: None,
+        poster_ref: None,
+        video_width: None,
+        video_height: None,
+    };
+    vec![
+        LiveStatus {
+            id: "fake-status-sarah-1".to_owned(),
+            author_jid: FAKE_DM_JID.to_owned(),
+            author_name: Some("Sarah Miller".to_owned()),
+            body: "At the lake house this weekend".to_owned(),
+            timestamp: 1_700_000_240,
+            background_argb: Some(0xFF7A_4A21),
+            ..base.clone()
+        },
+        LiveStatus {
+            id: "fake-status-emma-1".to_owned(),
+            author_jid: "10000000007@s.whatsapp.net".to_owned(),
+            author_name: Some("Emma Wilson".to_owned()),
+            body: "Morning run, done".to_owned(),
+            timestamp: 1_700_000_180,
+            kind: crate::LiveMessageKind::Media {
+                media: crate::MediaKind::Photo,
+                caption: "Morning run, done".to_owned(),
+                seconds: 0,
+                size_bytes: 144_000,
+            },
+            ..base.clone()
+        },
+        LiveStatus {
+            id: "fake-status-mike-1".to_owned(),
+            author_jid: "10000000004@s.whatsapp.net".to_owned(),
+            author_name: Some("Mike Johnson".to_owned()),
+            body: "Trail cam from yesterday".to_owned(),
+            timestamp: 1_700_000_120,
+            kind: crate::LiveMessageKind::Media {
+                media: crate::MediaKind::Video,
+                caption: "Trail cam from yesterday".to_owned(),
+                seconds: 12,
+                size_bytes: 2_400_000,
+            },
+            video_thumbnail: Some(fixture_png("fake-status-mike-1")),
+            video_width: Some(128),
+            video_height: Some(96),
+            ..base.clone()
+        },
+        LiveStatus {
+            id: "fake-status-mine-1".to_owned(),
+            author_jid: FAKE_OWN_JID.to_owned(),
+            body: "Shipping day".to_owned(),
+            timestamp: 1_700_000_060,
+            from_me: true,
+            background_argb: Some(0xFF00_A884),
+            ..base
         },
     ]
 }
@@ -909,11 +996,12 @@ pub(crate) fn fake_pair_code(phone: &str) -> String {
 impl Backend for FakeBackend {
     fn run(
         self: Box<Self>,
-        _config: &BackendConfig,
+        config: &BackendConfig,
         commands: Receiver<BackendCommand>,
         events: EventSink,
     ) -> Result<(), String> {
         let mut sent_counter: u64 = 0;
+        let mut status_counter: u64 = 0;
         let command_log = self.command_log.clone();
         // Session state: commands mutate these maps, so sequences
         // like archive-then-pin compose instead of restarting from
@@ -1119,8 +1207,152 @@ impl Backend for FakeBackend {
                         events.emit(BackendEvent::StatusPostFailed {
                             message: "There is nobody to post that status to.".to_owned(),
                         });
+                    } else if take_failure("PostTextStatus") {
+                        events.emit(BackendEvent::StatusPostFailed {
+                            message: "Posting the status failed: connection lost".to_owned(),
+                        });
                     } else {
-                        events.emit(BackendEvent::StatusPosted { text });
+                        status_counter += 1;
+                        let message_id = format!("fake-status-post-{status_counter}");
+                        events.emit(BackendEvent::StatusPosted { text: text.clone(), message_id: message_id.clone() });
+                        // The post is delivered back like a real
+                        // one: the account's own status arrives
+                        // under the broadcast too.
+                        events.emit(BackendEvent::StatusReceived {
+                            status: Box::new(LiveStatus {
+                                id: message_id,
+                                author_jid: FAKE_OWN_JID.to_owned(),
+                                author_name: None,
+                                body: text,
+                                timestamp: 1_700_000_400
+                                    + i64::try_from(status_counter).unwrap_or(0),
+                                from_me: true,
+                                kind: crate::LiveMessageKind::Text,
+                                background_argb: Some(0xFF00_A884),
+                                reactions: Vec::new(),
+                                my_reaction: None,
+                                photo_ref: None,
+                                photo_thumbnail: None,
+                                video_ref: None,
+                                video_thumbnail: None,
+                                poster_ref: None,
+                                video_width: None,
+                                video_height: None,
+                            }),
+                        });
+                    }
+                }
+                BackendCommand::PostMediaStatus {
+                    kind,
+                    data,
+                    caption,
+                    thumbnail,
+                    seconds,
+                    recipients,
+                    ..
+                } => {
+                    if let Some(log) = &command_log {
+                        log.lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .push(format!(
+                                "post_media_status:{kind:?}:{}:{}",
+                                data.len(),
+                                recipients.len()
+                            ));
+                    }
+                    // The real backend's refusal rules, in its
+                    // order: empty payload, unpostable kind,
+                    // empty audience.
+                    if data.is_empty() {
+                        events.emit(BackendEvent::StatusPostFailed {
+                            message: "That file is empty, nothing was posted.".to_owned(),
+                        });
+                    } else if !matches!(kind, crate::MediaKind::Photo | crate::MediaKind::Video) {
+                        events.emit(BackendEvent::StatusPostFailed {
+                            message: "Only a photo or a video can be posted as a status."
+                                .to_owned(),
+                        });
+                    } else if recipients.is_empty() {
+                        events.emit(BackendEvent::StatusPostFailed {
+                            message: "There is nobody to post that status to.".to_owned(),
+                        });
+                    } else if take_failure("PostMediaStatus") {
+                        events.emit(BackendEvent::StatusPostFailed {
+                            message: "Posting the status failed: connection lost".to_owned(),
+                        });
+                    } else {
+                        status_counter += 1;
+                        let status = LiveStatus {
+                            id: format!("fake-status-post-{status_counter}"),
+                            author_jid: FAKE_OWN_JID.to_owned(),
+                            author_name: None,
+                            body: caption.clone(),
+                            timestamp: 1_700_000_400
+                                + i64::try_from(status_counter).unwrap_or(0),
+                            from_me: true,
+                            kind: crate::LiveMessageKind::Media {
+                                media: kind,
+                                caption,
+                                seconds,
+                                size_bytes: data.len() as u64,
+                            },
+                            background_argb: None,
+                            reactions: Vec::new(),
+                            my_reaction: None,
+                            photo_ref: None,
+                            photo_thumbnail: if matches!(kind, crate::MediaKind::Photo)
+                                && !thumbnail.is_empty()
+                            {
+                                Some(thumbnail.clone())
+                            } else {
+                                None
+                            },
+                            video_ref: None,
+                            video_thumbnail: if matches!(kind, crate::MediaKind::Video)
+                                && !thumbnail.is_empty()
+                            {
+                                Some(thumbnail)
+                            } else {
+                                None
+                            },
+                            poster_ref: None,
+                            video_width: None,
+                            video_height: None,
+                        };
+                        events.emit(BackendEvent::StatusMediaPosted {
+                            status: Box::new(status.clone()),
+                        });
+                        events.emit(BackendEvent::StatusReceived { status: Box::new(status) });
+                    }
+                }
+                BackendCommand::DeleteStatus { message_id, recipients } => {
+                    if let Some(log) = &command_log {
+                        log.lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .push(format!(
+                                "delete_status:{message_id}:{}",
+                                recipients.len()
+                            ));
+                    }
+                    if recipients.is_empty() {
+                        events.emit(BackendEvent::StatusDeleteFailed {
+                            message_id,
+                            message: "There is nobody to send that delete to.".to_owned(),
+                        });
+                    } else if take_failure("DeleteStatus") {
+                        events.emit(BackendEvent::StatusDeleteFailed {
+                            message_id,
+                            message: "Deleting the status failed: connection lost".to_owned(),
+                        });
+                    } else {
+                        events.emit(BackendEvent::StatusDeleted { message_id: message_id.clone() });
+                        // The revoke is delivered back like a
+                        // real one: a protocol revoke addressed
+                        // to the broadcast.
+                        events.emit(BackendEvent::MessageRevoked {
+                            chat_jid: "status@broadcast".to_owned(),
+                            message_id,
+                        });
                     }
                 }
                 BackendCommand::SetDisappearingTimer { chat_jid, duration_secs } => {
@@ -1463,12 +1695,20 @@ impl Backend for FakeBackend {
                     }
                 }
                 BackendCommand::React { chat_jid, message_id, emoji, .. } => {
-                    events.emit(BackendEvent::ReactionUpdate {
-                        chat_jid,
-                        message_id,
-                        actor: "Me".to_owned(),
-                        emoji,
-                    });
+                    if take_failure("React") {
+                        events.emit(BackendEvent::ReactionFailed {
+                            chat_jid,
+                            message_id,
+                            message: "Reaction failed: connection lost".to_owned(),
+                        });
+                    } else {
+                        events.emit(BackendEvent::ReactionUpdate {
+                            chat_jid,
+                            message_id,
+                            actor: "Me".to_owned(),
+                            emoji,
+                        });
+                    }
                 }
                 BackendCommand::MarkAsRead { chat_jid, message_ids, .. } => {
                     if let Some(log) = &command_log {
@@ -1476,6 +1716,20 @@ impl Backend for FakeBackend {
                             .unwrap_or_else(std::sync::PoisonError::into_inner)
                             .push(format!("mark_as_read:{chat_jid}:{}", message_ids.len()));
                     }
+                    // The read state syncs back like a real one:
+                    // the server echo reports the chat read (the
+                    // *Changed family is the adoption channel for
+                    // state the server holds; the fake simulates
+                    // the echo at zero latency, see the contract
+                    // note on BackendEvent).
+                    if let Some(chat) = chat_state.get_mut(&chat_jid) {
+                        chat.unread = 0;
+                    }
+                    events.emit(BackendEvent::ChatReadChanged {
+                        chat_jid,
+                        read: true,
+                        unread_count: 0,
+                    });
                 }
                 BackendCommand::SetTyping { chat_jid, typing } => {
                     if let Some(log) = &command_log {
@@ -1756,18 +2010,33 @@ impl Backend for FakeBackend {
                             .unwrap_or_else(std::sync::PoisonError::into_inner)
                             .push(format!("star:{chat_jid}:{message_id}:{star}"));
                     }
-                    let key = (chat_jid.clone(), message_id.clone());
-                    let entry = message_state
-                        .get(&key)
-                        .cloned()
-                        .or_else(|| polls.values().find(|m| m.id == message_id).cloned());
-                    if let Some(mut msg) = entry {
-                        msg.starred = star;
-                        message_state.insert(key, msg.clone());
-                        if matches!(msg.kind, crate::LiveMessageKind::Poll { .. }) {
-                            polls.insert(msg.id.clone(), msg.clone());
+                    if take_failure("StarMessage") {
+                        events.emit(BackendEvent::StarFailed {
+                            chat_jid,
+                            message_id,
+                            message: "Starring failed: connection lost".to_owned(),
+                        });
+                    } else {
+                        let key = (chat_jid.clone(), message_id.clone());
+                        let entry = message_state
+                            .get(&key)
+                            .cloned()
+                            .or_else(|| polls.values().find(|m| m.id == message_id).cloned());
+                        if let Some(mut msg) = entry {
+                            msg.starred = star;
+                            message_state.insert(key, msg.clone());
+                            if matches!(msg.kind, crate::LiveMessageKind::Poll { .. }) {
+                                polls.insert(msg.id.clone(), msg.clone());
+                            }
+                            events.emit(BackendEvent::MessageUpsert(msg));
                         }
-                        events.emit(BackendEvent::MessageUpsert(msg));
+                        // The server echo, as app-state sync
+                        // delivers it from a real session.
+                        events.emit(BackendEvent::StarChanged {
+                            chat_jid,
+                            message_id,
+                            starred: star,
+                        });
                     }
                 }
                 BackendCommand::PinMessage { chat_jid, message_id, pin, .. } => {
@@ -1776,11 +2045,26 @@ impl Backend for FakeBackend {
                             .unwrap_or_else(std::sync::PoisonError::into_inner)
                             .push(format!("pin_message:{chat_jid}:{message_id}:{pin}"));
                     }
-                    let key = (chat_jid.clone(), message_id.clone());
-                    if let Some(msg) = message_state.get_mut(&key) {
-                        msg.pinned = pin;
-                        let msg = msg.clone();
-                        events.emit(BackendEvent::MessageUpsert(msg));
+                    if take_failure("PinMessage") {
+                        events.emit(BackendEvent::PinFailed {
+                            chat_jid,
+                            message_id,
+                            message: "Pinning failed: connection lost".to_owned(),
+                        });
+                    } else {
+                        let key = (chat_jid.clone(), message_id.clone());
+                        if let Some(msg) = message_state.get_mut(&key) {
+                            msg.pinned = pin;
+                            let msg = msg.clone();
+                            events.emit(BackendEvent::MessageUpsert(msg));
+                        }
+                        // The pin protocol echo, as a real
+                        // session delivers it.
+                        events.emit(BackendEvent::MessagePinChanged {
+                            chat_jid,
+                            message_id,
+                            pinned: pin,
+                        });
                     }
                 }
                 BackendCommand::ChatAction { chat_jid, action } => {
@@ -1815,7 +2099,35 @@ impl Backend for FakeBackend {
                             }
                         }
                         let chat = chat.clone();
-                        events.emit(BackendEvent::ChatUpsert(chat));
+                        events.emit(BackendEvent::ChatUpsert(chat.clone()));
+                        // The server echoes, as app-state sync
+                        // delivers them from a real session: the
+                        // archive and mute states are *Changed
+                        // events there, and the pin state rides
+                        // PinChanged.
+                        match action {
+                            crate::ChatAction::Archive | crate::ChatAction::Unarchive => {
+                                events.emit(BackendEvent::ArchiveChanged {
+                                    chat_jid: chat.jid.clone(),
+                                    archived: chat.archived,
+                                });
+                            }
+                            crate::ChatAction::Pin | crate::ChatAction::Unpin => {
+                                events.emit(BackendEvent::PinChanged {
+                                    chat_jid: chat.jid.clone(),
+                                    pinned: chat.pinned,
+                                });
+                            }
+                            crate::ChatAction::Mute
+                            | crate::ChatAction::MuteUntil(_)
+                            | crate::ChatAction::Unmute => {
+                                events.emit(BackendEvent::MuteChanged {
+                                    chat_jid: chat.jid.clone(),
+                                    muted: chat.muted,
+                                    mute_until: chat.mute_until,
+                                });
+                            }
+                        }
                     }
                 }
                 BackendCommand::BlockContact { chat_jid, block } => {
@@ -2150,20 +2462,85 @@ impl Backend for FakeBackend {
                         events.emit(BackendEvent::ChatUpsert(chat));
                     }
                 }
-                BackendCommand::DownloadMedia { .. } => {
-                    events.emit(BackendEvent::Error {
-                        message: "That file is not available in the demo.".to_owned(),
-                    });
+                BackendCommand::DownloadMedia { chat_jid, message_id, .. } => {
+                    if !self.demo_script {
+                        events.emit(BackendEvent::Error {
+                            message: "That file is not available in the demo.".to_owned(),
+                        });
+                    } else {
+                        // The demo download (P2-44): the fixture
+                        // bytes for the message's kind, written
+                        // under the downloads folder with the
+                        // shared stem rule, answered with
+                        // MediaSaved exactly as the real backend
+                        // answers. A view-once message refuses,
+                        // as the real one does; an unknown
+                        // message keeps the honest demo error.
+                        let scripted = message_state
+                            .get(&(chat_jid.clone(), message_id.clone()))
+                            .map(|m| (m.kind.clone(), m.view_once))
+                            .or_else(|| {
+                                scripted_statuses()
+                                    .into_iter()
+                                    .find(|s| s.id == message_id)
+                                    .map(|s| (s.kind, false))
+                            });
+                        match scripted {
+                            Some((_, true)) => {
+                                events.emit(BackendEvent::Error {
+                                    message: "View-once media cannot be saved.".to_owned(),
+                                });
+                            }
+                            Some((kind, false)) => {
+                                let (bytes, ext) = match kind {
+                                    crate::LiveMessageKind::Media {
+                                        media: crate::MediaKind::Video,
+                                        ..
+                                    } => (FIXTURE_MP4.to_vec(), "mp4"),
+                                    crate::LiveMessageKind::Media {
+                                        media: crate::MediaKind::Voice | crate::MediaKind::Audio,
+                                        ..
+                                    } => (FIXTURE_VOICE_OPUS.to_vec(), "opus"),
+                                    _ => (fixture_png(&message_id), "png"),
+                                };
+                                let dir = config.data_dir.join("downloads");
+                                let stem =
+                                    crate::downloaded_media_stem(&chat_jid, &message_id);
+                                let path = dir.join(format!("{stem}.{ext}"));
+                                let saved = std::fs::create_dir_all(&dir)
+                                    .and_then(|()| std::fs::write(&path, &bytes));
+                                match saved {
+                                    Ok(()) => events.emit(BackendEvent::MediaSaved {
+                                        chat_jid,
+                                        message_id,
+                                        path: path.to_string_lossy().into_owned(),
+                                    }),
+                                    Err(_) => events.emit(BackendEvent::Error {
+                                        message: "Saving that file failed.".to_owned(),
+                                    }),
+                                }
+                            }
+                            None => {
+                                events.emit(BackendEvent::Error {
+                                    message: "That file is not available in the demo."
+                                        .to_owned(),
+                                });
+                            }
+                        }
+                    }
                 }
                 // In the demo script the media fetches serve
                 // fixture bytes (P2-44), the way the sticker
                 // fetch already did: media QA (fetch state,
                 // decode, display, playback) can be rehearsed
                 // without a live account. The waiting fake
-                // keeps the honest per-message failures. Video
-                // bytes stay unserved: the fake has no MP4
-                // fixture, and serving undecodable bytes would
-                // rehearse a failure, not the flow.
+                // keeps the honest per-message failures. The
+                // video fixture is a real generated MP4 (see
+                // FIXTURE_MP4), so playback rehearses end to
+                // end: a regular video lands in the video
+                // cache as VideoReady, a view-once one answers
+                // with its bytes, exactly the real backend's
+                // two shapes.
                 BackendCommand::FetchPhoto { chat_jid, message_id, .. } => {
                     if self.demo_script {
                         let bytes = fixture_png(&message_id);
@@ -2192,11 +2569,40 @@ impl Backend for FakeBackend {
                     }
                 }
                 BackendCommand::FetchVideo { chat_jid, message_id, .. } => {
-                    events.emit(BackendEvent::VideoFetchFailed {
-                        chat_jid,
-                        message_id,
-                        message: "That media is not available in the demo.".to_owned(),
-                    });
+                    if !self.demo_script {
+                        events.emit(BackendEvent::VideoFetchFailed {
+                            chat_jid,
+                            message_id,
+                            message: "That media is not available in the demo.".to_owned(),
+                        });
+                    } else if message_state
+                        .get(&(chat_jid.clone(), message_id.clone()))
+                        .is_some_and(|m| m.view_once)
+                    {
+                        events.emit(BackendEvent::VideoBytes {
+                            chat_jid,
+                            message_id,
+                            bytes: FIXTURE_MP4.to_vec(),
+                        });
+                    } else {
+                        let dir = config.data_dir.join("video-cache");
+                        let stem = crate::downloaded_media_stem(&chat_jid, &message_id);
+                        let path = dir.join(format!("{stem}.mp4"));
+                        let saved = std::fs::create_dir_all(&dir)
+                            .and_then(|()| std::fs::write(&path, FIXTURE_MP4));
+                        match saved {
+                            Ok(()) => events.emit(BackendEvent::VideoReady {
+                                chat_jid,
+                                message_id,
+                                path: path.to_string_lossy().into_owned(),
+                            }),
+                            Err(_) => events.emit(BackendEvent::VideoFetchFailed {
+                                chat_jid,
+                                message_id,
+                                message: "That media is not available in the demo.".to_owned(),
+                            }),
+                        }
+                    }
                 }
                 BackendCommand::FetchVideoPoster { chat_jid, message_id, .. } => {
                     if self.demo_script {
@@ -2257,6 +2663,13 @@ impl Backend for FakeBackend {
                         log.lock()
                             .unwrap_or_else(std::sync::PoisonError::into_inner)
                             .push(format!("fetch_older:{chat_jid}:{oldest_message_id}"));
+                    }
+                    if take_failure("FetchOlderMessages") {
+                        events.emit(BackendEvent::HistoryFetchFailed {
+                            chat_jid,
+                            message: "Loading older messages failed: connection lost".to_owned(),
+                        });
+                        continue;
                     }
                     // The answer takes a phone round trip even
                     // in test mode: a short delay on a side
@@ -2540,6 +2953,14 @@ fn emit_linked_script(
     for msg in scripted_group_messages() {
         events.emit(BackendEvent::MessageUpsert(msg));
     }
+    // The scripted statuses, as the real backend delivers them:
+    // live arrivals and history redelivery both surface as
+    // StatusReceived, so the linked script (which stands in for
+    // a fresh link's history sync) delivers the feed the same
+    // way.
+    for status in scripted_statuses() {
+        events.emit(BackendEvent::StatusReceived { status: Box::new(status) });
+    }
     // The scripted promo message is deleted for everyone; the
     // app shows the placeholder.
     events.emit(BackendEvent::MessageRevoked {
@@ -2821,8 +3242,20 @@ mod tests {
             })
             .unwrap();
         match next(&ch) {
-            BackendEvent::StatusPosted { text } => assert_eq!(text, "Out for a walk"),
+            BackendEvent::StatusPosted { text, message_id } => {
+                assert_eq!(text, "Out for a walk");
+                assert_eq!(message_id, "fake-status-post-1");
+            }
             other => panic!("expected StatusPosted, got {other:?}"),
+        }
+        // The post is delivered back under the broadcast, like a
+        // real one.
+        match next(&ch) {
+            BackendEvent::StatusReceived { status } => {
+                assert!(status.from_me);
+                assert_eq!(status.body, "Out for a walk");
+            }
+            other => panic!("expected the StatusReceived echo, got {other:?}"),
         }
         let recorded = log.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
         assert_eq!(recorded, ["post_text_status:Out for a walk:1"]);
@@ -3162,6 +3595,248 @@ mod tests {
             matches!(next(&ch), BackendEvent::StatusPostFailed { .. }),
             "an empty audience is refused"
         );
+        ch.commands.send(BackendCommand::Shutdown).unwrap();
+    }
+
+    #[test]
+    fn post_media_status_is_recorded_and_answers_posted() {
+        let log = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let ch = start(FakeBackend::auto_with_log(log.clone()));
+        ch.commands
+            .send(BackendCommand::PostMediaStatus {
+                kind: crate::MediaKind::Photo,
+                data: vec![1, 2, 3],
+                mime: "image/png".to_owned(),
+                caption: "Trailhead".to_owned(),
+                thumbnail: vec![9],
+                seconds: 0,
+                recipients: vec![FAKE_DM_JID.to_owned()],
+            })
+            .unwrap();
+        match next(&ch) {
+            BackendEvent::StatusMediaPosted { status } => {
+                assert!(status.from_me);
+                assert_eq!(status.id, "fake-status-post-1");
+                assert_eq!(status.body, "Trailhead");
+                assert!(matches!(
+                    status.kind,
+                    crate::LiveMessageKind::Media { media: crate::MediaKind::Photo, .. }
+                ));
+            }
+            other => panic!("expected StatusMediaPosted, got {other:?}"),
+        }
+        // The post is delivered back under the broadcast too.
+        assert!(matches!(next(&ch), BackendEvent::StatusReceived { .. }));
+        let recorded = log.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        assert_eq!(recorded, ["post_media_status:Photo:3:1"]);
+        ch.commands.send(BackendCommand::Shutdown).unwrap();
+    }
+
+    #[test]
+    fn post_media_status_refuses_like_the_real_backend() {
+        let ch = start(FakeBackend::auto());
+        let post = |data: Vec<u8>, kind: crate::MediaKind, recipients: Vec<String>| {
+            BackendCommand::PostMediaStatus {
+                kind,
+                data,
+                mime: "image/png".to_owned(),
+                caption: String::new(),
+                thumbnail: Vec::new(),
+                seconds: 0,
+                recipients,
+            }
+        };
+        ch.commands.send(post(Vec::new(), crate::MediaKind::Photo, vec![FAKE_DM_JID.to_owned()])).unwrap();
+        assert!(matches!(next(&ch), BackendEvent::StatusPostFailed { .. }), "empty payload refused");
+        ch.commands
+            .send(post(vec![1], crate::MediaKind::Voice, vec![FAKE_DM_JID.to_owned()]))
+            .unwrap();
+        assert!(matches!(next(&ch), BackendEvent::StatusPostFailed { .. }), "voice kind refused");
+        ch.commands.send(post(vec![1], crate::MediaKind::Photo, Vec::new())).unwrap();
+        assert!(matches!(next(&ch), BackendEvent::StatusPostFailed { .. }), "empty audience refused");
+        ch.commands.send(BackendCommand::Shutdown).unwrap();
+    }
+
+    #[test]
+    fn delete_status_answers_deleted_and_echoes_the_revoke() {
+        let log = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let ch = start(FakeBackend::auto_with_log(log.clone()));
+        ch.commands
+            .send(BackendCommand::DeleteStatus {
+                message_id: "fake-status-mine-1".to_owned(),
+                recipients: vec![FAKE_DM_JID.to_owned()],
+            })
+            .unwrap();
+        match next(&ch) {
+            BackendEvent::StatusDeleted { message_id } => {
+                assert_eq!(message_id, "fake-status-mine-1");
+            }
+            other => panic!("expected StatusDeleted, got {other:?}"),
+        }
+        match next(&ch) {
+            BackendEvent::MessageRevoked { chat_jid, message_id } => {
+                assert_eq!(chat_jid, "status@broadcast");
+                assert_eq!(message_id, "fake-status-mine-1");
+            }
+            other => panic!("expected the broadcast revoke echo, got {other:?}"),
+        }
+        let recorded = log.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        assert_eq!(recorded, ["delete_status:fake-status-mine-1:1"]);
+        // An empty audience refuses: there is nobody to send
+        // the revoke to.
+        ch.commands
+            .send(BackendCommand::DeleteStatus {
+                message_id: "fake-status-mine-1".to_owned(),
+                recipients: Vec::new(),
+            })
+            .unwrap();
+        assert!(matches!(next(&ch), BackendEvent::StatusDeleteFailed { .. }));
+        ch.commands.send(BackendCommand::Shutdown).unwrap();
+    }
+
+    #[test]
+    fn injected_failures_answer_the_typed_failure_events() {
+        let fake = FakeBackend {
+            fail_next: vec!["React", "StarMessage", "PinMessage", "FetchOlderMessages"],
+            ..FakeBackend::auto()
+        };
+        let ch = start(fake);
+        linked(&ch);
+        ch.commands
+            .send(BackendCommand::React {
+                chat_jid: FAKE_DM_JID.to_owned(),
+                message_id: "fake-1".to_owned(),
+                sender_jid: None,
+                from_me: false,
+                emoji: "👍".to_owned(),
+            })
+            .unwrap();
+        assert!(matches!(next(&ch), BackendEvent::ReactionFailed { .. }));
+        ch.commands
+            .send(BackendCommand::StarMessage {
+                chat_jid: FAKE_DM_JID.to_owned(),
+                message_id: "fake-1".to_owned(),
+                sender_jid: None,
+                from_me: false,
+                star: true,
+            })
+            .unwrap();
+        assert!(matches!(next(&ch), BackendEvent::StarFailed { .. }));
+        ch.commands
+            .send(BackendCommand::PinMessage {
+                chat_jid: FAKE_DM_JID.to_owned(),
+                message_id: "fake-1".to_owned(),
+                sender_jid: None,
+                from_me: false,
+                pin: true,
+                duration: crate::PinDuration::Days7,
+            })
+            .unwrap();
+        assert!(matches!(next(&ch), BackendEvent::PinFailed { .. }));
+        ch.commands
+            .send(BackendCommand::FetchOlderMessages {
+                chat_jid: FAKE_DM_JID.to_owned(),
+                oldest_message_id: "fake-1".to_owned(),
+                oldest_from_me: false,
+                oldest_timestamp_ms: 1_700_000_100_000,
+            })
+            .unwrap();
+        assert!(matches!(next(&ch), BackendEvent::HistoryFetchFailed { .. }));
+        ch.commands.send(BackendCommand::Shutdown).unwrap();
+    }
+
+    #[test]
+    fn own_changes_echo_the_changed_events() {
+        let ch = start(FakeBackend::auto());
+        linked(&ch);
+        ch.commands
+            .send(BackendCommand::StarMessage {
+                chat_jid: FAKE_DM_JID.to_owned(),
+                message_id: "fake-1".to_owned(),
+                sender_jid: None,
+                from_me: false,
+                star: true,
+            })
+            .unwrap();
+        // The upsert lands first, then the server echo.
+        assert!(matches!(next(&ch), BackendEvent::MessageUpsert(_)));
+        match next(&ch) {
+            BackendEvent::StarChanged { starred, .. } => assert!(starred),
+            other => panic!("expected StarChanged, got {other:?}"),
+        }
+        ch.commands
+            .send(BackendCommand::ChatAction {
+                chat_jid: FAKE_DM_JID.to_owned(),
+                action: crate::ChatAction::Archive,
+            })
+            .unwrap();
+        assert!(matches!(next(&ch), BackendEvent::ChatUpsert(_)));
+        match next(&ch) {
+            BackendEvent::ArchiveChanged { archived, .. } => assert!(archived),
+            other => panic!("expected ArchiveChanged, got {other:?}"),
+        }
+        ch.commands.send(BackendCommand::Shutdown).unwrap();
+    }
+
+    #[test]
+    fn demo_video_fetch_serves_the_fixture_and_download_saves_it() {
+        let ch = start(FakeBackend::demo());
+        linked(&ch);
+        // A regular video fetch lands the fixture in the video
+        // cache and answers with the path.
+        ch.commands
+            .send(BackendCommand::FetchVideo {
+                chat_jid: "status@broadcast".to_owned(),
+                message_id: "fake-status-mike-1".to_owned(),
+                video_ref: None,
+                view_once: false,
+            })
+            .unwrap();
+        let path = match next(&ch) {
+            BackendEvent::VideoReady { path, .. } => path,
+            other => panic!("expected VideoReady, got {other:?}"),
+        };
+        let written = std::fs::read(&path).expect("the cached fixture exists");
+        assert_eq!(written, FIXTURE_MP4);
+        std::fs::remove_file(&path).ok();
+        // A view-once video answers with its bytes instead.
+        ch.commands
+            .send(BackendCommand::FetchVideo {
+                chat_jid: FAKE_DM_JID.to_owned(),
+                message_id: "fake-vo-1".to_owned(),
+                video_ref: None,
+                view_once: true,
+            })
+            .unwrap();
+        match next(&ch) {
+            BackendEvent::VideoBytes { bytes, .. } => assert_eq!(bytes, FIXTURE_MP4),
+            other => panic!("expected VideoBytes, got {other:?}"),
+        }
+        // A download saves the fixture under the downloads
+        // folder and answers with the saved path.
+        ch.commands
+            .send(BackendCommand::DownloadMedia {
+                chat_jid: "status@broadcast".to_owned(),
+                message_id: "fake-status-mike-1".to_owned(),
+                document_ref: None,
+            })
+            .unwrap();
+        let saved = match next(&ch) {
+            BackendEvent::MediaSaved { path, .. } => path,
+            other => panic!("expected MediaSaved, got {other:?}"),
+        };
+        let written = std::fs::read(&saved).expect("the saved fixture exists");
+        assert_eq!(written, FIXTURE_MP4);
+        std::fs::remove_file(&saved).ok();
+        // A view-once download refuses.
+        ch.commands
+            .send(BackendCommand::DownloadMedia {
+                chat_jid: FAKE_DM_JID.to_owned(),
+                message_id: "fake-vo-1".to_owned(),
+                document_ref: None,
+            })
+            .unwrap();
+        assert!(matches!(next(&ch), BackendEvent::Error { .. }));
         ch.commands.send(BackendCommand::Shutdown).unwrap();
     }
 }

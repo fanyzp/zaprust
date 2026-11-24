@@ -22,11 +22,12 @@ use super::calls::{
     CallIncoming,
 };
 use super::send::{
-    outgoing_contact_message, outgoing_location_message, outgoing_text_message, post_text_status,
-    send_media, stamp_ephemeral, OutgoingMedia,
+    delete_status, outgoing_contact_message, outgoing_location_message, outgoing_text_message,
+    post_media_status, post_text_status, send_media, stamp_ephemeral, OutgoingMedia,
 };
 use super::translate::{
     participant_name, privacy_map, translate_event, translate_message, translate_special,
+    translate_status,
 };
 use super::util::{
     abort_latest, build_message_target, cap_poll_secrets, download_proto, fetch_photo_by_ref,
@@ -845,6 +846,20 @@ pub(super) async fn run_async(
                 if translate_special(&ctx, &sink, &book) {
                     return;
                 }
+                // A status post is not a message in a
+                // conversation: it feeds the Updates screen's
+                // status list and never becomes a chat (the
+                // broadcast address must not enter the chat
+                // machinery). Special payloads addressed to the
+                // broadcast (reactions to a status, a status
+                // revoke) were already handled above and carry
+                // the broadcast address for the app to route.
+                if ctx.info.source.chat.to_string() == super::translate::STATUS_BROADCAST_JID {
+                    if let Some(status) = translate_status(&ctx, &book) {
+                        sink.emit(BackendEvent::StatusReceived { status: Box::new(status) });
+                    }
+                    return;
+                }
                 if let Some((chat, msg)) = translate_message(&ctx, &book) {
                     sink.emit(BackendEvent::ChatUpsert(chat.clone()));
                     sink.emit(BackendEvent::MessageUpsert(msg.clone()));
@@ -1179,9 +1194,118 @@ pub(super) async fn run_async(
                         });
                     } else {
                         match post_text_status(&client, &text, &audience).await {
-                            Ok(_) => events.emit(BackendEvent::StatusPosted { text }),
+                            Ok(sent) => events.emit(BackendEvent::StatusPosted {
+                                text,
+                                message_id: sent.message_id.to_string(),
+                            }),
                             Err(e) => events.emit(BackendEvent::StatusPostFailed {
                                 message: format!("Posting the status failed: {e}"),
+                            }),
+                        }
+                    }
+                }
+                BackendCommand::PostMediaStatus {
+                    kind,
+                    data,
+                    mime: _,
+                    caption,
+                    thumbnail,
+                    seconds,
+                    recipients,
+                } => {
+                    // The same refusal rules as a text post, plus
+                    // the payload itself: an empty payload, a kind
+                    // that cannot be a status, or nobody left to
+                    // receive it is refused before any upload.
+                    let audience: Vec<Jid> =
+                        recipients.iter().filter_map(|r| r.parse::<Jid>().ok()).collect();
+                    if data.is_empty() {
+                        events.emit(BackendEvent::StatusPostFailed {
+                            message: "That file is empty, nothing was posted.".to_owned(),
+                        });
+                    } else if !matches!(kind, crate::MediaKind::Photo | crate::MediaKind::Video) {
+                        events.emit(BackendEvent::StatusPostFailed {
+                            message: "Only a photo or a video can be posted as a status."
+                                .to_owned(),
+                        });
+                    } else if audience.is_empty() {
+                        events.emit(BackendEvent::StatusPostFailed {
+                            message: "There is nobody to post that status to.".to_owned(),
+                        });
+                    } else {
+                        let data_len = data.len() as u64;
+                        match post_media_status(
+                            &client,
+                            kind,
+                            data,
+                            &caption,
+                            thumbnail,
+                            seconds,
+                            &audience,
+                        )
+                        .await
+                        {
+                            Ok(sent) => {
+                                // The adopted post is the
+                                // LiveStatus the app files under
+                                // My Status: media references are
+                                // none (the bytes are the ones
+                                // just uploaded; the app keeps
+                                // them for the session view).
+                                let status = crate::LiveStatus {
+                                    id: sent.message_id.to_string(),
+                                    author_jid: client
+                                        .pn()
+                                        .map(|j| j.to_string())
+                                        .unwrap_or_default(),
+                                    author_name: None,
+                                    body: caption.clone(),
+                                    timestamp: unix_now(),
+                                    from_me: true,
+                                    kind: crate::LiveMessageKind::Media {
+                                        media: kind,
+                                        caption,
+                                        seconds,
+                                        size_bytes: data_len,
+                                    },
+                                    background_argb: None,
+                                    reactions: Vec::new(),
+                                    my_reaction: None,
+                                    photo_ref: None,
+                                    photo_thumbnail: None,
+                                    video_ref: None,
+                                    video_thumbnail: None,
+                                    poster_ref: None,
+                                    video_width: None,
+                                    video_height: None,
+                                };
+                                events.emit(BackendEvent::StatusMediaPosted {
+                                    status: Box::new(status),
+                                });
+                            }
+                            Err(e) => events.emit(BackendEvent::StatusPostFailed {
+                                message: format!("Posting the status failed: {e}"),
+                            }),
+                        }
+                    }
+                }
+                BackendCommand::DeleteStatus { message_id, recipients } => {
+                    // The revoke fans out to the post's audience;
+                    // with nobody to receive it there is nothing
+                    // to revoke to, so it is refused honestly.
+                    let audience: Vec<Jid> =
+                        recipients.iter().filter_map(|r| r.parse::<Jid>().ok()).collect();
+                    if audience.is_empty() {
+                        events.emit(BackendEvent::StatusDeleteFailed {
+                            message_id,
+                            message: "There is nobody to send that delete to.".to_owned(),
+                        });
+                    } else {
+                        match delete_status(&client, &message_id, &audience).await {
+                            Ok(_) => events.emit(BackendEvent::StatusDeleted { message_id }),
+                            Err(e) => events.emit(BackendEvent::StatusDeleteFailed {
+                                message_id,
+                                message: format!("Deleting the status failed: {e}"),
                             }),
                         }
                     }

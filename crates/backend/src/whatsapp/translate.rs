@@ -956,9 +956,23 @@ fn translate_history_conversation(
     sink: &EventSink,
 ) -> Option<(String, LiveChatKind)> {
     let chat_jid = conv.id.clone();
-    if chat_jid.is_empty() || chat_jid == STATUS_BROADCAST_JID {
+    if chat_jid.is_empty() {
+        return None;
+    }
+    if chat_jid == STATUS_BROADCAST_JID {
         // The status broadcast "conversation" in a history
-        // payload is not a chat: see STATUS_BROADCAST_JID.
+        // payload is not a chat: see STATUS_BROADCAST_JID. Its
+        // payloads are the statuses the server still holds,
+        // redelivered at link time; each one feeds the Updates
+        // feed as a received status and nothing becomes a chat
+        // or enters the archive.
+        for entry in &conv.messages {
+            if let Some(info) = entry.message.as_option() {
+                if let Some(status) = history_status(info, book) {
+                    sink.emit(BackendEvent::StatusReceived { status: Box::new(status) });
+                }
+            }
+        }
         return None;
     }
     let kind = kind_of(&chat_jid);
@@ -1695,6 +1709,146 @@ pub(super) fn translate_message(
     Some((chat, msg))
 }
 
+/// Translates one live message addressed to `status@broadcast`
+/// into a [`crate::LiveStatus`]. The classifier and body rules
+/// are the same ones chat messages use, so a status reads
+/// exactly like the same payload would in a conversation; only
+/// the envelope differs (no chat, no archive, the author is the
+/// identity). Returns `None` for payloads that carry no post at
+/// all (sender-key distribution and other bookkeeping, the same
+/// payloads [`translate_message`] drops).
+pub(super) fn translate_status(
+    ctx: &MessageContext,
+    book: &IdentityBook,
+) -> Option<crate::LiveStatus> {
+    let source = &ctx.info.source;
+    let (kind, view_once) = classify_kind(ctx);
+    if matches!(kind, LiveMessageKind::Other(_)) && ctx.message.text_content().is_none() {
+        // Bookkeeping payloads (sender-key distribution arrives
+        // as an unclassified protocol payload) are not posts.
+        return None;
+    }
+    let text =
+        ctx.message.text_content().map(ToOwned::to_owned).or_else(|| structured_text(&ctx.message));
+    let mut kind = kind;
+    if matches!(kind, LiveMessageKind::Text) && text.is_none() {
+        kind = LiveMessageKind::Other(unhandled_label(&ctx.message));
+    }
+    let body = body_for(&kind, view_once, text.as_deref());
+    let author_jid = source.sender.to_string();
+    let author_name = if source.is_from_me {
+        None
+    } else {
+        Some(book.sender_label(&author_jid, ctx.info.push_name.trim()))
+    };
+    Some(status_from_parts(
+        ctx.info.id.to_string(),
+        author_jid,
+        author_name,
+        body,
+        ctx.info.timestamp.timestamp(),
+        source.is_from_me,
+        kind,
+        &ctx.message,
+    ))
+}
+
+/// Translates one history-sync payload from the status
+/// conversation into a [`crate::LiveStatus`]: the server
+/// redelivers the statuses it still holds at link time, which
+/// is how the feed repopulates each session. Same drop rules
+/// as the live path.
+fn history_status(
+    info: &whatsapp_rust::prelude::wa::WebMessageInfo,
+    book: &IdentityBook,
+) -> Option<crate::LiveStatus> {
+    if info.ignore == Some(true) {
+        return None;
+    }
+    let proto = info.message.as_option()?;
+    let key = info.key.as_option()?;
+    let id = key.id.clone()?;
+    let from_me = key.from_me.unwrap_or(false);
+    let (kind, view_once) = classify_message(proto);
+    if matches!(kind, LiveMessageKind::Other(_)) && proto.text_content().is_none() {
+        return None;
+    }
+    let text = proto.text_content().map(ToOwned::to_owned).or_else(|| structured_text(proto));
+    let mut kind = kind;
+    if matches!(kind, LiveMessageKind::Text) && text.is_none() {
+        kind = LiveMessageKind::Other(unhandled_label(proto));
+    }
+    let body = body_for(&kind, view_once, text.as_deref());
+    let author_jid = key
+        .participant
+        .clone()
+        .or_else(|| info.participant.clone())
+        .or_else(|| key.remote_jid.clone())?;
+    let author_name = if from_me {
+        None
+    } else {
+        let own_push_name = info.push_name.clone().filter(|n| !n.trim().is_empty());
+        Some(
+            book.name_for(&author_jid)
+                .or(own_push_name)
+                .or_else(|| book.phone_for(&author_jid))
+                .unwrap_or_else(|| user_part(&author_jid)),
+        )
+    };
+    let timestamp = i64::try_from(info.message_timestamp.unwrap_or(0)).unwrap_or(0);
+    Some(status_from_parts(
+        id,
+        author_jid,
+        author_name,
+        body,
+        timestamp,
+        from_me,
+        kind,
+        proto,
+    ))
+}
+
+/// Assembles a [`crate::LiveStatus`] from translated parts and
+/// the wire payload: the shared tail of the live and history
+/// status translators (media references, the text background,
+/// the video's stated duration).
+fn status_from_parts(
+    id: String,
+    author_jid: String,
+    author_name: Option<String>,
+    body: String,
+    timestamp: i64,
+    from_me: bool,
+    kind: LiveMessageKind,
+    proto: &whatsapp_rust::prelude::wa::Message,
+) -> crate::LiveStatus {
+    let (video_width, video_height) = super::util::video_dimensions_of(proto)
+        .map(|(w, h)| (Some(w), Some(h)))
+        .unwrap_or((None, None));
+    crate::LiveStatus {
+        id,
+        author_jid,
+        author_name,
+        body,
+        timestamp,
+        from_me,
+        kind,
+        background_argb: proto
+            .extended_text_message
+            .as_option()
+            .and_then(|ext| ext.background_argb),
+        reactions: Vec::new(),
+        my_reaction: None,
+        photo_ref: super::util::photo_ref_of(proto),
+        photo_thumbnail: super::util::photo_thumbnail_of(proto),
+        video_ref: super::util::video_ref_of(proto),
+        video_thumbnail: super::util::video_thumbnail_of(proto),
+        poster_ref: super::util::poster_ref_of(proto),
+        video_width,
+        video_height,
+    }
+}
+
 /// Classifies a message's rich kind from its protocol payload.
 /// Poll *votes* arrive encrypted as separate protocol messages;
 /// they never reach this classifier (the session decrypts them
@@ -2195,11 +2349,13 @@ fn now_millis() -> i64 {
 
 /// The broadcast address WhatsApp delivers status posts under.
 /// It is not a conversation: no chat row may ever be built from
-/// it. Until the Updates feed consumes received statuses (the
-/// status round), status posts are dropped at this boundary
-/// rather than filed as a fake direct chat titled "status";
-/// history sync redelivers them, so nothing is lost for the
-/// round that builds the feed.
+/// it. Status posts are translated into `LiveStatus` values for
+/// the Updates feed at this boundary (live arrivals in the
+/// session's message handler, history payloads in
+/// `translate_history_conversation`), never filed as a fake
+/// direct chat titled "status" and never shelved in the chat
+/// archive; history sync redelivers the ones the server still
+/// holds at every link.
 pub(super) const STATUS_BROADCAST_JID: &str = "status@broadcast";
 
 pub(super) fn kind_of(jid: &str) -> LiveChatKind {

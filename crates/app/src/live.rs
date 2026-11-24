@@ -1824,7 +1824,12 @@ impl crate::state::App {
         }
         let message_id = self.protocol_ids.get(id)?.clone();
         let sender_jid = self.sender_jids.get(id).cloned();
-        Some(QuotedRef { message_id, sender_jid, excerpt: excerpt.chars().take(200).collect() })
+        Some(QuotedRef {
+            message_id,
+            sender_jid,
+            excerpt: excerpt.chars().take(200).collect(),
+            remote_jid: None,
+        })
     }
 
     /// Sends a text message to the currently selected live chat,

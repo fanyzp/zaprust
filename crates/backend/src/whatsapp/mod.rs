@@ -132,6 +132,7 @@ mod tests {
             message_id: message_id.to_owned(),
             sender_jid: sender.map(str::to_owned),
             excerpt: excerpt.to_owned(),
+            remote_jid: None,
         }
     }
 

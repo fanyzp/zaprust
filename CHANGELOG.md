@@ -4,6 +4,16 @@ All notable changes to Zaprust are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com), versions
 follow [SemVer](https://semver.org).
 
+## [1.6.19] - 2026-11-24
+
+### feat:
+
+- Events are a real surface now. An event someone shares renders as its own card in the conversation: name, date and time, place, description, a join or call link when it has one, and how many people answered Going, Maybe, or Not going. You can answer from the card itself, and bring extra guests when the organizer allows them. Creating an event lives in the attach menu (direct and group chats): name, date, start and end, place, description, link, scheduled call, and extra guests, with the form checking the essentials before anything sends and keeping your draft if the send fails. Your own events can be edited or cancelled from the message menu (cancelling asks first), and an event can be pinned like any other message. Answers and edits made on another device show up live. One honest limit, the same one polls have: an event from before this version, whose creation secret this device never captured, can be read but not answered or edited here, and the app says so instead of pretending.
+
+### fix:
+
+- Long conversations now render through a window: only the messages near the screen are drawn, with the rest held as measured space, so a chat with thousands of messages scrolls at full frame rate instead of slowing down as it grows. Scroll position is anchored exactly: loading older messages or a row changing height no longer makes the view jump. Chats under the window threshold render exactly as before.
+
 ## [1.6.18] - 2026-11-24
 
 ### feat:

@@ -4,6 +4,15 @@ All notable changes to Zaprust are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com), versions
 follow [SemVer](https://semver.org).
 
+## [1.6.22] - 2026-11-25
+
+### feat:
+
+- Video calls work. A video call shows the other side's picture on a stage in the call card, your own camera's picture in a small tile in its corner, and a camera toggle among the call controls; a voice call can turn its camera on mid-call, and a video call can turn it off. Your camera is captured on this machine and encoded here; nothing is sent until you turn video on. If the machine has no camera, or the camera will not open, the call card says so under the status line and the call continues as a voice call.
+- Group calls work. A group chat's call button starts a call for the whole group, a group call invitation rings here like a 1:1 call, and the call card lists who is in the call as they join. During a group call you can raise your hand and invite more of the group's members from the card.
+- Call links and the waiting room work. The Calls panel can create a call link (voice or video) to copy and share, and can join with a link: the link is previewed first, showing its kind and who created it. When a link requires approval, guests wait in a waiting room; the host sees them on the call card and admits or denies each one, and can turn the approval requirement on or off.
+- In-call reactions and screen sharing arrive. While a call is live, the card offers a reaction row; reactions from everyone show next to their name. When someone shares their screen, their picture takes the stage with a caption naming them. Two honest limits: sharing your own screen is not offered, because capturing the desktop is not built; and a participant whose client sends standard Opus audio (some desktop clients do) cannot be heard in a group call, because this build carries no Opus decoder by design.
+
 ## [1.6.21] - 2026-11-24
 
 ### feat:

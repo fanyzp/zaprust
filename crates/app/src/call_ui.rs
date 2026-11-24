@@ -863,7 +863,7 @@ impl App {
             call.phase == CallUiPhase::Ended
                 && call
                     .ended_at
-                    .is_some_and(|at| at.elapsed() > std::time::Duration::from_millis(2600))
+                    .is_some_and(|at| at.elapsed().as_secs() >= 4)
         });
         if dismiss {
             self.calls.active = None;
@@ -874,13 +874,13 @@ impl App {
         let Some(call) = self.calls.active.clone() else {
             return;
         };
-        let t = self.theme;
+        let t = self.tokens;
         let mut action: Option<String> = None;
         let media_stage = self.calls.media.stage_texture.clone();
         let media_preview = self.calls.media.preview_texture.clone();
         let sharing_jid = call.participants.iter().find(|p| p.sharing).map(|p| p.jid.clone());
-        Area::new(Id::new("call_overlay"))
-            .anchor(Align2::RIGHT_BOTTOM, Vec2::new(-16.0, -16.0))
+        Area::new(Id::unique("call_overlay"))
+            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
             .show(ctx, |ui| {
                 crate::theme::glass_frame(t, crate::theme::RADIUS_PANEL)
                     .fill(rgb(t.bg_panel))
@@ -1484,7 +1484,7 @@ impl App {
             self.calls.invite_open = false;
             return;
         };
-        let t = self.theme;
+        let t = self.tokens;
         let mut close = false;
         let mut invite: Option<String> = None;
         egui::Window::new(crate::i18n::t("call.add_people"))

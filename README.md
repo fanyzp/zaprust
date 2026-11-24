@@ -8,6 +8,7 @@
 
 - Chats, groups, communities, and channels
 - Voice notes with playback speed and seek
+- Voice and video calls, group calls, call links, and in-call reactions
 - Polls, reactions, replies, forwards
 - Quick replies
 - Themes generated from a single seed color, dark and light

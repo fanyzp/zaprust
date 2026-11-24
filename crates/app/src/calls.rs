@@ -1563,7 +1563,7 @@ impl App {
     }
 
     fn draw_link_create_dialog(&mut self, ctx: &egui::Context) {
-        let t = self.theme;
+        let t = self.tokens;
         let mut close = false;
         let mut create = false;
         let mut copy: Option<String> = None;
@@ -1680,7 +1680,7 @@ impl App {
     }
 
     fn draw_link_join_dialog(&mut self, ctx: &egui::Context) {
-        let t = self.theme;
+        let t = self.tokens;
         let mut close = false;
         let mut preview = false;
         let mut join: Option<(String, bool)> = None;

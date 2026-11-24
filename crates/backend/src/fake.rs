@@ -79,6 +79,31 @@ fn bidi_fixture_enabled() -> bool {
 pub const FAKE_BIDI_AR_JID: &str = "10000000033@s.whatsapp.net";
 /// JID of the scripted Hebrew DM (bidi-fixture gate only).
 pub const FAKE_BIDI_HE_JID: &str = "10000000034@s.whatsapp.net";
+/// Whether the business fixture is scripted: a verified
+/// business DM with a profile, a two-page catalog, one
+/// collection and an order message, plus two synced labels
+/// and two synced quick replies delivered at connect. Gated
+/// like the other fixture families so the standard fixtures
+/// (and every screenshot pair built on them) are unchanged
+/// unless a capture asks for them.
+fn business_fixture_enabled() -> bool {
+    std::env::var_os("ZAPRUST_FAKE_BUSINESS").is_some()
+}
+
+/// JID of the scripted business DM (business-fixture gate
+/// only).
+pub const FAKE_BIZ_JID: &str = "10000000035@s.whatsapp.net";
+/// Label ids of the scripted synced labels (business-fixture
+/// gate only).
+pub const FAKE_LABEL_URGENT_ID: &str = "fake-label-urgent";
+/// Second scripted label id.
+pub const FAKE_LABEL_VIP_ID: &str = "fake-label-vip";
+/// Order id of the scripted order message (business-fixture
+/// gate only).
+pub const FAKE_ORDER_ID: &str = "fake-order-1";
+/// Order token of the scripted order message.
+pub const FAKE_ORDER_TOKEN: &str = "fake-order-token";
+
 /// JID of the scripted group chat.
 pub const FAKE_GROUP_JID: &str = "10000000002@g.us";
 /// JID of the scripted channel.
@@ -550,6 +575,25 @@ pub fn scripted_chats() -> Vec<LiveChat> {
             is_parent: false,
         });
     }
+    if business_fixture_enabled() {
+        chats.push(LiveChat {
+            jid: FAKE_BIZ_JID.to_owned(),
+            title: "Bumi Roast Coffee (live demo)".to_owned(),
+            kind: LiveChatKind::Dm,
+            preview: "It ships tomorrow morning, tracking follows by noon.".to_owned(),
+            preview_sender: None,
+            timestamp: 1_700_000_430,
+            unread: 1,
+            archived: false,
+            locked: false,
+            pinned: false,
+            ephemeral_secs: 0,
+            muted: false,
+            mute_until: 0,
+            parent_jid: None,
+            is_parent: false,
+        });
+    }
     if marathon_enabled() {
         chats.push(LiveChat {
             jid: FAKE_MARATHON_JID.to_owned(),
@@ -884,6 +928,174 @@ pub fn scripted_marathon_messages() -> Vec<LiveMessage> {
 }
 
 /// The scripted DM conversation the fake serves on link.
+/// The scripted business's profile (business-fixture gate
+/// only): a coffee roastery with hours, categories and a
+/// website, shaped like the library's read.
+fn fixture_business_profile() -> crate::LiveBusinessProfile {
+    let day = |day: &str, mode: &str, open: Option<u32>, close: Option<u32>| {
+        crate::LiveBusinessDayHours {
+            day: day.to_owned(),
+            mode: mode.to_owned(),
+            open_minutes: open,
+            close_minutes: close,
+        }
+    };
+    crate::LiveBusinessProfile {
+        description: "Small-batch coffee roastery and cafe. Beans are roasted every Tuesday."
+            .to_owned(),
+        email: Some("hello@bumiroast.example".to_owned()),
+        websites: vec!["https://bumiroast.example".to_owned()],
+        categories: vec![
+            crate::LiveBusinessCategory { id: "cat-cafe".to_owned(), name: "Cafe".to_owned() },
+            crate::LiveBusinessCategory {
+                id: "cat-roastery".to_owned(),
+                name: "Coffee roastery".to_owned(),
+            },
+        ],
+        address: Some("Jl. Kopi No. 8, Balikpapan".to_owned()),
+        hours_timezone: Some("Asia/Makassar".to_owned()),
+        hours: vec![
+            day("mon", "specific_hours", Some(480), Some(1020)),
+            day("tue", "specific_hours", Some(480), Some(1020)),
+            day("wed", "specific_hours", Some(480), Some(1020)),
+            day("thu", "specific_hours", Some(480), Some(1020)),
+            day("fri", "specific_hours", Some(480), Some(1020)),
+            day("sat", "specific_hours", Some(540), Some(840)),
+            day("sun", "open_24h", None, None),
+        ],
+    }
+}
+
+/// The fake account's own business profile (business-fixture
+/// gate only): the account runs a small shop of its own.
+fn fixture_own_business_profile() -> crate::LiveBusinessProfile {
+    crate::LiveBusinessProfile {
+        description: "The fake account's own shop.".to_owned(),
+        email: None,
+        websites: Vec::new(),
+        categories: vec![crate::LiveBusinessCategory {
+            id: "cat-cafe".to_owned(),
+            name: "Cafe".to_owned(),
+        }],
+        address: None,
+        hours_timezone: None,
+        hours: Vec::new(),
+    }
+}
+
+/// One scripted catalog product.
+fn fixture_product(
+    id: &str,
+    name: &str,
+    price: Option<i64>,
+    sale: Option<i64>,
+    availability: Option<&str>,
+) -> crate::LiveProduct {
+    crate::LiveProduct {
+        id: id.to_owned(),
+        name: Some(name.to_owned()),
+        description: None,
+        price_amount_1000: price,
+        sale_amount_1000: sale,
+        price_currency: Some("IDR".to_owned()),
+        availability: availability.map(str::to_owned),
+        hidden: false,
+        image_url: Some(format!("https://cdn.example/{id}.jpg")),
+    }
+}
+
+/// One page of the scripted catalog: three products and a
+/// cursor, then two more and the end.
+fn fixture_catalog_page(after: Option<&str>) -> (Vec<crate::LiveProduct>, Option<String>) {
+    match after {
+        None => (
+            vec![
+                fixture_product("beans-arabica", "Arabica Beans 200g", Some(85_000_000), None, Some("IN_STOCK")),
+                fixture_product("beans-robusta", "Robusta Beans 200g", Some(65_000_000), None, Some("IN_STOCK")),
+                fixture_product("cold-brew", "Cold Brew Bottle 250ml", Some(35_000_000), Some(28_000_000), Some("IN_STOCK")),
+            ],
+            Some("page-2".to_owned()),
+        ),
+        Some(_) => (
+            vec![
+                fixture_product("drip-set", "Drip Coffee Set", Some(240_000_000), None, Some("OUT_OF_STOCK")),
+                fixture_product("gift-card", "Gift Card", None, None, None),
+            ],
+            None,
+        ),
+    }
+}
+
+/// The scripted collections: one, with its products inline.
+fn fixture_collections() -> Vec<crate::LiveCollection> {
+    vec![crate::LiveCollection {
+        id: Some("starter-kits".to_owned()),
+        name: Some("Starter kits".to_owned()),
+        products: vec![
+            fixture_product("drip-set", "Drip Coffee Set", Some(240_000_000), None, Some("OUT_OF_STOCK")),
+            fixture_product("beans-arabica", "Arabica Beans 200g", Some(85_000_000), None, Some("IN_STOCK")),
+        ],
+    }]
+}
+
+/// The scripted order's details, matching the order
+/// message's totals.
+fn fixture_order() -> crate::LiveOrder {
+    let item = |name: &str, price: i64, quantity: i64| crate::LiveOrderItem {
+        name: Some(name.to_owned()),
+        price_amount_1000: Some(price),
+        price_currency: Some("IDR".to_owned()),
+        quantity: Some(quantity),
+        variant: Vec::new(),
+    };
+    crate::LiveOrder {
+        items: vec![item("Arabica Beans 200g", 85_000_000, 2), item("Cold Brew Bottle 250ml", 35_000_000, 1)],
+        subtotal_amount_1000: Some(205_000_000),
+        total_amount_1000: Some(205_000_000),
+        currency: Some("IDR".to_owned()),
+    }
+}
+
+/// The scripted business DM's messages (business-fixture
+/// gate only): a greeting, a text and the order message.
+pub fn scripted_business_messages() -> Vec<LiveMessage> {
+    let mut order = LiveMessage::text(
+        "fake-order-msg-1",
+        FAKE_BIZ_JID,
+        Some("Bumi Roast Coffee".to_owned()),
+        "Order",
+        1_700_000_420,
+        false,
+    );
+    order.kind = crate::LiveMessageKind::Order {
+        order_id: FAKE_ORDER_ID.to_owned(),
+        token: FAKE_ORDER_TOKEN.to_owned(),
+        item_count: 3,
+        total_amount_1000: 205_000_000,
+        currency: "IDR".to_owned(),
+        status: "ACCEPTED".to_owned(),
+    };
+    vec![
+        LiveMessage::text(
+            "fake-biz-1",
+            FAKE_BIZ_JID,
+            Some("Bumi Roast Coffee".to_owned()),
+            "Hi! Our catalog is in the profile if you want to browse.",
+            1_700_000_400,
+            false,
+        ),
+        order,
+        LiveMessage::text(
+            "fake-biz-2",
+            FAKE_BIZ_JID,
+            Some("Bumi Roast Coffee".to_owned()),
+            "It ships tomorrow morning, tracking follows by noon.",
+            1_700_000_430,
+            false,
+        ),
+    ]
+}
+
 pub fn scripted_messages() -> Vec<LiveMessage> {
     // The poll sits after the three-photo album run: the archive
     // returns messages in timestamp order, so the scripted vector
@@ -1612,6 +1824,12 @@ impl Backend for FakeBackend {
         // the full profile is re-emitted, as the real re-read
         // reports it.
         let mut own_profile_state = baseline_own_profile();
+        // The account's own business profile (business
+        // fixture only): UpdateOwnBusinessProfile merges the
+        // delta into it, and the fetch reads it back, like
+        // the server-side state the real backend queries.
+        let mut own_business_state: Option<crate::LiveBusinessProfile> =
+            if business_fixture_enabled() { Some(fixture_own_business_profile()) } else { None };
         let mut message_state: std::collections::HashMap<(String, String), LiveMessage> =
             scripted_messages()
                 .into_iter()
@@ -3990,9 +4208,202 @@ impl Backend for FakeBackend {
                     }
                 }
                 BackendCommand::FetchVerifiedName { jid } => {
-                    // No identity in the fake roster is a
-                    // verified business.
-                    events.emit(BackendEvent::VerifiedNameResult { jid, name: None });
+                    // The scripted business is verified under
+                    // its gate; nothing else in the fake
+                    // roster is a verified business.
+                    let name = if business_fixture_enabled() && jid == FAKE_BIZ_JID {
+                        Some("Bumi Roast Coffee".to_owned())
+                    } else {
+                        None
+                    };
+                    events.emit(BackendEvent::VerifiedNameResult { jid, name });
+                }
+                BackendCommand::FetchBusinessProfile { chat_jid } => {
+                    if take_failure("FetchBusinessProfile") {
+                        events.emit(BackendEvent::BusinessProfileFetchFailed {
+                            chat_jid,
+                            message: "Could not load the business profile: connection lost"
+                                .to_owned(),
+                        });
+                    } else {
+                        let profile = if business_fixture_enabled() && chat_jid == FAKE_BIZ_JID {
+                            Some(fixture_business_profile())
+                        } else {
+                            None
+                        };
+                        events.emit(BackendEvent::BusinessProfileFetched { chat_jid, profile });
+                    }
+                }
+                BackendCommand::FetchCatalog { chat_jid, after } => {
+                    if take_failure("FetchCatalog") {
+                        events.emit(BackendEvent::CatalogFetchFailed {
+                            chat_jid,
+                            message: "Could not load the catalog: connection lost".to_owned(),
+                        });
+                    } else if business_fixture_enabled() && chat_jid == FAKE_BIZ_JID {
+                        let (products, after_cursor) = fixture_catalog_page(after.as_deref());
+                        events.emit(BackendEvent::CatalogFetched { chat_jid, products, after_cursor });
+                    } else {
+                        events.emit(BackendEvent::CatalogFetched {
+                            chat_jid,
+                            products: Vec::new(),
+                            after_cursor: None,
+                        });
+                    }
+                }
+                BackendCommand::FetchCollections { chat_jid } => {
+                    if take_failure("FetchCollections") {
+                        events.emit(BackendEvent::CollectionsFetchFailed {
+                            chat_jid,
+                            message: "Could not load the collections: connection lost".to_owned(),
+                        });
+                    } else {
+                        let collections = if business_fixture_enabled() && chat_jid == FAKE_BIZ_JID {
+                            fixture_collections()
+                        } else {
+                            Vec::new()
+                        };
+                        events.emit(BackendEvent::CollectionsFetched { chat_jid, collections });
+                    }
+                }
+                BackendCommand::FetchProductImage { url } => {
+                    if url.is_empty() {
+                        events.emit(BackendEvent::ProductImageFetchFailed { url });
+                    } else {
+                        let bytes = fixture_png(&url);
+                        events.emit(BackendEvent::ProductImageBytes { url, bytes });
+                    }
+                }
+                BackendCommand::FetchOrderDetails { chat_jid, order_id, token } => {
+                    if take_failure("FetchOrderDetails") {
+                        events.emit(BackendEvent::OrderDetailsFetchFailed {
+                            chat_jid,
+                            order_id,
+                            message: "Could not load the order: connection lost".to_owned(),
+                        });
+                    } else if business_fixture_enabled()
+                        && order_id == FAKE_ORDER_ID
+                        && token == FAKE_ORDER_TOKEN
+                    {
+                        events.emit(BackendEvent::OrderDetailsFetched {
+                            chat_jid,
+                            order_id,
+                            order: fixture_order(),
+                        });
+                    } else {
+                        events.emit(BackendEvent::OrderDetailsFetchFailed {
+                            chat_jid,
+                            order_id,
+                            message: "Could not load the order: not found".to_owned(),
+                        });
+                    }
+                }
+                BackendCommand::FetchOwnBusinessProfile => {
+                    if take_failure("FetchOwnBusinessProfile") {
+                        events.emit(BackendEvent::OwnBusinessProfileFetchFailed {
+                            message: "Could not load the business profile: connection lost"
+                                .to_owned(),
+                        });
+                    } else {
+                        events.emit(BackendEvent::OwnBusinessProfileFetched {
+                            profile: own_business_state.clone(),
+                        });
+                    }
+                }
+                BackendCommand::UpdateOwnBusinessProfile { update } => {
+                    if take_failure("UpdateOwnBusinessProfile") {
+                        events.emit(BackendEvent::OwnBusinessProfileSaveFailed {
+                            message: "Business profile change failed: connection lost".to_owned(),
+                        });
+                    } else {
+                        if let Some(profile) = &mut own_business_state {
+                            merge_business_update(profile, &update);
+                        }
+                        events.emit(BackendEvent::OwnBusinessProfileSaved);
+                    }
+                }
+                BackendCommand::SaveLabel { label_id, name, color } => {
+                    if take_failure("SaveLabel") {
+                        events.emit(BackendEvent::LabelActionFailed {
+                            action: crate::LabelAction::Save { label_id, name, color },
+                            message: "Label change failed: connection lost".to_owned(),
+                        });
+                    } else {
+                        events.emit(BackendEvent::LabelEdited {
+                            label_id,
+                            name: Some(name),
+                            color: Some(color),
+                            predefined_id: None,
+                            deleted: false,
+                        });
+                    }
+                }
+                BackendCommand::DeleteLabel { label_id } => {
+                    if take_failure("DeleteLabel") {
+                        events.emit(BackendEvent::LabelDeleteFailed {
+                            label_id,
+                            message: "Deleting the label failed: connection lost".to_owned(),
+                        });
+                    } else {
+                        events.emit(BackendEvent::LabelDeleted { label_id });
+                    }
+                }
+                BackendCommand::SetChatLabel { label_id, chat_jid, labeled } => {
+                    if take_failure("SetChatLabel") {
+                        events.emit(BackendEvent::LabelActionFailed {
+                            action: crate::LabelAction::SetChat { label_id, chat_jid, labeled },
+                            message: "Label change failed: connection lost".to_owned(),
+                        });
+                    } else {
+                        events.emit(BackendEvent::ChatLabelChanged { label_id, chat_jid, labeled });
+                    }
+                }
+                BackendCommand::SetMessageLabel { label_id, chat_jid, message_id, labeled } => {
+                    if take_failure("SetMessageLabel") {
+                        events.emit(BackendEvent::LabelActionFailed {
+                            action: crate::LabelAction::SetMessage {
+                                label_id,
+                                chat_jid,
+                                message_id,
+                                labeled,
+                            },
+                            message: "Label change failed: connection lost".to_owned(),
+                        });
+                    } else {
+                        events.emit(BackendEvent::MessageLabelChanged {
+                            label_id,
+                            chat_jid,
+                            message_id,
+                            labeled,
+                        });
+                    }
+                }
+                BackendCommand::SaveQuickReply { id, shortcut, message, keywords, count } => {
+                    if take_failure("SaveQuickReply") {
+                        events.emit(BackendEvent::QuickReplyFailed {
+                            id,
+                            message: "Quick reply change failed: connection lost".to_owned(),
+                        });
+                    } else {
+                        events.emit(BackendEvent::QuickReplyEdited {
+                            id,
+                            shortcut,
+                            message,
+                            keywords,
+                            count,
+                            deleted: false,
+                        });
+                    }
+                }
+                BackendCommand::DeleteQuickReply { id } => {
+                    if take_failure("DeleteQuickReply") {
+                        events.emit(BackendEvent::QuickReplyDeleteFailed {
+                            id,
+                            message: "Deleting the quick reply failed: connection lost".to_owned(),
+                        });
+                    } else {
+                        events.emit(BackendEvent::QuickReplyDeleted { id });
+                    }
                 }
                 BackendCommand::FetchAvatar { jid, .. } => {
                     // A group picture changed this session wins
@@ -4287,6 +4698,45 @@ fn baseline_privacy_state() -> std::collections::BTreeMap<String, String> {
     privacy
 }
 
+/// Merges one own-business-profile delta into the stored
+/// profile, with the contract's semantics: `None` leaves a
+/// field untouched, `Some(None)` clears a text field, and
+/// the hours replace wholesale.
+fn merge_business_update(
+    profile: &mut crate::LiveBusinessProfile,
+    update: &crate::LiveBusinessProfileUpdate,
+) {
+    if let Some(description) = &update.description {
+        profile.description = description.clone().unwrap_or_default();
+    }
+    if let Some(email) = &update.email {
+        profile.email = email.clone();
+    }
+    if let Some(address) = &update.address {
+        profile.address = address.clone();
+    }
+    if let Some(websites) = &update.websites {
+        profile.websites = websites.clone();
+    }
+    if let Some(categories) = &update.categories {
+        profile.categories = categories
+            .iter()
+            .map(|id| {
+                let name = profile
+                    .categories
+                    .iter()
+                    .find(|c| &c.id == id)
+                    .map_or_else(|| id.clone(), |c| c.name.clone());
+                crate::LiveBusinessCategory { id: id.clone(), name }
+            })
+            .collect();
+    }
+    if let Some(hours) = &update.hours {
+        profile.hours_timezone = hours.timezone.clone();
+        profile.hours = hours.days.clone();
+    }
+}
+
 /// The fake account's own profile at link time. The run loop
 /// keeps the live copy: UpdateOwnProfile mutates the given
 /// fields and the full profile is re-emitted, mirroring the
@@ -4333,6 +4783,60 @@ fn emit_linked_script(
         for msg in scripted_bidi_fixture_messages() {
             events.emit(BackendEvent::MessageUpsert(msg));
         }
+    }
+    if business_fixture_enabled() {
+        for msg in scripted_business_messages() {
+            events.emit(BackendEvent::MessageUpsert(msg));
+        }
+        // The account's synced labels and quick replies, as
+        // the app-state sync delivers them at connect: the
+        // definitions first, then the associations.
+        events.emit(BackendEvent::LabelEdited {
+            label_id: FAKE_LABEL_URGENT_ID.to_owned(),
+            name: Some("Urgent".to_owned()),
+            color: Some(5),
+            predefined_id: None,
+            deleted: false,
+        });
+        events.emit(BackendEvent::LabelEdited {
+            label_id: FAKE_LABEL_VIP_ID.to_owned(),
+            name: Some("VIP".to_owned()),
+            color: Some(12),
+            predefined_id: None,
+            deleted: false,
+        });
+        events.emit(BackendEvent::ChatLabelChanged {
+            label_id: FAKE_LABEL_VIP_ID.to_owned(),
+            chat_jid: FAKE_BIZ_JID.to_owned(),
+            labeled: true,
+        });
+        events.emit(BackendEvent::ChatLabelChanged {
+            label_id: FAKE_LABEL_URGENT_ID.to_owned(),
+            chat_jid: FAKE_DM_JID.to_owned(),
+            labeled: true,
+        });
+        events.emit(BackendEvent::MessageLabelChanged {
+            label_id: FAKE_LABEL_URGENT_ID.to_owned(),
+            chat_jid: FAKE_BIZ_JID.to_owned(),
+            message_id: "fake-order-msg-1".to_owned(),
+            labeled: true,
+        });
+        events.emit(BackendEvent::QuickReplyEdited {
+            id: "fake-qr-hours".to_owned(),
+            shortcut: "hours".to_owned(),
+            message: "We are open Monday to Saturday, 8:00 to 17:00.".to_owned(),
+            keywords: vec!["open".to_owned(), "opening".to_owned()],
+            count: 4,
+            deleted: false,
+        });
+        events.emit(BackendEvent::QuickReplyEdited {
+            id: "fake-qr-ship".to_owned(),
+            shortcut: "ship".to_owned(),
+            message: "Orders ship the next morning by courier.".to_owned(),
+            keywords: vec!["delivery".to_owned(), "shipping".to_owned()],
+            count: 2,
+            deleted: false,
+        });
     }
     // The scripted statuses, as the real backend delivers them:
     // live arrivals and history redelivery both surface as

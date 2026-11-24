@@ -1828,10 +1828,7 @@ pub enum BackendCommand {
     /// Create or edit a synced business quick reply (one
     /// upsert on the wire). The app applies it at once; a
     /// failure answers [`BackendEvent::QuickReplyFailed`]
-    /// and the app rolls back. The usage count is not the
-    /// caller's to set: the backend carries the count the
-    /// reply already has (0 for a new one), because the
-    /// wire's upsert replaces it.
+    /// and the app rolls back.
     SaveQuickReply {
         /// Quick reply id (the caller generates it for a
         /// new reply).
@@ -1842,6 +1839,11 @@ pub enum BackendCommand {
         message: String,
         /// Extra search terms.
         keywords: Vec<String>,
+        /// The usage count the reply already has (0 for a
+        /// new one). The wire's upsert replaces the stored
+        /// count, so the app passes the count it last saw;
+        /// it is never user-facing input.
+        count: i32,
     },
     /// Delete a synced business quick reply. The app
     /// confirms first and applies only when

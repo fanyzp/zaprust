@@ -4154,6 +4154,228 @@ pub(super) async fn run_async(
                     let profile = super::profile::fetch_own_profile(&client).await;
                     events.emit(BackendEvent::OwnProfile(profile));
                 }
+                BackendCommand::FetchBusinessProfile { chat_jid } => {
+                    match chat_jid.parse::<Jid>() {
+                        Ok(jid) => {
+                            match super::business::fetch_business_profile(&client, &jid).await {
+                                Ok(profile) => events.emit(BackendEvent::BusinessProfileFetched {
+                                    chat_jid,
+                                    profile,
+                                }),
+                                Err(message) => events.emit(BackendEvent::BusinessProfileFetchFailed {
+                                    chat_jid,
+                                    message,
+                                }),
+                            }
+                        }
+                        Err(e) => events.emit(BackendEvent::BusinessProfileFetchFailed {
+                            chat_jid,
+                            message: format!("Invalid address: {}", error_words(&e)),
+                        }),
+                    }
+                }
+                BackendCommand::FetchCatalog { chat_jid, after } => {
+                    match chat_jid.parse::<Jid>() {
+                        Ok(jid) => match super::business::fetch_catalog(&client, &jid, after).await {
+                            Ok((products, after_cursor)) => {
+                                events.emit(BackendEvent::CatalogFetched {
+                                    chat_jid,
+                                    products,
+                                    after_cursor,
+                                })
+                            }
+                            Err(message) => {
+                                events.emit(BackendEvent::CatalogFetchFailed { chat_jid, message })
+                            }
+                        },
+                        Err(e) => events.emit(BackendEvent::CatalogFetchFailed {
+                            chat_jid,
+                            message: format!("Invalid address: {}", error_words(&e)),
+                        }),
+                    }
+                }
+                BackendCommand::FetchCollections { chat_jid } => {
+                    match chat_jid.parse::<Jid>() {
+                        Ok(jid) => match super::business::fetch_collections(&client, &jid).await {
+                            Ok(collections) => {
+                                events.emit(BackendEvent::CollectionsFetched { chat_jid, collections })
+                            }
+                            Err(message) => {
+                                events.emit(BackendEvent::CollectionsFetchFailed { chat_jid, message })
+                            }
+                        },
+                        Err(e) => events.emit(BackendEvent::CollectionsFetchFailed {
+                            chat_jid,
+                            message: format!("Invalid address: {}", error_words(&e)),
+                        }),
+                    }
+                }
+                BackendCommand::FetchProductImage { url } => {
+                    // A hosted image download, on a blocking
+                    // thread like the profile picture download.
+                    let sink_image = events.clone();
+                    tokio::task::spawn_blocking(move || {
+                        match super::business::download_product_image(&url) {
+                            Some(bytes) => {
+                                sink_image.emit(BackendEvent::ProductImageBytes { url, bytes })
+                            }
+                            None => sink_image.emit(BackendEvent::ProductImageFetchFailed { url }),
+                        }
+                    });
+                }
+                BackendCommand::FetchOrderDetails { chat_jid, order_id, token } => {
+                    match chat_jid.parse::<Jid>() {
+                        Ok(jid) => {
+                            match super::business::fetch_order(&client, &jid, &order_id, &token).await {
+                                Ok(order) => events.emit(BackendEvent::OrderDetailsFetched {
+                                    chat_jid,
+                                    order_id,
+                                    order,
+                                }),
+                                Err(message) => events.emit(BackendEvent::OrderDetailsFetchFailed {
+                                    chat_jid,
+                                    order_id,
+                                    message,
+                                }),
+                            }
+                        }
+                        Err(e) => events.emit(BackendEvent::OrderDetailsFetchFailed {
+                            chat_jid,
+                            order_id,
+                            message: format!("Invalid address: {}", error_words(&e)),
+                        }),
+                    }
+                }
+                BackendCommand::FetchOwnBusinessProfile => {
+                    // The account's own JID, phone form first:
+                    // the business profile query addresses the
+                    // account the same way it addresses any
+                    // business.
+                    match client.pn().or_else(|| client.lid()) {
+                        Some(jid) => {
+                            match super::business::fetch_business_profile(&client, &jid).await {
+                                Ok(profile) => {
+                                    events.emit(BackendEvent::OwnBusinessProfileFetched { profile })
+                                }
+                                Err(message) => {
+                                    events.emit(BackendEvent::OwnBusinessProfileFetchFailed { message })
+                                }
+                            }
+                        }
+                        None => events.emit(BackendEvent::OwnBusinessProfileFetchFailed {
+                            message: "The account address is not known yet.".to_owned(),
+                        }),
+                    }
+                }
+                BackendCommand::UpdateOwnBusinessProfile { update } => {
+                    match super::business::update_own_business_profile(&client, &update).await {
+                        Ok(()) => events.emit(BackendEvent::OwnBusinessProfileSaved),
+                        Err(message) => {
+                            events.emit(BackendEvent::OwnBusinessProfileSaveFailed { message })
+                        }
+                    }
+                }
+                BackendCommand::SaveLabel { label_id, name, color } => {
+                    if let Err(e) = client.labels().create_label(&label_id, &name, color).await {
+                        events.emit(BackendEvent::LabelActionFailed {
+                            action: crate::LabelAction::Save { label_id, name, color },
+                            message: format!("Label change failed: {}", error_words(&e)),
+                        });
+                    }
+                }
+                BackendCommand::DeleteLabel { label_id } => {
+                    match client.labels().delete_label(&label_id).await {
+                        Ok(()) => events.emit(BackendEvent::LabelDeleted { label_id }),
+                        Err(e) => events.emit(BackendEvent::LabelDeleteFailed {
+                            label_id,
+                            message: format!("Deleting the label failed: {}", error_words(&e)),
+                        }),
+                    }
+                }
+                BackendCommand::SetChatLabel { label_id, chat_jid, labeled } => {
+                    let result = match chat_jid.parse::<Jid>() {
+                        Ok(jid) => {
+                            if labeled {
+                                client.labels().add_chat_label(&label_id, &jid).await
+                            } else {
+                                client.labels().remove_chat_label(&label_id, &jid).await
+                            }
+                        }
+                        Err(e) => Err(whatsapp_rust::AppStateError::InvalidRequest(
+                            format!("invalid chat address: {}", error_words(&e)),
+                        )),
+                    };
+                    if let Err(e) = result {
+                        events.emit(BackendEvent::LabelActionFailed {
+                            action: crate::LabelAction::SetChat { label_id, chat_jid, labeled },
+                            message: format!("Label change failed: {}", error_words(&e)),
+                        });
+                    }
+                }
+                BackendCommand::SetMessageLabel { label_id, chat_jid, message_id, labeled } => {
+                    let parsed = chat_jid
+                        .parse::<Jid>()
+                        .map_err(|e| {
+                            whatsapp_rust::AppStateError::InvalidRequest(format!(
+                                "invalid chat address: {}",
+                                error_words(&e)
+                            ))
+                        })
+                        .and_then(|jid| {
+                            whatsapp_rust::MessageId::new(&message_id)
+                                .map(|mid| (jid, mid))
+                                .map_err(|_| {
+                                    whatsapp_rust::AppStateError::InvalidRequest(
+                                        "invalid message id".to_owned(),
+                                    )
+                                })
+                        });
+                    let result = match parsed {
+                        Ok((jid, mid)) => {
+                            if labeled {
+                                client.labels().add_message_label(&label_id, &jid, &mid).await
+                            } else {
+                                client.labels().remove_message_label(&label_id, &jid, &mid).await
+                            }
+                        }
+                        Err(e) => Err(e),
+                    };
+                    if let Err(e) = result {
+                        events.emit(BackendEvent::LabelActionFailed {
+                            action: crate::LabelAction::SetMessage {
+                                label_id,
+                                chat_jid,
+                                message_id,
+                                labeled,
+                            },
+                            message: format!("Label change failed: {}", error_words(&e)),
+                        });
+                    }
+                }
+                BackendCommand::SaveQuickReply { id, shortcut, message, keywords, count } => {
+                    if let Err(e) = client
+                        .quick_replies()
+                        .set_quick_reply(&id, &shortcut, &message, keywords, count)
+                        .await
+                    {
+                        events.emit(BackendEvent::QuickReplyFailed {
+                            id,
+                            message: format!("Quick reply change failed: {}", error_words(&e)),
+                        });
+                    }
+                }
+                BackendCommand::DeleteQuickReply { id } => {
+                    match client.quick_replies().delete_quick_reply(&id).await {
+                        Ok(()) => events.emit(BackendEvent::QuickReplyDeleted { id }),
+                        Err(e) => events.emit(BackendEvent::QuickReplyDeleteFailed {
+                            id,
+                            message: format!(
+                                "Deleting the quick reply failed: {}",
+                                error_words(&e)
+                            ),
+                        }),
+                    }
+                }
                 BackendCommand::Disconnect => {
                     // The local teardown always happens inside
                     // logout; what can silently fail is the

@@ -636,6 +636,49 @@ pub(super) fn translate_event(
         Event::RemoveRecentStickerUpdate(update) => {
             sink.emit(BackendEvent::RecentStickerRemoved { filehash: update.filehash.clone() });
         }
+        Event::LabelEditUpdate(update) => {
+            // Label definitions sync through app state, the
+            // pairing-time full sync included: the phone's
+            // whole label set replays through this arm, one
+            // label per mutation.
+            let deleted = update.action.deleted.unwrap_or(false);
+            sink.emit(BackendEvent::LabelEdited {
+                label_id: update.label_id.clone(),
+                name: if deleted { None } else { update.action.name.clone() },
+                color: if deleted { None } else { update.action.color },
+                predefined_id: update.action.predefined_id,
+                deleted,
+            });
+        }
+        Event::LabelAssociationUpdate(update) => {
+            sink.emit(BackendEvent::ChatLabelChanged {
+                label_id: update.label_id.clone(),
+                chat_jid: update.chat_jid.to_string(),
+                labeled: update.action.labeled.unwrap_or(false),
+            });
+        }
+        Event::MessageLabelAssociationUpdate(update) => {
+            sink.emit(BackendEvent::MessageLabelChanged {
+                label_id: update.label_id.clone(),
+                chat_jid: update.chat_jid.to_string(),
+                message_id: update.message_id.clone(),
+                labeled: update.action.labeled.unwrap_or(false),
+            });
+        }
+        Event::QuickReplyUpdate(update) => {
+            // Deletion is the same mutation with the deleted
+            // flag set, never a separate removal: check the
+            // flag rather than assuming a live reply.
+            let deleted = update.action.deleted.unwrap_or(false);
+            sink.emit(BackendEvent::QuickReplyEdited {
+                id: update.id.clone(),
+                shortcut: update.action.shortcut.clone().unwrap_or_default(),
+                message: update.action.message.clone().unwrap_or_default(),
+                keywords: update.action.keywords.clone(),
+                count: update.action.count.unwrap_or(0),
+                deleted,
+            });
+        }
         Event::AppStateSyncFailed(failed) => {
             // A fatal collection refusal is the case WA Web
             // treats as grounds to tell the user (the library
@@ -1322,6 +1365,7 @@ pub(super) fn body_for(kind: &LiveMessageKind, view_once: bool, text: Option<&st
             }
         }
         LiveMessageKind::Location { name, .. } => name.clone(),
+        LiveMessageKind::Order { .. } => "Order".to_owned(),
         LiveMessageKind::Contact { name, .. } => name.clone(),
         LiveMessageKind::Carousel { body, .. } => body.clone(),
         LiveMessageKind::Other(label) => label.clone(),
@@ -2478,6 +2522,33 @@ fn classify_unwrapped_deep(
                 caption: String::new(),
                 seconds: 0,
                 size_bytes: sticker.file_length.unwrap_or(0),
+            },
+            false,
+        );
+    }
+    if let Some(order) = msg.order_message.as_option() {
+        // An order keeps its capability (id + token) on the
+        // kind: without them the order-details fetch has
+        // nothing to authorize with, and the message would
+        // be only its recovered words. The body still comes
+        // from the text recovery (the order's own message or
+        // title), so previews and search keep the words.
+        use whatsapp_rust::prelude::wa::message::order_message::OrderStatus;
+        let status = match order.status {
+            Some(OrderStatus::Inquiry) => "INQUIRY",
+            Some(OrderStatus::Accepted) => "ACCEPTED",
+            Some(OrderStatus::Declined) => "DECLINED",
+            _ => "",
+        };
+        let order_token_value = order.token.clone().unwrap_or_default();
+        return (
+            LiveMessageKind::Order {
+                order_id: order.order_id.clone().unwrap_or_default(),
+                token: order_token_value,
+                item_count: u32::try_from(order.item_count.unwrap_or(0)).unwrap_or(0),
+                total_amount_1000: order.total_amount1000.unwrap_or(0),
+                currency: order.total_currency_code.clone().unwrap_or_default(),
+                status: status.to_owned(),
             },
             false,
         );
@@ -3648,6 +3719,37 @@ mod live_pairing_fix_tests {
         let (kind, _) = classify_message(&msg);
         assert!(matches!(kind, LiveMessageKind::Media { media: MediaKind::Video, seconds: 9, .. }));
         assert_eq!(body_for(&kind, false, None), "round note");
+    }
+
+    /// An order message classifies as the Order kind with
+    /// its capability (id and token) retained: before this
+    /// arm existed the payload fell through to Text and the
+    /// order-details fetch had nothing to authorize with.
+    #[test]
+    fn order_message_classifies_with_its_capability() {
+        let mut order = wa::message::OrderMessage::default();
+        order.order_id = Some("ORDER-9".to_owned());
+        order.token = Some("tok-9".to_owned());
+        order.item_count = Some(3);
+        order.total_amount_1000 = Some(45_500);
+        order.total_currency_code = Some("USD".to_owned());
+        order.status = Some(wa::message::order_message::OrderStatus::Accepted);
+        order.order_title = Some("Order #9".to_owned());
+        let mut msg = wa::Message::default();
+        msg.order_message = MessageField::some(order);
+        let (kind, _) = classify_message(&msg);
+        match kind {
+            LiveMessageKind::Order { order_id, token, item_count, total_amount_1000, currency, status } => {
+                assert_eq!(order_id, "ORDER-9");
+                assert_eq!(token, "tok-9");
+                assert_eq!(item_count, 3);
+                assert_eq!(total_amount_1000, 45_500);
+                assert_eq!(currency, "USD");
+                assert_eq!(status, "ACCEPTED");
+            }
+            other => panic!("expected the Order kind, got {other:?}"),
+        }
+        assert_eq!(structured_text(&msg).as_deref(), Some("Order #9"));
     }
 
     /// The ptt flag is the whole difference between a voice

@@ -161,28 +161,42 @@ pub(crate) fn event_show_guests(
     extra_guests && my_rsvp == Some(core::model::EventRsvp::Going) && !canceled
 }
 
+/// Height of one event metadata row (when, location, link)
+/// laid out at the card's inner text width: the wrapped
+/// galley's height plus the row's 2 px text offset, never
+/// less than the standard line. A long when (a cross-day
+/// event names both dates) or a long location wraps into
+/// its own space instead of over the next row. Shared by
+/// the measure, click and paint passes.
+pub(crate) fn event_row_h(ui: &egui::Ui, text: &str, w: f32, color: Color32) -> f32 {
+    let g = layout_text(ui, text, FontId::proportional(INNER_BODY_SIZE), color, w);
+    (g.size().y + 2.0).max(EVENT_LINE_H)
+}
+
 /// The event card's total content height from its parts, the
 /// single formula the measure, click and paint passes share:
-/// name, when line, optional location line, optional
-/// description, optional link line, tally line, the RSVP row
-/// (unless canceled) and the guest row (when shown).
+/// name, when row, optional location row, optional
+/// description, optional link row, tally line, the RSVP row
+/// (unless canceled) and the guest row (when shown). A row
+/// height of 0 marks an absent row.
 pub(crate) fn event_card_h(
     name_h: f32,
+    when_h: f32,
+    location_h: f32,
     desc_h: f32,
-    has_location: bool,
-    has_link: bool,
+    link_h: f32,
     canceled: bool,
     show_guests: bool,
 ) -> f32 {
-    let mut h = name_h + 6.0 + EVENT_LINE_H;
-    if has_location {
-        h += 2.0 + EVENT_LINE_H;
+    let mut h = name_h + 6.0 + when_h;
+    if location_h > 0.0 {
+        h += 2.0 + location_h;
     }
     if desc_h > 0.0 {
         h += 6.0 + desc_h;
     }
-    if has_link {
-        h += 2.0 + EVENT_LINE_H;
+    if link_h > 0.0 {
+        h += 2.0 + link_h;
     }
     h += 8.0 + EVENT_LINE_H;
     if !canceled {
@@ -1103,8 +1117,11 @@ pub(crate) fn message_bubble(
         MessageKind::Event {
             name,
             description,
+            start_time,
+            end_time,
             location,
             join_link,
+            scheduled_call,
             extra_guests,
             canceled,
             my_rsvp,
@@ -1117,11 +1134,26 @@ pub(crate) fn message_bubble(
             // card never goes narrower than that.
             content_w =
                 content_w.max(body_galley.size().x).max(if *canceled { 0.0 } else { 280.0 });
+            let when = crate::live::fmt_event_when(*start_time, *end_time);
+            let when_h = event_row_h(ui, &when, inner_max - 20.0, text_color);
+            let location_h = if location.is_empty() {
+                0.0
+            } else {
+                event_row_h(ui, location, inner_max - 20.0, text_color)
+            };
+            let link_h = if join_link.is_empty() {
+                0.0
+            } else if *scheduled_call {
+                event_row_h(ui, &crate::i18n::t("event.join_call"), inner_max - 20.0, text_color)
+            } else {
+                event_row_h(ui, join_link, inner_max - 20.0, text_color)
+            };
             kind_h = event_card_h(
                 body_galley.size().y,
+                when_h,
+                location_h,
                 desc_h,
-                !location.is_empty(),
-                !join_link.is_empty(),
+                link_h,
                 *canceled,
                 show_guests,
             );
@@ -1302,8 +1334,11 @@ pub(crate) fn message_bubble(
                     }
                     MessageKind::Event {
                         ref description,
+                        start_time,
+                        end_time,
                         ref location,
                         ref join_link,
+                        scheduled_call,
                         canceled,
                         extra_guests,
                         my_rsvp,
@@ -1319,22 +1354,30 @@ pub(crate) fn message_bubble(
                             let content_x = rect.left() + pad_x;
                             let desc_h = event_desc_h(ui, description, inner_w, text_color);
                             let show_guests = event_show_guests(extra_guests, my_rsvp, canceled);
-                            let mut y = content_top + body_galley.size().y + 6.0 + EVENT_LINE_H;
+                            let when = crate::live::fmt_event_when(start_time, end_time);
+                            let when_h = event_row_h(ui, &when, inner_w - 20.0, text_color);
+                            let mut y = content_top + body_galley.size().y + 6.0 + when_h;
                             if !location.is_empty() {
-                                y += 2.0 + EVENT_LINE_H;
+                                y += 2.0 + event_row_h(ui, location, inner_w - 20.0, text_color);
                             }
                             if desc_h > 0.0 {
                                 y += 6.0 + desc_h;
                             }
                             if !join_link.is_empty() {
+                                let label = if scheduled_call {
+                                    crate::i18n::t("event.join_call")
+                                } else {
+                                    join_link.clone()
+                                };
+                                let link_h = event_row_h(ui, &label, inner_w - 20.0, text_color);
                                 let link_top = y + 2.0;
                                 if pos.y >= link_top
-                                    && pos.y < link_top + EVENT_LINE_H
+                                    && pos.y < link_top + link_h
                                     && pos.x >= content_x
                                 {
                                     return Some(BubbleAction::OpenJoinLink(join_link.clone()));
                                 }
-                                y += 2.0 + EVENT_LINE_H;
+                                y += 2.0 + link_h;
                             }
                             if canceled {
                                 return None;
@@ -2189,8 +2232,9 @@ pub(crate) fn message_bubble(
                     secondary,
                     inner_w - 20.0,
                 );
+                let when_h = (g.size().y + 2.0).max(EVENT_LINE_H);
                 painter.galley(Pos2::new(x + 20.0, cy + 2.0), g, secondary);
-                cy += EVENT_LINE_H;
+                cy += when_h;
                 if !location.is_empty() {
                     let loc = location;
                     cy += 2.0;
@@ -2209,8 +2253,9 @@ pub(crate) fn message_bubble(
                         secondary,
                         inner_w - 20.0,
                     );
+                    let loc_h = (g.size().y + 2.0).max(EVENT_LINE_H);
                     painter.galley(Pos2::new(x + 20.0, cy + 2.0), g, secondary);
-                    cy += EVENT_LINE_H;
+                    cy += loc_h;
                 }
                 let desc_h = event_desc_h(ui, description, inner_w, text_color);
                 if desc_h > 0.0 {
@@ -2248,8 +2293,9 @@ pub(crate) fn message_bubble(
                         rgb(t.accent),
                         inner_w - 20.0,
                     );
+                    let link_h = (g.size().y + 2.0).max(EVENT_LINE_H);
                     painter.galley(Pos2::new(x + 20.0, cy + 2.0), g, rgb(t.accent));
-                    cy += EVENT_LINE_H;
+                    cy += link_h;
                 }
                 cy += 8.0;
                 if *canceled {

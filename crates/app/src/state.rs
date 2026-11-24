@@ -619,6 +619,12 @@ pub(crate) enum UiConfirm {
     /// confirming sends it. The chat and message are named so
     /// the outcome notice can say what was reported.
     ReportSpam { chat_id: u64, msg_id: u64, name: String },
+    /// Report a group message to the group's admins (row
+    /// 65): the admins receive the message for review; the
+    /// group is named in the modal. Confirming sends the
+    /// report; the outcome arrives as MessageReportedToAdmins
+    /// or ReportToAdminsFailed.
+    ReportToAdmins { chat_id: u64, msg_id: u64, name: String },
     /// Delete a local sticker pack (design standard
     /// section 24): the pack's folder is removed from disk,
     /// which no undo in this client can reverse, so it
@@ -1081,6 +1087,22 @@ pub(crate) struct MemberRow {
     pub(crate) label: String,
     pub(crate) detail: Option<String>,
     pub(crate) admin: bool,
+    /// The member's own label in this group (row 65), shown
+    /// as a chip on the row; `None` when they have not set
+    /// one.
+    pub(crate) member_label: Option<String>,
+}
+
+/// One reported message in the admin dock section (row 65):
+/// the report as the backend answered it, with the archived
+/// body filled in when this device holds the message.
+#[derive(Clone)]
+pub(crate) struct ReportedRow {
+    /// The archived message's sender label and body, when
+    /// the store holds the message in this group.
+    pub(crate) snippet: Option<(String, String)>,
+    /// Reporter display labels, resolved on arrival.
+    pub(crate) reporters: Vec<String>,
 }
 
 /// Group state: member lists, modes and invite data reported by the backend, plus the join-by-link and create-group dialog state.
@@ -1120,6 +1142,34 @@ pub(crate) struct GroupsState {
     pub(crate) join_link_open: bool,
     pub(crate) join_link_input: String,
     pub(crate) join_link_error: Option<String>,
+    /// The account's own member label per group (row 65), as
+    /// the backend last reported it (its own participant row
+    /// or a confirmed set). Drives the label editor's draft.
+    pub(crate) own_member_labels: std::collections::HashMap<u64, String>,
+    /// The member-label editor's draft text, and the chat it
+    /// was seeded for: switching chats reseeds it from that
+    /// group's own label.
+    pub(crate) member_label_draft: String,
+    pub(crate) member_label_draft_chat: Option<u64>,
+    /// A SetOwnMemberLabel command is in flight for this
+    /// chat; its outcome event clears the flag and speaks.
+    pub(crate) member_label_pending: Option<u64>,
+    /// The add-participant "share recent messages" switch
+    /// (row 64): when on, an add carries the group's recent
+    /// eligible history to the new members.
+    pub(crate) share_history: bool,
+    /// The chat whose last history share failed retryably
+    /// (row 64): the dock offers the retry while this is set.
+    pub(crate) history_retry_chat: Option<u64>,
+    /// Reported messages for the group whose dock is open
+    /// (row 65): (chat id, rows). Admin-only section.
+    pub(crate) reported: Option<(u64, Vec<ReportedRow>)>,
+    /// Chats whose reported list was already requested this
+    /// panel session.
+    pub(crate) reported_requested: std::collections::HashSet<u64>,
+    /// The reported-list fetch failure for the open dock, in
+    /// user words: (chat id, message).
+    pub(crate) reported_error: Option<(u64, String)>,
     /// Create-group dialog state: open flag + form buffers.
     pub(crate) create_open: bool,
     /// A live CreateGroup command is in flight: set at send,
@@ -1153,6 +1203,16 @@ pub(crate) struct NewChatState {
     pub(crate) not_found: Option<String>,
     /// The lookup failed, in user words, shown inline.
     pub(crate) error: Option<String>,
+}
+
+/// A cross-message text selection (row 129): the anchor and
+/// focus as (message id, character index into the message's
+/// painted body text). Either direction is stored as made;
+/// stream order normalizes it at highlight and copy time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TextSelection {
+    pub(crate) anchor: (u64, usize),
+    pub(crate) focus: (u64, usize),
 }
 
 /// The label editor's draft (Labels panel and Settings):
@@ -1534,6 +1594,9 @@ pub(crate) struct ComposerState {
     pub(crate) rich_menu_open: bool,
     /// The poll builder draft, when open.
     pub(crate) poll_draft: Option<PollDraft>,
+    /// The interactive message builder draft, when open
+    /// (row 19).
+    pub(crate) interactive_draft: Option<InteractiveDraft>,
     /// The event builder draft, when open (attach menu).
     pub(crate) event_draft: Option<EventDraft>,
     /// Files staged in the composer (attach menu), sent together.
@@ -1801,6 +1864,23 @@ pub(crate) struct App {
     /// [`effective_pixels_per_point`]).
     pub(crate) zoom_percent: u32,
     pub(crate) enter_sends: bool,
+    /// Composer spell checking (row 128): underline
+    /// misspellings in the draft. Persisted in settings.json.
+    pub(crate) spell_check: bool,
+    /// The personal dictionary (row 128): words the user
+    /// added, persisted in settings.json.
+    pub(crate) spell_personal: Vec<String>,
+    /// The personal dictionary as edited in Settings: one
+    /// comma-separated line; parsed into `spell_personal`
+    /// whenever it changes.
+    pub(crate) spell_personal_text: String,
+    /// The built spell checker, lazily constructed on first
+    /// composer use (the dictionaries parse once per run).
+    pub(crate) spell_checker: Option<crate::spell::SpellChecker>,
+    /// The chat whose names were last seeded into the
+    /// checker (chat titles and the session name directory
+    /// join the known words per open chat).
+    pub(crate) spell_names_chat: Option<u64>,
     pub(crate) keep_archived: bool,
     pub(crate) sidebar_collapsed: bool,
     /// The current frame's layout mode, refreshed by the shell
@@ -2447,6 +2527,13 @@ pub(crate) struct App {
     pub(crate) staged_send: Option<StagedSendState>,
     /// Message whose context menu is open (secondary click), if any.
     pub(crate) bubble_menu: Option<u64>,
+    /// The cross-message text selection (row 129), and the
+    /// chat it was made in (a chat switch clears it).
+    pub(crate) text_selection: Option<TextSelection>,
+    pub(crate) selection_chat: Option<u64>,
+    /// A selection drag is in progress (pointer down after a
+    /// press that landed on a painted body).
+    pub(crate) selection_drag: bool,
     /// Message id waiting for a forward target (picker popup).
     pub(crate) forward_from: Option<u64>,
     /// The chat a composing chat-state was sent to and not yet
@@ -2460,6 +2547,107 @@ pub(crate) struct App {
     pub(crate) notify_snapshot: Option<(bool, bool, bool, bool)>,
     /// Self-update state (see update.rs): the phase, the release on offer, worker results and check bookkeeping.
     pub(crate) update: UpdateState,
+}
+
+/// The shape an interactive message draft takes (row 19).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InteractiveShape {
+    Buttons,
+    List,
+    Carousel,
+}
+
+/// One list section in an interactive draft: a title and its
+/// rows as (title, description) pairs.
+#[derive(Debug, Clone)]
+pub(crate) struct InteractiveSectionDraft {
+    pub(crate) title: String,
+    pub(crate) rows: Vec<(String, String)>,
+}
+
+/// One carousel card in an interactive draft.
+#[derive(Debug, Clone)]
+pub(crate) struct InteractiveCardDraft {
+    pub(crate) title: String,
+    pub(crate) body: String,
+    pub(crate) buttons: Vec<String>,
+}
+
+/// An interactive message under construction in the composer
+/// menu (row 19). One draft type for the three shapes; the
+/// fields a shape does not use stay empty. Caps mirror the
+/// renderer and the wire builders: 3 buttons, 5 sections of
+/// 10 rows, 2 cards of 2 buttons.
+#[derive(Debug, Clone)]
+pub(crate) struct InteractiveDraft {
+    pub(crate) shape: InteractiveShape,
+    /// Buttons text / list title / carousel body.
+    pub(crate) text: String,
+    /// Buttons shape: the footer line.
+    pub(crate) footer: String,
+    /// Buttons shape: the button labels.
+    pub(crate) buttons: Vec<String>,
+    /// List shape: the description under the title.
+    pub(crate) description: String,
+    /// List shape: the label heading the rows.
+    pub(crate) button_label: String,
+    /// List shape: the sections.
+    pub(crate) sections: Vec<InteractiveSectionDraft>,
+    /// Carousel shape: the cards.
+    pub(crate) cards: Vec<InteractiveCardDraft>,
+}
+
+impl InteractiveDraft {
+    pub(crate) fn new() -> Self {
+        Self {
+            shape: InteractiveShape::Buttons,
+            text: String::new(),
+            footer: String::new(),
+            buttons: vec![String::new()],
+            description: String::new(),
+            button_label: String::new(),
+            sections: vec![InteractiveSectionDraft {
+                title: String::new(),
+                rows: vec![(String::new(), String::new())],
+            }],
+            cards: vec![InteractiveCardDraft {
+                title: String::new(),
+                body: String::new(),
+                buttons: vec![String::new()],
+            }],
+        }
+    }
+
+    /// Whether the draft can be sent: every required field
+    /// filled, every offered choice labeled. The builder's
+    /// Send button enables exactly on this, so a click can
+    /// never produce an invalid message.
+    pub(crate) fn valid(&self) -> bool {
+        if self.text.trim().is_empty() {
+            return false;
+        }
+        match self.shape {
+            InteractiveShape::Buttons => {
+                !self.buttons.is_empty() && self.buttons.iter().all(|b| !b.trim().is_empty())
+            }
+            InteractiveShape::List => {
+                !self.button_label.trim().is_empty()
+                    && !self.sections.is_empty()
+                    && self.sections.iter().all(|section| {
+                        !section.rows.is_empty()
+                            && section.rows.iter().all(|(title, _)| !title.trim().is_empty())
+                    })
+            }
+            InteractiveShape::Carousel => {
+                !self.cards.is_empty()
+                    && self.cards.iter().all(|card| {
+                        !card.title.trim().is_empty()
+                            && !card.buttons.is_empty()
+                            && card.buttons.iter().all(|b| !b.trim().is_empty())
+                    })
+            }
+        }
+    }
 }
 
 /// A poll under construction in the composer menu.
@@ -2767,6 +2955,7 @@ impl App {
                 stack_h: 84.0,
                 rich_menu_open: false,
                 poll_draft: None,
+                interactive_draft: None,
                 event_draft: None,
                 staged: Vec::new(),
                 staged_caption: String::new(),
@@ -2782,6 +2971,11 @@ impl App {
             qa_community_scroll: args.community_scroll,
             zoom_percent: 100,
             enter_sends: true,
+            spell_check: true,
+            spell_personal: Vec::new(),
+            spell_personal_text: String::new(),
+            spell_checker: None,
+            spell_names_chat: None,
             keep_archived: true,
             sidebar_collapsed: args.sidebar_collapsed,
             single_pane: false,
@@ -2908,6 +3102,15 @@ impl App {
                 join_link_open: false,
                 join_link_input: String::new(),
                 join_link_error: None,
+                own_member_labels: std::collections::HashMap::new(),
+                member_label_draft: String::new(),
+                member_label_draft_chat: None,
+                member_label_pending: None,
+                share_history: false,
+                history_retry_chat: None,
+                reported: None,
+                reported_requested: std::collections::HashSet::new(),
+                reported_error: None,
                 create_open: false,
                 create_error: None,
                 create_pending: false,
@@ -3071,6 +3274,9 @@ impl App {
             storage_sizes: None,
             staged_send: None,
             bubble_menu: None,
+            text_selection: None,
+            selection_chat: None,
+            selection_drag: false,
             forward_from: None,
             typing_sent_for: None,
             debug: DebugState {

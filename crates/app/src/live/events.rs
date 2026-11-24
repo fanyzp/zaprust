@@ -4,6 +4,11 @@
 
 use super::*;
 
+/// One archived message row for the reported-messages list
+/// (row 65): protocol id, sender address, sender display
+/// name, own-message flag, and body.
+type ReportedArchiveRow = (String, Option<String>, Option<String>, bool, String);
+
 impl crate::state::App {
     /// Loads the archive's persisted call history into the Calls
     /// panel's live list. Called when a live session starts, the
@@ -2133,7 +2138,7 @@ impl crate::state::App {
                         .insert(chat_id, crate::state::ContactPresence { online, last_seen });
                 }
             }
-            BackendEvent::GroupMembers { chat_jid, members, own_admin } => {
+            BackendEvent::GroupMembers { chat_jid, members, own_admin, own_label } => {
                 // A participant add's outcome refresh (P2-37):
                 // only now does the input clear, and only if it
                 // still holds the address that was sent.
@@ -2148,11 +2153,22 @@ impl crate::state::App {
                     self.clear_busy_notice();
                 }
                 self.groups.own_admin.insert(jid_id(&chat_jid), own_admin);
+                // The account's own member label (row 65)
+                // rides the same answer; an unset label clears
+                // any stale local copy.
+                match own_label {
+                    Some(label) => {
+                        self.groups.own_member_labels.insert(jid_id(&chat_jid), label);
+                    }
+                    None => {
+                        self.groups.own_member_labels.remove(&jid_id(&chat_jid));
+                    }
+                }
                 // Member names join the name directory before
                 // row resolution masks any of them: mentions of
                 // this group's members resolve from here.
                 if let Some(session) = &mut self.live {
-                    for (jid, name, _admin) in &members {
+                    for (jid, name, _admin, _label) in &members {
                         if !name.is_empty() && !is_raw_identifier(name) {
                             session.names.insert(jid.clone(), name.clone());
                         }
@@ -2169,6 +2185,183 @@ impl crate::state::App {
             }
             BackendEvent::GroupModesState { chat_jid, announce, locked } => {
                 self.groups.modes.insert(jid_id(&chat_jid), (announce, locked));
+            }
+            BackendEvent::GroupHistoryReported { chat_jid, added, refused, report } => {
+                let chat_id = jid_id(&chat_jid);
+                // The outcome speaks in parts, each one only
+                // what the backend actually reported (row 64):
+                // who was added, who was refused and why, and
+                // what became of the history share itself.
+                let mut parts: Vec<String> = Vec::new();
+                if !added.is_empty() {
+                    parts.push(crate::i18n::tf(
+                        "group.history_added",
+                        "count",
+                        &added.len().to_string(),
+                    ));
+                }
+                for (address, reason) in &refused {
+                    parts.push(
+                        crate::i18n::tf("group.history_refused", "address", address)
+                            .replace("{reason}", reason),
+                    );
+                }
+                let mut failed = false;
+                match &report {
+                    backend::HistoryShareReport::Shared { messages } => {
+                        parts.push(crate::i18n::tf(
+                            "group.history_shared",
+                            "count",
+                            &messages.to_string(),
+                        ));
+                        if self.groups.history_retry_chat == Some(chat_id) {
+                            self.groups.history_retry_chat = None;
+                        }
+                    }
+                    backend::HistoryShareReport::NotRequested => {}
+                    backend::HistoryShareReport::Skipped { reason } => {
+                        parts.push(crate::i18n::tf("group.history_skipped", "reason", reason));
+                    }
+                    backend::HistoryShareReport::Failed { error, retryable } => {
+                        failed = true;
+                        parts.push(error.clone());
+                        if *retryable {
+                            self.groups.history_retry_chat = Some(chat_id);
+                        }
+                    }
+                }
+                if !parts.is_empty() {
+                    let text = parts.join(" ");
+                    self.notice =
+                        Some(if failed { Notice::error(text) } else { Notice::info(text) });
+                }
+            }
+            BackendEvent::MemberLabelSet { chat_jid, label } => {
+                let chat_id = jid_id(&chat_jid);
+                if self.groups.member_label_pending == Some(chat_id) {
+                    self.groups.member_label_pending = None;
+                }
+                if label.is_empty() {
+                    self.groups.own_member_labels.remove(&chat_id);
+                    self.notice = Some(Notice::info(crate::i18n::t("group.member_label_cleared")));
+                } else {
+                    self.groups.own_member_labels.insert(chat_id, label);
+                    self.notice = Some(Notice::info(crate::i18n::t("group.member_label_set")));
+                }
+            }
+            BackendEvent::MemberLabelFailed { chat_jid, message } => {
+                let chat_id = jid_id(&chat_jid);
+                if self.groups.member_label_pending == Some(chat_id) {
+                    self.groups.member_label_pending = None;
+                }
+                self.notice = Some(Notice::error(human_error(&message)));
+            }
+            BackendEvent::MemberLabelChanged { chat_jid, member_jid, label } => {
+                // Another member's label changed (or our own,
+                // from another device): the roster row follows.
+                let chat_id = jid_id(&chat_jid);
+                if let Some(rows) = self.groups.live_members.get_mut(&chat_id) {
+                    if let Some(row) = rows.iter_mut().find(|r| r.address == member_jid) {
+                        row.member_label = label;
+                    }
+                }
+            }
+            BackendEvent::MessageReportedToAdmins { chat_jid: _, message_id: _ } => {
+                self.notice = Some(Notice::info(crate::i18n::t("group.report_sent")));
+            }
+            BackendEvent::ReportToAdminsFailed { message, .. } => {
+                self.notice = Some(Notice::error(human_error(&message)));
+            }
+            BackendEvent::ReportedMessages { chat_jid, reports } => {
+                let chat_id = jid_id(&chat_jid);
+                // Reporter labels resolve through the name
+                // directory when the reporter arrived as an
+                // address; a name stays a name. The snippet
+                // comes from this device's archive when it
+                // holds the message (row 65).
+                let names: std::collections::HashMap<String, String> =
+                    self.live.as_ref().map(|session| session.names.clone()).unwrap_or_default();
+                let archived: Vec<ReportedArchiveRow> = self
+                    .live
+                    .as_ref()
+                    .and_then(|session| session.store.as_ref())
+                    .and_then(|store| store.messages(&chat_jid).ok())
+                    .map(|rows| {
+                        rows.into_iter()
+                            .map(|(message, _)| {
+                                // Kinds whose words live outside
+                                // the body field (a carousel's
+                                // body, a location's name) lend
+                                // them to the snippet, so a
+                                // reported card never reads as an
+                                // empty quote.
+                                let body = if message.body.is_empty() {
+                                    match &message.kind {
+                                        backend::LiveMessageKind::Carousel { body, .. } => {
+                                            body.clone()
+                                        }
+                                        backend::LiveMessageKind::Location { name, .. } => {
+                                            name.clone()
+                                        }
+                                        _ => message.body.clone(),
+                                    }
+                                } else {
+                                    message.body.clone()
+                                };
+                                (
+                                    message.id,
+                                    message.sender_jid,
+                                    message.sender,
+                                    message.from_me,
+                                    body,
+                                )
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let rows = reports
+                    .into_iter()
+                    .map(|entry| {
+                        let reporters = entry
+                            .reporters
+                            .iter()
+                            .map(|reporter| {
+                                // An address resolves through
+                                // the name directory and masks
+                                // when unknown; a display name
+                                // (the fake's form) stays as is.
+                                if reporter.contains('@') {
+                                    resolve_person_label("", reporter, &names).0
+                                } else {
+                                    reporter.clone()
+                                }
+                            })
+                            .collect();
+                        let snippet = archived.iter().find(|(id, ..)| *id == entry.message_id).map(
+                            |(_, sender_jid, sender_name, from_me, body)| {
+                                let sender = if *from_me {
+                                    crate::i18n::t("profile.my_default_name")
+                                } else if let Some(name) = sender_name {
+                                    name.clone()
+                                } else if let Some(jid) = sender_jid {
+                                    resolve_person_label("", jid, &names).0
+                                } else {
+                                    String::new()
+                                };
+                                (sender, body.clone())
+                            },
+                        );
+                        crate::state::ReportedRow { snippet, reporters }
+                    })
+                    .collect();
+                if self.groups.reported_error.as_ref().is_some_and(|(id, _)| *id == chat_id) {
+                    self.groups.reported_error = None;
+                }
+                self.groups.reported = Some((chat_id, rows));
+            }
+            BackendEvent::ReportedMessagesFailed { chat_jid, message } => {
+                let chat_id = jid_id(&chat_jid);
+                self.groups.reported_error = Some((chat_id, human_error(&message)));
             }
             BackendEvent::JoinRequests { chat_jid, requests } => {
                 let rows = self.resolve_request_rows(requests);
@@ -5781,11 +5974,17 @@ mod burst_drain_tests {
         tx.send(BackendEvent::GroupMembers {
             chat_jid: GROUP_JID.to_owned(),
             members: vec![
-                ("6281111111111@s.whatsapp.net".to_owned(), "Alice Johnson".to_owned(), true),
-                ("6282222222222@s.whatsapp.net".to_owned(), "Bob Carter".to_owned(), false),
-                ("6283333333333@s.whatsapp.net".to_owned(), "Carol Danvers".to_owned(), false),
+                ("6281111111111@s.whatsapp.net".to_owned(), "Alice Johnson".to_owned(), true, None),
+                ("6282222222222@s.whatsapp.net".to_owned(), "Bob Carter".to_owned(), false, None),
+                (
+                    "6283333333333@s.whatsapp.net".to_owned(),
+                    "Carol Danvers".to_owned(),
+                    false,
+                    None,
+                ),
             ],
             own_admin: false,
+            own_label: None,
         })
         .unwrap();
         drain_all(&mut app, &ctx);
@@ -5904,13 +6103,19 @@ mod burst_drain_tests {
         tx.send(BackendEvent::GroupMembers {
             chat_jid: GROUP_JID.to_owned(),
             members: vec![
-                (ALICE_JID.to_owned(), String::new(), false),
-                (BOB_JID.to_owned(), String::new(), true),
-                (CAROL_JID.to_owned(), "Carol Danvers".to_owned(), false),
-                (STRANGER_JID.to_owned(), String::new(), false),
-                (LID_JID.to_owned(), String::new(), false),
+                (ALICE_JID.to_owned(), String::new(), false, None),
+                (BOB_JID.to_owned(), String::new(), true, None),
+                (
+                    CAROL_JID.to_owned(),
+                    "Carol Danvers".to_owned(),
+                    false,
+                    Some("Design".to_owned()),
+                ),
+                (STRANGER_JID.to_owned(), String::new(), false, None),
+                (LID_JID.to_owned(), String::new(), false, None),
             ],
             own_admin: false,
+            own_label: None,
         })
         .unwrap();
         drain_all(&mut app, &ctx);
@@ -5930,6 +6135,10 @@ mod burst_drain_tests {
         // The name the server rendered is carried through.
         assert_eq!(rows[2].label, "Carol Danvers");
         assert_eq!(rows[2].detail.as_deref(), Some("+6283333333333"));
+        // Carol's member label (row 65) rides her row; the
+        // others have none.
+        assert_eq!(rows[2].member_label.as_deref(), Some("Design"));
+        assert_eq!(rows[0].member_label, None);
         // Unknown: a masked identifier, and no number line
         // beneath it (that would undo the masking).
         assert_eq!(rows[3].label, "+628 ••• 4444");

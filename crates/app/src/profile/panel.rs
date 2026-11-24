@@ -4,9 +4,9 @@
 //! dock gathers (group edits, participant ops, block toggles).
 
 use super::dock::{
-    disappearing_section, dock_card, dock_card_section, dock_member_row, dock_prose, dock_row,
-    dock_separator, profile_ai_body, profile_counts_section, profile_header, profile_user_body,
-    DOCK_LABEL_X,
+    disappearing_section, dock_card, dock_card_section, dock_member_row, dock_member_row_labeled,
+    dock_prose, dock_row, dock_separator, profile_ai_body, profile_counts_section, profile_header,
+    profile_user_body, DOCK_LABEL_X,
 };
 use super::{profile_kind, MemberAction, ProfileIntents, ProfileKind};
 use crate::icons::Icon;
@@ -98,6 +98,8 @@ impl App {
             self.group_desc_edit = String::new();
             self.add_participant_input = String::new();
             self.add_member_open = false;
+            // The member-label draft reseeds for the new chat.
+            self.groups.member_label_draft_chat = None;
         }
         let live_members = self.groups.live_members.get(&chat.id).cloned();
         let mut close = false;
@@ -601,6 +603,58 @@ impl App {
                                 },
                             );
                             ui.add_space(SP_3);
+                            // Share recent messages with new
+                            // members (row 64): the switch arms
+                            // the add above; the records ride
+                            // the add command itself.
+                            ui.allocate_ui_with_layout(
+                                egui::vec2(ui.available_width(), 28.0),
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    let mut on = self.groups.share_history;
+                                    crate::widgets::switch(ui, &mut on, t);
+                                    if on != self.groups.share_history {
+                                        self.groups.share_history = on;
+                                    }
+                                    ui.label(
+                                        RichText::new(crate::i18n::t("profile.share_history"))
+                                            .size(12.0)
+                                            .color(rgb(t.text_primary)),
+                                    );
+                                },
+                            );
+                            ui.label(
+                                RichText::new(crate::i18n::t("profile.share_history_caption"))
+                                    .size(10.0)
+                                    .color(rgb(t.text_faint)),
+                            );
+                            if self.groups.history_retry_chat == Some(chat.id) {
+                                ui.add_space(SP_2);
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        RichText::new(crate::i18n::t("profile.history_failed"))
+                                            .size(12.0)
+                                            .color(rgb(t.text_secondary)),
+                                    );
+                                    if button(
+                                        ui,
+                                        t,
+                                        &crate::i18n::t("profile.history_retry"),
+                                        Btn::Secondary,
+                                    )
+                                    .clicked()
+                                    {
+                                        if let Some(jid) = self.live_jid(chat.id) {
+                                            self.send_backend(
+                                                backend::BackendCommand::RetryGroupHistoryShare {
+                                                    chat_jid: jid,
+                                                },
+                                            );
+                                        }
+                                    }
+                                });
+                            }
+                            ui.add_space(SP_3);
                             // Invite link: fetched on demand;
                             // copy and reset act on the link the
                             // backend last reported for this chat.
@@ -744,7 +798,158 @@ impl App {
                                     );
                                 },
                             );
+                            ui.add_space(SP_3);
+                            // Your member label in this group
+                            // (row 65): the label other members
+                            // see on your roster row. The draft
+                            // seeds from the label the backend
+                            // last reported for this group;
+                            // saving an empty field clears it.
+                            if self.groups.member_label_draft_chat != Some(chat.id) {
+                                self.groups.member_label_draft = self
+                                    .groups
+                                    .own_member_labels
+                                    .get(&chat.id)
+                                    .cloned()
+                                    .unwrap_or_default();
+                                self.groups.member_label_draft_chat = Some(chat.id);
+                            }
+                            ui.label(
+                                RichText::new(crate::i18n::t("profile.member_label"))
+                                    .size(12.0)
+                                    .color(rgb(t.text_secondary)),
+                            );
+                            ui.allocate_ui_with_layout(
+                                egui::vec2(ui.available_width(), 40.0),
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    let pending =
+                                        self.groups.member_label_pending == Some(chat.id);
+                                    let unchanged = self.groups.member_label_draft.trim()
+                                        == self
+                                            .groups
+                                            .own_member_labels
+                                            .get(&chat.id)
+                                            .map_or("", String::as_str);
+                                    ui.add_enabled_ui(!pending && !unchanged, |ui| {
+                                        if button(
+                                            ui,
+                                            t,
+                                            &crate::i18n::t("profile.member_label_save"),
+                                            Btn::Secondary,
+                                        )
+                                        .clicked()
+                                        {
+                                            self.set_own_member_label(chat.id);
+                                        }
+                                    });
+                                    let w = ui.available_width();
+                                    text_field(
+                                        ui,
+                                        t,
+                                        &mut self.groups.member_label_draft,
+                                        &crate::i18n::t("profile.member_label_hint"),
+                                        w,
+                                    );
+                                },
+                            );
                             });
+                            // Reported messages (row 65): an
+                            // admin-only section. The fetch runs
+                            // once per panel session; the rows
+                            // are what the backend answered, with
+                            // the archived body when this device
+                            // holds the message.
+                            if self.groups.own_admin.get(&chat.id).copied().unwrap_or(false) {
+                                if !self.groups.reported_requested.contains(&chat.id) {
+                                    self.groups.reported_requested.insert(chat.id);
+                                    if let Some(jid) = self.live_jid(chat.id) {
+                                        self.send_backend(
+                                            backend::BackendCommand::FetchReportedMessages {
+                                                chat_jid: jid,
+                                            },
+                                        );
+                                    }
+                                }
+                                let reported_rows = self
+                                    .groups
+                                    .reported
+                                    .as_ref()
+                                    .filter(|(id, _)| *id == chat.id)
+                                    .map(|(_, rows)| rows.clone());
+                                let reported_error = self
+                                    .groups
+                                    .reported_error
+                                    .as_ref()
+                                    .filter(|(id, _)| *id == chat.id)
+                                    .map(|(_, message)| message.clone());
+                                dock_card_section(ui, t, &crate::i18n::t("profile.reported_messages"), None, |ui| {
+                                    if let Some(message) = &reported_error {
+                                        ui.label(
+                                            RichText::new(message.clone())
+                                                .size(12.0)
+                                                .color(rgb(t.text_secondary)),
+                                        );
+                                        if button(
+                                            ui,
+                                            t,
+                                            &crate::i18n::t("profile.reported_retry"),
+                                            Btn::Secondary,
+                                        )
+                                        .clicked()
+                                        {
+                                            self.groups.reported_error = None;
+                                            self.groups.reported_requested.remove(&chat.id);
+                                        }
+                                    } else if let Some(rows) = &reported_rows {
+                                        if rows.is_empty() {
+                                            ui.label(
+                                                RichText::new(crate::i18n::t("profile.reported_empty"))
+                                                    .size(12.0)
+                                                    .color(rgb(t.text_faint)),
+                                            );
+                                        }
+                                        for row in rows {
+                                            match &row.snippet {
+                                                Some((sender, body)) => {
+                                                    ui.label(
+                                                        RichText::new(format!("{sender}: {body}"))
+                                                            .size(12.0)
+                                                            .color(rgb(t.text_primary)),
+                                                    );
+                                                }
+                                                None => {
+                                                    ui.label(
+                                                        RichText::new(crate::i18n::t(
+                                                            "profile.reported_not_on_device",
+                                                        ))
+                                                        .size(12.0)
+                                                        .color(rgb(t.text_secondary)),
+                                                    );
+                                                }
+                                            }
+                                            if !row.reporters.is_empty() {
+                                                ui.label(
+                                                    RichText::new(crate::i18n::tf(
+                                                        "profile.reported_by",
+                                                        "names",
+                                                        &row.reporters.join(", "),
+                                                    ))
+                                                    .size(10.0)
+                                                    .color(rgb(t.text_faint)),
+                                                );
+                                            }
+                                            ui.add_space(SP_1);
+                                        }
+                                    } else {
+                                        ui.label(
+                                            RichText::new(crate::i18n::t("profile.reported_loading"))
+                                                .size(12.0)
+                                                .color(rgb(t.text_faint)),
+                                        );
+                                    }
+                                });
+                            }
                             if approval_on {
                                 dock_card_section(ui, t, &crate::i18n::t("profile.member_requests"), None, |ui| {
                                 ui.horizontal(|ui| {
@@ -888,7 +1093,7 @@ impl App {
                                     for (row, photo) in
                                         live_list.iter().take(shown).zip(member_photos.iter())
                                     {
-                                        let Some(kebab) = dock_member_row(
+                                        let Some(kebab) = dock_member_row_labeled(
                                             ui,
                                             t,
                                             &row.label,
@@ -896,6 +1101,7 @@ impl App {
                                             row.admin,
                                             true,
                                             *photo,
+                                            row.member_label.as_deref(),
                                         ) else {
                                             continue;
                                         };
@@ -1347,6 +1553,23 @@ impl App {
             return;
         }
         let is_add = matches!(op, backend::ParticipantOp::Add);
+        if is_add && self.groups.share_history {
+            // Add with history (row 64): the records come from
+            // this device's archive, and the outcome arrives
+            // as a GroupHistoryReported event (the refreshed
+            // member list still lands through the fetch below).
+            let history = self.history_records(&jid);
+            self.send_backend(backend::BackendCommand::AddGroupParticipantsWithHistory {
+                chat_jid: jid.clone(),
+                participants: vec![target.clone()],
+                history,
+            });
+            self.groups.participant_add_awaiting = Some((chat_id, target));
+            self.groups.live_members.remove(&chat_id);
+            self.send_backend(backend::BackendCommand::FetchGroupMembers { chat_jid: jid });
+            self.notice = Some(Notice::busy(crate::i18n::t("notice.updating_members")));
+            return;
+        }
         self.send_backend(backend::BackendCommand::GroupParticipants {
             chat_jid: jid.clone(),
             participants: vec![target.clone()],
@@ -1363,6 +1586,54 @@ impl App {
         self.groups.live_members.remove(&chat_id);
         self.send_backend(backend::BackendCommand::FetchGroupMembers { chat_jid: jid });
         self.notice = Some(Notice::busy(crate::i18n::t("notice.updating_members")));
+    }
+
+    /// The shareable history records for a group, from this
+    /// device's archive (row 64): plain-text messages only,
+    /// the newest 100, oldest first, in the exact shapes the
+    /// backend contract carries. The library applies its own
+    /// eligibility rules on top; this only bounds and shapes
+    /// what the archive can offer.
+    fn history_records(&self, chat_jid: &str) -> Vec<backend::HistoryMessageRecord> {
+        let Some(store) = self.live.as_ref().and_then(|session| session.store.as_ref()) else {
+            return Vec::new();
+        };
+        let Ok(messages) = store.messages(chat_jid) else {
+            return Vec::new();
+        };
+        let mut records: Vec<backend::HistoryMessageRecord> = messages
+            .into_iter()
+            .map(|(message, _)| message)
+            .filter(|message| {
+                matches!(message.kind, backend::LiveMessageKind::Text)
+                    && !message.body.trim().is_empty()
+            })
+            .map(|message| backend::HistoryMessageRecord {
+                id: message.id,
+                author_jid: message.sender_jid,
+                from_me: message.from_me,
+                timestamp: message.timestamp,
+                body: message.body,
+                mentions: message.mentions,
+                delivery: message.delivery,
+            })
+            .collect();
+        let excess = records.len().saturating_sub(100);
+        records.drain(..excess);
+        records
+    }
+
+    /// Sends the member-label editor's draft for a group
+    /// (row 65): the trimmed text, empty clearing the label.
+    /// The outcome event speaks and clears the pending flag;
+    /// nothing is applied locally before it lands.
+    pub(crate) fn set_own_member_label(&mut self, chat_id: u64) {
+        let Some(jid) = self.live_jid(chat_id) else {
+            return;
+        };
+        let label = self.groups.member_label_draft.trim().to_owned();
+        self.groups.member_label_pending = Some(chat_id);
+        self.send_backend(backend::BackendCommand::SetOwnMemberLabel { chat_jid: jid, label });
     }
 
     /// Leaves a live group and archives the local row. The

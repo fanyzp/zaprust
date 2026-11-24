@@ -258,18 +258,19 @@ impl crate::state::App {
     /// command targets, never labels.
     pub(super) fn resolve_member_rows(
         &self,
-        members: Vec<(String, String, bool)>,
+        members: Vec<backend::GroupMemberRow>,
     ) -> Vec<crate::state::MemberRow> {
         let known = self.known_person_names();
         members
             .into_iter()
-            .map(|(address, name, admin)| {
+            .map(|(address, name, admin, member_label)| {
                 let (label, named) = resolve_person_label(&name, &address, &known);
                 crate::state::MemberRow {
                     detail: member_detail(&address, named),
                     address,
                     label,
                     admin,
+                    member_label,
                 }
             })
             .collect()

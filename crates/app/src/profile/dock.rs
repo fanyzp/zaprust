@@ -394,6 +394,25 @@ pub(crate) fn dock_member_row(
     kebab: bool,
     photo: Option<egui::TextureId>,
 ) -> Option<egui::Response> {
+    dock_member_row_labeled(ui, t, name, address, admin, kebab, photo, None)
+}
+
+/// [`dock_member_row`] with the member's self-chosen label
+/// (row 65) riding beside the name, when they set one. The
+/// labeled form takes the label as an eighth argument; the
+/// row's inputs are all borrowed view data with no natural
+/// grouping struct, so the count is allowed here.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn dock_member_row_labeled(
+    ui: &mut egui::Ui,
+    t: Tokens,
+    name: &str,
+    address: Option<&str>,
+    admin: bool,
+    kebab: bool,
+    photo: Option<egui::TextureId>,
+    member_label: Option<&str>,
+) -> Option<egui::Response> {
     let seed = (name.bytes().map(u32::from).sum::<u32>() % 8) as u8;
     let mut kebab_resp = None;
     ui.allocate_ui_with_layout(
@@ -408,7 +427,19 @@ pub(crate) fn dock_member_row(
                 None => crate::widgets::paint_avatar(ui.painter(), center, 15.0, false, seed),
             }
             ui.vertical(|ui| {
-                ui.label(RichText::new(name).size(12.0).color(rgb(t.text_primary)));
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(name).size(12.0).color(rgb(t.text_primary)));
+                    // The member's own label in this group
+                    // (row 65): their words, shown as they set
+                    // them, never invented here.
+                    if let Some(label) = member_label {
+                        ui.label(
+                            RichText::new(label)
+                                .size(crate::theme::TEXT_CAPTION)
+                                .color(rgb(t.accent)),
+                        );
+                    }
+                });
                 if let Some(address) = address {
                     ui.label(
                         RichText::new(address)

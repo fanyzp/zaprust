@@ -368,7 +368,7 @@ fn draw_community_admin_sections(
         const MEMBER_LIST_CAP: usize = 200;
         let shown = admin.members.len().min(MEMBER_LIST_CAP);
         for (row, photo) in admin.members.iter().take(shown).zip(admin.member_photos.iter()) {
-            let kebab = crate::profile::dock::dock_member_row(
+            let kebab = crate::profile::dock::dock_member_row_labeled(
                 ui,
                 t,
                 &row.label,
@@ -376,6 +376,7 @@ fn draw_community_admin_sections(
                 row.admin,
                 admin.own_admin,
                 *photo,
+                row.member_label.as_deref(),
             );
             if let Some(kebab) = kebab {
                 egui::Popup::menu(&kebab)

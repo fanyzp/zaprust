@@ -913,7 +913,7 @@ impl App {
                                     Some(ref tex) => {
                                         let (sw, sh) = self.calls.media.stage_size;
                                         if sw > 0 {
-                                            let cap = if sections_on { 112.0 } else { 224.0 };
+                                            let cap = if sections_on { 96.0 } else { 224.0 };
                                             (width * sh as f32 / sw as f32).clamp(110.0, cap)
                                         } else {
                                             let _ = tex;
@@ -922,7 +922,7 @@ impl App {
                                     }
                                     None => {
                                         if sections_on {
-                                            112.0
+                                            96.0
                                         } else {
                                             168.0
                                         }
@@ -1019,35 +1019,35 @@ impl App {
                             // chat avatar dispatch (section
                             // 20): a 1:1 call shows its chat, a
                             // group call its group, a link call
-                            // the silhouette.
-                            let radius = if sections_on {
-                                16.0
-                            } else if stage_on {
-                                20.0
-                            } else {
-                                32.0
-                            };
-                            let (rect, _) =
-                                ui.allocate_exact_size(Vec2::splat(radius * 2.0), Sense::hover());
-                            let center = rect.center();
-                            match self.chats.iter().find(|c| c.id == call.chat_id).cloned() {
-                                Some(chat) => {
-                                    let photo = self.chat_avatar_photo(ui.ctx(), &chat);
-                                    crate::widgets::paint_chat_avatar_photo(
+                            // the silhouette. With the roster
+                            // sections on, the stage already
+                            // carries the picture and the avatar
+                            // gives its height back so the card
+                            // fits the window.
+                            let radius = if stage_on { 20.0 } else { 32.0 };
+                            if !sections_on {
+                                let (rect, _) = ui
+                                    .allocate_exact_size(Vec2::splat(radius * 2.0), Sense::hover());
+                                let center = rect.center();
+                                match self.chats.iter().find(|c| c.id == call.chat_id).cloned() {
+                                    Some(chat) => {
+                                        let photo = self.chat_avatar_photo(ui.ctx(), &chat);
+                                        crate::widgets::paint_chat_avatar_photo(
+                                            ui.painter(),
+                                            center,
+                                            radius,
+                                            &chat,
+                                            photo,
+                                        );
+                                    }
+                                    None => crate::widgets::paint_avatar(
                                         ui.painter(),
                                         center,
                                         radius,
-                                        &chat,
-                                        photo,
-                                    );
+                                        call.group,
+                                        (call.chat_id % 251) as u8,
+                                    ),
                                 }
-                                None => crate::widgets::paint_avatar(
-                                    ui.painter(),
-                                    center,
-                                    radius,
-                                    call.group,
-                                    (call.chat_id % 251) as u8,
-                                ),
                             }
                             ui.add_space(SP_2);
                             ui.label(

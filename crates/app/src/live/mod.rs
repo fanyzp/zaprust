@@ -709,17 +709,17 @@ pub(crate) fn fmt_day(timestamp: i64) -> String {
 /// optional end): "29 November 2026 · 19:00", with the end
 /// appended as " – 22:00" on the same day or with its own
 /// date across days. Same UTC grid as [`fmt_day`]/[`fmt_time`].
-pub(crate) fn fmt_event_when(start_time: i64, end_time: Option<i64>) -> String {
+pub(crate) fn fmt_event_when(start_time: i64, end_time: i64) -> String {
     let one = |ts: i64| {
         let (y, m, d) = civil_from_days(ts.div_euclid(86_400));
         format!("{d} {} {y} · {}", MONTH_NAMES[(m - 1) as usize], fmt_time(ts))
     };
     match end_time {
-        None => one(start_time),
-        Some(end) if end.div_euclid(86_400) == start_time.div_euclid(86_400) => {
+        0 => one(start_time),
+        end if end.div_euclid(86_400) == start_time.div_euclid(86_400) => {
             format!("{} – {}", one(start_time), fmt_time(end))
         }
-        Some(end) => format!("{} – {}", one(start_time), one(end)),
+        end => format!("{} – {}", one(start_time), one(end)),
     }
 }
 

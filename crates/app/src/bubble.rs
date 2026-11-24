@@ -66,7 +66,7 @@ pub(crate) fn paint_clock(painter: &egui::Painter, center: Pos2, color: Color32)
 }
 
 /// What a click on a bubble asked the app to do.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) enum BubbleAction {
     /// Toggle voice-note playback for this message id.
     ToggleVoice(u64),
@@ -1119,8 +1119,8 @@ pub(crate) fn message_bubble(
             kind_h = event_card_h(
                 body_galley.size().y,
                 desc_h,
-                location.is_some(),
-                join_link.is_some(),
+                !location.is_empty(),
+                !join_link.is_empty(),
                 *canceled,
                 show_guests,
             );
@@ -1317,25 +1317,25 @@ pub(crate) fn message_bubble(
                             let content_top = rect.top() + pad_top + sender_h + quote_h;
                             let content_x = rect.left() + pad_x;
                             let desc_h = event_desc_h(ui, description, inner_w, text_color);
-                            let show_guests = event_show_guests(*extra_guests, *my_rsvp, *canceled);
+                            let show_guests = event_show_guests(extra_guests, my_rsvp, canceled);
                             let mut y = content_top + body_galley.size().y + 6.0 + EVENT_LINE_H;
-                            if location.is_some() {
+                            if !location.is_empty() {
                                 y += 2.0 + EVENT_LINE_H;
                             }
                             if desc_h > 0.0 {
                                 y += 6.0 + desc_h;
                             }
-                            if let Some(link) = join_link {
+                            if !join_link.is_empty() {
                                 let link_top = y + 2.0;
                                 if pos.y >= link_top
                                     && pos.y < link_top + EVENT_LINE_H
                                     && pos.x >= content_x
                                 {
-                                    return Some(BubbleAction::OpenJoinLink(link.clone()));
+                                    return Some(BubbleAction::OpenJoinLink(join_link.clone()));
                                 }
                                 y += 2.0 + EVENT_LINE_H;
                             }
-                            if *canceled {
+                            if canceled {
                                 return None;
                             }
                             let btn_top = y + 8.0 + EVENT_LINE_H + 8.0;
@@ -2185,7 +2185,8 @@ pub(crate) fn message_bubble(
                     layout_text(ui, &when, FontId::proportional(INNER_BODY_SIZE), secondary, inner_w - 20.0);
                 painter.galley(Pos2::new(x + 20.0, cy + 2.0), g, secondary);
                 cy += EVENT_LINE_H;
-                if let Some(loc) = location {
+                if !location.is_empty() {
+                    let loc = location;
                     cy += 2.0;
                     crate::icons::draw(
                         painter,
@@ -2221,12 +2222,12 @@ pub(crate) fn message_bubble(
                     });
                     cy += desc_h;
                 }
-                if let Some(link) = join_link {
+                if !join_link.is_empty() {
                     cy += 2.0;
                     let (icon, label) = if *scheduled_call {
                         (crate::icons::Icon::Videocam, crate::i18n::t("event.join_call"))
                     } else {
-                        (crate::icons::Icon::Link, link.clone())
+                        (crate::icons::Icon::Link, join_link.clone())
                     };
                     crate::icons::draw(
                         painter,

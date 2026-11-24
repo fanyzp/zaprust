@@ -73,9 +73,9 @@ fn event_kind(fields: &EventFields, previous: Option<&MessageKind>) -> MessageKi
         name: fields.name.clone(),
         description: fields.description.clone(),
         start_time: fields.start_time,
-        end_time: fields.end_time,
-        location: fields.location.clone(),
-        join_link: fields.join_link.clone(),
+        end_time: fields.end_time.unwrap_or(0),
+        location: fields.location.clone().unwrap_or_default(),
+        join_link: fields.join_link.clone().unwrap_or_default(),
         scheduled_call: fields.scheduled_call,
         extra_guests: fields.extra_guests,
         canceled,
@@ -237,11 +237,10 @@ impl App {
         // The form's end field is same-day only: an end on
         // another day (or none) starts empty rather than
         // silently moving the event when saved untouched.
-        let end = match end_time {
-            Some(end) if end.div_euclid(86_400) == start_time.div_euclid(86_400) => {
-                crate::live::fmt_event_form_fields(*end).1
-            }
-            _ => String::new(),
+        let end = if *end_time > 0 && end_time.div_euclid(86_400) == start_time.div_euclid(86_400) {
+            crate::live::fmt_event_form_fields(*end_time).1
+        } else {
+            String::new()
         };
         self.event_edit_draft = Some((
             chat_id,
@@ -252,8 +251,8 @@ impl App {
                 date,
                 start_time: start,
                 end_time: end,
-                location: location.clone().unwrap_or_default(),
-                link: join_link.clone().unwrap_or_default(),
+                location: location.clone(),
+                link: join_link.clone(),
                 scheduled_call: *scheduled_call,
                 extra_guests: *extra_guests,
                 error: None,
@@ -306,9 +305,9 @@ impl App {
             name: name.clone(),
             description: description.clone(),
             start_time: *start_time,
-            end_time: *end_time,
-            location: location.clone(),
-            join_link: join_link.clone(),
+            end_time: if *end_time > 0 { Some(*end_time) } else { None },
+            location: if location.is_empty() { None } else { Some(location.clone()) },
+            join_link: if join_link.is_empty() { None } else { Some(join_link.clone()) },
             scheduled_call: *scheduled_call,
             extra_guests: *extra_guests,
         };

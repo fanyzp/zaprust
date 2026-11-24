@@ -1705,7 +1705,7 @@ impl App {
                 ui.add_space(SP_3);
                 if crate::widgets::button(
                     ui,
-                    &t,
+                    t,
                     &crate::i18n::t("call.link_preview"),
                     crate::widgets::Btn::Secondary,
                 )
@@ -1752,7 +1752,7 @@ impl App {
                     ui.add_space(SP_SECTION);
                     if crate::widgets::button(
                         ui,
-                        &t,
+                        t,
                         &crate::i18n::t("call.join_call"),
                         crate::widgets::Btn::Primary,
                     )
@@ -1764,7 +1764,7 @@ impl App {
                 ui.add_space(SP_3);
                 if crate::widgets::button(
                     ui,
-                    &t,
+                    t,
                     &crate::i18n::t("common.close"),
                     crate::widgets::Btn::Secondary,
                 )

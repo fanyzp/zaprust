@@ -1620,9 +1620,9 @@ impl Store {
         name: &str,
         description: &str,
         start_time: i64,
-        end_time: Option<i64>,
-        location: Option<&str>,
-        join_link: Option<&str>,
+        end_time: i64,
+        location: &str,
+        join_link: &str,
         scheduled_call: bool,
         extra_guests: bool,
         canceled: bool,
@@ -1649,8 +1649,8 @@ impl Store {
         *d = description.to_owned();
         *s = start_time;
         *e = end_time;
-        *l = location.map(str::to_owned);
-        *j = join_link.map(str::to_owned);
+        *l = location.to_owned();
+        *j = join_link.to_owned();
         *sc = scheduled_call;
         *eg = extra_guests;
         *c = canceled;

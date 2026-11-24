@@ -2,6 +2,7 @@
 //! here; the message stream is in `stream`, the composer in
 //! `composer`.
 
+pub(crate) mod anchor;
 mod composer;
 mod stream;
 

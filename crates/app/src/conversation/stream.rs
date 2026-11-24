@@ -36,11 +36,28 @@ impl App {
         // (see the clear after the closure), so a target that lives
         // in an album run or a system row can never wedge
         // stick-to-bottom off for this view.
+        // Windowing state belongs to one chat: a switch drops
+        // the heights and the anchor (they re-measure within
+        // the first windowful of the new chat).
+        if self.stream_anchor_chat != chat.id {
+            self.stream_anchor_chat = chat.id;
+            self.stream_heights.clear();
+            self.stream_anchor = None;
+            self.stream_anchor_offset = 0.0;
+            self.stream_last_offset = 0.0;
+            self.stream_last_viewport = 0.0;
+            self.stream_was_bottom = true;
+        }
         let locate_pending = self.scroll_to_message.is_some();
         // Display fetches for photo messages whose real bytes are
         // not here yet. The paint loop below borrows the
         // conversation, so requests are collected here and
         // dispatched after the scroll pass, before the return.
+        // The height of everything painted above the row
+        // region this frame (top padding, the loading row),
+        // captured inside the pass for the anchor bookkeeping
+        // after it.
+        let mut prefix_h_out = 0.0_f32;
         let mut pending_photo_fetches: Vec<u64> = Vec::new();
         let mut pending_sticker_fetches: Vec<u64> = Vec::new();
         let mut pending_poster_fetches: Vec<u64> = Vec::new();
@@ -48,6 +65,11 @@ impl App {
             .auto_shrink([false, false])
             .stick_to_bottom(!self.qa_scroll_top && self.scroll_to_message.is_none())
             .show(&mut child, |ui| {
+                // The content's top edge in frame coordinates:
+                // the windowing math below converts between
+                // scroll offsets (content coordinates) and
+                // painted positions through it.
+                let content_top = ui.cursor().top();
                 ui.add_space(SP_2_5);
                 // The older-history loading row (design
                 // standard section 22): painted only while a
@@ -197,10 +219,208 @@ impl App {
                 // groups separate by 14 px. System messages
                 // break a group, and so do day boundaries
                 // and the unread divider.
+                prefix_h_out = ui.cursor().top() - content_top;
+                // P2-67 windowing pre-pass: the paint loop's
+                // iterations (one per message, an album run
+                // counting once) are derived up front, with
+                // their settled heights (measured in earlier
+                // frames, estimated until then). Long streams
+                // paint only the window around the viewport
+                // plus any locate/anchor target, replacing the
+                // rest with spacers from the same height table,
+                // so the content height and the anchor's
+                // position stay exact (see conversation::anchor
+                // for the proven invariants). Short streams
+                // render whole, exactly as before.
+                let mut iterations: Vec<(usize, usize)> = Vec::new();
+                let mut iter_of_msg: Vec<usize> = vec![0; total];
+                {
+                    let mut i = 0;
+                    while i < total {
+                        let run = album_run_len(&self.conversation, i, &key_of);
+                        let len = if run >= 2 { run } else { 1 };
+                        let iter_idx = iterations.len();
+                        for m in i..i + len {
+                            iter_of_msg[m] = iter_idx;
+                        }
+                        iterations.push((i, len));
+                        i += len;
+                    }
+                }
+                let msg_index_of_id: std::collections::HashMap<u64, usize> =
+                    self.conversation.iter().enumerate().map(|(i, m)| (m.id, i)).collect();
+                let resolved: Vec<f32> = iterations
+                    .iter()
+                    .map(|(first, len)| {
+                        self.stream_heights
+                            .get(&crate::conversation::anchor::RowKey::Row(
+                                self.conversation[*first].id,
+                            ))
+                            .copied()
+                            .unwrap_or_else(|| iter_estimate(&self.conversation, *first, *len))
+                    })
+                    .collect();
+                let table = crate::conversation::anchor::Heights::new(
+                    resolved.iter().map(|h| Some(*h)).collect(),
+                    0.0,
+                );
+                let prefix_sums = table.prefix_sums();
+                let windowed = iterations.len() > STREAM_WINDOW_MIN;
+                let mut segments: Vec<(usize, usize)> = Vec::new();
+                let mut spacer_before: std::collections::HashMap<usize, f32> =
+                    std::collections::HashMap::new();
+                let mut trailing_spacer = 0.0_f32;
+                // (iteration, intra-row offset) the anchor fix
+                // restores after the paint, when one is due.
+                let mut anchor_fix: Option<(usize, f32)> = None;
+                if windowed {
+                    let viewport = if self.stream_last_viewport > 0.0 {
+                        self.stream_last_viewport
+                    } else {
+                        available.y
+                    };
+                    let prefix_h = ui.cursor().top() - content_top;
+                    let offset_rows = (self.stream_last_offset - prefix_h).max(0.0);
+                    let stick_engaged =
+                        !self.qa_scroll_top && self.scroll_to_message.is_none();
+                    let win_offset = if stick_engaged
+                        && (self.stream_was_bottom || self.stream_last_viewport == 0.0)
+                    {
+                        table.offset_stuck_to_bottom(viewport)
+                    } else {
+                        offset_rows.min(table.total())
+                    };
+                    let (ws, we, _, _) = table.visible_range(win_offset, viewport, STREAM_OVERSCAN);
+                    segments.push((ws, we));
+                    // A locate target outside the window is
+                    // painted too (its own neighborhood), so
+                    // the rect-driven locate works unchanged.
+                    if let Some(target) = self.scroll_to_message {
+                        if let Some(&mi) = msg_index_of_id.get(&target) {
+                            let ti = iter_of_msg[mi];
+                            segments.push((ti.saturating_sub(4), (ti + 5).min(iterations.len())));
+                        }
+                    }
+                    // Anchor preservation: the model moved
+                    // rows above the captured anchor (a history
+                    // prepend landed, or rows above measured
+                    // differently than their estimates) while
+                    // the scroll offset stood still. The anchor
+                    // iteration is painted this frame and its
+                    // exact position restored after the paint.
+                    if let Some((key, intra)) = self.stream_anchor {
+                        if self.stream_anchor_chat == chat.id
+                            && !self.stream_was_bottom
+                            && (self.stream_last_offset - self.stream_anchor_offset).abs() <= 0.5
+                        {
+                            if let Some(ti) = iterations.iter().position(|(first, _)| {
+                                key == crate::conversation::anchor::RowKey::Row(
+                                    self.conversation[*first].id,
+                                )
+                            }) {
+                                let expected = table.offset_for_anchor((ti, intra)) + prefix_h;
+                                if (expected - self.stream_last_offset).abs() > 0.5 {
+                                    anchor_fix = Some((ti, intra));
+                                    segments.push((
+                                        ti.saturating_sub(4),
+                                        (ti + 5).min(iterations.len()),
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                    // Recapture the anchor from last frame's
+                    // final offset on this frame's model, for
+                    // the next frame's fix check. Skipped when
+                    // a fix just fired (the stored anchor stays
+                    // valid through its correction) and when
+                    // the stored anchor is inconsistent with
+                    // the standing offset for another reason
+                    // (its row was deleted: recapture then
+                    // takes whatever row the offset sits in).
+                    let user_scrolled =
+                        (self.stream_last_offset - self.stream_anchor_offset).abs() > 0.5;
+                    let stored_consistent = match self.stream_anchor {
+                        Some((key, intra)) => iterations
+                            .iter()
+                            .position(|(first, _)| {
+                                key == crate::conversation::anchor::RowKey::Row(
+                                    self.conversation[*first].id,
+                                )
+                            })
+                            .is_some_and(|ti| {
+                                (table.offset_for_anchor((ti, intra)) + prefix_h
+                                    - self.stream_last_offset)
+                                    .abs()
+                                    <= 2.0
+                            }),
+                        None => true,
+                    };
+                    if anchor_fix.is_none() && (user_scrolled || stored_consistent) {
+                        let offset_rows = (self.stream_last_offset - prefix_h).max(0.0);
+                        let (ai, intra) = table.anchor_at(offset_rows.min(table.total()));
+                        if ai < iterations.len() {
+                            self.stream_anchor = Some((
+                                crate::conversation::anchor::RowKey::Row(
+                                    self.conversation[iterations[ai].0].id,
+                                ),
+                                intra,
+                            ));
+                            self.stream_anchor_offset = self.stream_last_offset;
+                        }
+                    }
+                    segments.sort_unstable();
+                    let mut merged: Vec<(usize, usize)> = Vec::new();
+                    for seg in segments {
+                        if let Some(last) = merged.last_mut() {
+                            if seg.0 <= last.1 {
+                                last.1 = last.1.max(seg.1);
+                                continue;
+                            }
+                        }
+                        merged.push(seg);
+                    }
+                    segments = merged;
+                    for (i, (s, _)) in segments.iter().enumerate() {
+                        let sp = if i == 0 {
+                            prefix_sums[*s]
+                        } else {
+                            prefix_sums[*s] - prefix_sums[segments[i - 1].1]
+                        };
+                        if sp > 0.0 {
+                            spacer_before.insert(*s, sp);
+                        }
+                    }
+                    if let Some((_, last_end)) = segments.last() {
+                        trailing_spacer = prefix_sums[iterations.len()] - prefix_sums[*last_end];
+                    }
+                }
+                let in_window = |iter_idx: usize| -> bool {
+                    !windowed || segments.iter().any(|(s, e)| iter_idx >= *s && iter_idx < *e)
+                };
+                // The painted rect of the anchor-fix iteration,
+                // captured during the paint for the correction
+                // after the loop.
+                let mut anchor_fix_rect: Option<egui::Rect> = None;
                 // A manual index (not an iterator) so an album run
                 // can consume its whole run of messages in one step.
                 let mut idx = 0;
                 while idx < total {
+                    // Windowing bookkeeping for this iteration:
+                    // its spacer (when it opens a segment), its
+                    // top edge, and the skip for iterations
+                    // outside every segment (their height is
+                    // already inside the spacers).
+                    let iter_idx = iter_of_msg[idx];
+                    if let Some(sp) = spacer_before.get(&iter_idx) {
+                        ui.add_space(*sp);
+                    }
+                    let iter_top = ui.cursor().top();
+                    let mut iter_rise = 0.0_f32;
+                    if !in_window(iter_idx) {
+                        idx += iterations[iter_idx].1;
+                        continue;
+                    }
                     let msg = &self.conversation[idx];
                     let day_break =
                         idx == 0 || msg.day_label() != self.conversation[idx - 1].day_label();
@@ -257,6 +477,7 @@ impl App {
                             self.motion.fades(),
                         );
                         let rise = if self.motion.slides() { rise } else { 0.0 };
+                        iter_rise = rise;
                         if rise > 0.01 {
                             ui.add_space(rise);
                         }
@@ -315,6 +536,21 @@ impl App {
                         }
                         let reacted = run_items.last().is_some_and(|m| !m.reactions.is_empty());
                         ui.add_space(if reacted { REACTED_SPACE } else { RUN_GAP_SPACE });
+                        if windowed {
+                            let settled = (ui.cursor().top() - iter_top - iter_rise).max(0.0);
+                            self.stream_heights.insert(
+                                crate::conversation::anchor::RowKey::Row(
+                                    self.conversation[iterations[iter_idx].0].id,
+                                ),
+                                settled,
+                            );
+                            if anchor_fix.is_some_and(|(ti, _)| ti == iter_idx) {
+                                anchor_fix_rect = Some(egui::Rect::from_min_size(
+                                    egui::Pos2::new(rect.left(), iter_top),
+                                    egui::Vec2::new(rect.width(), ui.cursor().top() - iter_top),
+                                ));
+                            }
+                        }
                         idx += run;
                         continue;
                     }
@@ -324,6 +560,21 @@ impl App {
                     if msg.kind == core::model::MessageKind::System {
                         system_chip(ui, t, &msg.body);
                         ui.add_space(RUN_GAP_SPACE);
+                    if windowed {
+                            let settled = (ui.cursor().top() - iter_top - iter_rise).max(0.0);
+                            self.stream_heights.insert(
+                                crate::conversation::anchor::RowKey::Row(
+                                    self.conversation[iterations[iter_idx].0].id,
+                                ),
+                                settled,
+                            );
+                        if anchor_fix.is_some_and(|(ti, _)| ti == iter_idx) {
+                                anchor_fix_rect = Some(egui::Rect::from_min_size(
+                                    egui::Pos2::new(rect.left(), iter_top),
+                                    egui::Vec2::new(rect.width(), ui.cursor().top() - iter_top),
+                                ));
+                            }
+                        }
                         idx += 1;
                         continue;
                     }
@@ -563,6 +814,7 @@ impl App {
                     // The Motion setting's contract: Reduced
                     // keeps fades but drops slides.
                     let rise = if self.motion.slides() { rise } else { 0.0 };
+                    iter_rise = rise;
                     if rise > 0.01 {
                         ui.add_space(rise);
                     }
@@ -671,10 +923,43 @@ impl App {
                     } else {
                         RUN_TIGHT_SPACE
                     });
+                    if windowed {
+                            let settled = (ui.cursor().top() - iter_top - iter_rise).max(0.0);
+                            self.stream_heights.insert(
+                                crate::conversation::anchor::RowKey::Row(
+                                    self.conversation[iterations[iter_idx].0].id,
+                                ),
+                                settled,
+                            );
+                        if anchor_fix.is_some_and(|(ti, _)| ti == iter_idx) {
+                                anchor_fix_rect = Some(egui::Rect::from_min_size(
+                                    egui::Pos2::new(rect.left(), iter_top),
+                                    egui::Vec2::new(rect.width(), ui.cursor().top() - iter_top),
+                                ));
+                            }
+                        }
                     idx += 1;
+                }
+                if windowed && trailing_spacer > 0.0 {
+                    ui.add_space(trailing_spacer);
                 }
                 crate::anim::end_message_stream(ui, chat.id);
                 *pending_actions = actions;
+                // Anchor fix: the anchor iteration painted at
+                // its new position this frame; scroll so its
+                // captured intra-row offset is restored exactly
+                // (the same scroll-to-rect route the locate
+                // takes, without animation: this is a
+                // correction, not a journey).
+                if let (Some(fix_rect), Some((_, intra))) = (anchor_fix_rect, anchor_fix) {
+                    ui.scroll_to_rect(
+                        egui::Rect::from_min_size(
+                            egui::Pos2::new(fix_rect.left(), fix_rect.top() - intra),
+                            egui::Vec2::new(fix_rect.width(), 1.0),
+                        ),
+                        Some(egui::Align::Min),
+                    );
+                }
                 ui.add_space(SP_1);
                 ui.add_space(composer_clearance);
                 // The scroll-to-bottom button's request:
@@ -693,6 +978,12 @@ impl App {
                     );
                 }
             });
+        // Windowing bookkeeping: remember this frame's final
+        // scroll geometry for the next frame's window and
+        // anchor work (the anchor itself is recaptured in the
+        // next pre-pass, from this stored offset).
+        self.stream_last_offset = scroll_out.state.clamped_offset().y;
+        self.stream_last_viewport = scroll_out.inner_rect.height();
         if locate_pending {
             // One-shot clear (see locate_pending above): a matched
             // target was scrolled to during this pass; an unmatched
@@ -715,6 +1006,7 @@ impl App {
         let at_bottom = scroll_out.content_size.y
             - (scroll_out.state.clamped_offset().y + scroll_out.inner_rect.height())
             <= 48.0;
+        self.stream_was_bottom = at_bottom;
         if at_bottom {
             let (wheel, key_nav, hovering) = ui.ctx().input(|i| {
                 (
@@ -1079,6 +1371,43 @@ fn is_album_item(m: &Message) -> bool {
 /// photos or videos from the same sender on the same day with no
 /// quote of their own. Runs shorter than two never reach the grid
 /// (the caller draws a normal bubble for them).
+/// Streams longer than this many paint iterations (messages,
+/// album runs counting once) render windowed (P2-67); shorter
+/// ones render whole, exactly as they always have.
+const STREAM_WINDOW_MIN: usize = 120;
+
+/// Rows painted beyond the viewport's edges on each side of
+/// the window, so a fast scroll does not run into unpainted
+/// content within a frame or two.
+const STREAM_OVERSCAN: usize = 12;
+
+/// The standing estimate for one paint iteration that has
+/// never rendered (or whose chat was reopened): per-kind
+/// typical heights. Measured heights replace them after the
+/// first render; they only steer the window and the spacers
+/// until then, and the anchor invariants keep positions
+/// exact as they converge.
+fn iter_estimate(conversation: &[Message], first: usize, len: usize) -> f32 {
+    if len > 1 {
+        return 300.0;
+    }
+    match &conversation[first].kind {
+        core::model::MessageKind::System => 46.0,
+        core::model::MessageKind::Image { view_once: true, .. } => 66.0,
+        core::model::MessageKind::Image { .. } => 320.0,
+        core::model::MessageKind::Video { .. } => 300.0,
+        core::model::MessageKind::Voice { .. } => 76.0,
+        core::model::MessageKind::Poll { options, .. } => 120.0 + 36.0 * options.len() as f32,
+        core::model::MessageKind::Event { .. } => 220.0,
+        core::model::MessageKind::Document { .. } => 92.0,
+        core::model::MessageKind::Sticker => 190.0,
+        core::model::MessageKind::Location { .. } => 130.0,
+        core::model::MessageKind::Contact { .. } => 66.0,
+        core::model::MessageKind::Carousel { .. } => 210.0,
+        core::model::MessageKind::Text => 68.0,
+    }
+}
+
 fn album_run_len(
     msgs: &[Message],
     start: usize,

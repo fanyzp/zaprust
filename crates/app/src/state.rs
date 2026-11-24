@@ -1860,6 +1860,35 @@ pub(crate) struct App {
     /// egui time the locate highlight started, stamped by the
     /// stream on its first highlighted frame.
     pub(crate) highlight_started: Option<f64>,
+    /// P2-67 windowing: settled row heights of the open
+    /// conversation, keyed by row (see
+    /// `conversation::anchor`). Measured rows replace their
+    /// estimates as they render; the map is dropped when the
+    /// open chat changes.
+    pub(crate) stream_heights:
+        std::collections::HashMap<crate::conversation::anchor::RowKey, f32>,
+    /// P2-67 windowing: the scroll anchor captured at the end
+    /// of the last stream draw (row key + intra-row offset),
+    /// the scroll offset it was captured at, and the chat it
+    /// belongs to. A frame whose model moved rows above the
+    /// anchor while the offset stood still (a history prepend,
+    /// a measurement correction) restores the anchor's exact
+    /// viewport position.
+    pub(crate) stream_anchor: Option<(crate::conversation::anchor::RowKey, f32)>,
+    /// The scroll offset the anchor was captured at.
+    pub(crate) stream_anchor_offset: f32,
+    /// The chat the anchor and heights belong to.
+    pub(crate) stream_anchor_chat: u64,
+    /// Last frame's scroll offset and viewport height, the
+    /// window computation's inputs for this frame (one frame
+    /// of lag, covered by the overscan).
+    pub(crate) stream_last_offset: f32,
+    /// Last frame's viewport height.
+    pub(crate) stream_last_viewport: f32,
+    /// Whether the last stream draw rested at the bottom:
+    /// stick-to-bottom territory, where the anchor fix never
+    /// applies (the stick owns the position there).
+    pub(crate) stream_was_bottom: bool,
     /// The chat list's global message search (section 25):
     /// cached results for the list search's current query.
     pub(crate) global_search: GlobalSearch,
@@ -2528,6 +2557,13 @@ impl App {
             open_community: None,
             community_home_from_overview: false,
             scroll_to_message: None,
+            stream_heights: std::collections::HashMap::new(),
+            stream_anchor: None,
+            stream_anchor_offset: 0.0,
+            stream_anchor_chat: 0,
+            stream_last_offset: 0.0,
+            stream_last_viewport: 0.0,
+            stream_was_bottom: true,
             highlight_message: None,
             highlight_started: None,
             global_search: GlobalSearch::default(),

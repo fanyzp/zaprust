@@ -170,7 +170,7 @@ impl SpellChecker {
 /// of every sentence. Address characters are ASCII by
 /// definition, so the scan runs on bytes.
 fn address_fused(bytes: &[u8], range: &Range<usize>) -> bool {
-    const PUNCT: [u8; 3] = [b'.', b'/', b':'];
+    const PUNCT: &[u8] = b"./:";
     let mut lo = range.start;
     while lo > 0 && !bytes[lo - 1].is_ascii_whitespace() {
         lo -= 1;

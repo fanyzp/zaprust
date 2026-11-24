@@ -861,9 +861,7 @@ impl App {
         // call ends.
         let dismiss = self.calls.active.as_ref().is_some_and(|call| {
             call.phase == CallUiPhase::Ended
-                && call
-                    .ended_at
-                    .is_some_and(|at| at.elapsed().as_secs() >= 4)
+                && call.ended_at.is_some_and(|at| at.elapsed().as_secs() >= 4)
         });
         if dismiss {
             self.calls.active = None;
@@ -879,9 +877,9 @@ impl App {
         let media_stage = self.calls.media.stage_texture.clone();
         let media_preview = self.calls.media.preview_texture.clone();
         let sharing_jid = call.participants.iter().find(|p| p.sharing).map(|p| p.jid.clone());
-        Area::new(Id::unique("call_overlay"))
-            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
-            .show(ctx, |ui| {
+        Area::new(Id::unique("call_overlay")).anchor(Align2::CENTER_CENTER, Vec2::ZERO).show(
+            ctx,
+            |ui| {
                 crate::theme::glass_frame(t, crate::theme::RADIUS_PANEL)
                     .fill(rgb(t.bg_panel))
                     .inner_margin(Margin::same(20))
@@ -1328,7 +1326,8 @@ impl App {
                             }
                         });
                     });
-            });
+            },
+        );
         match action.as_deref() {
             Some("accept") => self.accept_active_call(),
             Some("reject") => self.reject_active_call(),

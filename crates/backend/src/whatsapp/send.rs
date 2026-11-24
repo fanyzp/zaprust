@@ -113,7 +113,10 @@ pub(super) async fn send_media(
     let mut message = message;
     stamp_ephemeral(&mut message, outgoing.ephemeral_secs);
     let message = apply_view_once(message, outgoing.kind, outgoing.view_once);
-    client.send_message(jid.clone(), message).await.map_err(|e| format!("send: {}", super::util::error_words(&e)))
+    client
+        .send_message(jid.clone(), message)
+        .await
+        .map_err(|e| format!("send: {}", super::util::error_words(&e)))
 }
 
 /// The background a text status post carries, as an ARGB word:
@@ -200,7 +203,8 @@ pub(super) async fn delete_status(
     message_id: &str,
     recipients: &[Jid],
 ) -> Result<SendResult, String> {
-    let id = whatsapp_rust::MessageId::new(message_id).map_err(|e| format!("{}", super::util::error_words(&e)))?;
+    let id = whatsapp_rust::MessageId::new(message_id)
+        .map_err(|e| format!("{}", super::util::error_words(&e)))?;
     client
         .status()
         .revoke(id, recipients, whatsapp_rust::StatusSendOptions::default())

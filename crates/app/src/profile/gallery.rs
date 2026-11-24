@@ -12,7 +12,7 @@
 
 use crate::icons::Icon;
 use crate::state::GallerySection;
-use crate::theme::{SP_2, rgb};
+use crate::theme::{rgb, SP_2};
 use core::model::{Message, MessageKind};
 use core::theme::Tokens;
 use eframe::egui::{self, Color32, CornerRadius, Pos2, Rect, RichText, Sense, Vec2};

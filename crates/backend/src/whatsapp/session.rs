@@ -31,11 +31,10 @@ use super::translate::{
 };
 use super::util::{
     abort_latest, build_message_target, cap_poll_secrets, download_proto, error_words,
-    fetch_photo_by_ref,
-    fetch_photo_bytes, fetch_video_by_ref, fetch_video_bytes, fetch_video_file_by_ref,
-    fetch_video_to_file, fetch_voice_by_ref, fetch_voice_bytes, lock_cache, parse_address,
-    poll_vote_payload, proto_is_view_once, received_poll_secret, selected_indices, spawn_latest,
-    unix_now, LatestTask, PollSecrets, ProtoCache,
+    fetch_photo_by_ref, fetch_photo_bytes, fetch_video_by_ref, fetch_video_bytes,
+    fetch_video_file_by_ref, fetch_video_to_file, fetch_voice_by_ref, fetch_voice_bytes,
+    lock_cache, parse_address, poll_vote_payload, proto_is_view_once, received_poll_secret,
+    selected_indices, spawn_latest, unix_now, LatestTask, PollSecrets, ProtoCache,
 };
 
 /// How many session events may wait for the event callbacks.
@@ -1130,7 +1129,10 @@ pub(super) async fn run_async(
                                         });
                                     }
                                     Ok(Err(e)) => events.emit(BackendEvent::Error {
-                                        message: format!("Media sending failed: {}", error_words(&e)),
+                                        message: format!(
+                                            "Media sending failed: {}",
+                                            error_words(&e)
+                                        ),
                                     }),
                                     Err(_) => events.emit(BackendEvent::Error {
                                         message: format!(
@@ -1166,7 +1168,10 @@ pub(super) async fn run_async(
                                 message_id: sent.message_id.to_string(),
                             }),
                             Err(e) => events.emit(BackendEvent::Error {
-                                message: format!("Sending the location failed: {}", error_words(&e)),
+                                message: format!(
+                                    "Sending the location failed: {}",
+                                    error_words(&e)
+                                ),
                             }),
                         }
                     }
@@ -1236,13 +1241,7 @@ pub(super) async fn run_async(
                     } else {
                         let data_len = data.len() as u64;
                         match post_media_status(
-                            &client,
-                            kind,
-                            data,
-                            &caption,
-                            thumbnail,
-                            seconds,
-                            &audience,
+                            &client, kind, data, &caption, thumbnail, seconds, &audience,
                         )
                         .await
                         {
@@ -1338,7 +1337,10 @@ pub(super) async fn run_async(
                                 }),
                                 Err(e) => events.emit(BackendEvent::DisappearingTimerFailed {
                                     chat_jid: chat_jid.clone(),
-                                    message: format!("Changing disappearing messages failed: {}", error_words(&e)),
+                                    message: format!(
+                                        "Changing disappearing messages failed: {}",
+                                        error_words(&e)
+                                    ),
                                 }),
                             }
                         }
@@ -1381,7 +1383,10 @@ pub(super) async fn run_async(
                                     cap_poll_secrets(&poll_secrets);
                                 }
                                 Err(e) => events.emit(BackendEvent::Error {
-                                    message: format!("Creating the poll failed: {}", error_words(&e)),
+                                    message: format!(
+                                        "Creating the poll failed: {}",
+                                        error_words(&e)
+                                    ),
                                 }),
                             }
                         }
@@ -1445,7 +1450,10 @@ pub(super) async fn run_async(
                                     }
                                 }
                                 Err(e) => {
-                                    fail(format!("Invalid poll creator address: {}", error_words(&e)));
+                                    fail(format!(
+                                        "Invalid poll creator address: {}",
+                                        error_words(&e)
+                                    ));
                                 }
                             }
                         }
@@ -1488,7 +1496,10 @@ pub(super) async fn run_async(
                                         reason: Some("Declined".to_owned()),
                                     }),
                                     Err(e) => events.emit(BackendEvent::Error {
-                                        message: format!("Rejecting the call failed: {}", error_words(&e)),
+                                        message: format!(
+                                            "Rejecting the call failed: {}",
+                                            error_words(&e)
+                                        ),
                                     }),
                                 }
                             }
@@ -1608,7 +1619,9 @@ pub(super) async fn run_async(
                                         fail(format!("Reaction failed: {}", error_words(&e)));
                                     }
                                 }
-                                Err(e) => fail(format!("Reaction target invalid: {}", error_words(&e))),
+                                Err(e) => {
+                                    fail(format!("Reaction target invalid: {}", error_words(&e)))
+                                }
                             }
                         }
                         Err(e) => fail(format!("Invalid chat address: {}", error_words(&e))),
@@ -1719,7 +1732,10 @@ pub(super) async fn run_async(
                             ) {
                                 Ok(target) => {
                                     if let Err(e) = client.revoke_message(&target).await {
-                                        fail(format!("Deleting for everyone failed: {}", error_words(&e)));
+                                        fail(format!(
+                                            "Deleting for everyone failed: {}",
+                                            error_words(&e)
+                                        ));
                                     }
                                 }
                                 Err(_) => {
@@ -1767,7 +1783,10 @@ pub(super) async fn run_async(
                                         )
                                         .await
                                     {
-                                        fail(format!("Deleting the message failed: {}", error_words(&e)));
+                                        fail(format!(
+                                            "Deleting the message failed: {}",
+                                            error_words(&e)
+                                        ));
                                     }
                                 }
                                 Err(_) => {
@@ -1801,7 +1820,10 @@ pub(super) async fn run_async(
                             ) {
                                 Ok(target) => {
                                     if let Err(e) = client.keep_message(&target, keep).await {
-                                        fail(format!("Keeping the message failed: {}", error_words(&e)));
+                                        fail(format!(
+                                            "Keeping the message failed: {}",
+                                            error_words(&e)
+                                        ));
                                     }
                                 }
                                 Err(_) => {
@@ -1929,7 +1951,10 @@ pub(super) async fn run_async(
                                         client.unpin_message(&target).await
                                     };
                                     if let Err(e) = result {
-                                        fail(format!("Pinning the message failed: {}", error_words(&e)));
+                                        fail(format!(
+                                            "Pinning the message failed: {}",
+                                            error_words(&e)
+                                        ));
                                     }
                                 }
                                 Err(_) => {
@@ -2034,7 +2059,10 @@ pub(super) async fn run_async(
                             if let Err(e) =
                                 client.chat_actions().mark_chat_as_read(&jid, false, None).await
                             {
-                                fail(format!("Marking the chat as unread failed: {}", error_words(&e)));
+                                fail(format!(
+                                    "Marking the chat as unread failed: {}",
+                                    error_words(&e)
+                                ));
                             }
                         }
                         Err(e) => fail(format!("Invalid chat address: {}", error_words(&e))),
@@ -2051,7 +2079,10 @@ pub(super) async fn run_async(
                                     message_id: sent.message_id.to_string(),
                                 }),
                                 Err(e) => events.emit(BackendEvent::Error {
-                                    message: format!("Sending the contact failed: {}", error_words(&e)),
+                                    message: format!(
+                                        "Sending the contact failed: {}",
+                                        error_words(&e)
+                                    ),
                                 }),
                             }
                         }
@@ -2125,7 +2156,10 @@ pub(super) async fn run_async(
                                 });
                             }
                             Err(e) => events.emit(BackendEvent::Error {
-                                message: format!("Creating the community failed: {}", error_words(&e)),
+                                message: format!(
+                                    "Creating the community failed: {}",
+                                    error_words(&e)
+                                ),
                             }),
                         },
                         Err(e) => events.emit(BackendEvent::Error {
@@ -2165,7 +2199,10 @@ pub(super) async fn run_async(
                                     }));
                                 }
                                 Err(e) => events.emit(BackendEvent::Error {
-                                    message: format!("Creating the group failed: {}", error_words(&e)),
+                                    message: format!(
+                                        "Creating the group failed: {}",
+                                        error_words(&e)
+                                    ),
                                 }),
                             }
                         }
@@ -2199,7 +2236,10 @@ pub(super) async fn run_async(
                             };
                             if let Err(e) = result {
                                 events.emit(BackendEvent::Error {
-                                    message: format!("That group change failed: {}", error_words(&e)),
+                                    message: format!(
+                                        "That group change failed: {}",
+                                        error_words(&e)
+                                    ),
                                 });
                             }
                         }
@@ -2227,13 +2267,17 @@ pub(super) async fn run_async(
                                         if let Err(e) =
                                             client.groups().set_subject(jid.clone(), subject).await
                                         {
-                                            failure =
-                                                Some(format!("Renaming the group failed: {}", error_words(&e)));
+                                            failure = Some(format!(
+                                                "Renaming the group failed: {}",
+                                                error_words(&e)
+                                            ));
                                         }
                                     }
                                     Err(e) => {
-                                        failure =
-                                            Some(format!("That group name is not allowed: {}", error_words(&e)));
+                                        failure = Some(format!(
+                                            "That group name is not allowed: {}",
+                                            error_words(&e)
+                                        ));
                                     }
                                 }
                             }
@@ -2249,7 +2293,10 @@ pub(super) async fn run_async(
                                     whatsapp_rust::GroupDescription::new(description)
                                         .map(Some)
                                         .map_err(|e| {
-                                            format!("That description is not allowed: {}", error_words(&e))
+                                            format!(
+                                                "That description is not allowed: {}",
+                                                error_words(&e)
+                                            )
                                         })
                                 };
                                 match parsed {
@@ -2264,7 +2311,10 @@ pub(super) async fn run_async(
                                             .await
                                         {
                                             failure.get_or_insert_with(|| {
-                                                format!("Changing the description failed: {}", error_words(&e))
+                                                format!(
+                                                    "Changing the description failed: {}",
+                                                    error_words(&e)
+                                                )
                                             });
                                         }
                                     }
@@ -2363,7 +2413,10 @@ pub(super) async fn run_async(
                                 link,
                             }),
                             Err(e) => events.emit(BackendEvent::Error {
-                                message: format!("Could not load the invite link: {}", error_words(&e)),
+                                message: format!(
+                                    "Could not load the invite link: {}",
+                                    error_words(&e)
+                                ),
                             }),
                         },
                         Err(e) => events.emit(BackendEvent::Error {
@@ -2385,7 +2438,10 @@ pub(super) async fn run_async(
                                     enabled,
                                 }),
                                 Err(e) => events.emit(BackendEvent::Error {
-                                    message: format!("Changing the approval setting failed: {}", error_words(&e)),
+                                    message: format!(
+                                        "Changing the approval setting failed: {}",
+                                        error_words(&e)
+                                    ),
                                 }),
                             }
                         }
@@ -2437,11 +2493,17 @@ pub(super) async fn run_async(
                                         });
                                     }
                                     Err(e) => events.emit(BackendEvent::Error {
-                                        message: format!("Could not reload the requests: {}", error_words(&e)),
+                                        message: format!(
+                                            "Could not reload the requests: {}",
+                                            error_words(&e)
+                                        ),
                                     }),
                                 },
                                 Err(e) => events.emit(BackendEvent::Error {
-                                    message: format!("That review did not go through: {}", error_words(&e)),
+                                    message: format!(
+                                        "That review did not go through: {}",
+                                        error_words(&e)
+                                    ),
                                 }),
                             }
                         }
@@ -2462,11 +2524,17 @@ pub(super) async fn run_async(
                                         locked: meta.is_locked,
                                     }),
                                     Err(e) => events.emit(BackendEvent::Error {
-                                        message: format!("Could not reload the group modes: {}", error_words(&e)),
+                                        message: format!(
+                                            "Could not reload the group modes: {}",
+                                            error_words(&e)
+                                        ),
                                     }),
                                 },
                                 Err(e) => events.emit(BackendEvent::Error {
-                                    message: format!("Changing who can send messages failed: {}", error_words(&e)),
+                                    message: format!(
+                                        "Changing who can send messages failed: {}",
+                                        error_words(&e)
+                                    ),
                                 }),
                             }
                         }
@@ -2485,11 +2553,17 @@ pub(super) async fn run_async(
                                     locked: meta.is_locked,
                                 }),
                                 Err(e) => events.emit(BackendEvent::Error {
-                                    message: format!("Could not reload the group modes: {}", error_words(&e)),
+                                    message: format!(
+                                        "Could not reload the group modes: {}",
+                                        error_words(&e)
+                                    ),
                                 }),
                             },
                             Err(e) => events.emit(BackendEvent::Error {
-                                message: format!("Changing who can edit the group failed: {}", error_words(&e)),
+                                message: format!(
+                                    "Changing who can edit the group failed: {}",
+                                    error_words(&e)
+                                ),
                             }),
                         },
                         Err(e) => events.emit(BackendEvent::Error {
@@ -2500,7 +2574,10 @@ pub(super) async fn run_async(
                 BackendCommand::SetDefaultDisappearingTimer { duration_secs } => {
                     if let Err(e) = client.set_default_disappearing_mode(duration_secs).await {
                         events.emit(BackendEvent::Error {
-                            message: format!("Setting the default timer failed: {}", error_words(&e)),
+                            message: format!(
+                                "Setting the default timer failed: {}",
+                                error_words(&e)
+                            ),
                         });
                     }
                 }
@@ -3320,7 +3397,10 @@ pub(super) async fn run_async(
                                 }
                                 Err(e) => {
                                     events.emit(BackendEvent::Error {
-                                        message: format!("Privacy change failed: {}", error_words(&e)),
+                                        message: format!(
+                                            "Privacy change failed: {}",
+                                            error_words(&e)
+                                        ),
                                     });
                                     // Re-assert the account's actual
                                     // settings after the failure: the

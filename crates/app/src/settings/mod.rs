@@ -20,7 +20,7 @@ mod privacy;
 mod storage;
 
 use crate::state::{App, Notice};
-use crate::theme::{SP_1, SP_2, SP_4, SP_SECTION, rgb};
+use crate::theme::{rgb, SP_1, SP_2, SP_4, SP_SECTION};
 use crate::widgets::{
     avatar, chip, form_row, number_field, radio_row, select, switch, text_field_password,
     FORM_CONTROL_W,

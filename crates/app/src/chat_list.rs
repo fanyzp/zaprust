@@ -2,7 +2,7 @@
 //! context menu (archiving lives here, on the left).
 
 use crate::state::App;
-use crate::theme::{SP_1, SP_2, rgb};
+use crate::theme::{rgb, SP_1, SP_2};
 use crate::widgets::chip;
 use core::filter::{filter_chats, ChatFilter};
 use core::model::{Chat, ChatKind};

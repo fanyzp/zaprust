@@ -674,11 +674,15 @@ mod tests {
                 galley.rows.iter().map(|r| r.glyphs.iter().map(|g| g.chr).collect()).collect();
             assert!(rows.len() >= 2, "showcase wraps at {wrap}");
             for pair in rows.windows(2) {
-                let tail: String =
-                    pair[0].chars().rev().take_while(|c| c.is_alphanumeric()).collect::<String>()
-                        .chars().rev().collect();
-                let head: String =
-                    pair[1].chars().take_while(|c| c.is_alphanumeric()).collect();
+                let tail: String = pair[0]
+                    .chars()
+                    .rev()
+                    .take_while(|c| c.is_alphanumeric())
+                    .collect::<String>()
+                    .chars()
+                    .rev()
+                    .collect();
+                let head: String = pair[1].chars().take_while(|c| c.is_alphanumeric()).collect();
                 if tail.is_empty() || head.is_empty() {
                     continue;
                 }
@@ -745,11 +749,8 @@ mod tests {
                 // glyph's range; the last glyph is followed
                 // only by solid geometry, so its own quad is
                 // the first four vertices of its range.
-                let end = row
-                    .glyphs
-                    .get(i + 1)
-                    .map(|n| n.first_vertex as usize)
-                    .unwrap_or(usize::MAX);
+                let end =
+                    row.glyphs.get(i + 1).map(|n| n.first_vertex as usize).unwrap_or(usize::MAX);
                 if glyph.chr == ' ' {
                     // A trailing space has no next glyph to
                     // bound it; the triangle count above already

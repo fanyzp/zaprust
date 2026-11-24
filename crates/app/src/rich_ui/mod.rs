@@ -15,7 +15,7 @@ use core::model::{Message, MessageKind};
 use eframe::egui::{self, Align2, CornerRadius, Margin, RichText, Vec2};
 
 use crate::state::{App, Notice, UiConfirm};
-use crate::theme::{SP_1, SP_2, rgb};
+use crate::theme::{rgb, SP_1, SP_2};
 
 /// The six quick reactions offered by the picker (WhatsApp's set).
 pub(crate) const QUICK_REACTIONS: [&str; 6] = ["👍", "❤️", "😂", "😮", "😢", "🙏"];

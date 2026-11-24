@@ -11,7 +11,7 @@ use super::dock::{
 use super::{profile_kind, MemberAction, ProfileIntents, ProfileKind};
 use crate::icons::Icon;
 use crate::state::{App, Notice, UiConfirm};
-use crate::theme::{SP_1, SP_2, SP_3, SP_SECTION, rgb};
+use crate::theme::{rgb, SP_1, SP_2, SP_3, SP_SECTION};
 use crate::widgets::{button, text_field, Btn};
 use core::model::ChatKind;
 use eframe::egui::{self, RichText};

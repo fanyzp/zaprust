@@ -8,7 +8,7 @@
 
 use crate::icons::{draw as draw_icon, Icon};
 use crate::state::{App, Notice, PairMode, Screen};
-use crate::theme::{SP_2, SP_3, SP_4, SP_6, rgb};
+use crate::theme::{rgb, SP_2, SP_3, SP_4, SP_6};
 use crate::widgets::paint_avatar;
 use core::theme::Tokens;
 use eframe::egui::{

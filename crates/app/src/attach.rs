@@ -5,7 +5,7 @@
 //! recorder wiring live here, since both are composer attachments.
 
 use super::*;
-use crate::theme::{SP_2, SP_3, rgb};
+use crate::theme::{rgb, SP_2, SP_3};
 use core::model::{Message, MessageKind};
 use core::theme::Tokens;
 use eframe::egui::{Align, CornerRadius, Layout, Margin, Pos2, RichText, Sense, Stroke, Vec2};

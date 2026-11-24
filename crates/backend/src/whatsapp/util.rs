@@ -166,7 +166,9 @@ pub(super) fn build_message_target(
     sender_jid: Option<&String>,
     _from_me: bool,
 ) -> Result<(Jid, Option<Jid>, whatsapp_rust::MessageId), String> {
-    let chat = chat_jid.parse::<Jid>().map_err(|e| format!("Invalid chat address: {}", error_words(&e)))?;
+    let chat = chat_jid
+        .parse::<Jid>()
+        .map_err(|e| format!("Invalid chat address: {}", error_words(&e)))?;
     let sender = sender_jid.and_then(|s| s.parse::<Jid>().ok());
     let mid = whatsapp_rust::MessageId::new(message_id)
         .map_err(|e| format!("Invalid message id: {}", error_words(&e)))?;

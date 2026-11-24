@@ -1796,16 +1796,7 @@ fn history_status(
         )
     };
     let timestamp = i64::try_from(info.message_timestamp.unwrap_or(0)).unwrap_or(0);
-    Some(status_from_parts(
-        id,
-        author_jid,
-        author_name,
-        body,
-        timestamp,
-        from_me,
-        kind,
-        proto,
-    ))
+    Some(status_from_parts(id, author_jid, author_name, body, timestamp, from_me, kind, proto))
 }
 
 /// Assembles a [`crate::LiveStatus`] from translated parts and

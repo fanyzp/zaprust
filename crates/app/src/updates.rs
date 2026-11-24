@@ -26,7 +26,7 @@
 //! family, opened from a feed row or from My Status.
 
 use crate::state::{App, Notice, PhotoFetchState, StagedStatusMedia, StatusEntry, StatusViewer};
-use crate::theme::{SP_1, SP_2, SP_3, SP_4, rgb};
+use crate::theme::{rgb, SP_1, SP_2, SP_3, SP_4};
 use eframe::egui::{self, Align2, CornerRadius, FontId, Margin, Pos2, RichText, Sense, Vec2};
 
 /// Height of the My Status row and of a feed row: avatar disc
@@ -114,10 +114,8 @@ impl App {
         let mut open_composer = false;
         let mut open_mine = false;
         {
-            let (rect, resp) = ui.allocate_exact_size(
-                Vec2::new(ui.available_width(), STATUS_ROW_H),
-                Sense::click(),
-            );
+            let (rect, resp) = ui
+                .allocate_exact_size(Vec2::new(ui.available_width(), STATUS_ROW_H), Sense::click());
             let hov = crate::anim::hover_factor(ui, "my_status_row", resp.hovered());
             if hov > 0.001 {
                 ui.painter().rect_filled(
@@ -133,11 +131,7 @@ impl App {
             // avatar wears the status ring like the reference
             // client's.
             if !self.updates.mine.is_empty() {
-                painter.circle_stroke(
-                    avatar_center,
-                    26.5,
-                    egui::Stroke::new(2.0, rgb(t.accent)),
-                );
+                painter.circle_stroke(avatar_center, 26.5, egui::Stroke::new(2.0, rgb(t.accent)));
             }
             // The add badge: an accent disc on the avatar's
             // lower right, ringed in the panel color so it reads
@@ -247,11 +241,13 @@ impl App {
     /// status's preview with its age. Returns true on click.
     fn feed_row(&mut self, ui: &mut egui::Ui, row: &FeedRow, now: i64) -> bool {
         let t = self.tokens();
-        let (rect, resp) = ui.allocate_exact_size(
-            Vec2::new(ui.available_width(), STATUS_ROW_H),
-            Sense::click(),
+        let (rect, resp) =
+            ui.allocate_exact_size(Vec2::new(ui.available_width(), STATUS_ROW_H), Sense::click());
+        let hov = crate::anim::hover_factor(
+            ui,
+            &format!("status_row_{}", row.author_jid),
+            resp.hovered(),
         );
-        let hov = crate::anim::hover_factor(ui, &format!("status_row_{}", row.author_jid), resp.hovered());
         if hov > 0.001 {
             ui.painter().rect_filled(
                 rect,
@@ -425,18 +421,9 @@ impl App {
 
     /// Opens the viewer on one author's run. `author` is the
     /// feed author's JID; `mine` opens my own run instead.
-    pub(crate) fn open_status_viewer(
-        &mut self,
-        author: Option<String>,
-        mine: bool,
-        index: usize,
-    ) {
+    pub(crate) fn open_status_viewer(&mut self, author: Option<String>, mine: bool, index: usize) {
         let author_jid = if mine {
-            self.updates
-                .mine
-                .first()
-                .map(|e| e.status.author_jid.clone())
-                .unwrap_or_default()
+            self.updates.mine.first().map(|e| e.status.author_jid.clone()).unwrap_or_default()
         } else {
             author.unwrap_or_default()
         };
@@ -453,11 +440,8 @@ impl App {
 
     /// The author's run the viewer walks, oldest first.
     pub(crate) fn status_run(&self, viewer: &StatusViewer) -> Vec<StatusEntry> {
-        let source: &Vec<StatusEntry> = if viewer.mine {
-            &self.updates.mine
-        } else {
-            &self.updates.feed
-        };
+        let source: &Vec<StatusEntry> =
+            if viewer.mine { &self.updates.mine } else { &self.updates.feed };
         let mut run: Vec<StatusEntry> = source
             .iter()
             .filter(|e| viewer.mine || e.status.author_jid == viewer.author_jid)
@@ -647,12 +631,7 @@ impl App {
     /// (the server has spoken); anyone else's updates the
     /// status's reaction summary through the per-actor map,
     /// the same accounting the chat path keeps.
-    pub(crate) fn apply_status_reaction(
-        &mut self,
-        message_id: &str,
-        actor: &str,
-        emoji: &str,
-    ) {
+    pub(crate) fn apply_status_reaction(&mut self, message_id: &str, actor: &str, emoji: &str) {
         if actor == "Me" {
             self.updates.reaction_pending.remove(message_id);
             if let Some(entry) = self.find_status_mut(message_id) {
@@ -696,9 +675,7 @@ impl App {
     /// Finds a status entry by protocol ID, in the feed first,
     /// then in My Status.
     fn find_status_mut(&mut self, message_id: &str) -> Option<&mut StatusEntry> {
-        if let Some(entry) =
-            self.updates.feed.iter_mut().find(|e| e.status.id == message_id)
-        {
+        if let Some(entry) = self.updates.feed.iter_mut().find(|e| e.status.id == message_id) {
             return Some(entry);
         }
         self.updates.mine.iter_mut().find(|e| e.status.id == message_id)
@@ -854,10 +831,7 @@ impl App {
             self.updates.last_audience.clone()
         };
         if recipients.is_empty() {
-            self.apply_status_delete_failed(
-                message_id,
-                crate::i18n::t("updates.no_recipients"),
-            );
+            self.apply_status_delete_failed(message_id, crate::i18n::t("updates.no_recipients"));
             return;
         }
         if let Some(viewer) = &mut self.updates.viewer {
@@ -907,11 +881,7 @@ impl App {
         let chat_id = crate::live::jid_id(&status.author_jid);
         let now = crate::live::unix_now_secs() as i64;
         self.sent_counter += 1;
-        let mut echo = core::model::Message::mine(
-            9_000_000 + self.sent_counter,
-            text,
-            "\u{2026}",
-        );
+        let mut echo = core::model::Message::mine(9_000_000 + self.sent_counter, text, "\u{2026}");
         echo.delivery = Some(core::model::Delivery::Sending);
         echo.quoted_sender = status.author_name.clone();
         echo.quoted_body = Some(status.body.chars().take(200).collect());
@@ -939,12 +909,9 @@ impl App {
         }
         let previous = status.my_reaction.clone();
         let next = if previous.as_deref() == Some(emoji) { "" } else { emoji };
-        self.updates
-            .reaction_pending
-            .insert(status.id.clone(), previous);
+        self.updates.reaction_pending.insert(status.id.clone(), previous);
         if let Some(entry) = self.find_status_mut(status.id.as_str()) {
-            entry.status.my_reaction =
-                if next.is_empty() { None } else { Some(next.to_owned()) };
+            entry.status.my_reaction = if next.is_empty() { None } else { Some(next.to_owned()) };
         }
         self.send_backend(backend::BackendCommand::React {
             chat_jid: crate::live::STATUS_BROADCAST_JID.to_owned(),
@@ -965,9 +932,7 @@ impl App {
         if self.media.photo_fetch.contains_key(&id) || self.live.is_none() {
             return;
         }
-        self.media
-            .photo_fetch
-            .insert(id, PhotoFetchState::Loading);
+        self.media.photo_fetch.insert(id, PhotoFetchState::Loading);
         self.send_backend(backend::BackendCommand::FetchPhoto {
             chat_jid: crate::live::STATUS_BROADCAST_JID.to_owned(),
             message_id: status.id.clone(),
@@ -980,10 +945,7 @@ impl App {
     /// addressing. A post made from this client has no
     /// reference to fetch by: its local bytes are seeded into
     /// the player's map instead.
-    pub(crate) fn ensure_status_video_fetch(
-        &mut self,
-        entry: &StatusEntry,
-    ) {
+    pub(crate) fn ensure_status_video_fetch(&mut self, entry: &StatusEntry) {
         let status = &entry.status;
         let id = crate::live::message_id(crate::live::STATUS_BROADCAST_JID, &status.id);
         if self.media.video_files.contains_key(&id)
@@ -997,9 +959,7 @@ impl App {
             self.media.video_bytes.insert(id, bytes.clone());
             return;
         }
-        self.media
-            .video_fetch
-            .insert(id, PhotoFetchState::Loading);
+        self.media.video_fetch.insert(id, PhotoFetchState::Loading);
         self.send_backend(backend::BackendCommand::FetchVideo {
             chat_jid: crate::live::STATUS_BROADCAST_JID.to_owned(),
             message_id: status.id.clone(),
@@ -1075,10 +1035,7 @@ impl App {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| "file".to_owned());
-        let ext = path
-            .extension()
-            .map(|e| e.to_string_lossy().to_lowercase())
-            .unwrap_or_default();
+        let ext = path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
         let kind = if ["jpg", "jpeg", "png", "webp", "gif"].contains(&ext.as_str()) {
             Some(backend::MediaKind::Photo)
         } else if ["mp4", "mkv", "webm", "mov", "avi"].contains(&ext.as_str()) {
@@ -1113,14 +1070,8 @@ impl App {
             }
         };
         self.updates.error = None;
-        self.updates.staged = Some(StagedStatusMedia {
-            kind,
-            name,
-            data,
-            mime,
-            thumbnail,
-            seconds,
-        });
+        self.updates.staged =
+            Some(StagedStatusMedia { kind, name, data, mime, thumbnail, seconds });
     }
 
     /// The status composer modal: the house centered-modal
@@ -1190,9 +1141,11 @@ impl App {
                                     .size(12.0),
                                 );
                                 ui.label(
-                                    RichText::new(crate::shell::video_size(staged.data.len() as u64))
-                                        .size(12.0)
-                                        .color(rgb(t.text_faint)),
+                                    RichText::new(crate::shell::video_size(
+                                        staged.data.len() as u64
+                                    ))
+                                    .size(12.0)
+                                    .color(rgb(t.text_faint)),
                                 );
                                 if crate::widgets::icon_button(
                                     ui,
@@ -1379,17 +1332,15 @@ impl App {
                         }
                     }
                 }
-                Some((backend::MediaKind::Video, seconds)) => {
-                    match self.video_play_route(vid) {
-                        crate::media::VideoPlayRoute::Idle => {
-                            self.ensure_status_video_fetch(&entry);
-                        }
-                        crate::media::VideoPlayRoute::Ready => {
-                            self.start_video_player(vid, seconds);
-                        }
-                        _ => {}
+                Some((backend::MediaKind::Video, seconds)) => match self.video_play_route(vid) {
+                    crate::media::VideoPlayRoute::Idle => {
+                        self.ensure_status_video_fetch(&entry);
                     }
-                }
+                    crate::media::VideoPlayRoute::Ready => {
+                        self.start_video_player(vid, seconds);
+                    }
+                    _ => {}
+                },
                 _ => {}
             }
         }
@@ -1515,11 +1466,9 @@ impl App {
                             .unwrap_or_else(|| rgb(self.tokens().accent));
                         painter.rect_filled(stage_rect, CornerRadius::same(12), fill);
                         let mut slot = ui.new_child(
-                            egui::UiBuilder::new()
-                                .max_rect(stage_rect.shrink(24.0))
-                                .layout(egui::Layout::centered_and_justified(
-                                    egui::Direction::TopDown,
-                                )),
+                            egui::UiBuilder::new().max_rect(stage_rect.shrink(24.0)).layout(
+                                egui::Layout::centered_and_justified(egui::Direction::TopDown),
+                            ),
                         );
                         slot.label(
                             RichText::new(&status.body)
@@ -1550,14 +1499,7 @@ impl App {
                             backend::MediaKind::Video => {
                                 let route = self.video_play_route(vid);
                                 let (_, retry) = self.paint_video_stage(
-                                    ui,
-                                    stage_rect,
-                                    vid,
-                                    false,
-                                    *seconds,
-                                    exiting,
-                                    route,
-                                    false,
+                                    ui, stage_rect, vid, false, *seconds, exiting, route, false,
                                 );
                                 if retry && !exiting {
                                     self.retry_status_video_fetch(&entry);
@@ -1777,12 +1719,7 @@ impl App {
     /// stage once its bytes are here, the spinner while they
     /// travel, and the honest failure line when they could not
     /// be fetched (clicking the stage retries).
-    fn paint_status_photo(
-        &mut self,
-        ui: &mut egui::Ui,
-        stage_rect: egui::Rect,
-        vid: u64,
-    ) {
+    fn paint_status_photo(&mut self, ui: &mut egui::Ui, stage_rect: egui::Rect, vid: u64) {
         let painter = ui.painter().clone();
         if let Some(tex) = self.media.textures.get(&vid) {
             let aspect = tex.aspect_ratio();
@@ -1999,9 +1936,7 @@ mod tests {
         let mut app = updates_app(&ctx);
         app.apply_status_received(status("s1", SARAH, "Sarah", "look", 1_000, false));
         app.updates.feed[0].status.my_reaction = Some("❤️".to_owned());
-        app.updates
-            .reaction_pending
-            .insert("s1".to_owned(), Some("❤️".to_owned()));
+        app.updates.reaction_pending.insert("s1".to_owned(), Some("❤️".to_owned()));
         app.updates.feed[0].status.my_reaction = Some("👍".to_owned());
         app.apply_status_reaction_failed("s1", "boom");
         assert_eq!(app.updates.feed[0].status.my_reaction.as_deref(), Some("❤️"));
@@ -2028,14 +1963,7 @@ mod tests {
         // "now", so the one 25 hours older is past its life
         // while both are far from the wall clock.
         app.apply_status_received(status("old", SARAH, "Sarah", "old", 1_000, false));
-        app.apply_status_received(status(
-            "new",
-            SARAH,
-            "Sarah",
-            "new",
-            1_000 + 25 * 3600,
-            false,
-        ));
+        app.apply_status_received(status("new", SARAH, "Sarah", "new", 1_000 + 25 * 3600, false));
         assert_eq!(app.updates.feed.len(), 1);
         assert_eq!(app.updates.feed[0].status.id, "new");
     }
@@ -2086,16 +2014,20 @@ mod tests {
     fn updates_surfaces_draw_frames() {
         let ctx = egui::Context::default();
         let mut app = updates_app(&ctx);
-        app.apply_status_received(status("s1", SARAH, "Sarah", "hello status", 1_700_000_000, false));
+        app.apply_status_received(status(
+            "s1",
+            SARAH,
+            "Sarah",
+            "hello status",
+            1_700_000_000,
+            false,
+        ));
         app.apply_status_received(status("m1", "", "", "my own", 1_700_000_100, true));
         let mut time = 0.0f64;
         let drive = |app: &mut App, time: &mut f64| {
             *time += 0.05;
             let input = egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(
-                    Pos2::ZERO,
-                    Vec2::new(1180.0, 760.0),
-                )),
+                screen_rect: Some(egui::Rect::from_min_size(Pos2::ZERO, Vec2::new(1180.0, 760.0))),
                 time: Some(*time),
                 ..Default::default()
             };
@@ -2103,10 +2035,8 @@ mod tests {
                 let mut root = egui::Ui::new(
                     ctx.clone(),
                     egui::Id::unique("updates_test_root"),
-                    egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
-                        Pos2::ZERO,
-                        Vec2::new(1180.0, 760.0),
-                    )),
+                    egui::UiBuilder::new()
+                        .max_rect(egui::Rect::from_min_size(Pos2::ZERO, Vec2::new(1180.0, 760.0))),
                 );
                 app.draw_updates(&mut root);
                 app.draw_status_composer(ctx);

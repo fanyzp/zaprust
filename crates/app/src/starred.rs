@@ -9,7 +9,7 @@
 //! asking the stream to scroll to and highlight that message.
 
 use crate::state::{App, Screen};
-use crate::theme::{SP_2, rgb};
+use crate::theme::{rgb, SP_2};
 use core::filter::ChatFilter;
 use core::model::{Chat, Message, MessageKind, PreviewMedia};
 use eframe::egui::{self, CornerRadius, FontId, Margin, Pos2, RichText, Sense, Vec2};

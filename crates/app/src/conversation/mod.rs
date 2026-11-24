@@ -46,7 +46,7 @@ pub(crate) fn scroll_bottom_button_top(full_bottom: f32, stack_h: f32, size: f32
 
 use crate::bubble::{message_bubble, BubbleAction, MediaCtx};
 use crate::state::{App, Notice};
-use crate::theme::{SP_1, SP_2, rgb};
+use crate::theme::{rgb, SP_1, SP_2};
 use core::model::{Delivery, Message};
 use core::theme::Tokens;
 use eframe::egui::{

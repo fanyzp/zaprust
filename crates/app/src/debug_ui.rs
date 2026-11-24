@@ -7,10 +7,10 @@
 //! solely inside an explicitly opted-in bundle.
 
 use crate::state::{App, Notice, Screen};
+use crate::theme::SP_2;
 use backend::BackendEvent;
 use core::debug;
 use eframe::egui::{self, RichText};
-use crate::theme::{SP_2};
 
 impl App {
     /// Records one trace entry (no-op unless debug mode is on)

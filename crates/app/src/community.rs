@@ -29,7 +29,7 @@
 //! `App::join_community_group`.
 
 use crate::state::{App, Notice};
-use crate::theme::{SP_1, SP_2, SP_3, SP_6, SP_SECTION, rgb};
+use crate::theme::{rgb, SP_1, SP_2, SP_3, SP_6, SP_SECTION};
 use crate::widgets::icon_button;
 use core::model::{
     demo_announcement_chat, demo_announcement_messages, demo_communities,

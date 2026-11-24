@@ -7,7 +7,7 @@ use eframe::egui::{self, Align2, Area, Id, Margin, RichText, Sense, Vec2};
 
 use crate::icons::{self, Icon};
 use crate::state::{App, Notice};
-use crate::theme::{SP_3, SP_SECTION, rgb};
+use crate::theme::{rgb, SP_3, SP_SECTION};
 
 /// Phases the overlay renders.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

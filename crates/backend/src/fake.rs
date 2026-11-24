@@ -1214,7 +1214,10 @@ impl Backend for FakeBackend {
                     } else {
                         status_counter += 1;
                         let message_id = format!("fake-status-post-{status_counter}");
-                        events.emit(BackendEvent::StatusPosted { text: text.clone(), message_id: message_id.clone() });
+                        events.emit(BackendEvent::StatusPosted {
+                            text: text.clone(),
+                            message_id: message_id.clone(),
+                        });
                         // The post is delivered back like a real
                         // one: the account's own status arrives
                         // under the broadcast too.
@@ -1252,13 +1255,13 @@ impl Backend for FakeBackend {
                     ..
                 } => {
                     if let Some(log) = &command_log {
-                        log.lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .push(format!(
+                        log.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(
+                            format!(
                                 "post_media_status:{kind:?}:{}:{}",
                                 data.len(),
                                 recipients.len()
-                            ));
+                            ),
+                        );
                     }
                     // The real backend's refusal rules, in its
                     // order: empty payload, unpostable kind,
@@ -1287,8 +1290,7 @@ impl Backend for FakeBackend {
                             author_jid: FAKE_OWN_JID.to_owned(),
                             author_name: None,
                             body: caption.clone(),
-                            timestamp: 1_700_000_400
-                                + i64::try_from(status_counter).unwrap_or(0),
+                            timestamp: 1_700_000_400 + i64::try_from(status_counter).unwrap_or(0),
                             from_me: true,
                             kind: crate::LiveMessageKind::Media {
                                 media: kind,
@@ -1329,10 +1331,7 @@ impl Backend for FakeBackend {
                     if let Some(log) = &command_log {
                         log.lock()
                             .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .push(format!(
-                                "delete_status:{message_id}:{}",
-                                recipients.len()
-                            ));
+                            .push(format!("delete_status:{message_id}:{}", recipients.len()));
                     }
                     if recipients.is_empty() {
                         events.emit(BackendEvent::StatusDeleteFailed {
@@ -2516,8 +2515,7 @@ impl Backend for FakeBackend {
                                     _ => (fixture_png(&message_id), "png"),
                                 };
                                 let dir = config.data_dir.join("downloads");
-                                let stem =
-                                    crate::downloaded_media_stem(&chat_jid, &message_id);
+                                let stem = crate::downloaded_media_stem(&chat_jid, &message_id);
                                 let path = dir.join(format!("{stem}.{ext}"));
                                 let saved = std::fs::create_dir_all(&dir)
                                     .and_then(|()| std::fs::write(&path, &bytes));
@@ -2534,8 +2532,7 @@ impl Backend for FakeBackend {
                             }
                             None => {
                                 events.emit(BackendEvent::Error {
-                                    message: "That file is not available in the demo."
-                                        .to_owned(),
+                                    message: "That file is not available in the demo.".to_owned(),
                                 });
                             }
                         }
@@ -3658,14 +3655,22 @@ mod tests {
                 recipients,
             }
         };
-        ch.commands.send(post(Vec::new(), crate::MediaKind::Photo, vec![FAKE_DM_JID.to_owned()])).unwrap();
-        assert!(matches!(next(&ch), BackendEvent::StatusPostFailed { .. }), "empty payload refused");
+        ch.commands
+            .send(post(Vec::new(), crate::MediaKind::Photo, vec![FAKE_DM_JID.to_owned()]))
+            .unwrap();
+        assert!(
+            matches!(next(&ch), BackendEvent::StatusPostFailed { .. }),
+            "empty payload refused"
+        );
         ch.commands
             .send(post(vec![1], crate::MediaKind::Voice, vec![FAKE_DM_JID.to_owned()]))
             .unwrap();
         assert!(matches!(next(&ch), BackendEvent::StatusPostFailed { .. }), "voice kind refused");
         ch.commands.send(post(vec![1], crate::MediaKind::Photo, Vec::new())).unwrap();
-        assert!(matches!(next(&ch), BackendEvent::StatusPostFailed { .. }), "empty audience refused");
+        assert!(
+            matches!(next(&ch), BackendEvent::StatusPostFailed { .. }),
+            "empty audience refused"
+        );
         ch.commands.send(BackendCommand::Shutdown).unwrap();
     }
 

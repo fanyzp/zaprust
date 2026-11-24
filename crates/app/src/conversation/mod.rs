@@ -870,7 +870,7 @@ impl App {
                                     if ui
                                         .add(
                                             egui::Label::new(
-                                                RichText::new(&chat.title)
+                                                RichText::new(core::bidi::display(&chat.title))
                                                     .font(crate::theme::semibold(15.0)),
                                             )
                                             .sense(Sense::click()),

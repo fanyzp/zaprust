@@ -315,12 +315,12 @@ impl App {
                             rgb(t.text_faint),
                         );
                         let title_budget = (rect.right() - 14.0 - date_w - text_left).max(0.0);
-                        let title_text = crate::widgets::ellipsize(
+                        let title_text = core::bidi::display(&crate::widgets::ellipsize(
                             ui,
                             title,
                             crate::theme::medium(15.0),
                             title_budget,
-                        );
+                        ));
                         painter.text(
                             Pos2::new(text_left, rect.top() + crate::chat_list::TITLE_DY),
                             egui::Align2::LEFT_CENTER,
@@ -362,12 +362,12 @@ impl App {
                                 rgb(t.text_secondary),
                             );
                         } else {
-                            let line = crate::widgets::ellipsize(
+                            let line = core::bidi::display(&crate::widgets::ellipsize(
                                 ui,
                                 &snippet(msg),
                                 FontId::proportional(12.0),
                                 budget,
-                            );
+                            ));
                             painter.text(
                                 Pos2::new(text_left, line2_y),
                                 egui::Align2::LEFT_CENTER,

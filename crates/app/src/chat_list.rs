@@ -1196,7 +1196,12 @@ pub(crate) fn chat_row(
         if chat.unread > 0 { crate::theme::semibold(15.0) } else { crate::theme::medium(15.0) };
     let title_budget =
         (rect.right() - 6.0 - time_w - blocked_w - 8.0 - badges_w - text_left).max(0.0);
-    let title = crate::widgets::ellipsize(ui, &chat.title, title_font.clone(), title_budget);
+    let title = core::bidi::display(&crate::widgets::ellipsize(
+        ui,
+        &chat.title,
+        title_font.clone(),
+        title_budget,
+    ));
     let title_rect = painter.text(
         Pos2::new(text_left, rect.top() + TITLE_DY),
         egui::Align2::LEFT_CENTER,
@@ -1307,12 +1312,12 @@ pub(crate) fn chat_row(
                 crate::theme::semibold(12.0),
                 rgb(t.accent),
             );
-            let body = crate::widgets::ellipsize(
+            let body = core::bidi::display(&crate::widgets::ellipsize(
                 ui,
                 draft,
                 snippet_font.clone(),
                 right_limit - text_left - prefix_w - 6.0,
-            );
+            ));
             if !body.is_empty() {
                 painter.text(
                     Pos2::new(text_left + prefix_w + 6.0, line_y),
@@ -1350,7 +1355,12 @@ pub(crate) fn chat_row(
     // The preview segment is composed whole (label included,
     // the media word exactly once) and painted in one run.
     let preview = chat_preview_display(chat);
-    let preview = crate::widgets::ellipsize(ui, &preview, snippet_font.clone(), right_limit - x);
+    let preview = core::bidi::display(&crate::widgets::ellipsize(
+        ui,
+        &preview,
+        snippet_font.clone(),
+        right_limit - x,
+    ));
     if row_state.is_none() && !preview.is_empty() {
         painter.text(
             Pos2::new(x, line_y),
@@ -1594,12 +1604,12 @@ impl App {
                         rgb(t.text_faint),
                     );
                     let title_budget = (rect.right() - 14.0 - date_w - text_left).max(0.0);
-                    let title_text = crate::widgets::ellipsize(
+                    let title_text = core::bidi::display(&crate::widgets::ellipsize(
                         ui,
                         &hit.chat_title,
                         crate::theme::medium(15.0),
                         title_budget,
-                    );
+                    ));
                     painter.text(
                         Pos2::new(text_left, rect.top() + TITLE_DY),
                         egui::Align2::LEFT_CENTER,
@@ -1612,8 +1622,12 @@ impl App {
                         None => hit.snippet.clone(),
                     };
                     let budget = (rect.right() - 14.0 - text_left).max(0.0);
-                    let line =
-                        crate::widgets::ellipsize(ui, &line, FontId::proportional(12.0), budget);
+                    let line = core::bidi::display(&crate::widgets::ellipsize(
+                        ui,
+                        &line,
+                        FontId::proportional(12.0),
+                        budget,
+                    ));
                     painter.text(
                         Pos2::new(text_left, rect.top() + SNIPPET_DY),
                         egui::Align2::LEFT_CENTER,

@@ -23,8 +23,11 @@ const PROBES: &[(&str, &str)] = &[
 ];
 
 fn report(ctx: &egui::Context, stack: &str) {
-    // Fonts exist only after the first frame pass.
-    ctx.run_ui(egui::RawInput::default(), |_| {});
+    // Fonts exist only after the first frame pass. The
+    // frame's texture delta is cleared rather than applied:
+    // nothing is painted in this probe.
+    let mut out = ctx.run_ui(egui::RawInput::default(), |_| {});
+    out.textures_delta.clear();
     ctx.fonts_mut(|fonts| {
         let chars = fonts.characters(&egui::FontFamily::Proportional).clone();
         for (name, text) in PROBES {

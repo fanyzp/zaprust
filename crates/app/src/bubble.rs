@@ -142,7 +142,13 @@ pub(crate) fn event_desc_h(ui: &egui::Ui, description: &str, w: f32, color: Colo
     if description.trim().is_empty() {
         return 0.0;
     }
-    let g = layout_text(ui, description, FontId::proportional(INNER_BODY_SIZE), color, w);
+    let g = layout_text(
+        ui,
+        &core::bidi::display(description),
+        FontId::proportional(INNER_BODY_SIZE),
+        color,
+        w,
+    );
     let rows = g.rows.len().max(1);
     if rows <= 3 {
         g.size().y
@@ -169,7 +175,13 @@ pub(crate) fn event_show_guests(
 /// its own space instead of over the next row. Shared by
 /// the measure, click and paint passes.
 pub(crate) fn event_row_h(ui: &egui::Ui, text: &str, w: f32, color: Color32) -> f32 {
-    let g = layout_text(ui, text, FontId::proportional(INNER_BODY_SIZE), color, w);
+    let g = layout_text(
+        ui,
+        &core::bidi::display(text),
+        FontId::proportional(INNER_BODY_SIZE),
+        color,
+        w,
+    );
     (g.size().y + 2.0).max(EVENT_LINE_H)
 }
 
@@ -821,7 +833,7 @@ pub(crate) fn message_bubble(
         crate::conversation::system_pill(
             ui,
             t,
-            &msg.body,
+            &core::bidi::display(&msg.body),
             rgb(t.text_secondary),
             false,
             crate::conversation::SystemPillKind::Event,
@@ -868,9 +880,19 @@ pub(crate) fn message_bubble(
     let quote = match (&msg.quoted_sender, &msg.quoted_body) {
         (Some(qs), Some(qb)) => {
             let text_w = inner_max - QUOTE_INSET;
-            let name =
-                crate::widgets::ellipsize(ui, qs, crate::theme::semibold(INNER_TITLE_SIZE), text_w);
-            let body = ellipsize_lines(ui, qb, FontId::proportional(INNER_BODY_SIZE), text_w, 2);
+            let name = core::bidi::display(&crate::widgets::ellipsize(
+                ui,
+                qs,
+                crate::theme::semibold(INNER_TITLE_SIZE),
+                text_w,
+            ));
+            let body = core::bidi::display(&ellipsize_lines(
+                ui,
+                qb,
+                FontId::proportional(INNER_BODY_SIZE),
+                text_w,
+                2,
+            ));
             let name_g = layout_text(
                 ui,
                 &name,
@@ -904,14 +926,19 @@ pub(crate) fn message_bubble(
             text_w -= EMBED_THUMB_W + 8.0;
         }
         let site = preview_site(&p.url);
-        let title = crate::widgets::ellipsize(
+        let title = core::bidi::display(&crate::widgets::ellipsize(
             ui,
             &p.title,
             crate::theme::semibold(INNER_TITLE_SIZE),
             text_w,
-        );
-        let desc =
-            ellipsize_lines(ui, &p.description, FontId::proportional(INNER_BODY_SIZE), text_w, 2);
+        ));
+        let desc = core::bidi::display(&ellipsize_lines(
+            ui,
+            &p.description,
+            FontId::proportional(INNER_BODY_SIZE),
+            text_w,
+            2,
+        ));
         let site_g = layout_text(ui, &site, FontId::proportional(10.0), secondary, text_w);
         let title_g =
             layout_text(ui, &title, crate::theme::semibold(INNER_TITLE_SIZE), text_color, text_w);
@@ -966,9 +993,15 @@ pub(crate) fn message_bubble(
     let kind_h;
     match &msg.kind {
         MessageKind::Text | MessageKind::System => {
+            // The display form of the body (core::bidi):
+            // reshaped and visual-ordered for RTL text,
+            // byte-identical for everything else. Markdown
+            // parsing runs on the display string; its markers
+            // are ASCII and travel with their runs.
+            let body_display = core::bidi::display(body_text);
             let est = crate::markdown::measure(
                 ui,
-                body_text,
+                &body_display,
                 14.5,
                 text_color,
                 rgb(t.bg_panel_alt),
@@ -976,7 +1009,7 @@ pub(crate) fn message_bubble(
             );
             body_galley = crate::markdown::galley_leading(
                 ui,
-                body_text,
+                &body_display,
                 14.5,
                 text_color,
                 rgb(t.bg_panel_alt),
@@ -1081,7 +1114,13 @@ pub(crate) fn message_bubble(
                 col_w,
             );
             let caption_below = if msg.body == *name { "" } else { msg.body.as_str() };
-            body_galley = layout_text(ui, caption_below, body_font.clone(), text_color, inner_max);
+            body_galley = layout_text(
+                ui,
+                &core::bidi::display(caption_below),
+                body_font.clone(),
+                text_color,
+                inner_max,
+            );
             let row_w = DOC_DISC + DOC_GAP + name_g.size().x.max(size_g.size().x) + doc_dl_w(mine);
             content_w = content_w.max(row_w.max(220.0).min(inner_max)).max(body_galley.size().x);
             kind_h = DOC_ROW_H.max(name_g.size().y + size_g.size().y + 4.0)
@@ -1103,7 +1142,13 @@ pub(crate) fn message_bubble(
             kind_h = DOC_ROW_H.max(name_g.size().y + size_g.size().y + 4.0);
         }
         MessageKind::Poll { question, options, .. } => {
-            body_galley = layout_text(ui, question, body_font.clone(), text_color, inner_max);
+            body_galley = layout_text(
+                ui,
+                &core::bidi::display(question),
+                body_font.clone(),
+                text_color,
+                inner_max,
+            );
             let mut w = body_galley.size().x;
             for (label, votes) in options {
                 let ow = measure_text(ui, label, FontId::proportional(INNER_BODY_SIZE))
@@ -1127,7 +1172,13 @@ pub(crate) fn message_bubble(
             my_rsvp,
             ..
         } => {
-            body_galley = layout_text(ui, name, body_font.clone(), text_color, inner_max);
+            body_galley = layout_text(
+                ui,
+                &core::bidi::display(name),
+                body_font.clone(),
+                text_color,
+                inner_max,
+            );
             let desc_h = event_desc_h(ui, description, inner_max, text_color);
             let show_guests = event_show_guests(*extra_guests, *my_rsvp, *canceled);
             // The RSVP row needs room for three buttons; the
@@ -2231,7 +2282,13 @@ pub(crate) fn message_bubble(
                 // canceled event paints its state instead of the
                 // controls. All offsets follow the shared
                 // layout formula in `event_card_h`.
-                let g = layout_text(ui, name, body_font.clone(), text_color, inner_w);
+                let g = layout_text(
+                    ui,
+                    &core::bidi::display(name),
+                    body_font.clone(),
+                    text_color,
+                    inner_w,
+                );
                 painter.galley(Pos2::new(x, y), g, text_color);
                 let mut cy = y + body_galley.size().y + 6.0;
                 crate::icons::draw(
@@ -2266,7 +2323,7 @@ pub(crate) fn message_bubble(
                     );
                     let g = layout_text(
                         ui,
-                        loc,
+                        &core::bidi::display(loc),
                         FontId::proportional(INNER_BODY_SIZE),
                         secondary,
                         inner_w - 20.0,
@@ -2280,7 +2337,7 @@ pub(crate) fn message_bubble(
                     cy += 6.0;
                     let g = layout_text(
                         ui,
-                        description,
+                        &core::bidi::display(description),
                         FontId::proportional(INNER_BODY_SIZE),
                         text_color,
                         inner_w,

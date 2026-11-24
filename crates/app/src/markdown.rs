@@ -624,4 +624,55 @@ mod tests {
         );
         assert_eq!(job_text(&plain), "plain\ntext");
     }
+
+    #[test]
+    fn probe_struck_row_mesh_quads() {
+        let body = showcase_body();
+        let ctx = eframe::egui::Context::default();
+        crate::theme::install_fonts(&ctx);
+        let input = eframe::egui::RawInput {
+            screen_rect: Some(eframe::egui::Rect::from_min_size(
+                eframe::egui::Pos2::ZERO,
+                eframe::egui::vec2(1440.0, 900.0),
+            )),
+            ..Default::default()
+        };
+        let mut out = ctx.run_pass(input, |ctx| {
+            eframe::egui::Area::new(eframe::egui::Id::unique("probe")).show(ctx, |ui| {
+                let galley = super::galley_leading(
+                    ui,
+                    &body,
+                    14.5,
+                    eframe::egui::Color32::WHITE,
+                    eframe::egui::Color32::from_gray(60),
+                    eframe::egui::Color32::BLUE,
+                    602.0,
+                    Some(14.5 * 1.5),
+                );
+                for (ri, row) in galley.rows.iter().enumerate() {
+                    let text: String = row.glyphs.iter().map(|g| g.chr).collect();
+                    // Textured quads: indices/6 in the row mesh
+                    // whose vertices have non-uniform uv (glyph
+                    // quads sample the atlas; solid triangles
+                    // share one uv).
+                    let mut quads = 0;
+                    for tri in row.visuals.mesh.indices.chunks_exact(3) {
+                        let vs: Vec<_> = tri
+                            .iter()
+                            .map(|&i| row.visuals.mesh.vertices[i as usize])
+                            .collect();
+                        if !(vs[0].uv == vs[1].uv && vs[1].uv == vs[2].uv) {
+                            quads += 1;
+                        }
+                    }
+                    eprintln!(
+                        "PROBE row {ri}: glyphs={} textured_tris={} text={text:?}",
+                        row.glyphs.len(),
+                        quads
+                    );
+                }
+            });
+        });
+        out.textures_delta.clear();
+    }
 }

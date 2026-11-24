@@ -1321,6 +1321,23 @@ pub(super) fn structured_text(msg: &whatsapp_rust::prelude::wa::Message) -> Opti
             }
         }
     }
+    // An AI rich response carries its words in its
+    // submessages' text parts (audit P0-09): joined, they
+    // are the response's body. A response with no text
+    // parts keeps its typed label in the fallthrough.
+    if let Some(rich) = base.rich_response_message.as_option() {
+        let joined = rich
+            .submessages
+            .iter()
+            .filter_map(|s| s.message_text.clone())
+            .map(|t| t.trim().to_owned())
+            .filter(|t| !t.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n");
+        if let Some(text) = clean(Some(joined)) {
+            return Some(text);
+        }
+    }
     if let Some(buttons) = base.buttons_message.as_option() {
         if let Some(text) = clean(buttons.content_text.clone()) {
             return Some(text);
@@ -3836,6 +3853,30 @@ mod live_pairing_fix_tests {
             ),
             "got {kind:?}"
         );
+    }
+
+    /// P0-09: an AI rich response carries its words in its
+    /// submessages' text parts; recovered and joined, they
+    /// are the message's body. A response with no text
+    /// parts recovers nothing and keeps its typed label.
+    #[test]
+    fn rich_response_recovers_its_submessage_text() {
+        let mut first = wa::AIRichResponseSubMessage::default();
+        first.message_text = Some("The market opens".to_owned());
+        let mut second = wa::AIRichResponseSubMessage::default();
+        second.message_text = Some("at nine.".to_owned());
+        let mut rich = wa::AIRichResponseMessage::default();
+        rich.submessages = vec![first, second];
+        let mut msg = wa::Message::default();
+        msg.rich_response_message = MessageField::some(rich);
+        assert_eq!(structured_text(&msg).as_deref(), Some("The market opens\nat nine."));
+        let (kind, _) = classify_message(&msg);
+        assert!(matches!(kind, LiveMessageKind::Text), "got {kind:?}");
+        let mut bare = wa::Message::default();
+        bare.rich_response_message =
+            MessageField::some(wa::AIRichResponseMessage::default());
+        assert_eq!(structured_text(&bare), None);
+        assert_eq!(unhandled_label(&bare), "AI response");
     }
 
     /// An encrypted comment whose body this client cannot

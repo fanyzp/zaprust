@@ -372,7 +372,7 @@ mod tests {
     fn yuyv_conversion_keeps_luma_and_averages_chroma() {
         // Two rows of one quad each: Y0=10 U=100 Y1=20 V=200,
         // then Y0=30 U=110 Y1=40 V=210.
-        let raw: [u8; 16] = [
+        let raw: [u8; 8] = [
             10, 100, 20, 200, //
             30, 110, 40, 210,
         ];

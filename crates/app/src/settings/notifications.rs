@@ -66,6 +66,24 @@ impl App {
             );
             self.notify_preview = v;
         });
+        ui.add_space(SP_4);
+        settings_card(ui, t, |ui| {
+            let mut v = self.tray_residence;
+            row_hl(
+                ui,
+                &mut self.settings_highlight,
+                self.motion,
+                "notifications.tray",
+                t,
+                &crate::i18n::t("notifications.tray"),
+                &crate::i18n::t("notifications.tray_caption"),
+                |ui| switch(ui, &mut v, t),
+            );
+            if v != self.tray_residence {
+                self.tray_residence = v;
+                self.persist_settings();
+            }
+        });
         // (Persistence: toggles write through in the card above
         // via persist-on-change, see the snapshot below.)
         if self.notify_snapshot

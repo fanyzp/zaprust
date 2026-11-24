@@ -76,6 +76,7 @@ pub(crate) enum Icon {
     Schedule,
     Send,
     Lock,
+    Keyboard,
     Done,
     DoneAll,
 }
@@ -177,6 +178,7 @@ pub(crate) fn glyph(icon: Icon) -> char {
         Icon::Schedule => '\u{efd6}',      // schedule
         Icon::Send => '\u{e163}',          // send
         Icon::Lock => '\u{e899}',          // lock
+        Icon::Keyboard => '\u{e312}',      // keyboard
         Icon::Done => '\u{e876}',          // done
         Icon::DoneAll => '\u{e877}',       // done_all
     }

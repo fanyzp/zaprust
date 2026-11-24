@@ -13,10 +13,12 @@
 
 mod about;
 mod appearance;
+mod blocked;
 mod chats;
 mod features;
 mod notifications;
 mod privacy;
+mod shortcuts;
 mod storage;
 
 use crate::state::{App, Notice};
@@ -164,6 +166,97 @@ const SETTINGS_REGISTRY: &[SettingEntry] = &[
         title_en: "Default message timer",
         title_id: "Timer pesan bawaan",
         keywords: "disappearing ephemeral timer pesan sementara hilang",
+    },
+    SettingEntry {
+        id: "notifications.tray",
+        tab: "Notifications",
+        title_en: "Keep in system tray",
+        title_id: "Tetap di baki sistem",
+        keywords: "tray minimize close hide baki sistem tutup sembunyi",
+    },
+    SettingEntry {
+        id: "privacy.blocked",
+        tab: "Privacy & Security",
+        title_en: "Blocked contacts",
+        title_id: "Kontak diblokir",
+        keywords: "block blocked unblock blokir kontak buka blokir",
+    },
+    SettingEntry {
+        id: "privacy.lock_code",
+        tab: "Privacy & Security",
+        title_en: "Lock code",
+        title_id: "Kode kunci",
+        keywords: "lock code pin password kunci folder locked chats",
+    },
+    SettingEntry {
+        id: "privacy.app_lock",
+        tab: "Privacy & Security",
+        title_en: "App lock",
+        title_id: "Kunci aplikasi",
+        keywords: "lock screen start kunci aplikasi layar",
+    },
+    SettingEntry {
+        id: "shortcut_new_chat",
+        tab: "Shortcuts",
+        title_en: "New chat",
+        title_id: "Chat baru",
+        keywords: "keyboard shortcut ctrl alt n pintasan",
+    },
+    SettingEntry {
+        id: "shortcut_next_chat",
+        tab: "Shortcuts",
+        title_en: "Next chat",
+        title_id: "Chat berikutnya",
+        keywords: "keyboard shortcut ctrl shift bracket pintasan",
+    },
+    SettingEntry {
+        id: "shortcut_prev_chat",
+        tab: "Shortcuts",
+        title_en: "Previous chat",
+        title_id: "Chat sebelumnya",
+        keywords: "keyboard shortcut ctrl shift bracket pintasan",
+    },
+    SettingEntry {
+        id: "shortcut_archive",
+        tab: "Shortcuts",
+        title_en: "Archive or unarchive chat",
+        title_id: "Arsipkan atau batalkan arsip chat",
+        keywords: "keyboard shortcut ctrl e archive arsip pintasan",
+    },
+    SettingEntry {
+        id: "shortcut_mute",
+        tab: "Shortcuts",
+        title_en: "Mute or unmute chat",
+        title_id: "Bisukan atau bunyikan chat",
+        keywords: "keyboard shortcut ctrl shift m mute bisu pintasan",
+    },
+    SettingEntry {
+        id: "shortcut_mark_unread",
+        tab: "Shortcuts",
+        title_en: "Mark chat as unread",
+        title_id: "Tandai chat belum dibaca",
+        keywords: "keyboard shortcut ctrl shift u unread pintasan",
+    },
+    SettingEntry {
+        id: "shortcut_search",
+        tab: "Shortcuts",
+        title_en: "Search in chat",
+        title_id: "Cari di chat",
+        keywords: "keyboard shortcut ctrl f find cari pintasan",
+    },
+    SettingEntry {
+        id: "shortcut_sidebar",
+        tab: "Shortcuts",
+        title_en: "Collapse or expand sidebar",
+        title_id: "Ciutkan atau bentangkan sidebar",
+        keywords: "keyboard shortcut ctrl b sidebar pintasan",
+    },
+    SettingEntry {
+        id: "shortcut_lock_app",
+        tab: "Shortcuts",
+        title_en: "Lock the app",
+        title_id: "Kunci aplikasi",
+        keywords: "keyboard shortcut ctrl alt l lock kunci pintasan",
     },
     SettingEntry {
         id: "features.api_keys",
@@ -416,6 +509,7 @@ fn settings_tab_icon(item: &str) -> crate::icons::Icon {
         "Chats" => crate::icons::Icon::Chat,
         "Notifications" => crate::icons::Icon::Bell,
         "Privacy & Security" => crate::icons::Icon::Shield,
+        "Shortcuts" => crate::icons::Icon::Keyboard,
         "Features" => crate::icons::Icon::Blocks,
         "Data & Storage" => crate::icons::Icon::Database,
         _ => crate::icons::Icon::Info,
@@ -589,14 +683,23 @@ impl App {
                 if self.settings_tab != "Data & Storage" {
                     self.storage_sizes = None;
                 }
-                match self.settings_tab {
-                    "Appearance" => self.page_appearance(ui, t),
-                    "Chats" => self.page_chats(ui, t),
-                    "Notifications" => self.page_notifications(ui, t),
-                    "Privacy & Security" => self.page_privacy(ui, t),
-                    "Features" => self.page_features(ui, t),
-                    "Data & Storage" => self.page_storage(ui, t),
-                    _ => self.page_about(ui, t),
+                if self.settings_blocked_open {
+                    // The blocked-contacts page lives inside
+                    // the settings panel (reached from Privacy
+                    // & Security): a left list panel like every
+                    // secondary surface, never a full screen.
+                    self.page_blocked(ui, t);
+                } else {
+                    match self.settings_tab {
+                        "Appearance" => self.page_appearance(ui, t),
+                        "Chats" => self.page_chats(ui, t),
+                        "Notifications" => self.page_notifications(ui, t),
+                        "Privacy & Security" => self.page_privacy(ui, t),
+                        "Shortcuts" => self.page_shortcuts(ui, t),
+                        "Features" => self.page_features(ui, t),
+                        "Data & Storage" => self.page_storage(ui, t),
+                        _ => self.page_about(ui, t),
+                    }
                 }
                 ui.add_space(SP_4_5);
             });
@@ -633,6 +736,10 @@ impl App {
                 let dot = item == "About" && self.update_available();
                 if settings_nav_row(ui, t, item, selected, dot) {
                     self.settings_tab = item;
+                    // Category navigation leaves the blocked
+                    // page: it belongs to Privacy & Security's
+                    // flow, not to the category list.
+                    self.settings_blocked_open = false;
                     // In single-pane mode this swaps the list
                     // for the page (ignored in two-pane mode).
                     self.settings_page_open = true;
@@ -688,6 +795,7 @@ impl App {
     /// arm the row highlight, and clear the search field.
     pub(crate) fn open_setting(&mut self, tab: &'static str, id: &'static str, now: f64) {
         self.settings_tab = tab;
+        self.settings_blocked_open = false;
         self.settings_page_open = true;
         self.settings_highlight = Some(SettingHighlight { id, started: now, scroll: true });
         self.settings_search.clear();
@@ -750,6 +858,7 @@ fn tab_label(item: &str) -> String {
         "Chats" => crate::i18n::t("settings.chats"),
         "Notifications" => crate::i18n::t("settings.notifications"),
         "Privacy & Security" => crate::i18n::t("settings.privacy"),
+        "Shortcuts" => crate::i18n::t("settings.shortcuts"),
         "Features" => crate::i18n::t("settings.features"),
         "Data & Storage" => crate::i18n::t("settings.storage"),
         "About" => crate::i18n::t("settings.about"),
@@ -903,6 +1012,7 @@ pub(crate) fn panel_items(title: &str) -> Vec<&'static str> {
             "Chats",
             "Notifications",
             "Privacy & Security",
+            "Shortcuts",
             "Features",
             "Data & Storage",
             "About",

@@ -98,6 +98,7 @@ WANTED = [
     ("LogOut", ["logout"]),
     ("Send", ["send"]),
     ("Lock", ["lock"]),
+    ("Keyboard", ["keyboard"]),
     ("Done", ["done"]),
     ("DoneAll", ["done_all"]),
 ]

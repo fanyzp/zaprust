@@ -266,7 +266,6 @@ impl crate::state::App {
         &mut self,
         chat_id: u64,
         archived: bool,
-        locked: false,
         pinned: bool,
         muted: bool,
     ) {

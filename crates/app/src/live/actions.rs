@@ -1161,8 +1161,7 @@ mod channel_tests {
     #[test]
     pub(super) fn code_prompt_gates_the_locked_folder() {
         let (mut app, _tx, _ctx, _cmd_rx) = live_app();
-        app.lock_code = core::lockcode::LockCode::new("2468");
-        assert!(app.lock_code.is_some());
+        app.lock_code = Some(core::lockcode::LockCode::new("2468"));
         app.code_prompt = Some(crate::state::CodePrompt::OpenFolder);
         app.code_entry = "0000".to_owned();
         app.submit_code_prompt();
@@ -1204,7 +1203,7 @@ mod channel_tests {
     #[test]
     pub(super) fn lock_settings_survive_the_round_trip() {
         let (mut app, _tx, _ctx, _cmd_rx) = live_app();
-        app.lock_code = core::lockcode::LockCode::new("2468");
+        app.lock_code = Some(core::lockcode::LockCode::new("2468"));
         app.app_lock_enabled = true;
         let doc = app.settings_json();
         let (mut fresh, _tx2, _ctx2, _rx2) = live_app();

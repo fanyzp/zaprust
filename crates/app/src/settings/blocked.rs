@@ -65,7 +65,7 @@ impl App {
                 }
             }
         }
-        entries.sort_by(|a, b| a.1.to_lowercase().cmp(&b.1.to_lowercase()));
+        entries.sort_by_key(|e| e.1.to_lowercase());
         let mut toggle: Option<u64> = None;
         if entries.is_empty() {
             settings_card(ui, t, |ui| {

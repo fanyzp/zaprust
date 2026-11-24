@@ -4,6 +4,17 @@ All notable changes to Zaprust are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com), versions
 follow [SemVer](https://semver.org).
 
+## [1.6.20] - 2026-11-24
+
+### feat:
+
+- Chats can be locked. Locking a chat (from its row menu or the conversation header) moves it out of the chat list, the unread total, search results and notification previews, into a Locked chats folder at the top of the list. The lock state syncs with your other devices like archive and pin do. The folder itself opens with a lock code you create in this app: the code is yours alone, stored only as a salted digest on this machine, and it gates this window only (it does not encrypt the archive, which has its own key, and it never syncs anywhere).
+- The whole app can lock too. Settings > Privacy & Security manages the same code: create it, change it, or remove it there, turn on App lock so the app starts behind the code, or lock on demand from the settings page or with Ctrl+Alt+L. While the app is locked nothing shows and notifications carry no names or text. Forgotten the code? The lock screen offers log out, which disconnects and clears the code with the session.
+- Blocked contacts get their own page. Settings > Privacy & Security shows how many contacts are blocked and opens a list where each one can be unblocked, with a picker to block a contact from your chats. Changes confirm against the server list before they are announced, and a failure puts the row back.
+- The app can live in the system tray (Linux). Turn it on in Settings > Notifications and closing the window tucks the app into the tray instead of quitting, with the unread count on the tray entry and Open and Quit in its menu. If no tray is running, closing works exactly as before.
+- Keyboard shortcuts grow up, and gain a reference page. Settings > Shortcuts lists the set: Ctrl+Alt+N for a new chat, Ctrl+Shift+] and Ctrl+Shift+[ to move between chats, Ctrl+E to archive the open chat, Ctrl+Shift+M to mute it, Ctrl+Shift+U to mark it unread, Ctrl+Alt+L to lock the app, alongside the existing in-chat search and sidebar chords.
+- Arabic and Hebrew text renders properly. Messages, chat names, previews and search results in those scripts now use bundled Noto fallback fonts (before, the app had no font that covered them at all, so the text painted as placeholder boxes), Arabic letters take their joined contextual forms, and right-to-left text reads in the correct order in bubbles, lists and headers. Text you are still typing in the composer keeps the editor's own layout, and stored text is unchanged: the fix is entirely in how text is painted.
+
 ## [1.6.19] - 2026-11-24
 
 ### feat:

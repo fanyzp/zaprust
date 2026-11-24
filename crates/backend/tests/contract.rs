@@ -1397,7 +1397,9 @@ fn scripted_incoming_call_can_be_accepted_and_ended() {
     // The linked script includes an incoming call from the DM.
     let events = collect_until(&ch.events, 40, |e| matches!(e, BackendEvent::IncomingCall { .. }));
     assert!(
-        events.iter().any(|e| matches!(e, BackendEvent::IncomingCall { call_id, chat_jid, video, .. }
+        events
+            .iter()
+            .any(|e| matches!(e, BackendEvent::IncomingCall { call_id, chat_jid, video, .. }
             if call_id == "fake-call-1" && chat_jid == "10000000001@s.whatsapp.net" && !video)),
         "the script rings an incoming voice call: {events:?}"
     );

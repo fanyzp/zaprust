@@ -1592,11 +1592,7 @@ impl App {
                             .color(rgb(t.text_secondary)),
                         );
                         ui.add_space(SP_2);
-                        ui.label(
-                            RichText::new(&url)
-                                .size(13.0)
-                                .color(rgb(t.text_primary)),
-                        );
+                        ui.label(RichText::new(&url).size(13.0).color(rgb(t.text_primary)));
                         ui.add_space(SP_2);
                         ui.label(
                             RichText::new(crate::i18n::t("call.link_created_note"))
@@ -1733,29 +1729,17 @@ impl App {
                         .chats
                         .iter()
                         .find(|c| {
-                            self.live_jid(c.id).as_deref()
-                                == Some(facts.creator_jid.as_str())
+                            self.live_jid(c.id).as_deref() == Some(facts.creator_jid.as_str())
                         })
                         .map_or_else(
-                            || {
-                                facts
-                                    .creator_jid
-                                    .split('@')
-                                    .next()
-                                    .unwrap_or_default()
-                                    .to_owned()
-                            },
+                            || facts.creator_jid.split('@').next().unwrap_or_default().to_owned(),
                             |c| c.title.clone(),
                         );
                     ui.add_space(SP_2);
                     ui.label(
-                        RichText::new(format!(
-                            "{} {}",
-                            crate::i18n::t("call.link_by"),
-                            creator
-                        ))
-                        .size(12.0)
-                        .color(rgb(t.text_secondary)),
+                        RichText::new(format!("{} {}", crate::i18n::t("call.link_by"), creator))
+                            .size(12.0)
+                            .color(rgb(t.text_secondary)),
                     );
                     if facts.waiting_room {
                         ui.add_space(SP_2);

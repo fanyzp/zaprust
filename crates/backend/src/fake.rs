@@ -2805,12 +2805,8 @@ impl Backend for FakeBackend {
                     } else {
                         state.counter += 1;
                         let call_id = format!("fake-call-{}", state.counter);
-                        state.current = Some(FakeCall::plain(
-                            call_id.clone(),
-                            chat_jid.clone(),
-                            true,
-                            video,
-                        ));
+                        state.current =
+                            Some(FakeCall::plain(call_id.clone(), chat_jid.clone(), true, video));
                         events.emit(BackendEvent::CallChanged {
                             call_id,
                             chat_jid,
@@ -2835,12 +2831,8 @@ impl Backend for FakeBackend {
                     } else {
                         state.counter += 1;
                         let call_id = format!("fake-call-{}", state.counter);
-                        let mut call = FakeCall::plain(
-                            call_id.clone(),
-                            chat_jid.clone(),
-                            true,
-                            video,
-                        );
+                        let mut call =
+                            FakeCall::plain(call_id.clone(), chat_jid.clone(), true, video);
                         call.group = true;
                         call.participants = scripted_group_participants();
                         state.current = Some(call);
@@ -2863,8 +2855,7 @@ impl Backend for FakeBackend {
                     }
                     if take_failure("CreateCallLink") {
                         events.emit(BackendEvent::CallLinkFailed {
-                            message: "Creating the call link failed: connection lost"
-                                .to_owned(),
+                            message: "Creating the call link failed: connection lost".to_owned(),
                         });
                     } else {
                         let kind = if video { "video" } else { "audio" };
@@ -2882,8 +2873,7 @@ impl Backend for FakeBackend {
                     }
                     if take_failure("PreviewCallLink") {
                         events.emit(BackendEvent::CallLinkFailed {
-                            message: "That call link could not be read: connection lost"
-                                .to_owned(),
+                            message: "That call link could not be read: connection lost".to_owned(),
                         });
                     } else if link.contains("call.whatsapp.com/") || link.contains("fake-link") {
                         events.emit(BackendEvent::CallLinkPreview {
@@ -2898,8 +2888,7 @@ impl Backend for FakeBackend {
                         });
                     } else {
                         events.emit(BackendEvent::CallLinkFailed {
-                            message: "That call link could not be read: not a call link"
-                                .to_owned(),
+                            message: "That call link could not be read: not a call link".to_owned(),
                         });
                     }
                 }
@@ -2934,17 +2923,11 @@ impl Backend for FakeBackend {
                                 chat_jid: String::new(),
                                 phase: crate::CallPhase::Ended,
                                 seconds: 0,
-                                reason: Some(
-                                    "Joining the call failed: connection lost".to_owned(),
-                                ),
+                                reason: Some("Joining the call failed: connection lost".to_owned()),
                             });
                         } else {
-                            let mut call = FakeCall::plain(
-                                call_id.clone(),
-                                String::new(),
-                                true,
-                                video,
-                            );
+                            let mut call =
+                                FakeCall::plain(call_id.clone(), String::new(), true, video);
                             call.group = true;
                             call.link = true;
                             call.phase = crate::CallPhase::Connecting;
@@ -3150,8 +3133,7 @@ impl Backend for FakeBackend {
                     }
                     if take_failure("SetCallApproval") {
                         events.emit(BackendEvent::CallControlFailed {
-                            message: "Changing the waiting room failed: connection lost"
-                                .to_owned(),
+                            message: "Changing the waiting room failed: connection lost".to_owned(),
                         });
                     } else {
                         let mut state =
@@ -5095,9 +5077,8 @@ fn fixture_aus() -> &'static [(Vec<u8>, bool)] {
         let mut out = Vec::new();
         let mut at = 0usize;
         while at + 5 <= bytes.len() {
-            let len =
-                u32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]])
-                    as usize;
+            let len = u32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]])
+                as usize;
             let keyframe = bytes[at + 4] != 0;
             let start = at + 5;
             let Some(au) = bytes.get(start..start + len) else { break };
@@ -5131,19 +5112,14 @@ fn fake_video_stream(
         let sender = {
             let guard = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             let Some(call) = &guard.current else { return };
-            if call.call_id != call_id
-                || call.phase != crate::CallPhase::Active
-                || !call.video
-            {
+            if call.call_id != call_id || call.phase != crate::CallPhase::Active || !call.video {
                 return;
             }
             if call.group {
                 call.participants
                     .iter()
                     .find(|p| p.sharing)
-                    .or_else(|| {
-                        call.participants.iter().find(|p| p.state == "connected")
-                    })
+                    .or_else(|| call.participants.iter().find(|p| p.state == "connected"))
                     .map(|p| p.jid.clone())
             } else {
                 None
@@ -5628,14 +5604,10 @@ fn emit_linked_script(
                     call.participants = scripted_group_participants();
                     (call, Some(FAKE_GROUP_JID.to_owned()))
                 }
-                Some("video") => (
-                    FakeCall::plain(call_id.clone(), FAKE_DM_JID.to_owned(), false, true),
-                    None,
-                ),
-                _ => (
-                    FakeCall::plain(call_id.clone(), FAKE_DM_JID.to_owned(), false, false),
-                    None,
-                ),
+                Some("video") => {
+                    (FakeCall::plain(call_id.clone(), FAKE_DM_JID.to_owned(), false, true), None)
+                }
+                _ => (FakeCall::plain(call_id.clone(), FAKE_DM_JID.to_owned(), false, false), None),
             };
             call.phase = crate::CallPhase::Ringing;
             let (chat_jid, video) = (call.chat_jid.clone(), call.video);

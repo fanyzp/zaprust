@@ -2080,10 +2080,7 @@ pub(super) async fn run_async(
                         (Some(handle), Ok(target)) => {
                             if let Err(e) = handle.invite_participant(&target).await {
                                 events.emit(BackendEvent::CallControlFailed {
-                                    message: format!(
-                                        "Inviting them failed: {}",
-                                        error_words(&e)
-                                    ),
+                                    message: format!("Inviting them failed: {}", error_words(&e)),
                                 });
                             }
                         }
@@ -2102,10 +2099,7 @@ pub(super) async fn run_async(
                         (Some(handle), Ok(user)) => {
                             if let Err(e) = handle.admit_waiting_user(&user).await {
                                 events.emit(BackendEvent::CallControlFailed {
-                                    message: format!(
-                                        "Letting them in failed: {}",
-                                        error_words(&e)
-                                    ),
+                                    message: format!("Letting them in failed: {}", error_words(&e)),
                                 });
                             }
                         }
@@ -2124,10 +2118,7 @@ pub(super) async fn run_async(
                         (Some(handle), Ok(user)) => {
                             if let Err(e) = handle.deny_waiting_user(&user).await {
                                 events.emit(BackendEvent::CallControlFailed {
-                                    message: format!(
-                                        "Refusing them failed: {}",
-                                        error_words(&e)
-                                    ),
+                                    message: format!("Refusing them failed: {}", error_words(&e)),
                                 });
                             }
                         }
@@ -2199,11 +2190,8 @@ pub(super) async fn run_async(
                     // guard alive across the awaits below. It is
                     // only taken when no call is active, exactly
                     // as the branch order below implies.
-                    let joining = if handle.is_none() {
-                        lock_cache(&call_joining).take()
-                    } else {
-                        None
-                    };
+                    let joining =
+                        if handle.is_none() { lock_cache(&call_joining).take() } else { None };
                     if let Some(handle) = handle {
                         // The pump notices the end and
                         // emits the final CallChanged.

@@ -320,8 +320,7 @@ impl Camera {
     /// it. The returned frame borrows the camera; dropping it
     /// requeues the buffer.
     pub fn next_frame(&mut self, timeout: Duration) -> FrameOutcome<'_> {
-        let mut pollfd =
-            libc::pollfd { fd: self.fd, events: libc::POLLIN, revents: 0 };
+        let mut pollfd = libc::pollfd { fd: self.fd, events: libc::POLLIN, revents: 0 };
         let millis = i32::try_from(timeout.as_millis()).unwrap_or(i32::MAX);
         // SAFETY: poll on the camera fd with a one-slot pollfd
         // array.
@@ -346,11 +345,8 @@ impl Camera {
         };
         // Some drivers leave bytesused at zero for capture;
         // the mapped length is the frame's size then.
-        let used = if buffer.bytesused == 0 {
-            map_len
-        } else {
-            (buffer.bytesused as usize).min(map_len)
-        };
+        let used =
+            if buffer.bytesused == 0 { map_len } else { (buffer.bytesused as usize).min(map_len) };
         // SAFETY: the driver filled `used` bytes of the
         // mmap'd buffer; the slice lives exactly as long as
         // the Frame that requeues the buffer on drop, and the

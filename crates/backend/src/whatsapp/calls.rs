@@ -349,8 +349,7 @@ pub(super) async fn start_group_call(
     };
     let video_plumbing = if video { Some(build_video(events).await) } else { None };
     let voip = client.voip();
-    let mut builder =
-        voip.group_call_by_id(&jid).audio(audio.source.clone(), audio.sink.clone());
+    let mut builder = voip.group_call_by_id(&jid).audio(audio.source.clone(), audio.sink.clone());
     if let Some(plumbing) = &video_plumbing {
         builder = builder.video(plumbing.source.clone(), plumbing.sink.clone());
     }
@@ -503,7 +502,9 @@ pub(super) async fn create_call_link(
 /// The media kind a call link string names, from its URL path
 /// when it carries one. A bare token names no kind.
 #[cfg(feature = "calls")]
-fn link_media_from_url(link: &str) -> Option<whatsapp_rust::wacore::types::group_call::CallLinkMedia> {
+fn link_media_from_url(
+    link: &str,
+) -> Option<whatsapp_rust::wacore::types::group_call::CallLinkMedia> {
     use whatsapp_rust::wacore::types::group_call::CallLinkMedia;
     if link.contains("/video/") {
         Some(CallLinkMedia::Video)
@@ -535,11 +536,7 @@ pub(super) async fn preview_call_link(
         match client.voip().preview_call_link(link, media).await {
             Ok(preview) => {
                 events.emit(BackendEvent::CallLinkPreview {
-                    url: format!(
-                        "https://call.whatsapp.com/{}/{}",
-                        media.as_str(),
-                        preview.token
-                    ),
+                    url: format!("https://call.whatsapp.com/{}/{}", media.as_str(), preview.token),
                     creator_jid: preview.creator.to_string(),
                     video: media == CallLinkMedia::Video,
                     waiting_room: preview.waiting_room_enabled,
@@ -611,9 +608,8 @@ pub(super) async fn join_call_link(
         // The builder borrows the client and the link string,
         // so it is built here, inside the task that owns both.
         let voip = client.voip();
-        let mut builder = voip
-            .call_link(&link, media)
-            .audio(audio.source.clone(), audio.sink.clone());
+        let mut builder =
+            voip.call_link(&link, media).audio(audio.source.clone(), audio.sink.clone());
         if let Some(plumbing) = &video_plumbing {
             builder = builder.video(plumbing.source.clone(), plumbing.sink.clone());
         }
@@ -653,10 +649,7 @@ pub(super) async fn join_call_link(
                     chat_jid: String::new(),
                     phase: crate::CallPhase::Ended,
                     seconds: 0,
-                    reason: Some(format!(
-                        "Joining the call failed: {}",
-                        error_words(&e)
-                    )),
+                    reason: Some(format!("Joining the call failed: {}", error_words(&e))),
                 });
             }
         }
@@ -1068,11 +1061,8 @@ async fn accept_peer_video_upgrade(
     let existing = {
         let guard = lock_cache(active);
         guard.as_ref().and_then(|slot| {
-            (slot.call_id == call_id).then(|| {
-                slot.video
-                    .as_ref()
-                    .map(|v| (v.source.clone(), v.sink.clone()))
-            })
+            (slot.call_id == call_id)
+                .then(|| slot.video.as_ref().map(|v| (v.source.clone(), v.sink.clone())))
         })
     };
     match existing {
@@ -1083,11 +1073,7 @@ async fn accept_peer_video_upgrade(
         }
         Some(None) => {
             let plumbing = build_video(events).await;
-            if handle
-                .start_video(plumbing.source.clone(), plumbing.sink.clone())
-                .await
-                .is_ok()
-            {
+            if handle.start_video(plumbing.source.clone(), plumbing.sink.clone()).await.is_ok() {
                 let mut guard = lock_cache(active);
                 if let Some(slot) = &mut *guard {
                     if slot.call_id == call_id && slot.video.is_none() {

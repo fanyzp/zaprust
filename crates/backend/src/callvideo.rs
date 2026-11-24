@@ -153,11 +153,9 @@ impl CallVideo {
         let thread = {
             let au_tx = au_tx.clone();
             let kf = force_keyframe.clone();
-            std::thread::Builder::new()
-                .name("zaprust-video-in".to_owned())
-                .spawn(move || {
-                    capture_thread(au_tx, events, kf, capture_stop, setup_tx);
-                })
+            std::thread::Builder::new().name("zaprust-video-in".to_owned()).spawn(move || {
+                capture_thread(au_tx, events, kf, capture_stop, setup_tx);
+            })
         };
         let (camera_on, camera_note, parked) = match thread {
             Ok(_) => match setup_rx.recv_timeout(std::time::Duration::from_secs(3)) {

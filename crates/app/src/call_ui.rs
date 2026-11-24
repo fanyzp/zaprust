@@ -460,9 +460,8 @@ impl App {
         // UI state is created from its first Ringing event.
         if self.calls.active.is_none() && phase == CallPhase::Ringing {
             let chat = self.chats.iter().find(|c| c.id == chat_id).cloned();
-            let title = chat
-                .as_ref()
-                .map_or_else(|| crate::i18n::t("call.unknown"), |c| c.title.clone());
+            let title =
+                chat.as_ref().map_or_else(|| crate::i18n::t("call.unknown"), |c| c.title.clone());
             let group = chat.is_some_and(|c| c.kind == core::model::ChatKind::Group);
             self.calls.media = CallMediaState::default();
             self.calls.active = Some(CallUi::fresh(
@@ -483,9 +482,7 @@ impl App {
         // Adopt an outgoing call-link join: its first phase
         // event is Connecting with no chat behind it, and the
         // join action's flag is what identifies it.
-        if self.calls.active.is_none()
-            && phase == CallPhase::Connecting
-            && self.calls.outgoing_link
+        if self.calls.active.is_none() && phase == CallPhase::Connecting && self.calls.outgoing_link
         {
             self.calls.outgoing_link = false;
             self.calls.media = CallMediaState::default();
@@ -637,10 +634,8 @@ impl App {
             return;
         };
         if let Some((rgba, width, height)) = decoder.decode(data) {
-            let image = egui::ColorImage::from_rgba_unmultiplied(
-                [width as usize, height as usize],
-                &rgba,
-            );
+            let image =
+                egui::ColorImage::from_rgba_unmultiplied([width as usize, height as usize], &rgba);
             self.calls.media.stage_texture =
                 Some(ctx.load_texture("call_stage", image, egui::TextureOptions::LINEAR));
             self.calls.media.stage_size = (width, height);
@@ -713,10 +708,7 @@ impl App {
                 }
             }
         }
-        if let Some(chat) = self
-            .chats
-            .iter()
-            .find(|c| self.live_jid(c.id).as_deref() == Some(jid))
+        if let Some(chat) = self.chats.iter().find(|c| self.live_jid(c.id).as_deref() == Some(jid))
         {
             if !chat.title.is_empty() {
                 return chat.title.clone();
@@ -770,17 +762,9 @@ fn call_action(
         } else {
             (bg, glyph, rgb(t.text_secondary))
         };
-        let disc_center =
-            egui::Pos2::new(rect.center().x, rect.top() + CALL_DISC / 2.0);
+        let disc_center = egui::Pos2::new(rect.center().x, rect.top() + CALL_DISC / 2.0);
         ui.painter().circle_filled(disc_center, CALL_DISC / 2.0, bg);
-        icons::draw(
-            ui.painter(),
-            icon,
-            disc_center,
-            crate::icons::SIZE_TAB,
-            glyph,
-            bg,
-        );
+        icons::draw(ui.painter(), icon, disc_center, crate::icons::SIZE_TAB, glyph, bg);
         ui.painter().text(
             egui::Pos2::new(rect.center().x, rect.top() + CALL_DISC + 6.0),
             Align2::CENTER_TOP,
@@ -825,14 +809,10 @@ impl App {
         if let Some(call) = &mut self.calls.active {
             if call.my_reaction.as_deref() == Some(emoji) {
                 call.my_reaction = None;
-                self.send_backend(BackendCommand::SendCallReaction {
-                    emoji: String::new(),
-                });
+                self.send_backend(BackendCommand::SendCallReaction { emoji: String::new() });
             } else {
                 call.my_reaction = Some(emoji.to_owned());
-                self.send_backend(BackendCommand::SendCallReaction {
-                    emoji: emoji.to_owned(),
-                });
+                self.send_backend(BackendCommand::SendCallReaction { emoji: emoji.to_owned() });
             }
         }
     }
@@ -898,11 +878,7 @@ impl App {
         let mut action: Option<String> = None;
         let media_stage = self.calls.media.stage_texture.clone();
         let media_preview = self.calls.media.preview_texture.clone();
-        let sharing_jid = call
-            .participants
-            .iter()
-            .find(|p| p.sharing)
-            .map(|p| p.jid.clone());
+        let sharing_jid = call.participants.iter().find(|p| p.sharing).map(|p| p.jid.clone());
         Area::new(Id::new("call_overlay"))
             .anchor(Align2::RIGHT_BOTTOM, Vec2::new(-16.0, -16.0))
             .show(ctx, |ui| {
@@ -928,8 +904,7 @@ impl App {
                                     Some(ref tex) => {
                                         let (sw, sh) = self.calls.media.stage_size;
                                         if sw > 0 {
-                                            (width * sh as f32 / sw as f32)
-                                                .clamp(120.0, 224.0)
+                                            (width * sh as f32 / sw as f32).clamp(120.0, 224.0)
                                         } else {
                                             let _ = tex;
                                             168.0
@@ -937,15 +912,9 @@ impl App {
                                     }
                                     None => 168.0,
                                 };
-                                let (rect, _) = ui.allocate_exact_size(
-                                    Vec2::new(width, height),
-                                    Sense::hover(),
-                                );
-                                ui.painter().rect_filled(
-                                    rect,
-                                    12.0,
-                                    rgb(t.bg_panel_alt),
-                                );
+                                let (rect, _) = ui
+                                    .allocate_exact_size(Vec2::new(width, height), Sense::hover());
+                                ui.painter().rect_filled(rect, 12.0, rgb(t.bg_panel_alt));
                                 if let Some(ref tex) = media_stage {
                                     ui.painter().image(
                                         tex.id(),
@@ -969,10 +938,7 @@ impl App {
                                 // The local preview tile.
                                 if let Some(ref tex) = media_preview {
                                     let tile = egui::Rect::from_min_size(
-                                        egui::pos2(
-                                            rect.max.x - 96.0,
-                                            rect.max.y - 70.0,
-                                        ),
+                                        egui::pos2(rect.max.x - 96.0, rect.max.y - 70.0),
                                         Vec2::new(88.0, 62.0),
                                     );
                                     ui.painter().image(
@@ -987,10 +953,7 @@ impl App {
                                     ui.painter().rect_stroke(
                                         tile,
                                         8.0,
-                                        egui::Stroke::new(
-                                            1.0,
-                                            egui::Color32::from_white_alpha(70),
-                                        ),
+                                        egui::Stroke::new(1.0, egui::Color32::from_white_alpha(70)),
                                         egui::StrokeKind::Inside,
                                     );
                                 }
@@ -1004,9 +967,9 @@ impl App {
                                         crate::i18n::t("call.is_sharing_screen"),
                                     ))
                                 } else if call.group {
-                                    call.stage_sender.as_ref().map(|jid| {
-                                        self.call_participant_name(&call, jid)
-                                    })
+                                    call.stage_sender
+                                        .as_ref()
+                                        .map(|jid| self.call_participant_name(&call, jid))
                                 } else {
                                     None
                                 };
@@ -1042,20 +1005,12 @@ impl App {
                             // group call its group, a link call
                             // the silhouette.
                             let radius = if stage_on { 20.0 } else { 32.0 };
-                            let (rect, _) = ui.allocate_exact_size(
-                                Vec2::splat(radius * 2.0),
-                                Sense::hover(),
-                            );
+                            let (rect, _) =
+                                ui.allocate_exact_size(Vec2::splat(radius * 2.0), Sense::hover());
                             let center = rect.center();
-                            match self
-                                .chats
-                                .iter()
-                                .find(|c| c.id == call.chat_id)
-                                .cloned()
-                            {
+                            match self.chats.iter().find(|c| c.id == call.chat_id).cloned() {
                                 Some(chat) => {
-                                    let photo =
-                                        self.chat_avatar_photo(ui.ctx(), &chat);
+                                    let photo = self.chat_avatar_photo(ui.ctx(), &chat);
                                     crate::widgets::paint_chat_avatar_photo(
                                         ui.painter(),
                                         center,
@@ -1087,9 +1042,7 @@ impl App {
                             if let Some(note) = &call.video_note {
                                 ui.add_space(2.0);
                                 ui.label(
-                                    RichText::new(note)
-                                        .size(12.0)
-                                        .color(rgb(t.text_secondary)),
+                                    RichText::new(note).size(12.0).color(rgb(t.text_secondary)),
                                 );
                             }
                             // The roster strip: group and
@@ -1102,12 +1055,8 @@ impl App {
                             {
                                 ui.add_space(SP_SECTION);
                                 let shown = call.participants.len().min(6);
-                                for participant in
-                                    call.participants.iter().take(shown)
-                                {
-                                    self.draw_call_participant_row(
-                                        ui, &call, participant, t,
-                                    );
+                                for participant in call.participants.iter().take(shown) {
+                                    self.draw_call_participant_row(ui, &call, participant, t);
                                 }
                                 if call.participants.len() > shown {
                                     ui.label(
@@ -1127,64 +1076,45 @@ impl App {
                                     if !waiting.users.is_empty() {
                                         ui.add_space(SP_SECTION);
                                         ui.label(
-                                            RichText::new(crate::i18n::t(
-                                                "call.waiting_room",
-                                            ))
-                                            .size(12.0)
-                                            .strong()
-                                            .color(rgb(t.text_secondary)),
+                                            RichText::new(crate::i18n::t("call.waiting_room"))
+                                                .size(12.0)
+                                                .strong()
+                                                .color(rgb(t.text_secondary)),
                                         );
                                         for user in &waiting.users {
-                                            let name = user.phone.clone().unwrap_or_else(
-                                                || {
-                                                    self.call_participant_name(
-                                                        &call, &user.jid,
-                                                    )
-                                                },
-                                            );
+                                            let name = user.phone.clone().unwrap_or_else(|| {
+                                                self.call_participant_name(&call, &user.jid)
+                                            });
                                             ui.add_space(SP_2);
                                             ui.horizontal(|ui| {
                                                 ui.label(
                                                     RichText::new(name)
                                                         .size(12.0)
-                                                        .color(rgb(
-                                                            t.text_primary,
-                                                        )),
+                                                        .color(rgb(t.text_primary)),
                                                 );
-                                                let pending = call
-                                                    .waiting_pending
-                                                    .as_deref()
+                                                let pending = call.waiting_pending.as_deref()
                                                     == Some(user.jid.as_str());
                                                 if !pending {
                                                     if crate::widgets::button(
                                                         ui,
                                                         t,
-                                                        &crate::i18n::t(
-                                                            "call.admit",
-                                                        ),
+                                                        &crate::i18n::t("call.admit"),
                                                         crate::widgets::Btn::Primary,
                                                     )
                                                     .clicked()
                                                     {
-                                                        action = Some(format!(
-                                                            "admit:{}",
-                                                            user.jid
-                                                        ));
+                                                        action =
+                                                            Some(format!("admit:{}", user.jid));
                                                     }
                                                     if crate::widgets::button(
                                                         ui,
                                                         t,
-                                                        &crate::i18n::t(
-                                                            "call.deny",
-                                                        ),
+                                                        &crate::i18n::t("call.deny"),
                                                         crate::widgets::Btn::Secondary,
                                                     )
                                                     .clicked()
                                                     {
-                                                        action = Some(format!(
-                                                            "deny:{}",
-                                                            user.jid
-                                                        ));
+                                                        action = Some(format!("deny:{}", user.jid));
                                                     }
                                                 }
                                             });
@@ -1196,29 +1126,17 @@ impl App {
                                     ui.add_space(SP_3);
                                     ui.horizontal(|ui| {
                                         ui.label(
-                                            RichText::new(crate::i18n::t(
-                                                "call.require_approval",
-                                            ))
-                                            .size(12.0)
-                                            .color(rgb(t.text_primary)),
+                                            RichText::new(crate::i18n::t("call.require_approval"))
+                                                .size(12.0)
+                                                .color(rgb(t.text_primary)),
                                         );
                                         ui.with_layout(
-                                            egui::Layout::right_to_left(
-                                                egui::Align::Center,
-                                            ),
+                                            egui::Layout::right_to_left(egui::Align::Center),
                                             |ui| {
-                                                let mut approval =
-                                                    waiting.approval_required;
-                                                crate::widgets::switch(
-                                                    ui,
-                                                    &mut approval,
-                                                    t,
-                                                );
-                                                if approval
-                                                    != waiting.approval_required
-                                                {
-                                                    action =
-                                                        Some("approval".to_owned());
+                                                let mut approval = waiting.approval_required;
+                                                crate::widgets::switch(ui, &mut approval, t);
+                                                if approval != waiting.approval_required {
+                                                    action = Some("approval".to_owned());
                                                 }
                                             },
                                         );
@@ -1232,22 +1150,17 @@ impl App {
                                 ui.horizontal(|ui| {
                                     ui.add_space(18.0);
                                     for emoji in REACTIONS {
-                                        let mine =
-                                            call.my_reaction.as_deref()
-                                                == Some(emoji);
-                                        let mut button = egui::Button::new(
-                                            RichText::new(emoji).size(17.0),
-                                        )
-                                        .corner_radius(18.0);
+                                        let mine = call.my_reaction.as_deref() == Some(emoji);
+                                        let mut button =
+                                            egui::Button::new(RichText::new(emoji).size(17.0))
+                                                .corner_radius(18.0);
                                         button = if mine {
                                             button.fill(rgb(t.bg_panel_alt))
                                         } else {
                                             button.frame(false)
                                         };
                                         if ui.add(button).clicked() {
-                                            action = Some(format!(
-                                                "react:{emoji}"
-                                            ));
+                                            action = Some(format!("react:{emoji}"));
                                         }
                                     }
                                 });
@@ -1302,11 +1215,8 @@ impl App {
                                 }
                                 _ => {
                                     ui.columns(4, |cols| {
-                                        let mute_icon = if call.muted {
-                                            Icon::MicOff
-                                        } else {
-                                            Icon::Mic
-                                        };
+                                        let mute_icon =
+                                            if call.muted { Icon::MicOff } else { Icon::Mic };
                                         if call_action(
                                             &mut cols[0],
                                             mute_icon,
@@ -1327,15 +1237,11 @@ impl App {
                                         // so its state reads at a
                                         // glance, not only from its
                                         // glyph.
-                                        let (speaker_bg, speaker_glyph) =
-                                            if call.speaker {
-                                                (rgb(t.accent), rgb(t.on_accent()))
-                                            } else {
-                                                (
-                                                    rgb(t.bg_panel_alt),
-                                                    rgb(t.text_primary),
-                                                )
-                                            };
+                                        let (speaker_bg, speaker_glyph) = if call.speaker {
+                                            (rgb(t.accent), rgb(t.on_accent()))
+                                        } else {
+                                            (rgb(t.bg_panel_alt), rgb(t.text_primary))
+                                        };
                                         if call_action(
                                             &mut cols[1],
                                             Icon::VolumeUp,
@@ -1347,15 +1253,11 @@ impl App {
                                         ) {
                                             action = Some("speaker".to_owned());
                                         }
-                                        let (video_bg, video_glyph) =
-                                            if call.video_local {
-                                                (rgb(t.accent), rgb(t.on_accent()))
-                                            } else {
-                                                (
-                                                    rgb(t.bg_panel_alt),
-                                                    rgb(t.text_primary),
-                                                )
-                                            };
+                                        let (video_bg, video_glyph) = if call.video_local {
+                                            (rgb(t.accent), rgb(t.on_accent()))
+                                        } else {
+                                            (rgb(t.bg_panel_alt), rgb(t.text_primary))
+                                        };
                                         if call_action(
                                             &mut cols[2],
                                             if call.video_local {
@@ -1389,30 +1291,21 @@ impl App {
                                     {
                                         ui.add_space(SP_3);
                                         ui.columns(2, |cols| {
-                                            let (hand_bg, hand_glyph) =
-                                                if call.hand_raised {
-                                                    (
-                                                        rgb(t.accent),
-                                                        rgb(t.on_accent()),
-                                                    )
-                                                } else {
-                                                    (
-                                                        rgb(t.bg_panel_alt),
-                                                        rgb(t.text_primary),
-                                                    )
-                                                };
+                                            let (hand_bg, hand_glyph) = if call.hand_raised {
+                                                (rgb(t.accent), rgb(t.on_accent()))
+                                            } else {
+                                                (rgb(t.bg_panel_alt), rgb(t.text_primary))
+                                            };
                                             if call_action(
                                                 &mut cols[0],
                                                 Icon::BackHand,
                                                 hand_bg,
                                                 hand_glyph,
-                                                &crate::i18n::t(
-                                                    if call.hand_raised {
-                                                        "call.lower_hand"
-                                                    } else {
-                                                        "call.raise_hand"
-                                                    },
-                                                ),
+                                                &crate::i18n::t(if call.hand_raised {
+                                                    "call.lower_hand"
+                                                } else {
+                                                    "call.raise_hand"
+                                                }),
                                                 t,
                                                 call.action_pending,
                                             ) {
@@ -1427,8 +1320,7 @@ impl App {
                                                 t,
                                                 call.action_pending,
                                             ) {
-                                                action =
-                                                    Some("invite".to_owned());
+                                                action = Some("invite".to_owned());
                                             }
                                         });
                                     }
@@ -1497,8 +1389,7 @@ impl App {
         t: core::theme::Tokens,
     ) {
         ui.horizontal(|ui| {
-            let (rect, _) =
-                ui.allocate_exact_size(Vec2::splat(28.0), Sense::hover());
+            let (rect, _) = ui.allocate_exact_size(Vec2::splat(28.0), Sense::hover());
             let center = rect.center();
             match self
                 .chats
@@ -1532,11 +1423,7 @@ impl App {
             );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if participant.state != "connected" {
-                    ui.label(
-                        RichText::new(&participant.state)
-                            .size(11.0)
-                            .color(rgb(t.text_faint)),
-                    );
+                    ui.label(RichText::new(&participant.state).size(11.0).color(rgb(t.text_faint)));
                 }
                 if participant.sharing {
                     icons::draw(
@@ -1614,11 +1501,8 @@ impl App {
             .show(ctx, |ui| {
                 match self.groups.live_members.get(&call.chat_id) {
                     Some(members) => {
-                        let in_call: std::collections::HashSet<&str> = call
-                            .participants
-                            .iter()
-                            .map(|p| p.jid.as_str())
-                            .collect();
+                        let in_call: std::collections::HashSet<&str> =
+                            call.participants.iter().map(|p| p.jid.as_str()).collect();
                         let rows: Vec<&crate::state::MemberRow> = members
                             .iter()
                             .filter(|m| !in_call.contains(m.address.as_str()))
@@ -1630,49 +1514,35 @@ impl App {
                                     .color(rgb(t.text_secondary)),
                             );
                         }
-                        egui::ScrollArea::vertical()
-                            .max_height(280.0)
-                            .show(ui, |ui| {
-                                for member in rows {
-                                    let (rect, response) = ui.allocate_exact_size(
-                                        Vec2::new(ui.available_width(), 44.0),
-                                        Sense::click(),
-                                    );
-                                    if response.hovered() {
-                                        ui.painter().rect_filled(
-                                            rect,
-                                            8.0,
-                                            rgb(t.bg_panel_alt),
-                                        );
-                                    }
-                                    let center = egui::pos2(
-                                        rect.min.x + 22.0,
-                                        rect.center().y,
-                                    );
-                                    crate::widgets::paint_avatar(
-                                        ui.painter(),
-                                        center,
-                                        14.0,
-                                        false,
-                                        (crate::live::jid_id(&member.address)
-                                            % 251)
-                                            as u8,
-                                    );
-                                    ui.painter().text(
-                                        egui::pos2(
-                                            rect.min.x + 44.0,
-                                            rect.center().y,
-                                        ),
-                                        Align2::LEFT_CENTER,
-                                        &member.label,
-                                        egui::FontId::proportional(13.0),
-                                        rgb(t.text_primary),
-                                    );
-                                    if response.clicked() {
-                                        invite = Some(member.address.clone());
-                                    }
+                        egui::ScrollArea::vertical().max_height(280.0).show(ui, |ui| {
+                            for member in rows {
+                                let (rect, response) = ui.allocate_exact_size(
+                                    Vec2::new(ui.available_width(), 44.0),
+                                    Sense::click(),
+                                );
+                                if response.hovered() {
+                                    ui.painter().rect_filled(rect, 8.0, rgb(t.bg_panel_alt));
                                 }
-                            });
+                                let center = egui::pos2(rect.min.x + 22.0, rect.center().y);
+                                crate::widgets::paint_avatar(
+                                    ui.painter(),
+                                    center,
+                                    14.0,
+                                    false,
+                                    (crate::live::jid_id(&member.address) % 251) as u8,
+                                );
+                                ui.painter().text(
+                                    egui::pos2(rect.min.x + 44.0, rect.center().y),
+                                    Align2::LEFT_CENTER,
+                                    &member.label,
+                                    egui::FontId::proportional(13.0),
+                                    rgb(t.text_primary),
+                                );
+                                if response.clicked() {
+                                    invite = Some(member.address.clone());
+                                }
+                            }
+                        });
                     }
                     None => {
                         ui.label(

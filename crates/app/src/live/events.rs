@@ -2455,11 +2455,7 @@ impl crate::state::App {
                 if ended {
                     // A call-link call has no chat behind it:
                     // it leaves no chat-bound history record.
-                    let link_call = self
-                        .calls
-                        .active
-                        .as_ref()
-                        .is_some_and(|call| call.link);
+                    let link_call = self.calls.active.as_ref().is_some_and(|call| call.link);
                     if !link_call {
                         self.record_ended_call(&call_id, &chat_jid, seconds);
                     }
@@ -2498,12 +2494,8 @@ impl crate::state::App {
             }
             BackendEvent::CallLinkPreview { url, creator_jid, video, waiting_room } => {
                 self.calls.link_busy = false;
-                self.calls.link_preview = Some(crate::call_ui::LinkPreviewUi {
-                    url,
-                    creator_jid,
-                    video,
-                    waiting_room,
-                });
+                self.calls.link_preview =
+                    Some(crate::call_ui::LinkPreviewUi { url, creator_jid, video, waiting_room });
             }
             BackendEvent::CallLinkFailed { message } => {
                 self.calls.link_busy = false;
@@ -3408,7 +3400,7 @@ mod burst_drain_tests {
             call_id: "call-3".to_owned(),
             chat_jid: CHAT_JID.to_owned(),
             video: false,
-                group_jid: None,
+            group_jid: None,
         })
         .unwrap();
         tx.send(call_changed("call-3", backend::CallPhase::Ended, 0, Some("Missed call"))).unwrap();
@@ -3435,7 +3427,7 @@ mod burst_drain_tests {
             call_id: "call-4".to_owned(),
             chat_jid: CHAT_JID.to_owned(),
             video: false,
-                group_jid: None,
+            group_jid: None,
         })
         .unwrap();
         drain_all(&mut app, &ctx);
@@ -3553,7 +3545,7 @@ mod burst_drain_tests {
             call_id: "call-7".to_owned(),
             chat_jid: CHAT_JID.to_owned(),
             video: false,
-                group_jid: None,
+            group_jid: None,
         })
         .unwrap();
         drain_all(&mut app, &ctx);
@@ -3591,7 +3583,7 @@ mod burst_drain_tests {
             call_id: "call-8".to_owned(),
             chat_jid: CHAT_JID.to_owned(),
             video: false,
-                group_jid: None,
+            group_jid: None,
         })
         .unwrap();
         drain_all(&mut app, &ctx);
@@ -3652,7 +3644,7 @@ mod burst_drain_tests {
             call_id: "call-10".to_owned(),
             chat_jid: CHAT_JID.to_owned(),
             video: false,
-                group_jid: None,
+            group_jid: None,
         })
         .unwrap();
         tx.send(BackendEvent::CallEndedElsewhere {

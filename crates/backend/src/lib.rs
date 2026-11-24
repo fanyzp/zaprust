@@ -959,6 +959,58 @@ pub enum BackendCommand {
         /// Community name.
         name: String,
     },
+    /// Link existing groups into a community as subgroups. The
+    /// answer is a [`BackendEvent::CommunityGroupsLinked`] event
+    /// listing the groups that linked and the ones the server
+    /// refused; each linked group also re-reports its structure
+    /// with a [`BackendEvent::ChatCommunity`] event. Failures of
+    /// the operation as a whole surface as an `Error` event.
+    LinkCommunityGroups {
+        /// Community (parent group) JID.
+        community_jid: String,
+        /// Group JIDs to link.
+        group_jids: Vec<String>,
+    },
+    /// Unlink subgroups from a community. Members keep their
+    /// place in the unlinked groups themselves; only the
+    /// community tie is cut. Answered like
+    /// [`BackendCommand::LinkCommunityGroups`], with a
+    /// [`BackendEvent::CommunityGroupsUnlinked`] event.
+    UnlinkCommunityGroups {
+        /// Community (parent group) JID.
+        community_jid: String,
+        /// Group JIDs to unlink.
+        group_jids: Vec<String>,
+    },
+    /// Create a new subgroup inside a community. The answer is a
+    /// [`BackendEvent::CommunitySubgroupCreated`] event carrying
+    /// the new group's roster entry, whose community parent is
+    /// set. Failures surface as an `Error` event.
+    CreateCommunitySubgroup {
+        /// Community (parent group) JID.
+        community_jid: String,
+        /// Subgroup name (subject).
+        name: String,
+    },
+    /// Remove participants from a community entirely: the parent
+    /// group and every linked subgroup. Answered with a
+    /// [`BackendEvent::CommunityParticipantsRemoved`] event, and
+    /// the parent group's refreshed member list follows as a
+    /// `GroupMembers` event. Failures surface as an `Error` event.
+    RemoveCommunityParticipants {
+        /// Community (parent group) JID.
+        community_jid: String,
+        /// Participant JIDs or phone numbers.
+        participants: Vec<String>,
+    },
+    /// Deactivate a community. The server unlinks its subgroups
+    /// rather than deleting them. Answered with a
+    /// [`BackendEvent::CommunityDeactivated`] event. Failures
+    /// surface as an `Error` event.
+    DeactivateCommunity {
+        /// Community (parent group) JID.
+        community_jid: String,
+    },
     /// Create a group with the given name and participant JIDs (or
     /// bare phone numbers, which the backend normalises).
     CreateGroup {
@@ -2274,6 +2326,53 @@ pub enum BackendEvent {
         jid: String,
         /// The community's name, as created.
         name: String,
+    },
+    /// Groups were linked into a community (the answer to
+    /// [`BackendCommand::LinkCommunityGroups`]).
+    CommunityGroupsLinked {
+        /// Community (parent group) JID.
+        community_jid: String,
+        /// Group JIDs that are now linked subgroups.
+        linked: Vec<String>,
+        /// Groups the server refused, as (group JID, server
+        /// error code) pairs.
+        failed: Vec<(String, u32)>,
+    },
+    /// Groups were unlinked from a community (the answer to
+    /// [`BackendCommand::UnlinkCommunityGroups`]).
+    CommunityGroupsUnlinked {
+        /// Community (parent group) JID.
+        community_jid: String,
+        /// Group JIDs that are no longer linked.
+        unlinked: Vec<String>,
+        /// Groups the server refused, as (group JID, server
+        /// error code) pairs.
+        failed: Vec<(String, u32)>,
+    },
+    /// A subgroup was created inside a community (the answer to
+    /// [`BackendCommand::CreateCommunitySubgroup`]). The roster
+    /// entry carries its community parent.
+    CommunitySubgroupCreated {
+        /// Community (parent group) JID.
+        community_jid: String,
+        /// The new subgroup's roster entry.
+        group: LiveChat,
+    },
+    /// Participants were removed from a community (the answer to
+    /// [`BackendCommand::RemoveCommunityParticipants`]).
+    CommunityParticipantsRemoved {
+        /// Community (parent group) JID.
+        community_jid: String,
+        /// Participant JIDs that were removed.
+        participants: Vec<String>,
+    },
+    /// A community was deactivated (the answer to
+    /// [`BackendCommand::DeactivateCommunity`]). Its subgroups
+    /// survive as ordinary groups; the host clears their parent
+    /// tags and drops the parent chat locally.
+    CommunityDeactivated {
+        /// Community (parent group) JID.
+        community_jid: String,
     },
     /// A message appeared or changed.
     MessageUpsert(LiveMessage),

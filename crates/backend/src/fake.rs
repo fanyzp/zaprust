@@ -46,6 +46,9 @@ pub const FAKE_GROUP_JID: &str = "10000000002@g.us";
 pub const FAKE_CHANNEL_JID: &str = "10000000003@newsletter";
 /// JID of the scripted community parent group.
 pub const FAKE_COMMUNITY_JID: &str = "10000000004@g.us";
+/// JID of the scripted group that belongs to no community: the
+/// link picker's candidate in demo and tests.
+pub const FAKE_UNLINKED_GROUP_JID: &str = "10000000009@g.us";
 
 /// The deterministic fake backend. See the module docs.
 #[derive(Debug, Clone)]
@@ -412,6 +415,22 @@ pub fn scripted_chats() -> Vec<LiveChat> {
             mute_until: 0,
             parent_jid: None,
             is_parent: true,
+        },
+        LiveChat {
+            jid: FAKE_UNLINKED_GROUP_JID.to_owned(),
+            title: "Trail Crew (live demo)".to_owned(),
+            kind: LiveChatKind::Group,
+            preview: "Trail cleanup moved to Saturday".to_owned(),
+            preview_sender: None,
+            timestamp: 1_700_000_020,
+            unread: 0,
+            archived: false,
+            pinned: false,
+            ephemeral_secs: 0,
+            muted: false,
+            mute_until: 0,
+            parent_jid: None,
+            is_parent: false,
         },
     ]
 }
@@ -1175,6 +1194,7 @@ impl Backend for FakeBackend {
         // the script on every command.
         let mut group_counter: u32 = 0;
         let mut community_counter: u32 = 0;
+        let mut subgroup_counter: u32 = 0;
         let mut group_state: std::collections::HashMap<String, Vec<(String, String, bool)>> =
             std::collections::HashMap::new();
         // Group invite, approval and join-request state. The
@@ -2840,6 +2860,159 @@ impl Backend for FakeBackend {
                     let new_jid = format!("300000000{community_counter}@g.us");
                     events.emit(BackendEvent::CommunityCreated { jid: new_jid, name });
                 }
+                BackendCommand::LinkCommunityGroups { community_jid, group_jids } => {
+                    if let Some(log) = &command_log {
+                        log.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(
+                            format!(
+                                "link_community_groups:{community_jid}:{}",
+                                group_jids.join(",")
+                            ),
+                        );
+                    }
+                    let mut linked = Vec::new();
+                    let mut failed = Vec::new();
+                    for group_jid in &group_jids {
+                        match chat_state.get_mut(group_jid) {
+                            Some(chat)
+                                if chat.kind == LiveChatKind::Group
+                                    && *group_jid != community_jid =>
+                            {
+                                chat.parent_jid = Some(community_jid.clone());
+                                linked.push(group_jid.clone());
+                            }
+                            _ => failed.push((group_jid.clone(), 404)),
+                        }
+                    }
+                    events.emit(BackendEvent::CommunityGroupsLinked {
+                        community_jid: community_jid.clone(),
+                        linked: linked.clone(),
+                        failed,
+                    });
+                    for group_jid in &linked {
+                        events.emit(BackendEvent::ChatCommunity {
+                            chat_jid: group_jid.clone(),
+                            parent_jid: Some(community_jid.clone()),
+                            is_parent: false,
+                        });
+                    }
+                }
+                BackendCommand::UnlinkCommunityGroups { community_jid, group_jids } => {
+                    if let Some(log) = &command_log {
+                        log.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(
+                            format!(
+                                "unlink_community_groups:{community_jid}:{}",
+                                group_jids.join(",")
+                            ),
+                        );
+                    }
+                    let mut unlinked = Vec::new();
+                    let mut failed = Vec::new();
+                    for group_jid in &group_jids {
+                        match chat_state.get_mut(group_jid) {
+                            Some(chat)
+                                if chat.parent_jid.as_deref() == Some(community_jid.as_str()) =>
+                            {
+                                chat.parent_jid = None;
+                                unlinked.push(group_jid.clone());
+                            }
+                            _ => failed.push((group_jid.clone(), 404)),
+                        }
+                    }
+                    events.emit(BackendEvent::CommunityGroupsUnlinked {
+                        community_jid: community_jid.clone(),
+                        unlinked: unlinked.clone(),
+                        failed,
+                    });
+                    for group_jid in &unlinked {
+                        events.emit(BackendEvent::ChatCommunity {
+                            chat_jid: group_jid.clone(),
+                            parent_jid: None,
+                            is_parent: false,
+                        });
+                    }
+                }
+                BackendCommand::CreateCommunitySubgroup { community_jid, name } => {
+                    if let Some(log) = &command_log {
+                        log.lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .push(format!("create_community_subgroup:{community_jid}:{name}"));
+                    }
+                    subgroup_counter += 1;
+                    let new_jid = format!("400000000{subgroup_counter}@g.us");
+                    let group = LiveChat {
+                        jid: new_jid.clone(),
+                        title: name.clone(),
+                        kind: LiveChatKind::Group,
+                        preview: "Group created".to_owned(),
+                        preview_sender: None,
+                        timestamp: 1_700_000_500,
+                        unread: 0,
+                        archived: false,
+                        pinned: false,
+                        ephemeral_secs: 0,
+                        muted: false,
+                        mute_until: 0,
+                        parent_jid: Some(community_jid.clone()),
+                        is_parent: false,
+                    };
+                    chat_state.insert(new_jid, group.clone());
+                    events.emit(BackendEvent::CommunitySubgroupCreated { community_jid, group });
+                }
+                BackendCommand::RemoveCommunityParticipants { community_jid, participants } => {
+                    if let Some(log) = &command_log {
+                        log.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(
+                            format!(
+                                "remove_community_participants:{community_jid}:{}",
+                                participants.join(",")
+                            ),
+                        );
+                    }
+                    // Removal covers the parent group and every
+                    // linked subgroup, like the real backend.
+                    let affected: Vec<String> = chat_state
+                        .values()
+                        .filter(|c| {
+                            c.jid == community_jid
+                                || c.parent_jid.as_deref() == Some(community_jid.as_str())
+                        })
+                        .map(|c| c.jid.clone())
+                        .collect();
+                    for jid in &affected {
+                        if let Some(members) = group_state.get_mut(jid) {
+                            members.retain(|(j, _, _)| !participants.contains(j));
+                        }
+                    }
+                    events.emit(BackendEvent::CommunityParticipantsRemoved {
+                        community_jid: community_jid.clone(),
+                        participants: participants.clone(),
+                    });
+                    let members = group_state
+                        .entry(community_jid.clone())
+                        .or_insert_with(default_members)
+                        .clone();
+                    events.emit(BackendEvent::GroupMembers {
+                        chat_jid: community_jid,
+                        members,
+                        own_admin: true,
+                    });
+                }
+                BackendCommand::DeactivateCommunity { community_jid } => {
+                    if let Some(log) = &command_log {
+                        log.lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .push(format!("deactivate_community:{community_jid}"));
+                    }
+                    // Subgroups survive as ordinary groups; only
+                    // the parent chat goes away.
+                    for chat in chat_state.values_mut() {
+                        if chat.parent_jid.as_deref() == Some(community_jid.as_str()) {
+                            chat.parent_jid = None;
+                        }
+                    }
+                    chat_state.remove(&community_jid);
+                    group_state.remove(&community_jid);
+                    events.emit(BackendEvent::CommunityDeactivated { community_jid });
+                }
                 BackendCommand::GroupParticipants { chat_jid, participants, op } => {
                     if let Some(log) = &command_log {
                         log.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(
@@ -4261,6 +4434,125 @@ mod tests {
             }
             other => panic!("expected the poll, got {other:?}"),
         }
+        ch.commands.send(BackendCommand::Shutdown).unwrap();
+    }
+
+    /// Community management (parity P6): linking the scripted
+    /// unlinked group files it under the community (and an
+    /// unknown group is refused with its code), creating a
+    /// subgroup answers with a parented roster entry, removing
+    /// a member takes them out of the parent's refreshed list,
+    /// unlinking stands a group alone again, and deactivation
+    /// is answered while the subgroups survive.
+    #[test]
+    fn community_management_round_trip() {
+        let ch = start(FakeBackend::auto());
+        linked(&ch);
+        ch.commands
+            .send(BackendCommand::LinkCommunityGroups {
+                community_jid: FAKE_COMMUNITY_JID.to_owned(),
+                group_jids: vec![FAKE_UNLINKED_GROUP_JID.to_owned(), "99999999999@g.us".to_owned()],
+            })
+            .unwrap();
+        let linked_events =
+            collect_until(&ch, &|e| matches!(e, BackendEvent::ChatCommunity { .. }));
+        let answer = linked_events
+            .iter()
+            .find_map(|e| match e {
+                BackendEvent::CommunityGroupsLinked { linked, failed, .. } => {
+                    Some((linked.clone(), failed.clone()))
+                }
+                _ => None,
+            })
+            .expect("the link answer arrives");
+        assert_eq!(answer.0, vec![FAKE_UNLINKED_GROUP_JID.to_owned()], "the real group links");
+        assert_eq!(
+            answer.1,
+            vec![("99999999999@g.us".to_owned(), 404)],
+            "the unknown group is refused with its code"
+        );
+        assert!(
+            linked_events.iter().any(|e| matches!(
+                e,
+                BackendEvent::ChatCommunity { chat_jid, parent_jid: Some(p), .. }
+                    if chat_jid == FAKE_UNLINKED_GROUP_JID && p == FAKE_COMMUNITY_JID
+            )),
+            "the linked group re-reports its structure: {linked_events:?}"
+        );
+        ch.commands
+            .send(BackendCommand::CreateCommunitySubgroup {
+                community_jid: FAKE_COMMUNITY_JID.to_owned(),
+                name: "Trail Food".to_owned(),
+            })
+            .unwrap();
+        let created =
+            collect_until(&ch, &|e| matches!(e, BackendEvent::CommunitySubgroupCreated { .. }));
+        let subgroup_jid = match &created[created.len() - 1] {
+            BackendEvent::CommunitySubgroupCreated { group, .. } => {
+                assert_eq!(group.title, "Trail Food");
+                assert_eq!(group.parent_jid.as_deref(), Some(FAKE_COMMUNITY_JID));
+                group.jid.clone()
+            }
+            other => panic!("expected the subgroup answer, got {other:?}"),
+        };
+        ch.commands
+            .send(BackendCommand::FetchGroupMembers { chat_jid: FAKE_COMMUNITY_JID.to_owned() })
+            .unwrap();
+        let _ = collect_until(&ch, &|e| matches!(e, BackendEvent::GroupMembers { .. }));
+        ch.commands
+            .send(BackendCommand::RemoveCommunityParticipants {
+                community_jid: FAKE_COMMUNITY_JID.to_owned(),
+                participants: vec!["10000000004@s.whatsapp.net".to_owned()],
+            })
+            .unwrap();
+        let removed = collect_until(&ch, &|e| matches!(e, BackendEvent::GroupMembers { .. }));
+        assert!(
+            removed.iter().any(|e| matches!(
+                e,
+                BackendEvent::CommunityParticipantsRemoved { participants, .. }
+                    if participants == &vec!["10000000004@s.whatsapp.net".to_owned()]
+            )),
+            "the removal is answered: {removed:?}"
+        );
+        match &removed[removed.len() - 1] {
+            BackendEvent::GroupMembers { members, .. } => {
+                assert!(
+                    !members.iter().any(|(j, _, _)| j == "10000000004@s.whatsapp.net"),
+                    "the refreshed parent list loses the removed member: {members:?}"
+                );
+            }
+            other => panic!("expected the refreshed member list, got {other:?}"),
+        }
+        ch.commands
+            .send(BackendCommand::UnlinkCommunityGroups {
+                community_jid: FAKE_COMMUNITY_JID.to_owned(),
+                group_jids: vec![subgroup_jid.clone()],
+            })
+            .unwrap();
+        let unlinked_events =
+            collect_until(&ch, &|e| matches!(e, BackendEvent::ChatCommunity { .. }));
+        assert!(
+            unlinked_events.iter().any(|e| matches!(
+                e,
+                BackendEvent::CommunityGroupsUnlinked { unlinked, .. }
+                    if unlinked == &vec![subgroup_jid.clone()]
+            )),
+            "the unlink is answered: {unlinked_events:?}"
+        );
+        ch.commands
+            .send(BackendCommand::DeactivateCommunity {
+                community_jid: FAKE_COMMUNITY_JID.to_owned(),
+            })
+            .unwrap();
+        let deactivated =
+            collect_until(&ch, &|e| matches!(e, BackendEvent::CommunityDeactivated { .. }));
+        assert!(
+            matches!(
+                &deactivated[deactivated.len() - 1],
+                BackendEvent::CommunityDeactivated { .. }
+            ),
+            "the deactivation is answered: {deactivated:?}"
+        );
         ch.commands.send(BackendCommand::Shutdown).unwrap();
     }
 

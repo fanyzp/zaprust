@@ -461,6 +461,50 @@ async fn retry_download_file(
     .ok()
 }
 
+/// Re-reports one group's community structure from a fresh
+/// metadata fetch, after a link or unlink changed it
+/// server-side. Best-effort: a failed fetch leaves the last
+/// known structure in place rather than failing the operation
+/// that already succeeded.
+async fn emit_community_structure(
+    client: &whatsapp_rust::Client,
+    events: &crate::EventSink,
+    group_jid: &str,
+) {
+    let Ok(parsed) = group_jid.parse::<Jid>() else { return };
+    if let Ok(meta) = client.groups().fetch_metadata(&parsed).await {
+        events.emit(BackendEvent::ChatCommunity {
+            chat_jid: group_jid.to_owned(),
+            parent_jid: meta.parent_group_jid.as_ref().map(|p| p.to_string()),
+            is_parent: meta.is_parent_group,
+        });
+    }
+}
+
+/// Emits the `GroupMembers` answer for one group from a fresh
+/// metadata fetch: the same member rows and own-role computation
+/// [`BackendCommand::FetchGroupMembers`] answers with, reused
+/// after a community participant removal so the community home
+/// re-renders from server truth.
+async fn emit_group_members(
+    client: &whatsapp_rust::Client,
+    events: &crate::EventSink,
+    chat_jid: &str,
+) {
+    let Ok(jid) = chat_jid.parse::<Jid>() else { return };
+    let Ok(meta) = client.groups().fetch_metadata(&jid).await else { return };
+    let members: Vec<(String, String, bool)> = meta
+        .participants
+        .iter()
+        .map(|p| (p.jid.to_string(), participant_name(p), p.is_admin()))
+        .collect();
+    let own_admin = [client.pn(), client.lid()].into_iter().flatten().any(|own| {
+        let own = own.to_non_ad().to_string();
+        meta.participants.iter().any(|p| p.is_admin() && p.jid.to_non_ad().to_string() == own)
+    });
+    events.emit(BackendEvent::GroupMembers { chat_jid: chat_jid.to_owned(), members, own_admin });
+}
+
 pub(super) async fn run_async(
     config: &BackendConfig,
     commands: Receiver<BackendCommand>,
@@ -2229,6 +2273,185 @@ pub(super) async fn run_async(
                         },
                         Err(e) => events.emit(BackendEvent::Error {
                             message: format!("Creating the community failed: {}", error_words(&e)),
+                        }),
+                    }
+                }
+                BackendCommand::LinkCommunityGroups { community_jid, group_jids } => {
+                    let parsed = (
+                        community_jid.parse::<Jid>(),
+                        group_jids
+                            .iter()
+                            .map(|g| g.parse::<Jid>())
+                            .collect::<Result<Vec<Jid>, _>>(),
+                    );
+                    match parsed {
+                        (Ok(parent), Ok(groups)) => {
+                            match client.community().link_subgroups(parent, &groups).await {
+                                Ok(result) => {
+                                    let linked: Vec<String> =
+                                        result.linked_jids.iter().map(|j| j.to_string()).collect();
+                                    events.emit(BackendEvent::CommunityGroupsLinked {
+                                        community_jid: community_jid.clone(),
+                                        linked: linked.clone(),
+                                        failed: result
+                                            .failed_groups
+                                            .iter()
+                                            .map(|f| (f.jid.to_string(), f.code))
+                                            .collect(),
+                                    });
+                                    for group in &linked {
+                                        emit_community_structure(&client, &events, group).await;
+                                    }
+                                }
+                                Err(e) => events.emit(BackendEvent::Error {
+                                    message: format!(
+                                        "Linking the group failed: {}",
+                                        error_words(&e)
+                                    ),
+                                }),
+                            }
+                        }
+                        (Err(e), _) | (_, Err(e)) => events.emit(BackendEvent::Error {
+                            message: format!("Invalid group address: {}", error_words(&e)),
+                        }),
+                    }
+                }
+                BackendCommand::UnlinkCommunityGroups { community_jid, group_jids } => {
+                    let parsed = (
+                        community_jid.parse::<Jid>(),
+                        group_jids
+                            .iter()
+                            .map(|g| g.parse::<Jid>())
+                            .collect::<Result<Vec<Jid>, _>>(),
+                    );
+                    match parsed {
+                        (Ok(parent), Ok(groups)) => {
+                            match client.community().unlink_subgroups(parent, &groups, false).await
+                            {
+                                Ok(result) => {
+                                    let unlinked: Vec<String> = result
+                                        .unlinked_jids
+                                        .iter()
+                                        .map(|j| j.to_string())
+                                        .collect();
+                                    events.emit(BackendEvent::CommunityGroupsUnlinked {
+                                        community_jid: community_jid.clone(),
+                                        unlinked: unlinked.clone(),
+                                        failed: result
+                                            .failed_groups
+                                            .iter()
+                                            .map(|f| (f.jid.to_string(), f.code))
+                                            .collect(),
+                                    });
+                                    for group in &unlinked {
+                                        emit_community_structure(&client, &events, group).await;
+                                    }
+                                }
+                                Err(e) => events.emit(BackendEvent::Error {
+                                    message: format!(
+                                        "Unlinking the group failed: {}",
+                                        error_words(&e)
+                                    ),
+                                }),
+                            }
+                        }
+                        (Err(e), _) | (_, Err(e)) => events.emit(BackendEvent::Error {
+                            message: format!("Invalid group address: {}", error_words(&e)),
+                        }),
+                    }
+                }
+                BackendCommand::CreateCommunitySubgroup { community_jid, name } => {
+                    match community_jid.parse::<Jid>() {
+                        Ok(parent) => {
+                            match client
+                                .community()
+                                .create_subgroup(name.clone(), &[], parent)
+                                .await
+                            {
+                                Ok(result) => {
+                                    let meta = result.metadata;
+                                    events.emit(BackendEvent::CommunitySubgroupCreated {
+                                        community_jid: community_jid.clone(),
+                                        group: LiveChat {
+                                            jid: meta.id.to_string(),
+                                            title: name,
+                                            kind: LiveChatKind::Group,
+                                            preview: "Group created".to_owned(),
+                                            preview_sender: None,
+                                            timestamp: unix_now(),
+                                            unread: 0,
+                                            archived: false,
+                                            pinned: false,
+                                            ephemeral_secs: 0,
+                                            muted: false,
+                                            mute_until: 0,
+                                            parent_jid: Some(community_jid.clone()),
+                                            is_parent: false,
+                                        },
+                                    });
+                                }
+                                Err(e) => events.emit(BackendEvent::Error {
+                                    message: format!(
+                                        "Creating the subgroup failed: {}",
+                                        error_words(&e)
+                                    ),
+                                }),
+                            }
+                        }
+                        Err(e) => events.emit(BackendEvent::Error {
+                            message: format!("Invalid community address: {}", error_words(&e)),
+                        }),
+                    }
+                }
+                BackendCommand::RemoveCommunityParticipants { community_jid, participants } => {
+                    let parsed = (
+                        community_jid.parse::<Jid>(),
+                        participants
+                            .iter()
+                            .map(|p| parse_address(p))
+                            .collect::<Result<Vec<Jid>, String>>(),
+                    );
+                    match parsed {
+                        (Ok(parent), Ok(parts)) => {
+                            match client.community().remove_participants(parent, &parts).await {
+                                Ok(_) => {
+                                    events.emit(BackendEvent::CommunityParticipantsRemoved {
+                                        community_jid: community_jid.clone(),
+                                        participants: parts.iter().map(|j| j.to_string()).collect(),
+                                    });
+                                    emit_group_members(&client, &events, &community_jid).await;
+                                }
+                                Err(e) => events.emit(BackendEvent::Error {
+                                    message: format!(
+                                        "Removing the member failed: {}",
+                                        error_words(&e)
+                                    ),
+                                }),
+                            }
+                        }
+                        (Err(e), _) => events.emit(BackendEvent::Error {
+                            message: format!("Invalid community address: {}", error_words(&e)),
+                        }),
+                        (_, Err(e)) => events.emit(BackendEvent::Error { message: e }),
+                    }
+                }
+                BackendCommand::DeactivateCommunity { community_jid } => {
+                    match community_jid.parse::<Jid>() {
+                        Ok(parent) => match client.community().deactivate(parent).await {
+                            Ok(()) => {
+                                events.emit(BackendEvent::CommunityDeactivated {
+                                    community_jid: community_jid.clone(),
+                                });
+                            }
+                            Err(e) => events.emit(BackendEvent::Error {
+                                message: format!(
+                                    "Deactivating the community failed: {}",
+                                    error_words(&e)
+                                ),
+                            }),
+                        },
+                        Err(e) => events.emit(BackendEvent::Error {
+                            message: format!("Invalid community address: {}", error_words(&e)),
                         }),
                     }
                 }

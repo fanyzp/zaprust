@@ -2688,7 +2688,7 @@ mod tests {
             store.upsert_message(&msg, 0).unwrap();
         }
         let chats = store.chats().unwrap();
-        assert_eq!(chats.len(), 5);
+        assert_eq!(chats.len(), 6);
         assert_eq!(chats[0].jid, scripted_chats()[0].jid, "most recent first");
         let msgs: Vec<LiveMessage> =
             store.messages(&scripted_chats()[0].jid).unwrap().into_iter().map(|(m, _)| m).collect();

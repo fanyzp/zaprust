@@ -420,13 +420,85 @@ fn fake_invite_code(chat_jid: &str, generation: u32) -> String {
     out
 }
 
-/// The scripted group's default member rows: (jid, name, admin).
-fn default_members() -> Vec<(String, String, bool)> {
+/// The scripted group's default member rows: (jid, name,
+/// admin, member label). Emma carries a label so the member
+/// label surface (row 65) is visible in demo mode.
+fn default_members() -> Vec<crate::GroupMemberRow> {
     vec![
-        ("10000000001@s.whatsapp.net".to_owned(), "Sarah Miller".to_owned(), true),
-        ("10000000004@s.whatsapp.net".to_owned(), "Mike Johnson".to_owned(), false),
-        ("10000000007@s.whatsapp.net".to_owned(), "Emma Wilson".to_owned(), false),
+        ("10000000001@s.whatsapp.net".to_owned(), "Sarah Miller".to_owned(), true, None),
+        ("10000000004@s.whatsapp.net".to_owned(), "Mike Johnson".to_owned(), false, None),
+        (
+            "10000000007@s.whatsapp.net".to_owned(),
+            "Emma Wilson".to_owned(),
+            false,
+            Some("Design".to_owned()),
+        ),
     ]
+}
+
+/// The short kind name the command log records for an
+/// interactive send.
+fn spec_log_name(spec: &crate::InteractiveSpec) -> &'static str {
+    match spec {
+        crate::InteractiveSpec::Buttons { .. } => "buttons",
+        crate::InteractiveSpec::List { .. } => "list",
+        crate::InteractiveSpec::Carousel { .. } => "carousel",
+    }
+}
+
+/// The echo body and kind an interactive send produces in the
+/// fake: the same shapes the live builder puts on the wire,
+/// with the same positional choice ids.
+fn interactive_echo_parts(spec: &crate::InteractiveSpec) -> (String, crate::LiveMessageKind) {
+    match spec {
+        crate::InteractiveSpec::Buttons { text, footer, buttons } => (
+            text.clone(),
+            crate::LiveMessageKind::Buttons {
+                footer: footer.clone(),
+                buttons: buttons
+                    .iter()
+                    .enumerate()
+                    .map(|(index, label)| crate::LiveButton {
+                        id: (index + 1).to_string(),
+                        text: label.clone(),
+                    })
+                    .collect(),
+            },
+        ),
+        crate::InteractiveSpec::List { title, description, button_label, sections } => {
+            let mut next_row = 0usize;
+            let sections = sections
+                .iter()
+                .map(|(section_title, rows)| crate::LiveListSection {
+                    title: section_title.clone(),
+                    rows: rows
+                        .iter()
+                        .map(|(row_title, row_description)| {
+                            next_row += 1;
+                            crate::LiveListRow {
+                                id: next_row.to_string(),
+                                title: row_title.clone(),
+                                description: row_description.clone(),
+                            }
+                        })
+                        .collect(),
+                })
+                .collect();
+            (
+                title.clone(),
+                crate::LiveMessageKind::ListMsg {
+                    description: description.clone(),
+                    button_label: button_label.clone(),
+                    footer: String::new(),
+                    sections,
+                },
+            )
+        }
+        crate::InteractiveSpec::Carousel { body, cards } => (
+            body.clone(),
+            crate::LiveMessageKind::Carousel { body: body.clone(), cards: cards.clone() },
+        ),
+    }
 }
 
 /// The scripted chats, in display order.
@@ -1443,8 +1515,9 @@ pub fn scripted_bidi_fixture_messages() -> Vec<LiveMessage> {
     ]
 }
 
-/// The scripted messages for the group chat: a location share and a
-/// received carousel sample (render-only rich types).
+/// The scripted messages for the group chat: a location share, a
+/// received carousel sample, a contact card, a group event, and
+/// received buttons and list samples.
 #[must_use]
 pub(crate) fn scripted_group_messages() -> Vec<LiveMessage> {
     let mut location = LiveMessage::text(
@@ -1530,7 +1603,54 @@ pub(crate) fn scripted_group_messages() -> Vec<LiveMessage> {
         ("10000000007@s.whatsapp.net".to_owned(), crate::EventRsvp::Going),
         (FAKE_DM_JID.to_owned(), crate::EventRsvp::Maybe),
     ];
-    vec![location, carousel, contact, event]
+    // Received interactive samples (row 19): a buttons
+    // message from Sarah and a list message from Mike, so the
+    // answer surfaces are exercisable in demo mode.
+    let mut buttons_msg = LiveMessage::text(
+        "fake-buttons-1",
+        FAKE_GROUP_JID,
+        Some("Sarah Miller".to_owned()),
+        "Lunch on Friday?",
+        1_700_000_240,
+        false,
+    );
+    buttons_msg.kind = crate::LiveMessageKind::Buttons {
+        footer: "Tap to answer".to_owned(),
+        buttons: vec![
+            crate::LiveButton { id: "1".to_owned(), text: "Yes".to_owned() },
+            crate::LiveButton { id: "2".to_owned(), text: "No".to_owned() },
+            crate::LiveButton { id: "3".to_owned(), text: "Maybe".to_owned() },
+        ],
+    };
+    let mut list_msg = LiveMessage::text(
+        "fake-list-1",
+        FAKE_GROUP_JID,
+        Some("Mike Johnson".to_owned()),
+        "Pick a meeting slot",
+        1_700_000_260,
+        false,
+    );
+    list_msg.kind = crate::LiveMessageKind::ListMsg {
+        description: "All times are local.".to_owned(),
+        button_label: "See slots".to_owned(),
+        footer: String::new(),
+        sections: vec![crate::LiveListSection {
+            title: "Friday".to_owned(),
+            rows: vec![
+                crate::LiveListRow {
+                    id: "1".to_owned(),
+                    title: "09:00".to_owned(),
+                    description: "Right after standup".to_owned(),
+                },
+                crate::LiveListRow {
+                    id: "2".to_owned(),
+                    title: "13:00".to_owned(),
+                    description: "After lunch".to_owned(),
+                },
+            ],
+        }],
+    };
+    vec![location, carousel, contact, event, buttons_msg, list_msg]
 }
 
 /// The scripted older-history pages for the DM chat, keyed by
@@ -1849,7 +1969,7 @@ impl Backend for FakeBackend {
         let mut group_counter: u32 = 0;
         let mut community_counter: u32 = 0;
         let mut subgroup_counter: u32 = 0;
-        let mut group_state: std::collections::HashMap<String, Vec<(String, String, bool)>> =
+        let mut group_state: std::collections::HashMap<String, Vec<crate::GroupMemberRow>> =
             std::collections::HashMap::new();
         // Group invite, approval and join-request state. The
         // scripted group starts with approval on and two pending
@@ -1860,6 +1980,28 @@ impl Backend for FakeBackend {
             std::collections::HashMap::from([(FAKE_GROUP_JID.to_owned(), true)]);
         // (announce, locked) modes per group; both start off.
         let mut mode_state: std::collections::HashMap<String, (bool, bool)> =
+            std::collections::HashMap::new();
+        // Reports to admins per group (row 65), seeded with one
+        // report of a scripted group message so the admin view
+        // has content before anything is reported in the demo.
+        let mut reported_state: std::collections::HashMap<
+            String,
+            Vec<crate::ReportedMessageEntry>,
+        > = std::collections::HashMap::from([(
+            FAKE_GROUP_JID.to_owned(),
+            vec![crate::ReportedMessageEntry {
+                message_id: "fake-carousel-1".to_owned(),
+                reporters: vec!["Emma Wilson".to_owned()],
+            }],
+        )]);
+        // The scripted account's own member label per group
+        // (row 65), set through SetOwnMemberLabel.
+        let mut own_label_state: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        // A history share whose send failed retryably (row
+        // 64): the eligible message count kept per group until
+        // the retry is spent, mirroring the live token.
+        let mut history_retry_state: std::collections::HashMap<String, usize> =
             std::collections::HashMap::new();
         let mut join_request_state: std::collections::HashMap<String, Vec<(String, String)>> =
             std::collections::HashMap::from([(
@@ -2060,6 +2202,83 @@ impl Backend for FakeBackend {
                             reply.expires_at = ts + 1 + i64::from(reply_timer);
                         }
                         events.emit(BackendEvent::MessageUpsert(reply));
+                    }
+                }
+                BackendCommand::SendInteractive { chat_jid, spec } => {
+                    if let Some(log) = &command_log {
+                        log.lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .push(format!("send_interactive:{chat_jid}:{}", spec_log_name(&spec)));
+                    }
+                    if take_failure("SendInteractive") {
+                        events.emit(BackendEvent::Error {
+                            message: "That message could not be sent: connection lost".to_owned(),
+                        });
+                    } else {
+                        sent_counter += 1;
+                        let id = format!("fake-sent-{sent_counter}");
+                        let ts = 1_700_000_300 + i64::try_from(sent_counter).unwrap_or(0);
+                        let (body, kind) = interactive_echo_parts(&spec);
+                        let mut echo =
+                            LiveMessage::text(id.clone(), chat_jid.clone(), None, body, ts, true);
+                        echo.kind = kind;
+                        events.emit(BackendEvent::MessageSent {
+                            chat_jid: chat_jid.clone(),
+                            message_id: id.clone(),
+                        });
+                        events.emit(BackendEvent::MessageUpsert(echo));
+                        events.emit(BackendEvent::Receipt {
+                            chat_jid: chat_jid.clone(),
+                            message_ids: vec![id.clone()],
+                            kind: crate::ReceiptKind::Delivered,
+                            at: ts,
+                            actor: None,
+                        });
+                        defer_read_receipt(events.clone(), chat_jid, id, ts);
+                    }
+                }
+                BackendCommand::SendInteractiveResponse {
+                    chat_jid,
+                    message_id: _,
+                    sender_jid: _,
+                    from_me: _,
+                    is_list: _,
+                    choice_id: _,
+                    choice_text,
+                } => {
+                    if let Some(log) = &command_log {
+                        log.lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .push(format!("interactive_response:{chat_jid}:{choice_text}"));
+                    }
+                    if take_failure("SendInteractiveResponse") {
+                        events.emit(BackendEvent::Error {
+                            message: "That answer could not be sent: connection lost".to_owned(),
+                        });
+                    } else {
+                        sent_counter += 1;
+                        let id = format!("fake-sent-{sent_counter}");
+                        let ts = 1_700_000_300 + i64::try_from(sent_counter).unwrap_or(0);
+                        let echo = LiveMessage::text(
+                            id.clone(),
+                            chat_jid.clone(),
+                            None,
+                            choice_text,
+                            ts,
+                            true,
+                        );
+                        events.emit(BackendEvent::MessageSent {
+                            chat_jid: chat_jid.clone(),
+                            message_id: id.clone(),
+                        });
+                        events.emit(BackendEvent::MessageUpsert(echo));
+                        events.emit(BackendEvent::Receipt {
+                            chat_jid,
+                            message_ids: vec![id],
+                            kind: crate::ReceiptKind::Delivered,
+                            at: ts,
+                            actor: None,
+                        });
                     }
                 }
                 BackendCommand::PostTextStatus { text, recipients } => {
@@ -3989,7 +4208,10 @@ impl Backend for FakeBackend {
                     let new_jid = format!("200000000{group_counter}@g.us");
                     group_state.insert(
                         new_jid.clone(),
-                        participants.iter().map(|p| (p.clone(), String::new(), false)).collect(),
+                        participants
+                            .iter()
+                            .map(|p| (p.clone(), String::new(), false, None))
+                            .collect(),
                     );
                     chat_state.insert(
                         new_jid.clone(),
@@ -4159,7 +4381,7 @@ impl Backend for FakeBackend {
                         .collect();
                     for jid in &affected {
                         if let Some(members) = group_state.get_mut(jid) {
-                            members.retain(|(j, _, _)| !participants.contains(j));
+                            members.retain(|(j, _, _, _)| !participants.contains(j));
                         }
                     }
                     events.emit(BackendEvent::CommunityParticipantsRemoved {
@@ -4171,6 +4393,7 @@ impl Backend for FakeBackend {
                         .or_insert_with(default_members)
                         .clone();
                     events.emit(BackendEvent::GroupMembers {
+                        own_label: own_label_state.get(&community_jid).cloned(),
                         chat_jid: community_jid,
                         members,
                         own_admin: true,
@@ -4207,13 +4430,13 @@ impl Backend for FakeBackend {
                     match op {
                         crate::ParticipantOp::Add => {
                             for p in &participants {
-                                if !members.iter().any(|(j, _, _)| j == p) {
-                                    members.push((p.clone(), String::new(), false));
+                                if !members.iter().any(|(j, _, _, _)| j == p) {
+                                    members.push((p.clone(), String::new(), false, None));
                                 }
                             }
                         }
                         crate::ParticipantOp::Remove => {
-                            members.retain(|(j, _, _)| !participants.contains(j));
+                            members.retain(|(j, _, _, _)| !participants.contains(j));
                         }
                         crate::ParticipantOp::Promote => {
                             for m in members.iter_mut() {
@@ -4231,10 +4454,161 @@ impl Backend for FakeBackend {
                         }
                     }
                     events.emit(BackendEvent::GroupMembers {
+                        own_label: own_label_state.get(&chat_jid).cloned(),
                         chat_jid,
                         members: members.clone(),
                         own_admin: true,
                     });
+                }
+                BackendCommand::AddGroupParticipantsWithHistory {
+                    chat_jid,
+                    participants,
+                    history,
+                } => {
+                    if let Some(log) = &command_log {
+                        log.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(
+                            format!(
+                                "add_with_history:{chat_jid}:{}:{}",
+                                participants.join(","),
+                                history.len()
+                            ),
+                        );
+                    }
+                    if take_failure("AddGroupParticipantsWithHistory") {
+                        events.emit(BackendEvent::Error {
+                            message: "That group change failed: connection lost".to_owned(),
+                        });
+                    } else {
+                        // Scripted refusal: an address carrying
+                        // "refused" is not on WhatsApp.
+                        let (added_refs, refused_refs): (Vec<&String>, Vec<&String>) =
+                            participants.iter().partition(|p| !p.contains("refused"));
+                        let added: Vec<String> = added_refs.iter().map(|p| (*p).clone()).collect();
+                        let refused: Vec<(String, String)> = refused_refs
+                            .iter()
+                            .map(|p| ((*p).clone(), "not on WhatsApp".to_owned()))
+                            .collect();
+                        let members =
+                            group_state.entry(chat_jid.clone()).or_insert_with(default_members);
+                        for p in &added {
+                            if !members.iter().any(|(j, _, _, _)| j == p) {
+                                members.push((p.clone(), String::new(), false, None));
+                            }
+                        }
+                        let members = members.clone();
+                        events.emit(BackendEvent::GroupMembers {
+                            own_label: own_label_state.get(&chat_jid).cloned(),
+                            chat_jid: chat_jid.clone(),
+                            members,
+                            own_admin: true,
+                        });
+                        // Scripted history outcomes: a "flaky"
+                        // participant makes the share send fail
+                        // retryably (the retry arm below then
+                        // succeeds); no records means nothing
+                        // was eligible; otherwise shared.
+                        let report = if participants.iter().any(|p| p.contains("flaky")) {
+                            if !history.is_empty() {
+                                history_retry_state.insert(chat_jid.clone(), history.len());
+                            }
+                            crate::HistoryShareReport::Failed {
+                                error: "sharing the history failed: connection lost".to_owned(),
+                                retryable: true,
+                            }
+                        } else if history.is_empty() {
+                            crate::HistoryShareReport::Skipped {
+                                reason: "there were no messages the protocol can share".to_owned(),
+                            }
+                        } else {
+                            crate::HistoryShareReport::Shared { messages: history.len() }
+                        };
+                        events.emit(BackendEvent::GroupHistoryReported {
+                            chat_jid,
+                            added,
+                            refused,
+                            report,
+                        });
+                    }
+                }
+                BackendCommand::RetryGroupHistoryShare { chat_jid } => {
+                    if let Some(log) = &command_log {
+                        log.lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .push(format!("retry_history:{chat_jid}"));
+                    }
+                    let report = match history_retry_state.remove(&chat_jid) {
+                        Some(messages) => crate::HistoryShareReport::Shared { messages },
+                        None => crate::HistoryShareReport::Failed {
+                            error: "the prepared share did not survive; add the members again to share history"
+                                .to_owned(),
+                            retryable: false,
+                        },
+                    };
+                    events.emit(BackendEvent::GroupHistoryReported {
+                        chat_jid,
+                        added: Vec::new(),
+                        refused: Vec::new(),
+                        report,
+                    });
+                }
+                BackendCommand::SetOwnMemberLabel { chat_jid, label } => {
+                    if let Some(log) = &command_log {
+                        log.lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .push(format!("member_label:{chat_jid}:{label}"));
+                    }
+                    if take_failure("SetOwnMemberLabel") {
+                        events.emit(BackendEvent::MemberLabelFailed {
+                            chat_jid,
+                            message: "Setting your member label failed: connection lost".to_owned(),
+                        });
+                    } else {
+                        if label.is_empty() {
+                            own_label_state.remove(&chat_jid);
+                        } else {
+                            own_label_state.insert(chat_jid.clone(), label.clone());
+                        }
+                        events.emit(BackendEvent::MemberLabelSet { chat_jid, label });
+                    }
+                }
+                BackendCommand::ReportMessageToAdmins { chat_jid, message_id } => {
+                    if let Some(log) = &command_log {
+                        log.lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .push(format!("report_to_admins:{chat_jid}:{message_id}"));
+                    }
+                    if take_failure("ReportMessageToAdmins") {
+                        events.emit(BackendEvent::ReportToAdminsFailed {
+                            chat_jid,
+                            message_id,
+                            message: "Reporting that message failed: connection lost".to_owned(),
+                        });
+                    } else {
+                        reported_state.entry(chat_jid.clone()).or_default().push(
+                            crate::ReportedMessageEntry {
+                                message_id: message_id.clone(),
+                                reporters: vec!["You".to_owned()],
+                            },
+                        );
+                        events.emit(BackendEvent::MessageReportedToAdmins { chat_jid, message_id });
+                    }
+                }
+                BackendCommand::FetchReportedMessages { chat_jid } => {
+                    if let Some(log) = &command_log {
+                        log.lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .push(format!("fetch_reported:{chat_jid}"));
+                    }
+                    if take_failure("FetchReportedMessages") {
+                        events.emit(BackendEvent::ReportedMessagesFailed {
+                            chat_jid,
+                            message: "Loading the reported messages failed: connection lost"
+                                .to_owned(),
+                        });
+                    } else {
+                        let reports = reported_state.get(&chat_jid).cloned().unwrap_or_default();
+                        events.emit(BackendEvent::ReportedMessages { chat_jid, reports });
+                    }
                 }
                 BackendCommand::SetGroupInfo { chat_jid, subject, description } => {
                     if let Some(log) = &command_log {
@@ -4273,6 +4647,7 @@ impl Backend for FakeBackend {
                     // admin flag in the demo data's own terms);
                     // the flag is what the app gates on.
                     events.emit(BackendEvent::GroupMembers {
+                        own_label: own_label_state.get(&chat_jid).cloned(),
                         chat_jid: chat_jid.clone(),
                         members,
                         own_admin: true,
@@ -4356,10 +4731,11 @@ impl Backend for FakeBackend {
                     if let Some(name) = approved_name {
                         let members =
                             group_state.entry(chat_jid.clone()).or_insert_with(default_members);
-                        if !members.iter().any(|(j, _, _)| j == &participant) {
-                            members.push((participant.clone(), name, false));
+                        if !members.iter().any(|(j, _, _, _)| j == &participant) {
+                            members.push((participant.clone(), name, false, None));
                             let members = members.clone();
                             events.emit(BackendEvent::GroupMembers {
+                                own_label: own_label_state.get(&chat_jid).cloned(),
                                 chat_jid: chat_jid.clone(),
                                 members,
                                 own_admin: true,
@@ -5676,6 +6052,210 @@ mod tests {
         ch.commands.send(BackendCommand::Shutdown).unwrap();
     }
 
+    /// Rows 64, 65 and 19: the fake scripts the whole new
+    /// group and interactive surface: add-with-history and
+    /// its retry, member labels, reports to admins, and
+    /// interactive sends and answers.
+    #[test]
+    fn group_long_tail_surface_is_scripted() {
+        let ch = start(FakeBackend::auto());
+        let record = |id: &str, body: &str| crate::HistoryMessageRecord {
+            id: id.to_owned(),
+            author_jid: Some(FAKE_MEMBER2_JID.to_owned()),
+            from_me: false,
+            timestamp: 1_700_000_100,
+            body: body.to_owned(),
+            mentions: Vec::new(),
+            delivery: None,
+        };
+        // Add with history: the share reports what it carried.
+        ch.commands
+            .send(BackendCommand::AddGroupParticipantsWithHistory {
+                chat_jid: FAKE_GROUP_JID.to_owned(),
+                participants: vec!["10000000020@s.whatsapp.net".to_owned()],
+                history: vec![record("h1", "first"), record("h2", "second")],
+            })
+            .unwrap();
+        let events =
+            collect_until(&ch, &|e| matches!(e, BackendEvent::GroupHistoryReported { .. }));
+        let reported = events
+            .iter()
+            .find_map(|e| match e {
+                BackendEvent::GroupHistoryReported { added, report, .. } => {
+                    Some((added.clone(), report.clone()))
+                }
+                _ => None,
+            })
+            .expect("the add outcome is reported");
+        assert_eq!(reported.0, vec!["10000000020@s.whatsapp.net".to_owned()]);
+        assert!(
+            matches!(reported.1, crate::HistoryShareReport::Shared { messages: 2 }),
+            "two records shared: {:?}",
+            reported.1
+        );
+        // No records: the share is honestly skipped.
+        ch.commands
+            .send(BackendCommand::AddGroupParticipantsWithHistory {
+                chat_jid: FAKE_GROUP_JID.to_owned(),
+                participants: vec!["10000000021@s.whatsapp.net".to_owned()],
+                history: Vec::new(),
+            })
+            .unwrap();
+        let events =
+            collect_until(&ch, &|e| matches!(e, BackendEvent::GroupHistoryReported { .. }));
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                BackendEvent::GroupHistoryReported {
+                    report: crate::HistoryShareReport::Skipped { .. },
+                    ..
+                }
+            )),
+            "an empty history skips: {events:?}"
+        );
+        // A flaky add fails the share retryably; the retry
+        // then shares it.
+        ch.commands
+            .send(BackendCommand::AddGroupParticipantsWithHistory {
+                chat_jid: FAKE_GROUP_JID.to_owned(),
+                participants: vec!["flaky1@s.whatsapp.net".to_owned()],
+                history: vec![record("h3", "third")],
+            })
+            .unwrap();
+        let events =
+            collect_until(&ch, &|e| matches!(e, BackendEvent::GroupHistoryReported { .. }));
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                BackendEvent::GroupHistoryReported {
+                    report: crate::HistoryShareReport::Failed { retryable: true, .. },
+                    ..
+                }
+            )),
+            "the flaky share fails retryably: {events:?}"
+        );
+        ch.commands
+            .send(BackendCommand::RetryGroupHistoryShare { chat_jid: FAKE_GROUP_JID.to_owned() })
+            .unwrap();
+        let events =
+            collect_until(&ch, &|e| matches!(e, BackendEvent::GroupHistoryReported { .. }));
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                BackendEvent::GroupHistoryReported {
+                    report: crate::HistoryShareReport::Shared { messages: 1 },
+                    ..
+                }
+            )),
+            "the retry shares: {events:?}"
+        );
+        // Member labels: the set answers, and the member list
+        // that follows carries the scripted labels.
+        ch.commands
+            .send(BackendCommand::SetOwnMemberLabel {
+                chat_jid: FAKE_GROUP_JID.to_owned(),
+                label: "Coordinator".to_owned(),
+            })
+            .unwrap();
+        let events = collect_until(&ch, &|e| matches!(e, BackendEvent::MemberLabelSet { .. }));
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                BackendEvent::MemberLabelSet { label, .. } if label == "Coordinator"
+            )),
+            "the label set is answered: {events:?}"
+        );
+        ch.commands
+            .send(BackendCommand::FetchGroupMembers { chat_jid: FAKE_GROUP_JID.to_owned() })
+            .unwrap();
+        let events = collect_until(&ch, &|e| matches!(e, BackendEvent::GroupMembers { .. }));
+        let members_event = events
+            .iter()
+            .find(|e| matches!(e, BackendEvent::GroupMembers { .. }))
+            .expect("the member list answers");
+        match members_event {
+            BackendEvent::GroupMembers { members, own_label, .. } => {
+                assert_eq!(own_label.as_deref(), Some("Coordinator"));
+                assert!(
+                    members.iter().any(|(jid, _, _, label)| {
+                        jid == FAKE_MEMBER3_JID && label.as_deref() == Some("Design")
+                    }),
+                    "Emma's scripted label rides the list: {members:?}"
+                );
+            }
+            _ => unreachable!(),
+        }
+        // Reports: reporting answers, and the admin fetch
+        // lists the seeded report plus the new one.
+        ch.commands
+            .send(BackendCommand::ReportMessageToAdmins {
+                chat_jid: FAKE_GROUP_JID.to_owned(),
+                message_id: "fake-loc-1".to_owned(),
+            })
+            .unwrap();
+        let events =
+            collect_until(&ch, &|e| matches!(e, BackendEvent::MessageReportedToAdmins { .. }));
+        assert!(
+            events.iter().any(|e| matches!(e, BackendEvent::MessageReportedToAdmins { .. })),
+            "the report is answered: {events:?}"
+        );
+        ch.commands
+            .send(BackendCommand::FetchReportedMessages { chat_jid: FAKE_GROUP_JID.to_owned() })
+            .unwrap();
+        let events = collect_until(&ch, &|e| matches!(e, BackendEvent::ReportedMessages { .. }));
+        let reports = events
+            .iter()
+            .find_map(|e| match e {
+                BackendEvent::ReportedMessages { reports, .. } => Some(reports.clone()),
+                _ => None,
+            })
+            .expect("the reported list answers");
+        assert_eq!(reports.len(), 2, "seeded plus new: {reports:?}");
+        assert!(reports.iter().any(|r| r.message_id == "fake-carousel-1"));
+        assert!(reports.iter().any(|r| r.message_id == "fake-loc-1"));
+        // Interactive sends echo with their kind; an answer
+        // echoes as its chosen text.
+        ch.commands
+            .send(BackendCommand::SendInteractive {
+                chat_jid: FAKE_GROUP_JID.to_owned(),
+                spec: crate::InteractiveSpec::Buttons {
+                    text: "Lunch?".to_owned(),
+                    footer: String::new(),
+                    buttons: vec!["Yes".to_owned(), "No".to_owned()],
+                },
+            })
+            .unwrap();
+        let events = collect_until(&ch, &|e| matches!(e, BackendEvent::MessageUpsert(_)));
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                BackendEvent::MessageUpsert(m)
+                    if matches!(m.kind, crate::LiveMessageKind::Buttons { .. }) && m.body == "Lunch?"
+            )),
+            "the buttons echo carries its kind: {events:?}"
+        );
+        ch.commands
+            .send(BackendCommand::SendInteractiveResponse {
+                chat_jid: FAKE_GROUP_JID.to_owned(),
+                message_id: "fake-buttons-1".to_owned(),
+                sender_jid: Some(FAKE_DM_JID.to_owned()),
+                from_me: false,
+                is_list: false,
+                choice_id: "1".to_owned(),
+                choice_text: "Yes".to_owned(),
+            })
+            .unwrap();
+        let events = collect_until(&ch, &|e| matches!(e, BackendEvent::MessageUpsert(_)));
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                BackendEvent::MessageUpsert(m) if m.body == "Yes" && m.from_me
+            )),
+            "the answer echoes as its text: {events:?}"
+        );
+        ch.commands.send(BackendCommand::Shutdown).unwrap();
+    }
+
     #[test]
     fn waiting_fake_stops_at_the_qr() {
         let ch = start(FakeBackend::waiting());
@@ -6446,7 +7026,7 @@ mod tests {
         match &removed[removed.len() - 1] {
             BackendEvent::GroupMembers { members, .. } => {
                 assert!(
-                    !members.iter().any(|(j, _, _)| j == "10000000004@s.whatsapp.net"),
+                    !members.iter().any(|(j, _, _, _)| j == "10000000004@s.whatsapp.net"),
                     "the refreshed parent list loses the removed member: {members:?}"
                 );
             }

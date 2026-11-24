@@ -217,11 +217,11 @@ fn invite_link_approval_and_join_requests_flow_through_the_fake() {
     ch.commands.send(BackendCommand::FetchGroupMembers { chat_jid: group.to_owned() }).unwrap();
     let events = collect_until(&ch.events, 5, |e| {
         matches!(e, BackendEvent::GroupMembers { members, .. }
-            if members.iter().any(|(j, _, _)| j == "10000000021@s.whatsapp.net"))
+            if members.iter().any(|(j, _, _, _)| j == "10000000021@s.whatsapp.net"))
     });
     assert!(
         events.iter().any(|e| matches!(e, BackendEvent::GroupMembers { members, .. }
-            if members.iter().any(|(j, _, _)| j == "10000000021@s.whatsapp.net"))),
+            if members.iter().any(|(j, _, _, _)| j == "10000000021@s.whatsapp.net"))),
         "the approved requester is a member now: {events:?}"
     );
     // Modes: both start off, and each setter echoes the pair.
@@ -1066,7 +1066,7 @@ fn create_group_fetch_members_and_download_honesty() {
     let events = collect_until(&ch.events, 5, |e| matches!(e, BackendEvent::GroupMembers { .. }));
     let members_ok = events.iter().any(|e| match e {
         BackendEvent::GroupMembers { members, .. } => {
-            members.iter().any(|(_, _, admin)| *admin) && members.len() >= 2
+            members.iter().any(|(_, _, admin, _)| *admin) && members.len() >= 2
         }
         _ => false,
     });
@@ -1162,7 +1162,7 @@ fn group_participant_ops_mutate_the_member_list() {
         .unwrap();
     let events = collect_until(&ch.events, 5, |e| {
         matches!(e, BackendEvent::GroupMembers { members, .. }
-            if members.iter().any(|(j, _, _)| j == "10000000009@s.whatsapp.net"))
+            if members.iter().any(|(j, _, _, _)| j == "10000000009@s.whatsapp.net"))
     });
     assert!(
         events.iter().any(|e| matches!(e, BackendEvent::GroupMembers { .. })),
@@ -1178,7 +1178,7 @@ fn group_participant_ops_mutate_the_member_list() {
         .unwrap();
     let events = collect_until(&ch.events, 5, |e| {
         matches!(e, BackendEvent::GroupMembers { members, .. }
-            if members.iter().any(|(j, _, a)| j == "10000000004@s.whatsapp.net" && *a))
+            if members.iter().any(|(j, _, a, _)| j == "10000000004@s.whatsapp.net" && *a))
     });
     assert!(
         events.iter().any(|e| matches!(e, BackendEvent::GroupMembers { .. })),
@@ -1194,13 +1194,13 @@ fn group_participant_ops_mutate_the_member_list() {
         .unwrap();
     let _ = collect_until(&ch.events, 5, |e| {
         matches!(e, BackendEvent::GroupMembers { members, .. }
-            if !members.iter().any(|(j, _, _)| j == "10000000009@s.whatsapp.net"))
+            if !members.iter().any(|(j, _, _, _)| j == "10000000009@s.whatsapp.net"))
     });
     ch.commands.send(BackendCommand::FetchGroupMembers { chat_jid: group.clone() }).unwrap();
     let events = collect_until(&ch.events, 8, |e| {
         matches!(e, BackendEvent::GroupMembers { members, .. }
-            if !members.iter().any(|(j, _, _)| j == "10000000009@s.whatsapp.net")
-               && members.iter().any(|(j, _, a)| j == "10000000004@s.whatsapp.net" && *a))
+            if !members.iter().any(|(j, _, _, _)| j == "10000000009@s.whatsapp.net")
+               && members.iter().any(|(j, _, a, _)| j == "10000000004@s.whatsapp.net" && *a))
     });
     assert!(
         events.iter().any(|e| matches!(e, BackendEvent::GroupMembers { .. })),

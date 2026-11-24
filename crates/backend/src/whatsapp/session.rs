@@ -1078,7 +1078,7 @@ pub(super) async fn run_async(
                         }
                         Err(e) => {
                             events.emit(BackendEvent::Error {
-                                message: "Invalid chat address".to_owned(),
+                                message: format!("Invalid chat address: {}", error_words(&e)),
                             });
                         }
                     }
@@ -1144,7 +1144,7 @@ pub(super) async fn run_async(
                             }
                             Err(e) => {
                                 events.emit(BackendEvent::Error {
-                                    message: "Invalid chat address".to_owned(),
+                                    message: format!("Invalid chat address: {}", error_words(&e)),
                                 });
                             }
                         }
@@ -1172,7 +1172,7 @@ pub(super) async fn run_async(
                     }
                     Err(e) => {
                         events.emit(BackendEvent::Error {
-                            message: "Invalid chat address".to_owned(),
+                            message: format!("Invalid chat address: {}", error_words(&e)),
                         });
                     }
                 },
@@ -1345,7 +1345,7 @@ pub(super) async fn run_async(
                         Err(e) => {
                             events.emit(BackendEvent::DisappearingTimerFailed {
                                 chat_jid: chat_jid.clone(),
-                                message: "Invalid chat address".to_owned(),
+                                message: format!("Invalid chat address: {}", error_words(&e)),
                             });
                         }
                     }
@@ -1386,7 +1386,7 @@ pub(super) async fn run_async(
                             }
                         }
                         Err(e) => events.emit(BackendEvent::Error {
-                            message: "Invalid chat address".to_owned(),
+                            message: format!("Invalid chat address: {}", error_words(&e)),
                         }),
                     }
                 }
@@ -1445,7 +1445,7 @@ pub(super) async fn run_async(
                                     }
                                 }
                                 Err(e) => {
-                                    fail("Invalid poll creator address".to_owned());
+                                    fail(format!("Invalid poll creator address: {}", error_words(&e)));
                                 }
                             }
                         }
@@ -1460,7 +1460,7 @@ pub(super) async fn run_async(
                                 .to_owned(),
                         ),
                         (_, Err(e)) => {
-                            fail("Invalid chat address".to_owned());
+                            fail(format!("Invalid chat address: {}", error_words(&e)));
                         }
                     }
                 }
@@ -1604,10 +1604,10 @@ pub(super) async fn run_async(
                                         fail(format!("Reaction failed: {}", error_words(&e)));
                                     }
                                 }
-                                Err(e) => fail("Reaction target invalid".to_owned()),
+                                Err(e) => fail(format!("Reaction target invalid: {}", error_words(&e))),
                             }
                         }
-                        Err(e) => fail("Invalid chat address".to_owned()),
+                        Err(e) => fail(format!("Invalid chat address: {}", error_words(&e))),
                     }
                 }
                 BackendCommand::MarkAsRead { chat_jid, sender_jid, message_ids } => {
@@ -1618,7 +1618,7 @@ pub(super) async fn run_async(
                             let _ = client.mark_as_read(&jid, sender.as_ref(), &ids).await;
                         }
                         Err(e) => events.emit(BackendEvent::Error {
-                            message: "Invalid chat address".to_owned(),
+                            message: format!("Invalid chat address: {}", error_words(&e)),
                         }),
                     }
                 }
@@ -1631,7 +1631,7 @@ pub(super) async fn run_async(
                         }
                     }
                     Err(e) => events.emit(BackendEvent::Error {
-                        message: "Invalid chat address".to_owned(),
+                        message: format!("Invalid chat address: {}", error_words(&e)),
                     }),
                 },
                 BackendCommand::SetPresenceSubscription { chat_jid, subscribed } => {
@@ -1650,7 +1650,7 @@ pub(super) async fn run_async(
                             }
                         }
                         Err(e) => events.emit(BackendEvent::Error {
-                            message: "Invalid chat address".to_owned(),
+                            message: format!("Invalid chat address: {}", error_words(&e)),
                         }),
                     }
                 }
@@ -1835,7 +1835,7 @@ pub(super) async fn run_async(
                                 .to_owned(),
                         }),
                         (_, Err(e)) => events.emit(BackendEvent::Error {
-                            message: "Invalid chat address".to_owned(),
+                            message: format!("Invalid chat address: {}", error_words(&e)),
                         }),
                     }
                 }
@@ -1966,7 +1966,7 @@ pub(super) async fn run_async(
                                 fail(format!("That chat action failed: {}", error_words(&e)));
                             }
                         }
-                        Err(e) => fail("Invalid chat address".to_owned()),
+                        Err(e) => fail(format!("Invalid chat address: {}", error_words(&e))),
                     }
                 }
                 BackendCommand::ClearChat { chat_jid, keep_starred } => {
@@ -1997,7 +1997,7 @@ pub(super) async fn run_async(
                                 fail(format!("Clearing the chat failed: {}", error_words(&e)));
                             }
                         }
-                        Err(e) => fail("Invalid chat address".to_owned()),
+                        Err(e) => fail(format!("Invalid chat address: {}", error_words(&e))),
                     }
                 }
                 BackendCommand::DeleteChat { chat_jid } => {
@@ -2015,7 +2015,7 @@ pub(super) async fn run_async(
                                 fail(format!("Deleting the chat failed: {}", error_words(&e)));
                             }
                         }
-                        Err(e) => fail("Invalid chat address".to_owned()),
+                        Err(e) => fail(format!("Invalid chat address: {}", error_words(&e))),
                     }
                 }
                 BackendCommand::MarkChatUnread { chat_jid } => {
@@ -2033,7 +2033,7 @@ pub(super) async fn run_async(
                                 fail(format!("Marking the chat as unread failed: {}", error_words(&e)));
                             }
                         }
-                        Err(e) => fail("Invalid chat address".to_owned()),
+                        Err(e) => fail(format!("Invalid chat address: {}", error_words(&e))),
                     }
                 }
                 BackendCommand::SendContact { chat_jid, name, phone, ephemeral_secs } => {
@@ -2052,7 +2052,7 @@ pub(super) async fn run_async(
                             }
                         }
                         Err(e) => events.emit(BackendEvent::Error {
-                            message: "Invalid chat address".to_owned(),
+                            message: format!("Invalid chat address: {}", error_words(&e)),
                         }),
                     }
                 }
@@ -2087,7 +2087,7 @@ pub(super) async fn run_async(
                                 Err(e) => fail(format!("Reporting failed: {}", error_words(&e))),
                             }
                         }
-                        Err(e) => fail("Invalid chat address".to_owned()),
+                        Err(e) => fail(format!("Invalid chat address: {}", error_words(&e))),
                     }
                 }
                 BackendCommand::BlockContact { chat_jid, block } => {
@@ -2108,7 +2108,7 @@ pub(super) async fn run_async(
                                 fail(format!("Blocking failed: {}", error_words(&e)));
                             }
                         }
-                        Err(e) => fail("Invalid chat address".to_owned()),
+                        Err(e) => fail(format!("Invalid chat address: {}", error_words(&e))),
                     }
                 }
                 BackendCommand::CreateCommunity { name } => {
@@ -2200,7 +2200,7 @@ pub(super) async fn run_async(
                             }
                         }
                         (Err(e), _) => events.emit(BackendEvent::Error {
-                            message: "Invalid group address".to_owned(),
+                            message: format!("Invalid group address: {}", error_words(&e)),
                         }),
                         (_, Err(e)) => events.emit(BackendEvent::Error { message: e }),
                     }
@@ -2271,7 +2271,7 @@ pub(super) async fn run_async(
                             }
                         }
                         Err(e) => {
-                            failure = Some("Invalid group address".to_owned());
+                            failure = Some(format!("Invalid group address: {}", error_words(&e)));
                         }
                     }
                     match failure {
@@ -2348,7 +2348,7 @@ pub(super) async fn run_async(
                         }),
                     },
                     Err(e) => events.emit(BackendEvent::Error {
-                        message: "Invalid group address".to_owned(),
+                        message: format!("Invalid group address: {}", error_words(&e)),
                     }),
                 },
                 BackendCommand::FetchGroupInviteLink { chat_jid, reset } => {
@@ -2363,7 +2363,7 @@ pub(super) async fn run_async(
                             }),
                         },
                         Err(e) => events.emit(BackendEvent::Error {
-                            message: "Invalid group address".to_owned(),
+                            message: format!("Invalid group address: {}", error_words(&e)),
                         }),
                     }
                 }
@@ -2386,7 +2386,7 @@ pub(super) async fn run_async(
                             }
                         }
                         Err(e) => events.emit(BackendEvent::Error {
-                            message: "Invalid group address".to_owned(),
+                            message: format!("Invalid group address: {}", error_words(&e)),
                         }),
                     }
                 }
@@ -2404,7 +2404,7 @@ pub(super) async fn run_async(
                         }),
                     },
                     Err(e) => events.emit(BackendEvent::Error {
-                        message: "Invalid group address".to_owned(),
+                        message: format!("Invalid group address: {}", error_words(&e)),
                     }),
                 },
                 BackendCommand::ReviewJoinRequest { chat_jid, participant, approve } => {
@@ -2442,7 +2442,7 @@ pub(super) async fn run_async(
                             }
                         }
                         (Err(e), _) => events.emit(BackendEvent::Error {
-                            message: "Invalid group address".to_owned(),
+                            message: format!("Invalid group address: {}", error_words(&e)),
                         }),
                         (_, Err(e)) => events.emit(BackendEvent::Error { message: e }),
                     }
@@ -2467,7 +2467,7 @@ pub(super) async fn run_async(
                             }
                         }
                         Err(e) => events.emit(BackendEvent::Error {
-                            message: "Invalid group address".to_owned(),
+                            message: format!("Invalid group address: {}", error_words(&e)),
                         }),
                     }
                 }
@@ -2489,7 +2489,7 @@ pub(super) async fn run_async(
                             }),
                         },
                         Err(e) => events.emit(BackendEvent::Error {
-                            message: "Invalid group address".to_owned(),
+                            message: format!("Invalid group address: {}", error_words(&e)),
                         }),
                     }
                 }
@@ -2555,7 +2555,7 @@ pub(super) async fn run_async(
                                 fail(format!("Leaving the group failed: {}", error_words(&e)));
                             }
                         }
-                        Err(e) => fail("Invalid group address".to_owned()),
+                        Err(e) => fail(format!("Invalid group address: {}", error_words(&e))),
                     }
                 }
                 BackendCommand::DownloadMedia { chat_jid, message_id, document_ref } => {
@@ -3202,7 +3202,7 @@ pub(super) async fn run_async(
                         }
                         Err(e) => events.emit(BackendEvent::HistoryFetchFailed {
                             chat_jid,
-                            message: "Invalid chat address".to_owned(),
+                            message: format!("Invalid chat address: {}", error_words(&e)),
                         }),
                     }
                 }

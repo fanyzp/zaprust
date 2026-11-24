@@ -184,7 +184,7 @@ pub(super) async fn start_outgoing_call(
     let jid = match chat_jid.parse::<Jid>() {
         Ok(j) => j,
         Err(e) => {
-            events.emit(BackendEvent::Error { message: "Invalid chat address".to_owned() });
+            events.emit(BackendEvent::Error { message: format!("Invalid chat address: {}", error_words(&e)) });
             return;
         }
     };

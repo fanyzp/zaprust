@@ -166,10 +166,10 @@ pub(super) fn build_message_target(
     sender_jid: Option<&String>,
     _from_me: bool,
 ) -> Result<(Jid, Option<Jid>, whatsapp_rust::MessageId), String> {
-    let chat = chat_jid.parse::<Jid>().map_err(|e| "Invalid chat address".to_owned())?;
+    let chat = chat_jid.parse::<Jid>().map_err(|e| format!("Invalid chat address: {}", error_words(&e)))?;
     let sender = sender_jid.and_then(|s| s.parse::<Jid>().ok());
     let mid = whatsapp_rust::MessageId::new(message_id)
-        .map_err(|e| "Invalid message id".to_owned())?;
+        .map_err(|e| format!("Invalid message id: {}", error_words(&e)))?;
     Ok((chat, sender, mid))
 }
 
@@ -178,7 +178,7 @@ pub(super) fn build_message_target(
 pub(super) fn parse_address(text: &str) -> Result<Jid, String> {
     let text = text.trim();
     if text.contains('@') {
-        text.parse::<Jid>().map_err(|e| "Invalid address".to_owned())
+        text.parse::<Jid>().map_err(|e| format!("Invalid address: {}", error_words(&e)))
     } else {
         let digits: String = text.chars().filter(char::is_ascii_digit).collect();
         if digits.len() < 7 {

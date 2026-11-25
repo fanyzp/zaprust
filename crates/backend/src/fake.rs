@@ -129,6 +129,28 @@ fn waiting_fixture_enabled() -> bool {
     std::env::var_os("ZAPRUST_FAKE_WAITING").is_some()
 }
 
+/// Whether the stress fixture is scripted: one DM whose
+/// messages are adversarial layout content (unbroken tokens,
+/// multi-paragraph text, long quotes, RTL runs, long media
+/// captions, long interactive labels) plus a few long-sender
+/// group messages, for visual QA of the conversation stream.
+/// From `ZAPRUST_FAKE_STRESS`, gated like the other fixture
+/// families so the standard fixtures (and every screenshot
+/// pair built on them) are unchanged unless a capture asks
+/// for them.
+fn stress_fixture_enabled() -> bool {
+    std::env::var_os("ZAPRUST_FAKE_STRESS").is_some()
+}
+
+/// JID of the scripted stress DM (stress-fixture gate only).
+pub const FAKE_STRESS_JID: &str = "10000000036@s.whatsapp.net";
+/// Display name of the stress DM contact: deliberately far
+/// longer than any real contact name, so chat rows, the
+/// conversation header and quote blocks must truncate or
+/// wrap it gracefully.
+pub const FAKE_STRESS_NAME: &str =
+    "Alexandria Konstantinopoulou Papadimitriou van der Berg Smith-Johnson";
+
 /// JIDs of the scripted group call's other members and of the
 /// waiting-room guest.
 pub const FAKE_MEMBER2_JID: &str = "10000000004@s.whatsapp.net";
@@ -689,6 +711,25 @@ pub fn scripted_chats() -> Vec<LiveChat> {
             preview_sender: None,
             timestamp: 1_700_000_430,
             unread: 1,
+            archived: false,
+            locked: false,
+            pinned: false,
+            ephemeral_secs: 0,
+            muted: false,
+            mute_until: 0,
+            parent_jid: None,
+            is_parent: false,
+        });
+    }
+    if stress_fixture_enabled() {
+        chats.push(LiveChat {
+            jid: FAKE_STRESS_JID.to_owned(),
+            title: format!("{FAKE_STRESS_NAME} (live demo)"),
+            kind: LiveChatKind::Dm,
+            preview: format!("https://example.com/{}", "a".repeat(120)),
+            preview_sender: None,
+            timestamp: 1_700_000_900,
+            unread: 3,
             archived: false,
             locked: false,
             pinned: false,
@@ -1512,6 +1553,491 @@ pub fn scripted_bidi_fixture_messages() -> Vec<LiveMessage> {
             1_700_000_255,
             false,
         ),
+    ]
+}
+
+/// The scripted messages of the stress DM (stress-fixture
+/// gate only): adversarial layout content for visual QA of
+/// the conversation stream. Every message is a case a real
+/// chat can produce and a bubble must survive without
+/// clipping: unbroken tokens, multi-paragraph text, long
+/// quotes, RTL runs, emoji-only messages, long media
+/// captions and file names, long interactive labels, an
+/// order card, and a crowded reaction row.
+#[must_use]
+pub fn scripted_stress_messages() -> Vec<LiveMessage> {
+    let name = Some(FAKE_STRESS_NAME.to_owned());
+    let long_token = format!("https://example.com/{}", "a".repeat(180));
+    let long_prose = "The community hall booking is confirmed for the whole weekend, \
+        and the caretaker said we can arrive from seven in the morning to set up \
+        the tables, the projector, and the coffee station before the first \
+        workshop starts, as long as we leave the kitchen exactly as we found it \
+        and take the recycling out on Sunday evening when the last session ends, \
+        because another group has the hall on Monday morning and they complained \
+        last time about the chairs being stacked in the wrong room.";
+    let mut quote_long = LiveMessage::text(
+        "fake-stress-5",
+        FAKE_STRESS_JID,
+        None,
+        "Agreed, let us book it today.",
+        1_700_000_640,
+        true,
+    );
+    quote_long.quoted_sender = name.clone();
+    quote_long.quoted_body = Some(long_prose.to_owned());
+    let mut quote_token = LiveMessage::text(
+        "fake-stress-6",
+        FAKE_STRESS_JID,
+        name.clone(),
+        "That link again, for the record.",
+        1_700_000_650,
+        false,
+    );
+    quote_token.quoted_sender = name.clone();
+    quote_token.quoted_body = Some(long_token.clone());
+    let mut voice = LiveMessage::text(
+        "fake-stress-11",
+        FAKE_STRESS_JID,
+        name.clone(),
+        "Voice message",
+        1_700_000_700,
+        false,
+    );
+    voice.kind = crate::LiveMessageKind::Media {
+        media: crate::MediaKind::Voice,
+        caption: String::new(),
+        seconds: 75,
+        size_bytes: 912_000,
+    };
+    let audio_name =
+        "Interview-recording-session-12-final-mix-unedited-take-three-with-room-tone.mp3";
+    let mut audio = LiveMessage::text(
+        "fake-stress-12",
+        FAKE_STRESS_JID,
+        name.clone(),
+        audio_name,
+        1_700_000_710,
+        false,
+    );
+    audio.kind = crate::LiveMessageKind::Media {
+        media: crate::MediaKind::Audio,
+        caption: audio_name.to_owned(),
+        seconds: 245,
+        size_bytes: 5_900_000,
+    };
+    let doc_name =
+        "Quarterly-financial-report-2026-final-version-revised-approved-signed-copy.pdf";
+    let mut document = LiveMessage::text(
+        "fake-stress-13",
+        FAKE_STRESS_JID,
+        name.clone(),
+        doc_name,
+        1_700_000_720,
+        false,
+    );
+    document.kind = crate::LiveMessageKind::Media {
+        media: crate::MediaKind::Document,
+        caption: doc_name.to_owned(),
+        seconds: 0,
+        size_bytes: 4_800_000,
+    };
+    let long_caption = "The whole crew at the summit marker after the last climb of the \
+        season, with the valley, the lake, the old lighthouse, and three very tired \
+        dogs in the back row, taken minutes before the weather turned.";
+    let mut photo = LiveMessage::text(
+        "fake-stress-14",
+        FAKE_STRESS_JID,
+        name.clone(),
+        long_caption,
+        1_700_000_730,
+        false,
+    );
+    photo.kind = crate::LiveMessageKind::Media {
+        media: crate::MediaKind::Photo,
+        caption: long_caption.to_owned(),
+        seconds: 0,
+        size_bytes: 3_400_000,
+    };
+    let mut video = LiveMessage::text(
+        "fake-stress-15",
+        FAKE_STRESS_JID,
+        None,
+        long_caption,
+        1_700_000_740,
+        true,
+    );
+    video.kind = crate::LiveMessageKind::Media {
+        media: crate::MediaKind::Video,
+        caption: long_caption.to_owned(),
+        seconds: 95,
+        size_bytes: 18_200_000,
+    };
+    let mut sticker = LiveMessage::text(
+        "fake-stress-16",
+        FAKE_STRESS_JID,
+        name.clone(),
+        "Sticker",
+        1_700_000_750,
+        false,
+    );
+    sticker.kind = crate::LiveMessageKind::Media {
+        media: crate::MediaKind::Sticker,
+        caption: String::new(),
+        seconds: 0,
+        size_bytes: 84_000,
+    };
+    let mut poll = LiveMessage::text(
+        "fake-stress-17",
+        FAKE_STRESS_JID,
+        name.clone(),
+        "",
+        1_700_000_760,
+        false,
+    );
+    poll.kind = crate::LiveMessageKind::Poll {
+        question: "Which of the proposed weekends should we pick for the annual \
+            neighborhood cleanup, the tool library inventory, and the shared \
+            garden replanting day?"
+            .to_owned(),
+        options: vec![
+            ("The first weekend of next month, starting early on Saturday morning".to_owned(), 4),
+            ("The second weekend, with the rain date held on the Sunday after".to_owned(), 2),
+            ("The last weekend of the month, combined with the street festival".to_owned(), 7),
+            ("Split it across two weekends so nobody has to give up a full day".to_owned(), 1),
+        ],
+        multiple: true,
+        my_votes: Vec::new(),
+        correct: None,
+    };
+    poll.poll_secret = Some(vec![0xFA; 32]);
+    poll.poll_creator = Some(FAKE_STRESS_JID.to_owned());
+    let mut event = LiveMessage::text(
+        "fake-stress-18",
+        FAKE_STRESS_JID,
+        name.clone(),
+        "",
+        1_700_000_770,
+        false,
+    );
+    event.kind = crate::LiveMessageKind::Event {
+        name: "Annual general meeting of the neighborhood association, the tool \
+            library collective, and the community garden committee"
+            .to_owned(),
+        description: "Agenda: the yearly budget, the roof repair quotes, the new \
+            booking rules for the hall, and the election of two board members. \
+            Please read the attached report before the meeting so the discussion \
+            can stay short."
+            .to_owned(),
+        start_time: 1_700_345_600,
+        end_time: 1_700_352_800,
+        location: "Community hall, second floor, Jalan Merdeka Raya number 128, \
+            next to the old post office and across from the central market"
+            .to_owned(),
+        join_link: String::new(),
+        scheduled_call: false,
+        extra_guests: true,
+        canceled: false,
+        my_rsvp: None,
+        going: 3,
+        maybe: 1,
+        not_going: 0,
+    };
+    event.event_secret = Some(vec![5u8; 32]);
+    event.event_creator = Some(FAKE_STRESS_JID.to_owned());
+    let mut buttons = LiveMessage::text(
+        "fake-stress-19",
+        FAKE_STRESS_JID,
+        name.clone(),
+        "The courier could not deliver the parcel today because the gate was \
+            locked. How should we proceed with the delivery tomorrow?",
+        1_700_000_780,
+        false,
+    );
+    buttons.kind = crate::LiveMessageKind::Buttons {
+        footer: "Choose one option; the courier sees your answer right away.".to_owned(),
+        buttons: vec![
+            crate::LiveButton {
+                id: "1".to_owned(),
+                text: "Deliver to the front desk instead".to_owned(),
+            },
+            crate::LiveButton {
+                id: "2".to_owned(),
+                text: "Leave it with the neighbor at number 12".to_owned(),
+            },
+            crate::LiveButton {
+                id: "3".to_owned(),
+                text: "Reschedule to next week, same time".to_owned(),
+            },
+        ],
+    };
+    let mut list = LiveMessage::text(
+        "fake-stress-20",
+        FAKE_STRESS_JID,
+        name.clone(),
+        "Workshop registration",
+        1_700_000_790,
+        false,
+    );
+    list.kind = crate::LiveMessageKind::ListMsg {
+        description: "Pick the session you want to attend. Every session includes \
+            materials, lunch, and a certificate, and places are limited to twenty \
+            participants per room."
+            .to_owned(),
+        button_label: "See all available sessions".to_owned(),
+        footer: "Registration closes on Friday evening.".to_owned(),
+        sections: vec![crate::LiveListSection {
+            title: "Saturday sessions in the main hall".to_owned(),
+            rows: vec![
+                crate::LiveListRow {
+                    id: "1".to_owned(),
+                    title: "Introduction to woodworking for complete beginners".to_owned(),
+                    description: "Tools, safety, and your first cutting board".to_owned(),
+                },
+                crate::LiveListRow {
+                    id: "2".to_owned(),
+                    title: "Advanced joinery and furniture restoration workshop".to_owned(),
+                    description: "Bring a small piece of furniture to work on".to_owned(),
+                },
+            ],
+        }],
+    };
+    let mut carousel = LiveMessage::text(
+        "fake-stress-21",
+        FAKE_STRESS_JID,
+        name.clone(),
+        "",
+        1_700_000_800,
+        false,
+    );
+    carousel.kind = crate::LiveMessageKind::Carousel {
+        body: "This month's featured rentals from the tool library, all serviced \
+            and ready to borrow for up to two weeks at a time:"
+            .to_owned(),
+        cards: vec![
+            crate::LiveCard {
+                title: "Professional pressure washer with the extended lance".to_owned(),
+                body: "Suitable for driveways, fences, and the community hall's \
+                    outer walls; includes detergent tank and two nozzles."
+                    .to_owned(),
+                image: None,
+                buttons: vec!["Reserve this item for next weekend".to_owned()],
+            },
+            crate::LiveCard {
+                title: "Twelve-person event tent with side walls".to_owned(),
+                body: "Sets up in about twenty minutes with two people; stakes, \
+                    ropes, and a repair kit are in the bag."
+                    .to_owned(),
+                image: None,
+                buttons: vec!["Check availability".to_owned(), "See the setup guide".to_owned()],
+            },
+        ],
+    };
+    let mut order = LiveMessage::text(
+        "fake-stress-22",
+        FAKE_STRESS_JID,
+        name.clone(),
+        "Order for the community kitchen restock: rice, cooking oil, coffee, \
+            tea, sugar, flour, eggs, vegetables, chicken, spices, cleaning \
+            supplies, and paper goods for the whole month.",
+        1_700_000_810,
+        false,
+    );
+    order.kind = crate::LiveMessageKind::Order {
+        order_id: "fake-stress-order".to_owned(),
+        token: <redacted>
+        item_count: 12,
+        total_amount_1000: 1_250_000_000,
+        currency: "IDR".to_owned(),
+        status: "INQUIRY".to_owned(),
+    };
+    let mut contact = LiveMessage::text(
+        "fake-stress-23",
+        FAKE_STRESS_JID,
+        name.clone(),
+        "",
+        1_700_000_820,
+        false,
+    );
+    contact.kind = crate::LiveMessageKind::Contact {
+        name: FAKE_STRESS_NAME.to_owned(),
+        phone: "Contact card shared by Alexandria, including her work number".to_owned(),
+    };
+    let mut location = LiveMessage::text(
+        "fake-stress-24",
+        FAKE_STRESS_JID,
+        name.clone(),
+        "",
+        1_700_000_830,
+        false,
+    );
+    location.kind = crate::LiveMessageKind::Location {
+        name: "The old lighthouse at the end of the harbor breakwater, past the \
+            fish market and the ferry terminal, Balikpapan"
+            .to_owned(),
+        latitude: -1.2768,
+        longitude: 116.8312,
+    };
+    let mut link = LiveMessage::text(
+        "fake-stress-25",
+        FAKE_STRESS_JID,
+        name.clone(),
+        "Full write-up here: https://example.com/reports/annual-neighborhood-report-2026",
+        1_700_000_840,
+        false,
+    );
+    link.link_preview = Some(crate::LivePreview {
+        title: "Annual neighborhood report 2026: everything the association did, \
+            spent, repaired, planted, and planned over the last twelve months"
+            .to_owned(),
+        description: "A complete record of the year's meetings, budgets, repair \
+            work, garden harvests, tool library lending statistics, and the plans \
+            the board approved for next year, with photos and charts throughout."
+            .to_owned(),
+        url: "https://example.com/reports/annual-neighborhood-report-2026".to_owned(),
+        thumbnail: None,
+    });
+    let mut reacted = LiveMessage::text(
+        "fake-stress-26",
+        FAKE_STRESS_JID,
+        name.clone(),
+        "We passed the inspection, the hall is ours for another year.",
+        1_700_000_850,
+        false,
+    );
+    reacted.reactions = vec![
+        ("👍".to_owned(), 128),
+        ("❤️".to_owned(), 96),
+        ("🎉".to_owned(), 54),
+        ("🙏".to_owned(), 12),
+        ("😮".to_owned(), 3),
+    ];
+    let mut flagged = LiveMessage::text(
+        "fake-stress-27",
+        FAKE_STRESS_JID,
+        None,
+        "Minutes from the last meeting are in the shared folder, under the \
+            longest file name anyone has ever given a document.",
+        1_700_000_860,
+        true,
+    );
+    flagged.edited = true;
+    flagged.forwarded = true;
+    flagged.starred = true;
+    vec![
+        LiveMessage::text("fake-stress-1", FAKE_STRESS_JID, name.clone(), &long_token, 1_700_000_600, false),
+        LiveMessage::text(
+            "fake-stress-2",
+            FAKE_STRESS_JID,
+            None,
+            &format!("ticket{}", "X7".repeat(90)),
+            1_700_000_610,
+            true,
+        ),
+        LiveMessage::text(
+            "fake-stress-3",
+            FAKE_STRESS_JID,
+            name.clone(),
+            "First paragraph: the ferry was two hours late, so we missed the \
+             morning market entirely.\n\nSecond paragraph: by the time we got \
+             there, the fish stalls were nearly empty and the vegetable sellers \
+             were already packing up.\n\nThird paragraph: we bought what was \
+             left, cooked it at the hall, and nobody complained.\n\nFourth \
+             paragraph: next time we take the early boat, no matter what the \
+             weather looks like at dawn.",
+            1_700_000_620,
+            false,
+        ),
+        LiveMessage::text("fake-stress-4", FAKE_STRESS_JID, name.clone(), long_prose, 1_700_000_630, false),
+        quote_long,
+        quote_token,
+        LiveMessage::text("fake-stress-7", FAKE_STRESS_JID, name.clone(), "😀😃😄😁😆", 1_700_000_660, false),
+        LiveMessage::text(
+            "fake-stress-8",
+            FAKE_STRESS_JID,
+            name.clone(),
+            "🎉🎉🎉 we did it, the whole team, every single one of us 🎉🎉🎉",
+            1_700_000_670,
+            false,
+        ),
+        LiveMessage::text(
+            "fake-stress-9",
+            FAKE_STRESS_JID,
+            name.clone(),
+            "مرحبا بالجميع، الاجتماع القادم سيكون يوم السبت في القاعة الكبيرة، \
+             وسنناقش الميزانية السنوية وخطة الإصلاحات والجدول الجديد للأنشطة، \
+             لذا يرجى قراءة التقرير قبل الحضور وإحضار أي مقترحات مكتوبة",
+            1_700_000_680,
+            false,
+        ),
+        LiveMessage::text(
+            "fake-stress-10",
+            FAKE_STRESS_JID,
+            name.clone(),
+            "הפגישה הבאה תתקיים ביום שבת בבוקר באולם הקהילה, ונדון בה את התקציב \
+             השנתי, את תוכנית התיקונים, ואת לוח הזמנים החדש של הפעילויות, אז \
+             בבקשה לקרוא את הדוח לפני שמגיעים ולהביא הצעות כתובות",
+            1_700_000_690,
+            false,
+        ),
+        voice,
+        audio,
+        document,
+        photo,
+        video,
+        sticker,
+        poll,
+        event,
+        buttons,
+        list,
+        carousel,
+        order,
+        contact,
+        location,
+        link,
+        reacted,
+        flagged,
+    ]
+}
+
+/// The stress additions to the group chat (stress-fixture
+/// gate only): bubbles from a sender with a very long name,
+/// so group sender labels and group quote blocks face the
+/// same adversarial content as the stress DM.
+#[must_use]
+pub fn scripted_stress_group_messages() -> Vec<LiveMessage> {
+    let mut quote = LiveMessage::text(
+        "fake-stress-g3",
+        FAKE_GROUP_JID,
+        Some("Mike Johnson".to_owned()),
+        "Seconded.",
+        1_700_000_720,
+        false,
+    );
+    quote.quoted_sender = Some(FAKE_STRESS_NAME.to_owned());
+    quote.quoted_body = Some(
+        "The community hall booking is confirmed for the whole weekend, and the \
+         caretaker said we can arrive from seven in the morning to set up."
+            .to_owned(),
+    );
+    vec![
+        LiveMessage::text(
+            "fake-stress-g1",
+            FAKE_GROUP_JID,
+            Some(FAKE_STRESS_NAME.to_owned()),
+            "Hello everyone, I booked the hall for the whole weekend and the \
+             caretaker confirmed we can set up from seven in the morning.",
+            1_700_000_700,
+            false,
+        ),
+        LiveMessage::text(
+            "fake-stress-g2",
+            FAKE_GROUP_JID,
+            Some(FAKE_STRESS_NAME.to_owned()),
+            &format!("https://example.com/{}", "b".repeat(150)),
+            1_700_000_710,
+            false,
+        ),
+        quote,
     ]
 }
 
@@ -5888,6 +6414,14 @@ fn emit_linked_script(
     }
     if bidi_fixture_enabled() {
         for msg in scripted_bidi_fixture_messages() {
+            events.emit(BackendEvent::MessageUpsert(msg));
+        }
+    }
+    if stress_fixture_enabled() {
+        for msg in scripted_stress_messages() {
+            events.emit(BackendEvent::MessageUpsert(msg));
+        }
+        for msg in scripted_stress_group_messages() {
             events.emit(BackendEvent::MessageUpsert(msg));
         }
     }

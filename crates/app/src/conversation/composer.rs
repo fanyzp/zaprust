@@ -650,17 +650,31 @@ impl App {
                                     // filled disc surface as the
                                     // app's other round icon buttons
                                     // (a panel-alt fill with a
-                                    // hairline edge), stepping to the
-                                    // hover and pressed fills under
-                                    // the pointer. The whole surface
+                                    // hairline edge), crossfading to
+                                    // the hover and pressed fills
+                                    // under the pointer through the
+                                    // shared factors like every other
+                                    // control. The whole surface
                                     // fades with the send morph.
-                                    let mic_fill = if sresp.is_pointer_button_down_on() {
-                                        core::theme::pressed_step(t.bg_panel_alt)
-                                    } else if sresp.hovered() {
-                                        core::theme::hover_step(t.bg_panel_alt)
-                                    } else {
-                                        t.bg_panel_alt
-                                    };
+                                    let hov = crate::anim::hover_factor(
+                                        ui,
+                                        ("composer_slot", sresp.id),
+                                        sresp.hovered(),
+                                    );
+                                    let press = crate::anim::press_factor(
+                                        ui,
+                                        ("composer_slot", sresp.id),
+                                        sresp.is_pointer_button_down_on(),
+                                    );
+                                    let mic_fill = core::theme::mix(
+                                        core::theme::mix(
+                                            t.bg_panel_alt,
+                                            core::theme::hover_step(t.bg_panel_alt),
+                                            hov,
+                                        ),
+                                        core::theme::pressed_step(t.bg_panel_alt),
+                                        press,
+                                    );
                                     ui.painter().circle_filled(
                                         sc,
                                         19.0,
@@ -687,11 +701,35 @@ impl App {
                                     );
                                 }
                                 if swap > 0.001 {
-                                    let send_fill = if sresp.is_pointer_button_down_on() {
-                                        core::theme::pressed_step(t.accent)
-                                    } else {
-                                        t.accent
-                                    };
+                                    // The send disc answers the
+                                    // pointer like the mic it morphs
+                                    // with: the accent crossfades to
+                                    // its hover step under the
+                                    // pointer and to its pressed step
+                                    // while held, through the same
+                                    // shared factors. It used to sit
+                                    // on the flat accent through
+                                    // hover, the one silent control
+                                    // in the composer cluster.
+                                    let hov = crate::anim::hover_factor(
+                                        ui,
+                                        ("composer_slot", sresp.id),
+                                        sresp.hovered(),
+                                    );
+                                    let press = crate::anim::press_factor(
+                                        ui,
+                                        ("composer_slot", sresp.id),
+                                        sresp.is_pointer_button_down_on(),
+                                    );
+                                    let send_fill = core::theme::mix(
+                                        core::theme::mix(
+                                            t.accent,
+                                            core::theme::hover_step(t.accent),
+                                            hov,
+                                        ),
+                                        core::theme::pressed_step(t.accent),
+                                        press,
+                                    );
                                     ui.painter().circle_filled(sc, pulse_r * swap, rgb(send_fill));
                                     // The paper plane is the icon
                                     // font's send glyph, the same

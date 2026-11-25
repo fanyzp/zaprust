@@ -4,6 +4,17 @@ All notable changes to Zaprust are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com), versions
 follow [SemVer](https://semver.org).
 
+## [1.6.27] - 2026-11-25
+
+### fix:
+
+- The send button now answers the pointer. It used to sit on the flat accent colour through hover, the one silent control in the composer; it now crossfades to its hover step under the pointer and its pressed step while held, through the same shared animation factors as the microphone it morphs with, and the microphone's own hover and press fills crossfade the same way instead of snapping.
+- Buttons, filter chips and icon buttons now show a keyboard focus ring. Only the text fields had one; the hand-painted controls now paint the same ring (1.5 px, inside the control) when they hold keyboard focus, so tabbing through the app is visible everywhere.
+- The settings switch's thumb now honours the Motion setting. Its slide ran on a fixed-length animation the setting could not reach, so it kept sliding with Motion set to Off; it now runs on the motion system's switch duration, shortened under Reduced and instant under Off, like every other animation.
+- The download chips inside message bubbles (voice notes, documents, audio files) crossfade their hover and pressed fills through the shared animation factors instead of snapping between them.
+- Two icons that shipped as empty boxes now render. The bundled icon font was missing the link and minus glyphs, so the event card's join-link row and its guest stepper's minus button painted the font's empty-box fallback; the font subset now includes both, and the link glyph points at the codepoint the rounded font actually uses.
+- The forward picker now paints the same avatar as the chat list for each target. It used to paint the generic silhouette for everyone, on a disc wider than the row's own slot; named contacts now wear their initials, groups wear the group glyph, and the disc fits its slot.
+
 ## [1.6.26] - 2026-11-25
 
 ### fix:

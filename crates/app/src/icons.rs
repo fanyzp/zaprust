@@ -132,7 +132,7 @@ pub(crate) fn glyph(icon: Icon) -> char {
         Icon::Plus => '\u{e145}',          // add
         Icon::Minus => '\u{e15b}',         // remove
         Icon::Videocam => '\u{e04b}',      // videocam
-        Icon::Link => '\u{e157}',          // link
+        Icon::Link => '\u{e250}',          // link
         Icon::Smile => '\u{e813}',         // sentiment_satisfied
         Icon::Mic => '\u{e31d}',           // mic
         Icon::MicOff => '\u{e02b}',        // mic_off

@@ -264,13 +264,17 @@ pub(crate) fn radio_row(
 
 /// A Material 3 style switch: when off, a quiet surface track with
 /// an outline and a small grey thumb; when on, an accent track with
-/// a larger light thumb. The thumb slides and grows over 140 ms
-/// (the motion system's SWITCH preset) instead of snapping, and the
+/// a larger light thumb. The thumb slides and grows on the motion
+/// system's SWITCH duration instead of snapping, and the
 /// track steps on hover and press like every other control.
 /// Toggles `on` in place.
 pub(crate) fn switch(ui: &mut egui::Ui, on: &mut bool, t: Tokens) {
     let (rect, response) = ui.allocate_exact_size(Vec2::new(38.0, 22.0), Sense::click());
-    let k = ui.ctx().animate_bool_with_time(response.id, *on, 0.14);
+    // The thumb's slide runs through the shared factor, so it
+    // takes the SWITCH duration as scaled by the Motion setting
+    // (and snaps under Motion Off) instead of running on a raw
+    // fixed-length animation the setting could not reach.
+    let k = crate::anim::switch_factor(ui, ("switch_thumb", response.id), *on);
     let off_fill = core::theme::mix(t.bg_panel_alt, t.bg_app, 0.4);
     let base = if *on { t.accent } else { off_fill };
     // The track's hover and pressed steps run through the shared

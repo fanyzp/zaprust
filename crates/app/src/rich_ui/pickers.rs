@@ -533,11 +533,11 @@ impl App {
             return;
         };
         let current = self.selected_chat;
-        let targets: Vec<(u64, String, u8)> = self
+        let targets: Vec<(u64, String, u8, bool)> = self
             .chats
             .iter()
             .filter(|c| c.id != current)
-            .map(|c| (c.id, c.title.clone(), c.avatar_seed))
+            .map(|c| (c.id, c.title.clone(), c.avatar_seed, c.kind == core::model::ChatKind::Group))
             .collect();
         let mut chosen: Option<u64> = None;
         let mut close = false;
@@ -560,19 +560,43 @@ impl App {
                             .max_height(320.0)
                             .auto_shrink([false, true])
                             .show(ui, |ui| {
-                                for (id, title, seed) in &targets {
+                                for (id, title, seed, group) in &targets {
                                     ui.horizontal(|ui| {
                                         let (rect, _) = ui.allocate_exact_size(
                                             Vec2::splat(26.0),
                                             egui::Sense::hover(),
                                         );
-                                        crate::widgets::paint_avatar_disc(
-                                            ui.painter(),
-                                            rect.center(),
-                                            14.0,
-                                            false,
-                                            crate::widgets::avatar_color(*seed),
-                                        );
+                                        // The same no-photo avatar
+                                        // the chat list paints for
+                                        // this chat (initials on the
+                                        // seed disc, the group glyph
+                                        // for groups, the silhouette
+                                        // for identifier titles), at
+                                        // the radius the 26 px slot
+                                        // actually holds: the picker
+                                        // used to paint the bare
+                                        // silhouette for every target
+                                        // at radius 14, a disc wider
+                                        // than its own slot and an
+                                        // identity the list never
+                                        // shows for these chats.
+                                        if *group {
+                                            crate::widgets::paint_avatar(
+                                                ui.painter(),
+                                                rect.center(),
+                                                13.0,
+                                                true,
+                                                *seed,
+                                            );
+                                        } else {
+                                            crate::widgets::paint_initials_avatar(
+                                                ui.painter(),
+                                                rect.center(),
+                                                13.0,
+                                                title,
+                                                *seed,
+                                            );
+                                        }
                                         if crate::widgets::menu_item(ui, t, title).clicked() {
                                             chosen = Some(*id);
                                         }

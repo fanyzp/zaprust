@@ -52,12 +52,13 @@ fn button_impl(
     // the resting fill, pressed one step the other way, on every
     // theme. Text on filled variants is the computed on-color
     // (WCAG-checked in core's theme tests).
-    let (fill, hovered, active, stroke, text) = match kind {
+    let (fill, hovered, active, stroke, text, focus_ring) = match kind {
         Btn::Primary => (
             t.accent,
             core::theme::hover_step(t.accent),
             core::theme::pressed_step(t.accent),
             Stroke::NONE,
+            t.on_accent(),
             t.on_accent(),
         ),
         Btn::Secondary => (
@@ -66,12 +67,14 @@ fn button_impl(
             core::theme::pressed_step(t.bg_panel_alt),
             Stroke::NONE,
             t.text_primary,
+            t.accent,
         ),
         Btn::Danger => (
             t.danger,
             core::theme::hover_step(t.danger),
             core::theme::pressed_step(t.danger),
             Stroke::NONE,
+            t.on_danger(),
             t.on_danger(),
         ),
     };
@@ -123,6 +126,19 @@ fn button_impl(
     painter.rect_filled(prect, radius, rgb(cur));
     if stroke != Stroke::NONE {
         painter.rect_stroke(prect, radius, stroke, egui::StrokeKind::Inside);
+    }
+    if enabled && response.has_focus() {
+        // The keyboard focus ring, in the same idiom as the text
+        // fields (1.5 px, inside the rect): the accent on the
+        // surface-toned kind, the on-fill text colour on the
+        // filled kinds, where an accent ring would vanish into
+        // the fill it outlines.
+        painter.rect_stroke(
+            prect,
+            radius,
+            Stroke::new(1.5_f32, rgb(focus_ring)),
+            egui::StrokeKind::Inside,
+        );
     }
     painter.text(
         prect.center(),
@@ -260,6 +276,16 @@ pub(crate) fn chip(ui: &mut egui::Ui, label: &str, selected: bool, t: Tokens) ->
     // radius that drifts from the height when font metrics move.
     let radius = CornerRadius::same((rect.height() / 2.0).round() as u8);
     ui.painter().rect_filled(rect, radius, fill);
+    if response.has_focus() {
+        // The keyboard focus ring, the text fields' idiom
+        // (1.5 px accent, inside the rect).
+        ui.painter().rect_stroke(
+            rect,
+            radius,
+            Stroke::new(1.5_f32, rgb(t.accent)),
+            egui::StrokeKind::Inside,
+        );
+    }
     let text = if selected { t.accent } else { t.text_secondary };
     ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, label, font, rgb(text));
     response.on_hover_cursor(egui::CursorIcon::PointingHand)
@@ -399,6 +425,16 @@ pub(crate) fn icon_button_on(
         None if resp.hovered() => rgb(t.text_primary),
         None => rgb(t.text_secondary),
     };
+    if resp.has_focus() {
+        // The keyboard focus ring: the text fields' 1.5 px accent
+        // ring, drawn as a circle just inside the wash disc so it
+        // follows this button's own shape.
+        ui.painter().circle_stroke(
+            rect.center(),
+            size / 2.0 - 0.75,
+            Stroke::new(1.5_f32, rgb(t.accent)),
+        );
+    }
     crate::icons::draw(
         ui.painter(),
         icon,

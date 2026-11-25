@@ -2475,13 +2475,20 @@ pub(crate) fn message_bubble(
                     // invisible and the glyph read as clipped
                     // against the bubble's right edge.
                     let dl_base = core::theme::pressed_step(t.bubble_in);
-                    let fill = if resp.is_pointer_button_down_on() {
-                        rgb(core::theme::pressed_step(dl_base))
-                    } else if resp.hovered() {
-                        rgb(core::theme::hover_step(dl_base))
-                    } else {
-                        rgb(dl_base)
-                    };
+                    // The disc's hover and pressed steps crossfade
+                    // through the shared factors like every other
+                    // control, instead of snapping between fills.
+                    let hov = crate::anim::hover_factor(ui, ("voice_dl", msg.id), resp.hovered());
+                    let press = crate::anim::press_factor(
+                        ui,
+                        ("voice_dl", msg.id),
+                        resp.is_pointer_button_down_on(),
+                    );
+                    let fill = rgb(core::theme::mix(
+                        core::theme::mix(dl_base, core::theme::hover_step(dl_base), hov),
+                        core::theme::pressed_step(dl_base),
+                        press,
+                    ));
                     painter.circle_filled(dl.center(), VOICE_DL / 2.0, fill);
                     if media.downloading {
                         // The download is in flight: the chip
@@ -2589,13 +2596,24 @@ pub(crate) fn message_bubble(
                     let resp = ui
                         .interact(dl, egui::Id::unique(("doc_dl", msg.id)), egui::Sense::click())
                         .on_hover_cursor(egui::CursorIcon::PointingHand);
-                    let fill = if resp.is_pointer_button_down_on() {
-                        rgb(core::theme::pressed_step(t.bg_panel_alt))
-                    } else if resp.hovered() {
-                        rgb(core::theme::hover_step(t.bg_panel_alt))
-                    } else {
-                        rgb(t.bg_panel_alt)
-                    };
+                    // The disc's hover and pressed steps crossfade
+                    // through the shared factors like every other
+                    // control, instead of snapping between fills.
+                    let hov = crate::anim::hover_factor(ui, ("doc_dl", msg.id), resp.hovered());
+                    let press = crate::anim::press_factor(
+                        ui,
+                        ("doc_dl", msg.id),
+                        resp.is_pointer_button_down_on(),
+                    );
+                    let fill = rgb(core::theme::mix(
+                        core::theme::mix(
+                            t.bg_panel_alt,
+                            core::theme::hover_step(t.bg_panel_alt),
+                            hov,
+                        ),
+                        core::theme::pressed_step(t.bg_panel_alt),
+                        press,
+                    ));
                     painter.circle_filled(dl.center(), DOC_DL / 2.0, fill);
                     if media.downloading {
                         // In flight: the shared spinner, same as
@@ -2662,13 +2680,24 @@ pub(crate) fn message_bubble(
                     let resp = ui
                         .interact(dl, egui::Id::unique(("doc_dl", msg.id)), egui::Sense::click())
                         .on_hover_cursor(egui::CursorIcon::PointingHand);
-                    let fill = if resp.is_pointer_button_down_on() {
-                        rgb(core::theme::pressed_step(t.bg_panel_alt))
-                    } else if resp.hovered() {
-                        rgb(core::theme::hover_step(t.bg_panel_alt))
-                    } else {
-                        rgb(t.bg_panel_alt)
-                    };
+                    // The disc's hover and pressed steps crossfade
+                    // through the shared factors like every other
+                    // control, instead of snapping between fills.
+                    let hov = crate::anim::hover_factor(ui, ("doc_dl", msg.id), resp.hovered());
+                    let press = crate::anim::press_factor(
+                        ui,
+                        ("doc_dl", msg.id),
+                        resp.is_pointer_button_down_on(),
+                    );
+                    let fill = rgb(core::theme::mix(
+                        core::theme::mix(
+                            t.bg_panel_alt,
+                            core::theme::hover_step(t.bg_panel_alt),
+                            hov,
+                        ),
+                        core::theme::pressed_step(t.bg_panel_alt),
+                        press,
+                    ));
                     painter.circle_filled(dl.center(), DOC_DL / 2.0, fill);
                     if media.downloading {
                         let slot_rect = Rect::from_center_size(dl.center(), Vec2::splat(DOC_DL));

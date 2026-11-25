@@ -47,6 +47,8 @@ pub(crate) mod dur {
     pub(crate) const POP: f32 = (crate::motion::dur::POP / 1000.0) as f32;
     /// The bottom navigation icon pop on tab activation.
     pub(crate) const TAB_POP: f32 = (crate::motion::dur::TAB_POP / 1000.0) as f32;
+    /// A switch thumb sliding between its two resting states.
+    pub(crate) const SWITCH: f32 = (crate::motion::dur::SWITCH / 1000.0) as f32;
 }
 
 /// Ease-out cubic shaped for egui's easing slot; the curve itself
@@ -119,6 +121,19 @@ pub(crate) fn press_factor(
     pressed: bool,
 ) -> f32 {
     bool_factor(ui, Id::unique(("anim_press", key)), pressed, dur::PRESS)
+}
+
+/// Eased factor for a switch thumb's slide between its on and
+/// off resting states, on the motion system's SWITCH duration:
+/// Reduced shortens the slide and Off snaps it, like every other
+/// factor here. The switch used to run its thumb on a raw egui
+/// animation call that ignored the Motion setting entirely.
+pub(crate) fn switch_factor(
+    ui: &egui::Ui,
+    key: impl std::hash::Hash + std::fmt::Debug,
+    on: bool,
+) -> f32 {
+    bool_factor(ui, Id::unique(("anim_switch", key)), on, dur::SWITCH)
 }
 
 /// Eased 0..1 factor for a two-state morph (the composer's

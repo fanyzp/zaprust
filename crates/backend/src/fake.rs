@@ -1923,6 +1923,76 @@ pub fn scripted_stress_messages() -> Vec<LiveMessage> {
     flagged.edited = true;
     flagged.forwarded = true;
     flagged.starred = true;
+    let mut buttons_long = LiveMessage::text(
+        "fake-stress-28",
+        FAKE_STRESS_JID,
+        name.clone(),
+        "One more choice, with much longer labels this time:",
+        1_700_000_870,
+        false,
+    );
+    buttons_long.kind = crate::LiveMessageKind::Buttons {
+        footer: "The caretaker answers in the evening, usually after the last \
+            booking of the day is done."
+            .to_owned(),
+        buttons: vec![
+            crate::LiveButton {
+                id: "1".to_owned(),
+                text: "Reserve the community hall for the whole weekend, including \
+                    setup on Friday and cleanup on Monday morning"
+                    .to_owned(),
+            },
+            crate::LiveButton {
+                id: "2".to_owned(),
+                text: "Ask the caretaker about the deposit, the keys, and the \
+                    parking arrangement first"
+                    .to_owned(),
+            },
+            crate::LiveButton { id: "3".to_owned(), text: "Cancel".to_owned() },
+        ],
+    };
+    let mut list_long = LiveMessage::text(
+        "fake-stress-29",
+        FAKE_STRESS_JID,
+        name.clone(),
+        "Sessions with long section names",
+        1_700_000_880,
+        false,
+    );
+    list_long.kind = crate::LiveMessageKind::ListMsg {
+        description: "Every section and row below carries a deliberately long \
+            text, so the stacked lines have to wrap."
+            .to_owned(),
+        button_label: "See all available sessions for the autumn term".to_owned(),
+        footer: "Registration closes on Friday evening before the term starts; \
+            late entries go to the waiting list."
+            .to_owned(),
+        sections: vec![crate::LiveListSection {
+            title: "Saturday sessions in the main hall and the adjoining \
+                workshop rooms"
+                .to_owned(),
+            rows: vec![
+                crate::LiveListRow {
+                    id: "1".to_owned(),
+                    title: "Introduction to woodworking for complete beginners \
+                        who have never held a saw"
+                        .to_owned(),
+                    description: "Tools, safety, and your first cutting board, \
+                        plus sharpening and care"
+                        .to_owned(),
+                },
+                crate::LiveListRow {
+                    id: "2".to_owned(),
+                    title: "Advanced joinery and furniture restoration workshop \
+                        for returning students"
+                        .to_owned(),
+                    description: "Bring a small piece of furniture to work on \
+                        and your own clamps if you have them"
+                        .to_owned(),
+                },
+            ],
+        }],
+    };
     vec![
         LiveMessage::text("fake-stress-1", FAKE_STRESS_JID, name.clone(), &long_token, 1_700_000_600, false),
         LiveMessage::text(
@@ -1996,6 +2066,8 @@ pub fn scripted_stress_messages() -> Vec<LiveMessage> {
         link,
         reacted,
         flagged,
+        buttons_long,
+        list_long,
     ]
 }
 

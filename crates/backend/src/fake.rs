@@ -1625,8 +1625,7 @@ pub fn scripted_stress_messages() -> Vec<LiveMessage> {
         seconds: 245,
         size_bytes: 5_900_000,
     };
-    let doc_name =
-        "Quarterly-financial-report-2026-final-version-revised-approved-signed-copy.pdf";
+    let doc_name = "Quarterly-financial-report-2026-final-version-revised-approved-signed-copy.pdf";
     let mut document = LiveMessage::text(
         "fake-stress-13",
         FAKE_STRESS_JID,
@@ -1994,7 +1993,14 @@ pub fn scripted_stress_messages() -> Vec<LiveMessage> {
         }],
     };
     vec![
-        LiveMessage::text("fake-stress-1", FAKE_STRESS_JID, name.clone(), &long_token, 1_700_000_600, false),
+        LiveMessage::text(
+            "fake-stress-1",
+            FAKE_STRESS_JID,
+            name.clone(),
+            &long_token,
+            1_700_000_600,
+            false,
+        ),
         LiveMessage::text(
             "fake-stress-2",
             FAKE_STRESS_JID,
@@ -2017,10 +2023,24 @@ pub fn scripted_stress_messages() -> Vec<LiveMessage> {
             1_700_000_620,
             false,
         ),
-        LiveMessage::text("fake-stress-4", FAKE_STRESS_JID, name.clone(), long_prose, 1_700_000_630, false),
+        LiveMessage::text(
+            "fake-stress-4",
+            FAKE_STRESS_JID,
+            name.clone(),
+            long_prose,
+            1_700_000_630,
+            false,
+        ),
         quote_long,
         quote_token,
-        LiveMessage::text("fake-stress-7", FAKE_STRESS_JID, name.clone(), "😀😃😄😁😆", 1_700_000_660, false),
+        LiveMessage::text(
+            "fake-stress-7",
+            FAKE_STRESS_JID,
+            name.clone(),
+            "😀😃😄😁😆",
+            1_700_000_660,
+            false,
+        ),
         LiveMessage::text(
             "fake-stress-8",
             FAKE_STRESS_JID,

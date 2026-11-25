@@ -234,8 +234,7 @@ fn list_block_h(
     }
     for section in sections {
         if !section.title.is_empty() {
-            let g =
-                layout_text(ui, &section.title, FontId::proportional(11.0), secondary, wrap_w);
+            let g = layout_text(ui, &section.title, FontId::proportional(11.0), secondary, wrap_w);
             h += interactive_line_h(g.size().y);
         }
         for row in &section.rows {
@@ -1331,9 +1330,8 @@ pub(crate) fn message_bubble(
             let mut rows_h = 0.0;
             for (label, votes) in options {
                 let votes_w = measure_text(ui, &format!("{votes}"), FontId::proportional(12.0));
-                let ow = measure_text(ui, label, FontId::proportional(INNER_BODY_SIZE))
-                    + votes_w
-                    + 44.0;
+                let ow =
+                    measure_text(ui, label, FontId::proportional(INNER_BODY_SIZE)) + votes_w + 44.0;
                 w = w.max(ow);
                 // The row's height follows the label's wrap at
                 // the width the paint pass will give it: the
@@ -1570,8 +1568,7 @@ pub(crate) fn message_bubble(
                 Some(14.5 * BODY_LEADING),
             )
             .size()
-            .y
-                + 4.0
+            .y + 4.0
         };
         kind_h = photo_tile_h(aspect, inner_w) + caption_h;
     }
@@ -1782,8 +1779,7 @@ pub(crate) fn message_bubble(
                                         inner_w,
                                     )
                                     .size()
-                                    .y
-                                        + 4.0
+                                    .y + 4.0
                                 };
                                 let mut y = rect.top()
                                     + pad_top
@@ -3084,7 +3080,8 @@ pub(crate) fn message_bubble(
                     .map(|c| carousel_block_h(c.buttons.len().min(2)))
                     .fold(0.0, f32::max);
                 for card in cards.iter().take(2) {
-                    let card_rect = Rect::from_min_size(Pos2::new(cx, cy), Vec2::new(150.0, card_h));
+                    let card_rect =
+                        Rect::from_min_size(Pos2::new(cx, cy), Vec2::new(150.0, card_h));
                     painter.rect_filled(
                         card_rect,
                         CornerRadius::same(INNER_CARD_RADIUS),
@@ -3334,11 +3331,7 @@ pub(crate) fn message_bubble(
                         }
                         painter.galley(Pos2::new(x + 8.0, cy + 3.0), title_g, text_color);
                         if let Some(g) = desc_g {
-                            painter.galley(
-                                Pos2::new(x + 8.0, cy + 3.0 + title_h),
-                                g,
-                                secondary,
-                            );
+                            painter.galley(Pos2::new(x + 8.0, cy + 3.0 + title_h), g, secondary);
                         }
                         cy += h;
                     }

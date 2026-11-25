@@ -159,7 +159,7 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
 name = "app"
-version = "1.6.27"
+version = "1.0.0"
 dependencies = [
  "backend",
  "core",
@@ -471,7 +471,7 @@ checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
 name = "backend"
-version = "1.6.27"
+version = "1.0.0"
 dependencies = [
  "camera",
  "core",
@@ -823,7 +823,7 @@ dependencies = [
 
 [[package]]
 name = "camera"
-version = "1.6.27"
+version = "1.0.0"
 dependencies = [
  "libc",
 ]
@@ -1040,7 +1040,7 @@ dependencies = [
 
 [[package]]
 name = "core"
-version = "1.6.27"
+version = "1.0.0"
 dependencies = [
  "base64 0.22.1",
  "getrandom 0.3.4",
@@ -1871,7 +1871,7 @@ dependencies = [
 
 [[package]]
 name = "export-chat"
-version = "1.6.27"
+version = "1.0.0"
 dependencies = [
  "core",
 ]
@@ -2202,7 +2202,7 @@ dependencies = [
 
 [[package]]
 name = "giphy"
-version = "1.6.27"
+version = "1.0.0"
 dependencies = [
  "core",
  "reqwest",
@@ -5382,14 +5382,14 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
 name = "stickers"
-version = "1.6.27"
+version = "1.0.0"
 dependencies = [
  "image",
 ]
 
 [[package]]
 name = "store"
-version = "1.6.27"
+version = "1.0.0"
 dependencies = [
  "backend",
  "core",

@@ -132,15 +132,23 @@ impl App {
                     });
                 });
                 ui.add_space(SP_2_5);
-                if self.business.label_editor.is_some() {
-                    self.draw_label_editor(ui, t);
-                    ui.add_space(SP_3);
-                }
                 if labels.is_empty() && self.business.label_editor.is_none() {
                     crate::widgets::empty_state(ui, t, &crate::i18n::t("labels.empty"));
                     return;
                 }
                 egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                    // The editor leads the scroll content, not
+                    // the panel flow above the area: laid out
+                    // above the area, its controls below the
+                    // name field took clicks one row higher
+                    // than their paint (measured 26 px in the
+                    // qc1629 rig runs), while rows inside the
+                    // area hit exactly. Inside the area the
+                    // editor shares the rows' layout pass.
+                    if self.business.label_editor.is_some() {
+                        self.draw_label_editor(ui, t);
+                        ui.add_space(SP_3);
+                    }
                     for label in &labels {
                         let (rect, resp) = ui.allocate_exact_size(
                             Vec2::new(ui.available_width(), 52.0),

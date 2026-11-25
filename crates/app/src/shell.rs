@@ -2,7 +2,7 @@
 //! collapsed-sidebar strip.
 
 use crate::state::{effective_pixels_per_point, layout_mode_for_content, App, LayoutMode, Screen};
-use crate::theme::{apply_visuals, rgb, SP_1_5, SP_2_5, SP_3, SP_3_5};
+use crate::theme::{apply_visuals, rgb, SP_1_5, SP_2, SP_2_5, SP_3, SP_3_5};
 use crate::widgets::rail_button;
 use core::filter::total_unread;
 use eframe::egui::{self, Align, Layout, Margin, RichText, Sense, Vec2};
@@ -258,8 +258,9 @@ impl App {
     }
 
     /// The empty conversation placeholder: the chat background
-    /// and one quiet centred line, the same presentation the
-    /// pane takes when no chat is selected at all. Shown on the
+    /// with the product name and one quiet GitHub link centred
+    /// on it, the same presentation the pane takes when no chat
+    /// is selected at all. Shown on the
     /// filtered list destinations while the selection sits
     /// outside the filter; the selection is left untouched, so
     /// it never opens, marks read, or disturbs the foreign chat.
@@ -288,20 +289,16 @@ impl App {
                 }
                 ui.vertical_centered(|ui| {
                     ui.add_space((ui.available_height() * 0.36).max(0.0));
-                    let (icon_rect, _) = ui.allocate_exact_size(Vec2::splat(48.0), Sense::hover());
-                    crate::icons::draw(
-                        ui.painter(),
-                        crate::icons::Icon::Chat,
-                        icon_rect.center(),
-                        crate::icons::SIZE_DISPLAY,
-                        rgb(t.text_faint),
-                        rgb(t.bg_chat),
-                    );
-                    ui.add_space(SP_2_5);
-                    ui.label(
-                        RichText::new(crate::i18n::t("conversation.select_chat"))
-                            .size(15.0)
-                            .color(rgb(t.text_secondary)),
+                    // The empty state is the product name and
+                    // one quiet link, nothing more (the owner's
+                    // minimalism ruling: no illustration, no
+                    // tagline, no call to action, no copy
+                    // explaining the pane).
+                    ui.label(RichText::new("ZapRust").size(29.0).color(rgb(t.text_primary)));
+                    ui.add_space(SP_2);
+                    ui.hyperlink_to(
+                        RichText::new("GitHub").size(15.0).color(rgb(t.text_secondary)),
+                        "https://github.com/fanyzp/zaprust",
                     );
                 });
             },

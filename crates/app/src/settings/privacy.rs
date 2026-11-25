@@ -8,7 +8,7 @@ impl App {
         group_label(ui, t, &crate::i18n::t("privacy.receipts_group"));
         settings_card(ui, t, |ui| {
             let mut v = self.read_receipts;
-            row_hl(
+            switch_row_hl(
                 ui,
                 &mut self.settings_highlight,
                 self.motion,
@@ -16,14 +16,14 @@ impl App {
                 t,
                 &crate::i18n::t("privacy.read_receipts"),
                 &crate::i18n::t("privacy.read_receipts_caption"),
-                |ui| switch(ui, &mut v, t),
+                &mut v,
             );
             if v != self.read_receipts {
                 self.set_read_receipts(v);
             }
             divider(ui, t);
             let mut tp = self.typing_indicators;
-            row_hl(
+            switch_row_hl(
                 ui,
                 &mut self.settings_highlight,
                 self.motion,
@@ -31,7 +31,7 @@ impl App {
                 t,
                 &crate::i18n::t("privacy.typing"),
                 "",
-                |ui| switch(ui, &mut tp, t),
+                &mut tp,
             );
             if tp != self.typing_indicators {
                 self.set_typing_indicators(tp);
@@ -47,7 +47,10 @@ impl App {
                         .color(rgb(t.text_secondary)),
                 );
                 ui.add_space(SP_1);
-                for secs in core::model::EPHEMERAL_OPTIONS {
+                for (i, secs) in core::model::EPHEMERAL_OPTIONS.into_iter().enumerate() {
+                    if i > 0 {
+                        divider_inset(ui, t, 34.0);
+                    }
                     let label = crate::extras::ephemeral_duration_label(secs);
                     if radio_row(ui, t, self.default_ephemeral_secs == secs, None, &label, "") {
                         self.default_ephemeral_secs = secs;
@@ -247,7 +250,7 @@ impl App {
             if has_code {
                 divider(ui, t);
                 let mut v = self.app_lock_enabled;
-                row_hl(
+                switch_row_hl(
                     ui,
                     &mut self.settings_highlight,
                     self.motion,
@@ -255,7 +258,7 @@ impl App {
                     t,
                     &crate::i18n::t("privacy.app_lock"),
                     &crate::i18n::t("privacy.app_lock_caption"),
-                    |ui| switch(ui, &mut v, t),
+                    &mut v,
                 );
                 if v != self.app_lock_enabled {
                     self.app_lock_enabled = v;

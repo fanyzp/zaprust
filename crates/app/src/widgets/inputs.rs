@@ -270,51 +270,182 @@ pub(crate) fn radio_row(
     response.on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
 }
 
-/// A Material 3 style switch: when off, a quiet surface track with
-/// an outline and a small grey thumb; when on, an accent track with
-/// a larger light thumb. The thumb slides and grows on the motion
-/// system's SWITCH duration instead of snapping, and the
-/// track steps on hover and press like every other control.
-/// Toggles `on` in place.
-pub(crate) fn switch(ui: &mut egui::Ui, on: &mut bool, t: Tokens) {
-    let (rect, response) = ui.allocate_exact_size(Vec2::new(38.0, 22.0), Sense::click());
-    // The thumb's slide runs through the shared factor, so it
-    // takes the SWITCH duration as scaled by the Motion setting
-    // (and snaps under Motion Off) instead of running on a raw
-    // fixed-length animation the setting could not reach.
-    let k = crate::anim::switch_factor(ui, ("switch_thumb", response.id), *on);
-    let off_fill = core::theme::mix(t.bg_panel_alt, t.bg_app, 0.4);
-    let base = if *on { t.accent } else { off_fill };
+/// The switch's track geometry: a 46 x 26 capsule, wide enough
+/// to read as a switch at a glance, with a constant 20 px thumb
+/// inset 3 px on every side. The slide is pure travel (20 px);
+/// the thumb never changes size, so the motion reads as travel
+/// and nothing else.
+pub(crate) const SWITCH_W: f32 = 46.0;
+pub(crate) const SWITCH_H: f32 = 26.0;
+
+/// Paints the switch inside `rect`. `k` is the slide factor
+/// (0 off, 1 on), `hov` and `press` the shared interaction
+/// factors, `focused` whether the owning interaction holds
+/// keyboard focus. One painter for both owners of the control:
+/// the standalone widget below and the settings toggle row,
+/// which hosts the switch on its own full-row interaction.
+pub(crate) fn switch_paint(
+    ui: &mut egui::Ui,
+    rect: egui::Rect,
+    t: Tokens,
+    on: bool,
+    k: f32,
+    hov: f32,
+    press: f32,
+    focused: bool,
+) {
+    let radius = CornerRadius::same(13);
+    // Off is a tone step, never an outline: the track mixes the
+    // card's alt panel toward the faint text tone, so it reads
+    // as a grey track on any card in either scheme. On is the
+    // accent, like every primary state in the app.
+    let off_track = core::theme::mix(t.bg_panel_alt, t.text_faint, 0.30);
+    let base = if on { t.accent } else { off_track };
     // The track's hover and pressed steps run through the shared
-    // factors, so the wash crossfades on HOVER and PRESS (and
-    // snaps under Motion Off) instead of jumping between steps.
-    let hov = crate::anim::hover_factor(ui, ("switch", response.id), response.hovered());
-    let press = crate::anim::press_factor(
-        ui,
-        ("switch", response.id),
-        response.is_pointer_button_down_on(),
-    );
+    // factors, so the wash crossfades (and snaps under Motion
+    // Off) instead of jumping between steps.
     let track = core::theme::mix(
         core::theme::mix(base, core::theme::hover_step(base), hov),
         core::theme::pressed_step(base),
         press,
     );
-    ui.painter().rect_filled(rect, CornerRadius::same(11), rgb(track));
-    if !*on {
-        ui.painter().rect_stroke(
+    let painter = ui.painter();
+    painter.rect_filled(rect, radius, rgb(track));
+    let cy = rect.center().y;
+    let cx = rect.left() + 13.0 + (rect.width() - 26.0) * k;
+    // A subtle press response on the thumb itself: it gives by
+    // 5% while held, on top of the track's pressed step.
+    let r = 10.0 * (1.0 - 0.05 * press);
+    // The thumb carries a soft shadow (two low-alpha discs), so
+    // the light off-state thumb stays readable on its grey track
+    // in the light scheme, where tone alone cannot separate a
+    // white thumb from a light track.
+    painter.circle_filled(Pos2::new(cx, cy + 1.5), r + 0.5, Color32::from_black_alpha(26));
+    painter.circle_filled(Pos2::new(cx, cy + 1.0), r, Color32::from_black_alpha(36));
+    // The off thumb is the scheme's light pole: near-white on a
+    // dark scheme, the white shell surface on a light one. On,
+    // it takes the accent's own on-colour.
+    let dark_scheme = t.bg_app.0 < 128 && t.bg_app.1 < 128 && t.bg_app.2 < 128;
+    let thumb = if on {
+        t.on_accent()
+    } else if dark_scheme {
+        core::theme::mix(t.text_primary, t.bg_panel, 0.12)
+    } else {
+        t.bg_panel
+    };
+    painter.circle_filled(Pos2::new(cx, cy), r, rgb(thumb));
+    if focused {
+        // The keyboard focus ring, in the text fields' idiom
+        // (1.5 px accent, inside the control), so the switch
+        // answers tabbing like every other control.
+        painter.rect_stroke(
             rect,
-            CornerRadius::same(11),
+            radius,
+            Stroke::new(1.5_f32, rgb(t.accent)),
+            egui::StrokeKind::Inside,
+        );
+    }
+}
+
+/// The switch hosted by another interaction (the settings
+/// toggle row): the host owns the click, this runs the slide
+/// and interaction factors under the host's id and paints.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn switch_hosted(
+    ui: &mut egui::Ui,
+    rect: egui::Rect,
+    t: Tokens,
+    on: bool,
+    host: egui::Id,
+    hovered: bool,
+    down: bool,
+    focused: bool,
+) {
+    // The thumb's slide runs through the shared factor, so it
+    // takes the SWITCH duration as scaled by the Motion setting
+    // (and snaps under Motion Off) instead of running on a raw
+    // fixed-length animation the setting could not reach.
+    let k = crate::anim::switch_factor(ui, ("switch_thumb", host), on);
+    let hov = crate::anim::hover_factor(ui, ("switch", host), hovered);
+    let press = crate::anim::press_factor(ui, ("switch", host), down);
+    switch_paint(ui, rect, t, on, k, hov, press, focused);
+}
+
+/// The one switch: a crafted toggle in the canonical system.
+/// When off, a grey tone-step track with a light thumb; when
+/// on, an accent track with the accent's on-colour thumb. The
+/// thumb slides the full inner length of the track on the
+/// motion system's SWITCH duration, the track steps on hover
+/// and press, and the control paints the shared focus ring.
+/// Toggles `on` in place.
+pub(crate) fn switch(ui: &mut egui::Ui, on: &mut bool, t: Tokens) {
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(SWITCH_W, SWITCH_H), Sense::click());
+    switch_hosted(
+        ui,
+        rect,
+        t,
+        *on,
+        response.id,
+        response.hovered(),
+        response.is_pointer_button_down_on(),
+        response.has_focus(),
+    );
+    if response.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+        *on = !*on;
+    }
+}
+
+/// A selectable checkbox row in the radio row's language: an
+/// 18 px square at radius 4, accent-filled with a check when
+/// on, an outline in the faint token when off, the label at
+/// body size beside it, and the whole row as the click target.
+/// Replaces the stock egui checkbox, the last stock widget in
+/// the settings forms. Returns true when clicked.
+pub(crate) fn checkbox_row(ui: &mut egui::Ui, t: Tokens, checked: bool, label: &str) -> bool {
+    let (rect, response) =
+        ui.allocate_exact_size(Vec2::new(ui.available_width(), 40.0), Sense::click());
+    let hov = crate::anim::hover_factor(ui, ("checkbox_row", label), response.hovered());
+    let press = crate::anim::press_factor(
+        ui,
+        ("checkbox_row", label),
+        response.is_pointer_button_down_on(),
+    );
+    if press > 0.001 {
+        let fill =
+            core::theme::mix(t.bg_panel_alt, core::theme::pressed_step(t.bg_panel_alt), press);
+        ui.painter().rect_filled(rect, crate::theme::RADIUS_MICRO, rgb(fill));
+    } else if hov > 0.001 {
+        let fill = core::theme::mix(t.bg_panel, t.bg_panel_alt, hov);
+        ui.painter().rect_filled(rect, crate::theme::RADIUS_MICRO, rgb(fill));
+    }
+    let cy = rect.center().y;
+    let bx = egui::Rect::from_min_size(Pos2::new(rect.left() + 11.0, cy - 9.0), Vec2::splat(18.0));
+    if checked {
+        ui.painter().rect_filled(bx, CornerRadius::same(4), rgb(t.accent));
+        crate::icons::draw(
+            ui.painter(),
+            crate::icons::Icon::Check,
+            bx.center(),
+            12.0,
+            rgb(t.on_accent()),
+            rgb(t.accent),
+        );
+    } else {
+        ui.painter().rect_stroke(
+            bx,
+            CornerRadius::same(4),
             Stroke::new(1.5_f32, rgb(t.text_faint)),
             egui::StrokeKind::Inside,
         );
     }
-    let knob_r = 6.0 + 2.0 * k;
-    let knob_color = if *on { rgb(t.on_accent()) } else { rgb(t.text_secondary) };
-    let knob_x = rect.left() + 11.0 + (rect.width() - 22.0) * k;
-    ui.painter().circle_filled(Pos2::new(knob_x, rect.center().y), knob_r, knob_color);
-    if response.clicked() {
-        *on = !*on;
-    }
+    ui.painter().text(
+        Pos2::new(bx.right() + 12.0, cy),
+        egui::Align2::LEFT_CENTER,
+        label,
+        FontId::proportional(15.0),
+        rgb(t.text_primary),
+    );
+    response.on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
 }
 
 /// The one search pill for list panels (chat list, starred,

@@ -378,6 +378,13 @@ pub(crate) fn apply_visuals(ctx: &egui::Context, t: Tokens) {
     visuals.widgets.open = wv(alt, field, Stroke::NONE, 12);
     ctx.set_visuals(visuals);
     ctx.global_style_mut(|style| {
+        // A scroll area with a single enabled direction takes
+        // the wheel's vertical delta for that direction: a
+        // mouse wheel over the horizontal filter chip row
+        // scrolls the chips instead of doing nothing (the
+        // stock default only answers the axis the wheel
+        // physically reports).
+        style.always_scroll_the_only_direction = true;
         // Whisper-quiet floating scrollbars, everywhere. The
         // stock floating preset paints the handle in the bright
         // foreground (text) color at up to full opacity, which

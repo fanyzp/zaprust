@@ -8,7 +8,7 @@ impl App {
         group_label(ui, t, &crate::i18n::t("chats_page.sending"));
         settings_card(ui, t, |ui| {
             let mut v = self.enter_sends;
-            row_hl(
+            switch_row_hl(
                 ui,
                 &mut self.settings_highlight,
                 self.motion,
@@ -16,7 +16,7 @@ impl App {
                 t,
                 &crate::i18n::t("chats_page.enter_sends"),
                 &crate::i18n::t("chats_page.enter_sends_caption"),
-                |ui| switch(ui, &mut v, t),
+                &mut v,
             );
             if v != self.enter_sends {
                 self.enter_sends = v;
@@ -27,7 +27,7 @@ impl App {
         group_label(ui, t, &crate::i18n::t("chats_page.writing"));
         settings_card(ui, t, |ui| {
             let mut v = self.spell_check;
-            row_hl(
+            switch_row_hl(
                 ui,
                 &mut self.settings_highlight,
                 self.motion,
@@ -35,13 +35,14 @@ impl App {
                 t,
                 &crate::i18n::t("chats_page.spell_check"),
                 &crate::i18n::t("chats_page.spell_check_caption"),
-                |ui| switch(ui, &mut v, t),
+                &mut v,
             );
             if v != self.spell_check {
                 self.spell_check = v;
                 self.persist_settings();
             }
             if self.spell_check {
+                divider(ui, t);
                 ui.label(
                     egui::RichText::new(crate::i18n::t("chats_page.spell_personal"))
                         .size(12.0)
@@ -79,7 +80,7 @@ impl App {
         group_label(ui, t, &crate::i18n::t("chats_page.archiving"));
         settings_card(ui, t, |ui| {
             let mut v = self.keep_archived;
-            row_hl(
+            switch_row_hl(
                 ui,
                 &mut self.settings_highlight,
                 self.motion,
@@ -87,7 +88,7 @@ impl App {
                 t,
                 "Keep chats archived",
                 "Archived chats stay archived when new messages arrive",
-                |ui| switch(ui, &mut v, t),
+                &mut v,
             );
             if v != self.keep_archived {
                 self.keep_archived = v;

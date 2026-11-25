@@ -8,7 +8,7 @@ impl App {
         group_label(ui, t, &crate::i18n::t("notifications.alerts"));
         settings_card(ui, t, |ui| {
             let mut v = self.notify_messages;
-            row_hl(
+            switch_row_hl(
                 ui,
                 &mut self.settings_highlight,
                 self.motion,
@@ -16,12 +16,12 @@ impl App {
                 t,
                 "Message notifications",
                 "",
-                |ui| switch(ui, &mut v, t),
+                &mut v,
             );
             self.notify_messages = v;
             divider(ui, t);
             let mut v = self.notify_groups;
-            row_hl(
+            switch_row_hl(
                 ui,
                 &mut self.settings_highlight,
                 self.motion,
@@ -29,9 +29,7 @@ impl App {
                 t,
                 "Group notifications",
                 "Including @mentions and replies",
-                |ui| {
-                    switch(ui, &mut v, t);
-                },
+                &mut v,
             );
             self.notify_groups = v;
         });
@@ -39,7 +37,7 @@ impl App {
         group_label(ui, t, &crate::i18n::t("notifications.sound_preview"));
         settings_card(ui, t, |ui| {
             let mut v = self.notify_sound;
-            row_hl(
+            switch_row_hl(
                 ui,
                 &mut self.settings_highlight,
                 self.motion,
@@ -47,14 +45,12 @@ impl App {
                 t,
                 "Sound",
                 "",
-                |ui| {
-                    switch(ui, &mut v, t);
-                },
+                &mut v,
             );
             self.notify_sound = v;
             divider(ui, t);
             let mut v = self.notify_preview;
-            row_hl(
+            switch_row_hl(
                 ui,
                 &mut self.settings_highlight,
                 self.motion,
@@ -62,14 +58,14 @@ impl App {
                 t,
                 "Show preview",
                 "Message text inside the notification (less private)",
-                |ui| switch(ui, &mut v, t),
+                &mut v,
             );
             self.notify_preview = v;
         });
         ui.add_space(SP_4);
         settings_card(ui, t, |ui| {
             let mut v = self.tray_residence;
-            row_hl(
+            switch_row_hl(
                 ui,
                 &mut self.settings_highlight,
                 self.motion,
@@ -77,7 +73,7 @@ impl App {
                 t,
                 &crate::i18n::t("notifications.tray"),
                 &crate::i18n::t("notifications.tray_caption"),
-                |ui| switch(ui, &mut v, t),
+                &mut v,
             );
             if v != self.tray_residence {
                 self.tray_residence = v;

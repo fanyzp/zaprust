@@ -27,9 +27,16 @@ impl App {
         settings_card(ui, t, |ui| {
             for (i, (id, name, _search_desc)) in FEATURE_ROWS.iter().enumerate() {
                 let mut on = self.feature_flags.get(*id).copied().unwrap_or(false);
-                row_hl(ui, &mut self.settings_highlight, self.motion, id, t, name, "", |ui| {
-                    switch(ui, &mut on, t)
-                });
+                switch_row_hl(
+                    ui,
+                    &mut self.settings_highlight,
+                    self.motion,
+                    id,
+                    t,
+                    name,
+                    "",
+                    &mut on,
+                );
                 if on != self.feature_flags.get(*id).copied().unwrap_or(false) {
                     self.feature_flags.insert((*id).to_owned(), on);
                     changed = true;
@@ -72,6 +79,7 @@ impl App {
                     });
                 },
             );
+            divider(ui, t);
             form_row_hl(
                 ui,
                 &mut self.settings_highlight,

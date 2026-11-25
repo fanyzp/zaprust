@@ -75,6 +75,7 @@ pub(crate) enum Icon {
     LogOut,
     Schedule,
     Send,
+    ArrowUp,
     Lock,
     Keyboard,
     Done,
@@ -185,6 +186,7 @@ pub(crate) fn glyph(icon: Icon) -> char {
         Icon::LogOut => '\u{e9ba}',        // logout
         Icon::Schedule => '\u{efd6}',      // schedule
         Icon::Send => '\u{e163}',          // send
+        Icon::ArrowUp => '\u{e5d8}',       // arrow_upward
         Icon::Lock => '\u{e899}',          // lock
         Icon::Keyboard => '\u{e312}',      // keyboard
         Icon::Done => '\u{e876}',          // done

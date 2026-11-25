@@ -74,11 +74,13 @@ impl App {
                     // editing bars above the input) takes
                     // the width left after the external
                     // button's slot. The slot is ALWAYS
-                    // reserved at 38 px plus its gap, so
+                    // reserved at the morph disc's diameter
+                    // plus its gap, so
                     // the pill's width never changes when
                     // the button morphs between microphone
                     // and send: zero reflow.
-                    let pill_w = (ui.available_width() - 46.0).max(160.0);
+                    let disc_d = morph_disc_d(composer_line_height(ui));
+                    let pill_w = (ui.available_width() - (disc_d + 8.0)).max(160.0);
                     let pill_rect = {
                         // The pill is the flagship glass
                         // surface: the panel-alt base
@@ -602,17 +604,26 @@ impl App {
                     // the slot.
                     let recording = self.recorder.is_some();
                     egui::Area::new(egui::Id::unique("composer_action"))
-                        .fixed_pos(Pos2::new(pill_rect.right() + 8.0, pill_rect.bottom() - 46.0))
+                        .fixed_pos(Pos2::new(pill_rect.right() + 8.0, pill_rect.bottom() - disc_d))
                         .order(egui::Order::Foreground)
                         .show(ui.ctx(), |ui| {
-                            // Send: a proper round accent button with a
-                            // paper-plane drawn as vectors (the font's
-                            // arrow glyphs look cheap). Empty draft:
-                            // a plain microphone in a hover circle.
-                            // While a recording runs the slot shows
-                            // the red stop disc instead.
+                            // The slot's disc is exactly as tall
+                            // as the one-line pill (see
+                            // morph_disc_d), so its top and
+                            // bottom edges meet the pill's, and
+                            // its centre sits on the pill's
+                            // centreline; when the pill grows,
+                            // the disc stays on the bottom line.
+                            // Send: a round accent button with an
+                            // up-arrow glyph (the owner's choice,
+                            // replacing the paper plane). Empty
+                            // draft: a plain microphone in a
+                            // hover circle. While a recording
+                            // runs the slot shows the red stop
+                            // disc instead.
+                            let disc_r = disc_d / 2.0;
                             let (srect, sresp) =
-                                ui.allocate_exact_size(Vec2::splat(38.0), Sense::click());
+                                ui.allocate_exact_size(Vec2::splat(disc_d), Sense::click());
                             let sresp = sresp.on_hover_cursor(egui::CursorIcon::PointingHand);
                             let sc = srect.center();
                             // Motion: the send button pulses once per send.
@@ -623,11 +634,11 @@ impl App {
                             );
                             // sin(pi * p) is 0 at rest (p = 1),
                             // so the button is steady when idle.
-                            let pulse_r = 19.0 - 3.0 * (pulse_p * std::f32::consts::PI).sin();
+                            let pulse_r = disc_r - 3.0 * (pulse_p * std::f32::consts::PI).sin();
                             if recording {
                                 ui.painter().circle_filled(
                                     sc,
-                                    19.0,
+                                    disc_r,
                                     rgb(if sresp.is_pointer_button_down_on() {
                                         core::theme::pressed_step(t.danger)
                                     } else {
@@ -638,7 +649,7 @@ impl App {
                                     ui.painter(),
                                     crate::icons::Icon::Stop,
                                     sc,
-                                    crate::icons::SIZE_CONTROL,
+                                    crate::icons::SIZE_CONTROL * (disc_d / 38.0),
                                     Color32::WHITE,
                                     rgb(t.danger),
                                 );
@@ -697,12 +708,12 @@ impl App {
                                     );
                                     ui.painter().circle_filled(
                                         sc,
-                                        19.0,
+                                        disc_r,
                                         fade(rgb(mic_fill), mic_a),
                                     );
                                     ui.painter().circle_stroke(
                                         sc,
-                                        19.0,
+                                        disc_r,
                                         Stroke::new(1.0_f32, fade(rgb(t.border), mic_a)),
                                     );
                                     let mic_col = rgb(t.text_secondary);
@@ -710,7 +721,9 @@ impl App {
                                         ui.painter(),
                                         crate::icons::Icon::Mic,
                                         sc,
-                                        crate::icons::SIZE_CONTROL * (1.0 - 0.25 * swap),
+                                        crate::icons::SIZE_CONTROL
+                                            * (disc_d / 38.0)
+                                            * (1.0 - 0.25 * swap),
                                         Color32::from_rgba_unmultiplied(
                                             mic_col.r(),
                                             mic_col.g(),
@@ -751,14 +764,18 @@ impl App {
                                         press,
                                     );
                                     ui.painter().circle_filled(sc, pulse_r * swap, rgb(send_fill));
-                                    // The paper plane is the icon
-                                    // font's send glyph, the same
-                                    // family as the mic it morphs
-                                    // with; it scales up from
-                                    // three-quarter size as it
+                                    // The send glyph is the icon
+                                    // font's up arrow (the owner's
+                                    // choice over the reference
+                                    // client's paper plane), the
+                                    // same family as the mic it
+                                    // morphs with, sized at the
+                                    // proportion the plane held in
+                                    // the old disc; it scales up
+                                    // from three-quarter size as it
                                     // fades in.
                                     let gs = 0.7 + 0.3 * swap;
-                                    let plane = Color32::from_rgba_unmultiplied(
+                                    let arrow = Color32::from_rgba_unmultiplied(
                                         255,
                                         255,
                                         255,
@@ -766,10 +783,10 @@ impl App {
                                     );
                                     crate::icons::draw(
                                         ui.painter(),
-                                        crate::icons::Icon::Send,
+                                        crate::icons::Icon::ArrowUp,
                                         sc,
-                                        21.0 * gs,
-                                        plane,
+                                        21.0 * (disc_d / 38.0) * gs,
+                                        arrow,
                                         rgb(send_fill),
                                     );
                                 }
@@ -1040,6 +1057,24 @@ const COMPOSER_FIELD_MARGIN_Y: f32 = 16.0;
 /// The height the composer input row is floored at: the
 /// 36 px icon buttons it always contains.
 const COMPOSER_ROW_MIN_H: f32 = 36.0;
+
+/// The composer pill's vertical inner margins, top plus
+/// bottom (the pill Frame is built with
+/// `Margin::symmetric(12, 8)`).
+const COMPOSER_PILL_MARGIN_Y: f32 = 16.0;
+
+/// The morph slot's disc diameter: exactly the one-line
+/// pill's height, computed from the same values that size
+/// the pill (the one-line row height plus the pill's own
+/// vertical margins), so the disc and the pill cannot drift
+/// apart. The owner's ruling: the old 38 px disc floated
+/// inside the 52 px pill's height, visibly smaller than the
+/// surface it belongs to; at this diameter the disc's edges
+/// meet the pill's and its centre sits on the pill's
+/// centreline at every font size.
+fn morph_disc_d(line_height: f32) -> f32 {
+    composer_row_height(1, line_height) + COMPOSER_PILL_MARGIN_Y
+}
 
 fn clamped_composer_rows(visual_rows: usize) -> usize {
     visual_rows.clamp(1, COMPOSER_MAX_ROWS)

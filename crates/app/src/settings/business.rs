@@ -33,11 +33,16 @@ impl App {
         }
         let replies = self.business.quick_replies.clone();
         if replies.is_empty() {
-            ui.label(
-                RichText::new(crate::i18n::t("business.quick_empty"))
-                    .size(12.0)
-                    .color(rgb(t.text_faint)),
-            );
+            // The empty state sits in the same card as the
+            // populated list, so the group reads the same
+            // whether or not replies exist yet.
+            settings_card(ui, t, |ui| {
+                ui.label(
+                    RichText::new(crate::i18n::t("business.quick_empty"))
+                        .size(12.0)
+                        .color(rgb(t.text_secondary)),
+                );
+            });
             ui.add_space(SP_2);
         } else {
             settings_card(ui, t, |ui| {
@@ -321,12 +326,12 @@ impl App {
                 if !categories.is_empty() {
                     field_label(ui, t, "business.categories");
                     for (id, name) in &categories {
-                        let mut keep = form.kept_categories.iter().any(|k| k == id);
-                        if ui.checkbox(&mut keep, name.as_str()).changed() {
+                        let keep = form.kept_categories.iter().any(|k| k == id);
+                        if crate::widgets::checkbox_row(ui, t, keep, name.as_str()) {
                             if keep {
-                                form.kept_categories.push(id.clone());
-                            } else {
                                 form.kept_categories.retain(|k| k != id);
+                            } else {
+                                form.kept_categories.push(id.clone());
                             }
                         }
                     }

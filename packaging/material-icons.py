@@ -100,6 +100,7 @@ WANTED = [
     ("VolumeUp", ["volume_up"]),
     ("LogOut", ["logout"]),
     ("Send", ["send"]),
+    ("ArrowUp", ["arrow_upward"]),
     ("Lock", ["lock"]),
     ("Keyboard", ["keyboard"]),
     ("Done", ["done"]),

@@ -1624,13 +1624,11 @@ fn system_pill_layout(
 }
 
 /// Paints the surface for a system row of `kind` at `rect`:
-/// the date pill gets the card shadow, the glass-tinted system
-/// fill, the hairline border and the specular top edge, fully
-/// rounded; the encryption card gets a solid tint toward the
-/// system text color at a card radius, with the same shadow
-/// and border but no glass edge; an event paints nothing (its
-/// quietness is the point). Returns the fill color (the
-/// padlock's keyhole is punched in it).
+/// the date pill gets the card-soft step, fully rounded; the
+/// encryption card gets the system chip fill at a card
+/// radius; an event paints nothing (its quietness is the
+/// point). Returns the fill color (the padlock's keyhole is
+/// punched in it).
 fn paint_system_pill(ui: &egui::Ui, t: Tokens, rect: egui::Rect, kind: SystemPillKind) -> Color32 {
     if kind == SystemPillKind::Event {
         return rgb(t.bg_chat);
@@ -1638,7 +1636,16 @@ fn paint_system_pill(ui: &egui::Ui, t: Tokens, rect: egui::Rect, kind: SystemPil
     let radius =
         if kind == SystemPillKind::Encryption { 12 } else { (rect.height() / 2.0).round() as u8 };
     let fill = if kind == SystemPillKind::Encryption {
-        rgb(core::theme::mix(t.system_chip, t.system_text, 0.28))
+        // The fill is the system chip token itself, never a
+        // mix toward the text color: the old 0.28 mix toward
+        // system_text pulled the fill a quarter of the way to
+        // the text in both themes and dropped the pair below
+        // the legibility floor (dark on dark in the owner's
+        // report). system_text on system_chip is the pair the
+        // core theme tests pin at AA for every seed, and the
+        // card's shape, padding and lock keep it distinct
+        // from the date pill beside it.
+        rgb(t.system_chip)
     } else {
         // The system chip tone retires onto the card-soft step
         // (design standard section 1): a resting pill on the

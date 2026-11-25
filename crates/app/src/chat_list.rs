@@ -367,80 +367,168 @@ impl App {
                         ui.add_space(SP_2);
                     }
                 }
-                // The filter chips live on the shared chip row:
-                // whole chips flow onto a second row when the
-                // panel is too narrow for one row, so every
-                // filter is fully visible at rest (the scrolling
-                // strip before v1.6.24 rested with the last chip
-                // clipped at the panel edge). Filtered
-                // destinations show no chip row at all: the
-                // destination itself is the filter, and its
-                // header above already says which one.
+                // The filter chips live on ONE row that scrolls
+                // horizontally when the panel is too narrow for
+                // them (the owner's ruling: the row must never
+                // wrap; the v1.6.24 wrapping flow row and the
+                // clipped strip before it are both superseded).
+                // A chip resting half-visible at the row's edge
+                // is the scroll affordance; every chip is
+                // reachable by scrolling. Only chat-intrinsic
+                // filters are chips: Groups and Channels are
+                // separate destinations now (their rail views
+                // preset the same filter), so they no longer
+                // appear here. Filtered destinations show no
+                // chip row at all: the destination itself is
+                // the filter, and its header above already
+                // says which one.
                 if !filtered {
-                    crate::widgets::chip_flow_row(ui, |ui| {
-                        for f in [
-                            ChatFilter::All,
-                            ChatFilter::Unread,
-                            ChatFilter::Private,
-                            ChatFilter::Favorites,
-                            ChatFilter::Groups,
-                        ]
-                        .into_iter()
-                        .chain(
-                            self.chats.iter().any(|c| c.archived).then_some(ChatFilter::Archived),
-                        ) {
-                            let selected = self.filter == f;
-                            // Filter chips carry their counts, the
-                            // way mainstream chat clients show them
-                            // (Unread 6, Groups 3, and so on).
-                            let count = match f {
-                                // Locked is never a chip (the
-                                // folder's entry row is its
-                                // way in); the arm exists for
-                                // exhaustiveness. The counted
-                                // filters exclude locked chats
-                                // like the lists they label do.
-                                ChatFilter::All | ChatFilter::Archived | ChatFilter::Locked => 0,
-                                ChatFilter::Unread => self
-                                    .chats
-                                    .iter()
-                                    .filter(|c| !c.archived && !c.locked && c.unread > 0)
-                                    .count(),
-                                ChatFilter::Private => self
-                                    .chats
-                                    .iter()
-                                    .filter(|c| !c.archived && !c.locked && c.kind == ChatKind::Dm)
-                                    .count(),
-                                ChatFilter::Favorites => self
-                                    .chats
-                                    .iter()
-                                    .filter(|c| !c.archived && !c.locked && c.favorite)
-                                    .count(),
-                                ChatFilter::Groups => self
-                                    .chats
-                                    .iter()
-                                    .filter(|c| {
-                                        !c.archived && !c.locked && c.kind == ChatKind::Group
-                                    })
-                                    .count(),
-                                ChatFilter::Channels => self
-                                    .chats
-                                    .iter()
-                                    .filter(|c| {
-                                        !c.archived && !c.locked && c.kind == ChatKind::Channel
-                                    })
-                                    .count(),
-                            };
-                            let name = crate::i18n::t(filter_label_key(f));
-                            let label = if count > 0 {
-                                format!("{name} {}", core::filter::format_count(count as u64))
-                            } else {
-                                name
-                            };
-                            let resp = chip(ui, &label, selected, t);
-                            if resp.clicked() {
-                                self.filter = f;
+                    // A selection pointing at a removed chip
+                    // (a Groups or Channels preset left in
+                    // memory) falls back to All instead of
+                    // stranding the list on a filter no chip
+                    // shows as selected.
+                    if matches!(self.filter, ChatFilter::Groups | ChatFilter::Channels) {
+                        self.filter = ChatFilter::All;
+                    }
+                    // Drag scrolling is hand-driven: egui's own
+                    // drag-to-scroll never engages here because
+                    // a press on a chip is claimed by the chip,
+                    // so the row tracks the gesture itself. A
+                    // press that starts on the row and travels
+                    // more than 6 px sideways scrolls instead of
+                    // selecting, and the release that ends it
+                    // does not fire the chip under it. The offset
+                    // round-trips through the area's state so
+                    // the wheel path below keeps working on the
+                    // same value.
+                    let drag_id = ui.id().with("chat_filter_chips_drag");
+                    let (mut offset_x, mut drag_moved, mut drag_origin) =
+                        ui.ctx().data_mut(|d| {
+                            (
+                                d.get_temp::<f32>(drag_id).unwrap_or(0.0),
+                                d.get_temp::<bool>(drag_id.with("moved")).unwrap_or(false),
+                                d.get_temp::<Option<egui::Pos2>>(drag_id.with("origin"))
+                                    .unwrap_or(None),
+                            )
+                        });
+                    let row_rect = egui::Rect::from_min_size(
+                        ui.cursor().min,
+                        egui::Vec2::new(ui.available_width(), 28.0),
+                    );
+                    let (primary_down, pointer_delta, pointer_pos) = ui.ctx().input(|i| {
+                        (
+                            i.pointer.primary_down(),
+                            i.pointer.delta(),
+                            i.pointer.latest_pos(),
+                        )
+                    });
+                    // The gesture's origin is tracked here, not
+                    // read from the pointer state: on some
+                    // backends the recorded press origin is the
+                    // window corner, which silently killed the
+                    // first version of this tracking.
+                    if primary_down {
+                        if drag_origin.is_none() {
+                            drag_origin = pointer_pos;
+                        }
+                        if let (Some(origin), Some(pos)) = (drag_origin, pointer_pos) {
+                            if row_rect.contains(origin) {
+                                if (pos.x - origin.x).abs() > 6.0 {
+                                    drag_moved = true;
+                                }
+                                if drag_moved {
+                                    offset_x = (offset_x - pointer_delta.x).max(0.0);
+                                }
                             }
+                        }
+                    } else {
+                        drag_origin = None;
+                    }
+                    let suppress_click = drag_moved;
+                    let output = egui::ScrollArea::horizontal()
+                        .id_salt("chat_filter_chips")
+                        .scroll_source(egui::scroll_area::ScrollSource {
+                            drag: egui::scroll_area::DragScroll::Never,
+                            ..Default::default()
+                        })
+                        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+                        .max_height(28.0)
+                        .scroll_offset(egui::Vec2::new(offset_x, 0.0))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                for f in [
+                                    ChatFilter::All,
+                                    ChatFilter::Unread,
+                                    ChatFilter::Private,
+                                    ChatFilter::Favorites,
+                                ]
+                                .into_iter()
+                                .chain(
+                                    self.chats
+                                        .iter()
+                                        .any(|c| c.archived)
+                                        .then_some(ChatFilter::Archived),
+                                ) {
+                                    let selected = self.filter == f;
+                                    // Filter chips carry their counts, the
+                                    // way mainstream chat clients show them
+                                    // (Unread 6, Personal 4, and so on).
+                                    let count = match f {
+                                        // Locked, Groups and Channels are
+                                        // never chips (the locked folder's
+                                        // entry row is its way in; Groups
+                                        // and Channels are rail
+                                        // destinations); the arm exists
+                                        // for exhaustiveness. The counted
+                                        // filters exclude locked chats
+                                        // like the lists they label do.
+                                        ChatFilter::All
+                                        | ChatFilter::Archived
+                                        | ChatFilter::Locked
+                                        | ChatFilter::Groups
+                                        | ChatFilter::Channels => 0,
+                                        ChatFilter::Unread => self
+                                            .chats
+                                            .iter()
+                                            .filter(|c| !c.archived && !c.locked && c.unread > 0)
+                                            .count(),
+                                        ChatFilter::Private => self
+                                            .chats
+                                            .iter()
+                                            .filter(|c| {
+                                                !c.archived && !c.locked && c.kind == ChatKind::Dm
+                                            })
+                                            .count(),
+                                        ChatFilter::Favorites => self
+                                            .chats
+                                            .iter()
+                                            .filter(|c| !c.archived && !c.locked && c.favorite)
+                                            .count(),
+                                    };
+                                    let name = crate::i18n::t(filter_label_key(f));
+                                    let label = if count > 0 {
+                                        format!(
+                                            "{name} {}",
+                                            core::filter::format_count(count as u64)
+                                        )
+                                    } else {
+                                        name
+                                    };
+                                    let resp = chip(ui, &label, selected, t);
+                                    if resp.clicked() && !suppress_click {
+                                        self.filter = f;
+                                    }
+                                }
+                            });
+                        });
+                    ui.ctx().data_mut(|d| {
+                        d.insert_temp(drag_id, output.state.clamped_offset().x);
+                        d.insert_temp(drag_id.with("origin"), drag_origin);
+                        if !primary_down {
+                            d.insert_temp(drag_id.with("moved"), false);
+                        } else {
+                            d.insert_temp(drag_id.with("moved"), drag_moved);
                         }
                     });
                 }
@@ -1529,6 +1617,9 @@ pub(crate) fn chat_row(
             rgb(t.text_secondary),
         );
     }
+    // The unread badge's width, kept for the pin indicator
+    // below, which steps left past it.
+    let mut unread_w = 0.0;
     if chat.unread > 0 {
         // The unread badge: a pill at least 19 px tall (wider when
         // the count needs it), 11 px text, and a short pop
@@ -1542,6 +1633,7 @@ pub(crate) fn chat_row(
             f.layout_no_wrap(label.clone(), font.clone(), rgb(t.badge_text)).size().x
         });
         let w = ((text_w + 10.0).max(19.0)) * scale;
+        unread_w = w;
         let h = 19.0 * scale;
         let brect = egui::Rect::from_min_size(
             Pos2::new(rect.right() - 6.0 - w, line_y - h / 2.0),
@@ -1568,6 +1660,28 @@ pub(crate) fn chat_row(
             "@",
             FontId::proportional(10.0),
             rgb(t.badge_text),
+        );
+    }
+    if chat.pinned {
+        // The pin indicator: a small pin in the faint token at
+        // the snippet line's right end, stepped left past
+        // whichever badges the row carries. The pinned state
+        // had no visible sign in the list before this: the row
+        // moved to the top, but nothing on it said why.
+        let mut pin_right = rect.right() - 6.0;
+        if chat.unread > 0 {
+            pin_right -= unread_w + 6.0;
+        }
+        if chat.mentions > 0 {
+            pin_right -= 50.0;
+        }
+        crate::icons::draw(
+            painter,
+            crate::icons::Icon::Pin,
+            Pos2::new(pin_right - 6.0, line_y),
+            12.0,
+            rgb(t.text_faint),
+            rgb(t.bg_panel),
         );
     }
     response.on_hover_cursor(egui::CursorIcon::PointingHand)

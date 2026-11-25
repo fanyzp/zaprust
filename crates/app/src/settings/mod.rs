@@ -25,7 +25,7 @@ mod storage;
 use crate::state::{App, Notice};
 use crate::theme::{rgb, SP_1, SP_1_5, SP_2, SP_2_5, SP_3_5, SP_4, SP_4_5, SP_SECTION};
 use crate::widgets::{
-    avatar, form_row, number_field, radio_row, select, switch, text_field_password, FORM_CONTROL_W,
+    avatar, form_row, number_field, radio_row, select, text_field_password, FORM_CONTROL_W,
 };
 use core::theme::ThemeId;
 use eframe::egui::{self, CornerRadius, FontId, Margin, Pos2, RichText, Sense, Vec2};
@@ -1107,21 +1107,54 @@ fn segmented(
     clicked
 }
 
-/// Group break between rows inside a card. Rows on one flat
-/// card are separated by spacing alone, never a hairline
-/// (design standard, hairline discipline): the helper keeps
-/// its call sites and their rhythm, and paints no line. The
-/// tokens argument stays so call sites read uniformly with
-/// the row helpers around them.
-fn divider(ui: &mut egui::Ui, _t: core::theme::Tokens) {
-    divider_inset(ui, _t, 0.0);
+/// Group break between rows inside a card: a hairline in the
+/// border token, the canonical allowance (hairlines live
+/// inside one flat list, and a settings card is one). 8 px of
+/// air on each side of the 1 px line, so the total rhythm
+/// matches the spacing-only break it replaces while the rows
+/// gain the separator that makes a card read as a list.
+fn divider(ui: &mut egui::Ui, t: core::theme::Tokens) {
+    divider_inset(ui, t, 0.0);
 }
 
-/// Inset variant of the group break; the inset no longer
-/// applies without a line, and is kept for the one call site
-/// that names it so its grouping rhythm is unchanged.
-fn divider_inset(ui: &mut egui::Ui, _t: core::theme::Tokens, _inset: f32) {
-    ui.add_space(SP_4);
+/// Inset variant of the hairline: the line starts at the
+/// rows' label column instead of the card's edge (the theme
+/// rows name 66, where their labels start past the radio ring
+/// and the swatch; the timer rows name 34, past the ring).
+fn divider_inset(ui: &mut egui::Ui, t: core::theme::Tokens, inset: f32) {
+    ui.add_space(SP_2);
+    let width = ui.available_width();
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 1.0), Sense::hover());
+    let line = egui::Rect::from_min_max(
+        Pos2::new(rect.left() + inset, rect.top()),
+        Pos2::new(rect.right(), rect.bottom()),
+    );
+    ui.painter().rect_filled(line, CornerRadius::ZERO, rgb(t.border));
+    ui.add_space(SP_2);
+}
+
+/// The height the row grammar gives a label column: the
+/// measured title plus the description wrapped at the
+/// column's capped width, with 8 px of air above and below,
+/// floored at 40 px so a bare title row still reads as a
+/// settings row instead of a line of text.
+fn row_height(ui: &egui::Ui, desc: &str, label_w: f32) -> f32 {
+    let (title_h, desc_h) = ui.ctx().fonts_mut(|f| {
+        let title_h = f.row_height(&FontId::proportional(15.0));
+        let desc_h = if desc.is_empty() {
+            0.0
+        } else {
+            let galley = f.layout(
+                desc.to_owned(),
+                FontId::proportional(12.0),
+                egui::Color32::WHITE,
+                label_w,
+            );
+            galley.rows.len() as f32 * f.row_height(&FontId::proportional(12.0)) + 3.0
+        };
+        (title_h, desc_h)
+    });
+    (title_h + desc_h + 16.0).max(40.0)
 }
 
 /// A settings row: title + description on the left, control on
@@ -1134,7 +1167,7 @@ fn divider_inset(ui: &mut egui::Ui, _t: core::theme::Tokens, _inset: f32) {
 /// control, clipped mid-sentence.
 fn row_with(
     ui: &mut egui::Ui,
-    _t: core::theme::Tokens,
+    t: core::theme::Tokens,
     title: &str,
     desc: &str,
     control: impl FnOnce(&mut egui::Ui),
@@ -1144,20 +1177,29 @@ fn row_with(
     // it. The cap reserves a fixed allowance for the control:
     // every control used with this variant (switches, buttons,
     // hyperlinks) is narrower than the reserve, so the label
-    // keeps the rest of the row. The row is a plain horizontal,
-    // so its height stays the taller of the two columns; a
-    // right-to-left outer layout here would claim the card's
-    // full available height and stretch the row to fill it.
+    // keeps the rest of the row. The row's height is the
+    // grammar's measured height for its label column (see
+    // row_height), allocated up front and centred into, so
+    // rows keep one rhythm whatever their control is; a
+    // right-to-left outer layout would claim the card's full
+    // available height and stretch the row to fill it.
     let reserve = 208.0;
-    let resp = ui.horizontal(|ui| {
-        ui.scope(|ui| {
-            ui.set_max_width((ui.available_width() - reserve).max(120.0));
-            label_column(ui, title, desc);
-        });
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            control(ui);
-        });
-    });
+    let width = ui.available_width();
+    let label_w = (width - reserve).max(120.0);
+    let height = row_height(ui, desc, label_w);
+    let resp = ui.allocate_ui_with_layout(
+        Vec2::new(width, height),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            ui.scope(|ui| {
+                ui.set_max_width(label_w);
+                label_column(ui, t, title, desc);
+            });
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                control(ui);
+            });
+        },
+    );
     resp.response.rect
 }
 
@@ -1167,36 +1209,147 @@ fn row_with(
 /// the title column out.
 fn row_with_text_control(
     ui: &mut egui::Ui,
-    _t: core::theme::Tokens,
+    t: core::theme::Tokens,
     title: &str,
     desc: &str,
     control: impl FnOnce(&mut egui::Ui),
 ) -> egui::Rect {
     let row_width = ui.available_width();
-    let resp = ui.horizontal(|ui| {
-        ui.scope(|ui| {
-            ui.set_max_width(row_width * 0.38);
-            label_column(ui, title, desc);
-        });
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+    let height = row_height(ui, desc, row_width * 0.38);
+    let resp = ui.allocate_ui_with_layout(
+        Vec2::new(row_width, height),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
             ui.scope(|ui| {
-                ui.set_max_width(row_width * 0.62);
-                control(ui);
+                ui.set_max_width(row_width * 0.38);
+                label_column(ui, t, title, desc);
             });
-        });
-    });
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.scope(|ui| {
+                    ui.set_max_width(row_width * 0.62);
+                    control(ui);
+                });
+            });
+        },
+    );
     resp.response.rect
 }
 
 /// The settings row's label column: the title with its optional
-/// wrapping description under it.
-fn label_column(ui: &mut egui::Ui, title: &str, desc: &str) {
+/// wrapping description under it, in the secondary text token.
+fn label_column(ui: &mut egui::Ui, t: core::theme::Tokens, title: &str, desc: &str) {
     ui.vertical(|ui| {
         ui.label(RichText::new(title).size(15.0));
         if !desc.is_empty() {
-            ui.label(RichText::new(desc).size(12.0).color(ui.visuals().weak_text_color()));
+            ui.label(RichText::new(desc).size(12.0).color(rgb(t.text_secondary)));
         }
     });
+}
+
+/// A toggle row: the whole row is the switch's hit area, so
+/// the target is the row (at least 40 px tall, the full card
+/// width) instead of the 46 px track alone. The row answers
+/// hover and press with the radio row's wash language, the
+/// switch sits on the shared right edge and runs on the row's
+/// own interaction state, and a click anywhere on the row
+/// toggles. Plus the search-jump highlight, like row_hl.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn switch_row_hl(
+    ui: &mut egui::Ui,
+    hl: &mut Option<SettingHighlight>,
+    motion: crate::motion::MotionSetting,
+    id: &str,
+    t: core::theme::Tokens,
+    title: &str,
+    desc: &str,
+    on: &mut bool,
+) {
+    let width = ui.available_width();
+    let label_w = (width - 208.0).max(120.0);
+    let height = row_height(ui, desc, label_w);
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, height), Sense::click());
+    let hov = crate::anim::hover_factor(ui, ("switch_row", id), response.hovered());
+    let press =
+        crate::anim::press_factor(ui, ("switch_row", id), response.is_pointer_button_down_on());
+    if press > 0.001 {
+        let fill =
+            core::theme::mix(t.bg_panel_alt, core::theme::pressed_step(t.bg_panel_alt), press);
+        ui.painter().rect_filled(rect, crate::theme::RADIUS_MICRO, rgb(fill));
+    } else if hov > 0.001 {
+        let fill = core::theme::mix(t.bg_panel, t.bg_panel_alt, hov);
+        ui.painter().rect_filled(rect, crate::theme::RADIUS_MICRO, rgb(fill));
+    }
+    let label_rect =
+        egui::Rect::from_min_max(rect.min, Pos2::new(rect.right() - 208.0, rect.bottom()));
+    ui.scope_builder(
+        egui::UiBuilder::new()
+            .max_rect(label_rect)
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        |ui| {
+            label_column(ui, t, title, desc);
+        },
+    );
+    let srect = egui::Rect::from_min_size(
+        Pos2::new(
+            rect.right() - crate::widgets::SWITCH_W,
+            rect.center().y - crate::widgets::SWITCH_H / 2.0,
+        ),
+        Vec2::new(crate::widgets::SWITCH_W, crate::widgets::SWITCH_H),
+    );
+    crate::widgets::switch_hosted(
+        ui,
+        srect,
+        t,
+        *on,
+        response.id,
+        response.hovered(),
+        response.is_pointer_button_down_on(),
+        response.has_focus(),
+    );
+    if response.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+        *on = !*on;
+    }
+    paint_highlight(ui, hl, motion, id, rect, t);
+}
+
+/// A choice row: the label column on the left, the canonical
+/// segmented toggle on the shared right edge. Returns the
+/// clicked segment's index and the row's rect (for the search
+/// highlight), so a choice inside a card reads as a settings
+/// row instead of a control floating in an empty card.
+pub(super) fn choice_row(
+    ui: &mut egui::Ui,
+    t: core::theme::Tokens,
+    title: &str,
+    desc: &str,
+    id: &str,
+    options: &[&str],
+    selected: usize,
+) -> (Option<usize>, egui::Rect) {
+    let width = ui.available_width();
+    let label_w = (width - 216.0).max(120.0);
+    let height = row_height(ui, desc, label_w).max(48.0);
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
+    let label_rect =
+        egui::Rect::from_min_max(rect.min, Pos2::new(rect.left() + label_w, rect.bottom()));
+    ui.scope_builder(
+        egui::UiBuilder::new()
+            .max_rect(label_rect)
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        |ui| {
+            label_column(ui, t, title, desc);
+        },
+    );
+    let seg_rect = egui::Rect::from_min_max(Pos2::new(rect.right() - 216.0, rect.top()), rect.max);
+    let clicked = ui
+        .scope_builder(
+            egui::UiBuilder::new()
+                .max_rect(seg_rect)
+                .layout(egui::Layout::right_to_left(egui::Align::Center)),
+            |ui| segmented(ui, t, id, options, selected),
+        )
+        .inner;
+    (clicked, rect)
 }
 
 /// The native feature switchboard rows: (feature id, display

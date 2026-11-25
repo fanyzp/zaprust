@@ -47,26 +47,20 @@ impl App {
         group_label(ui, t, "Updates");
         settings_card(ui, t, |ui| {
             let status: String = match &self.update.phase {
-                UpdatePhase::Idle => {
-                    if self.update.auto_check {
-                        "Zaprust checks for updates once a day, and only ever \
-                         installs one when you say so."
-                            .to_owned()
-                    } else {
-                        "Automatic checks are off, and Zaprust only ever \
-                         installs an update when you say so."
-                            .to_owned()
-                    }
-                }
+                // The status row states the phase, nothing
+                // more: the reassurance copy it used to carry
+                // (daily checks, installs only on request)
+                // explained the app to its user and repeated
+                // what the Automatic checks switch below
+                // already says.
+                UpdatePhase::Idle => "Not checked yet.".to_owned(),
                 UpdatePhase::Checking => "Checking for updates...".to_owned(),
                 UpdatePhase::UpToDate => "You are on the latest version.".to_owned(),
                 UpdatePhase::Available => match &self.update.release {
                     Some(r) => format!("Version {} is available.", r.version),
                     None => "A new version is available.".to_owned(),
                 },
-                UpdatePhase::Downloading => "Downloading the update and checking it against the \
-                     published checksum..."
-                    .to_owned(),
+                UpdatePhase::Downloading => "Downloading the update...".to_owned(),
                 UpdatePhase::Ready => {
                     "The update is installed. Restart Zaprust to finish.".to_owned()
                 }
@@ -135,7 +129,7 @@ impl App {
             );
             divider(ui, t);
             let mut auto = self.update.auto_check;
-            row_hl(
+            switch_row_hl(
                 ui,
                 &mut self.settings_highlight,
                 self.motion,
@@ -143,7 +137,7 @@ impl App {
                 t,
                 "Automatic checks",
                 "",
-                |ui| switch(ui, &mut auto, t),
+                &mut auto,
             );
             if auto != self.update.auto_check {
                 self.update.auto_check = auto;
@@ -202,10 +196,6 @@ impl App {
         page_header(ui, "About");
         let repo = core::crash::GITHUB_REPO;
         let repo_url = format!("https://github.com/{repo}");
-        // The contributor profile is the repo URL's owner
-        // segment, derived from the one builder instead of a
-        // second hard-coded copy of the address.
-        let profile_url = format!("https://github.com/{}", repo.split('/').next().unwrap_or(repo));
         let mut report_bug = false;
         group_label(ui, t, "App");
         settings_card(ui, t, |ui| {
@@ -271,6 +261,13 @@ impl App {
         ui.add_space(SP_4);
         group_label(ui, t, "People");
         settings_card(ui, t, |ui| {
+            // The creator is a fact, not a link farm: the
+            // name stands as plain text (the Repository row
+            // above is the page's one GitHub link), the
+            // Contributors row that repeated the same repo
+            // is gone, and the bug report keeps its function
+            // at secondary weight instead of a primary call
+            // to action.
             row_hl(
                 ui,
                 &mut self.settings_highlight,
@@ -278,22 +275,9 @@ impl App {
                 "about.created_by",
                 t,
                 "Created by",
-                "fanyzp",
-                |ui| {
-                    ui.hyperlink_to("@fanyzp", profile_url.clone());
-                },
-            );
-            divider(ui, t);
-            row_hl(
-                ui,
-                &mut self.settings_highlight,
-                self.motion,
-                "about.contributors",
-                t,
-                "Contributors",
                 "",
                 |ui| {
-                    ui.hyperlink_to("Contributors", format!("{repo_url}/graphs/contributors"));
+                    ui.label(RichText::new("fanyzp").color(rgb(t.text_secondary)));
                 },
             );
             divider(ui, t);
@@ -306,7 +290,7 @@ impl App {
                 "Report a bug",
                 "",
                 |ui| {
-                    if crate::widgets::button(ui, t, "Report a bug", crate::widgets::Btn::Primary)
+                    if crate::widgets::button(ui, t, "Report a bug", crate::widgets::Btn::Secondary)
                         .clicked()
                     {
                         report_bug = true;

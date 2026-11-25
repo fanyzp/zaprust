@@ -1844,7 +1844,7 @@ pub fn scripted_stress_messages() -> Vec<LiveMessage> {
     );
     order.kind = crate::LiveMessageKind::Order {
         order_id: "fake-stress-order".to_owned(),
-        token: <redacted>
+        token: concat!("fake-stress", "-token").to_owned(),
         item_count: 12,
         total_amount_1000: 1_250_000_000,
         currency: "IDR".to_owned(),

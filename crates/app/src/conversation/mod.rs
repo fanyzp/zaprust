@@ -881,10 +881,30 @@ impl App {
                             }
                             ui.vertical(|ui| {
                                 ui.horizontal(|ui| {
+                                    // The title ellipsizes to the
+                                    // width left after the header's
+                                    // action buttons (three 28 px
+                                    // buttons plus their spacing):
+                                    // an untruncated label reserves
+                                    // its full single-line width and
+                                    // paints straight through the
+                                    // buttons, and the reserved
+                                    // width widens the whole
+                                    // conversation column with it.
+                                    let badge_w = if chat.verified { 20.0 } else { 0.0 }
+                                        + if chat.meta_ai { 26.0 } else { 0.0 };
+                                    let title_budget =
+                                        (ui.available_width() - 112.0 - badge_w).max(48.0);
+                                    let title_text = crate::widgets::ellipsize(
+                                        ui,
+                                        &core::bidi::display(&chat.title),
+                                        crate::theme::semibold(15.0),
+                                        title_budget,
+                                    );
                                     if ui
                                         .add(
                                             egui::Label::new(
-                                                RichText::new(core::bidi::display(&chat.title))
+                                                RichText::new(title_text)
                                                     .font(crate::theme::semibold(15.0)),
                                             )
                                             .sense(Sense::click()),
@@ -950,8 +970,19 @@ impl App {
                                     } else {
                                         self.header_subtitle(&chat)
                                     };
+                                    // Same truncation rule as
+                                    // the title: the subtitle
+                                    // (a long member list, a long
+                                    // last-seen line) never runs
+                                    // under the action buttons.
+                                    let subtitle_text = crate::widgets::ellipsize(
+                                        ui,
+                                        &subtitle,
+                                        FontId::proportional(12.0),
+                                        ui.available_width().max(48.0),
+                                    );
                                     ui.label(
-                                        RichText::new(subtitle)
+                                        RichText::new(subtitle_text)
                                             .size(12.0)
                                             .color(rgb(t.text_secondary)),
                                     );

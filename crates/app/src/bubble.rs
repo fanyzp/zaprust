@@ -114,18 +114,37 @@ pub(crate) enum BubbleAction {
 /// Interactive message geometry (row 19), shared by the
 /// measure, paint and hit-test passes so the three can never
 /// disagree: a choice chip is 30 px tall with a 4 px gap, a
-/// list row is 26 px (36 with a description line), a section
-/// title and a footer each take an 18 px line.
+/// list row is 26 px (36 with a description line) and a
+/// section title or footer takes an 18 px line, each of
+/// those a floor that a wrapped line grows past.
 const INTERACTIVE_CHIP_H: f32 = 30.0;
 const INTERACTIVE_GAP: f32 = 4.0;
 const INTERACTIVE_LINE_H: f32 = 18.0;
 
-fn list_row_h(has_description: bool) -> f32 {
-    if has_description {
-        36.0
+/// One list row's height for a title laid out to `title_h`
+/// and a description laid out to `desc_h` (0 when the row
+/// has none): the title, the description under it, and the
+/// row's padding, floored at the heights one-line rows have
+/// always taken (36 px with a description, 26 without). A
+/// fixed height put the description through a wrapped
+/// title's second line. Measure, paint and the hit test
+/// share this, fed by each pass's own galleys.
+fn list_row_h_for(title_h: f32, desc_h: f32) -> f32 {
+    if desc_h > 0.0 {
+        (3.0 + title_h + desc_h + 3.0).max(36.0)
     } else {
-        26.0
+        (3.0 + title_h + 3.0).max(26.0)
     }
+}
+
+/// A single-line element of an interactive block (the open
+/// button line, a section title, a footer) laid out to
+/// `galley_h`: its height with the line's breathing room,
+/// floored at the 18 px line these elements have always
+/// taken, so a wrapped line grows the block instead of
+/// painting over the next element.
+fn interactive_line_h(galley_h: f32) -> f32 {
+    (galley_h + 2.0).max(INTERACTIVE_LINE_H)
 }
 
 /// One poll option row's height for a label laid out to
@@ -188,26 +207,61 @@ fn carousel_block_h(n: usize) -> f32 {
     }
 }
 
-fn buttons_block_h(count: usize, footer: &str) -> f32 {
-    count as f32 * (INTERACTIVE_CHIP_H + INTERACTIVE_GAP)
-        + if footer.is_empty() { 0.0 } else { INTERACTIVE_LINE_H }
+fn buttons_block_h(count: usize, footer_h: f32) -> f32 {
+    count as f32 * (INTERACTIVE_CHIP_H + INTERACTIVE_GAP) + footer_h
 }
 
-fn list_block_h(sections: &[core::model::MsgListSection], button_label: &str, footer: &str) -> f32 {
+/// The stacked height of a list message's interactive
+/// block (the open button line, the section titles, the
+/// rows and the footer), with every element laid out at
+/// `wrap_w`, the width the paint pass will give it: a
+/// wrapped title, section line or footer grows the block
+/// instead of painting over the element below it.
+#[allow(clippy::too_many_arguments)]
+fn list_block_h(
+    ui: &egui::Ui,
+    sections: &[core::model::MsgListSection],
+    button_label: &str,
+    footer: &str,
+    wrap_w: f32,
+    text_color: Color32,
+    secondary: Color32,
+) -> f32 {
     let mut h = 0.0;
     if !button_label.is_empty() {
-        h += INTERACTIVE_LINE_H;
+        let g = layout_text(ui, button_label, FontId::proportional(12.0), text_color, wrap_w);
+        h += interactive_line_h(g.size().y);
     }
     for section in sections {
         if !section.title.is_empty() {
-            h += INTERACTIVE_LINE_H;
+            let g =
+                layout_text(ui, &section.title, FontId::proportional(11.0), secondary, wrap_w);
+            h += interactive_line_h(g.size().y);
         }
         for row in &section.rows {
-            h += list_row_h(!row.description.is_empty());
+            let title_h =
+                layout_text(ui, &row.title, FontId::proportional(13.0), text_color, wrap_w - 16.0)
+                    .size()
+                    .y;
+            let desc_h = if row.description.is_empty() {
+                0.0
+            } else {
+                layout_text(
+                    ui,
+                    &row.description,
+                    FontId::proportional(11.0),
+                    secondary,
+                    wrap_w - 16.0,
+                )
+                .size()
+                .y
+            };
+            h += list_row_h_for(title_h, desc_h);
         }
     }
     if !footer.is_empty() {
-        h += INTERACTIVE_LINE_H;
+        let g = layout_text(ui, footer, FontId::proportional(11.0), secondary, wrap_w);
+        h += interactive_line_h(g.size().y);
     }
     h
 }
@@ -1440,7 +1494,16 @@ pub(crate) fn message_bubble(
                 .map(|b| measure_text(ui, &b.text, FontId::proportional(13.0)))
                 .fold(0.0, f32::max);
             content_w = content_w.max(body_galley.size().x.max((widest + 24.0).min(inner_max)));
-            kind_h = body_galley.size().y + 6.0 + buttons_block_h(buttons.len(), footer);
+            let footer_h = if footer.is_empty() {
+                0.0
+            } else {
+                interactive_line_h(
+                    layout_text(ui, footer, FontId::proportional(11.0), secondary, inner_max)
+                        .size()
+                        .y,
+                )
+            };
+            kind_h = body_galley.size().y + 6.0 + buttons_block_h(buttons.len(), footer_h);
         }
         MessageKind::ListMsg { description, button_label, footer, sections } => {
             body_galley = layout_text(ui, body_text, body_font.clone(), text_color, inner_max);
@@ -1458,8 +1521,14 @@ pub(crate) fn message_bubble(
                 .map(|r| measure_text(ui, &r.title, FontId::proportional(13.0)))
                 .fold(0.0, f32::max);
             content_w = content_w.max(body_galley.size().x.max((widest + 24.0).min(inner_max)));
-            kind_h =
-                body_galley.size().y + desc_h + 6.0 + list_block_h(sections, button_label, footer);
+            // The block's elements are laid out at the width
+            // the paint pass will give them: this arm's final
+            // content width, capped at the bubble cap.
+            let wrap_w = content_w.min(inner_max);
+            kind_h = body_galley.size().y
+                + desc_h
+                + 6.0
+                + list_block_h(ui, sections, button_label, footer, wrap_w, text_color, secondary);
         }
     }
 
@@ -1693,54 +1762,101 @@ pub(crate) fn message_bubble(
                     } if !mine => {
                         // A tap on a row answers with that row
                         // (row 19): walk the same stacked
-                        // geometry the paint pass lays out.
+                        // geometry the paint pass lays out. The
+                        // walk computes a hit instead of
+                        // returning early: a return inside this
+                        // closure exits the whole bubble draw,
+                        // which skipped the paint pass for the
+                        // click's frame.
                         response.interact_pointer_pos().and_then(|pos| {
-                            if pos.x < rect.left() + pad_x || pos.x > rect.right() - pad_x {
-                                return None;
-                            }
-                            let desc_h = if description.is_empty() {
-                                0.0
-                            } else {
-                                layout_text(
-                                    ui,
-                                    description,
-                                    FontId::proportional(12.0),
-                                    text_color,
-                                    inner_w,
-                                )
-                                .size()
-                                .y + 4.0
-                            };
-                            let mut y = rect.top()
-                                + pad_top
-                                + sender_h
-                                + quote_h
-                                + body_galley.size().y
-                                + desc_h
-                                + 6.0;
-                            // The button label line heads the
-                            // rows; it is not itself a choice.
-                            if !button_label.is_empty() {
-                                y += INTERACTIVE_LINE_H;
-                            }
-                            for section in sections {
-                                if !section.title.is_empty() {
-                                    y += INTERACTIVE_LINE_H;
+                            let mut hit = None;
+                            if pos.x >= rect.left() + pad_x && pos.x <= rect.right() - pad_x {
+                                let desc_h = if description.is_empty() {
+                                    0.0
+                                } else {
+                                    layout_text(
+                                        ui,
+                                        description,
+                                        FontId::proportional(12.0),
+                                        text_color,
+                                        inner_w,
+                                    )
+                                    .size()
+                                    .y
+                                        + 4.0
+                                };
+                                let mut y = rect.top()
+                                    + pad_top
+                                    + sender_h
+                                    + quote_h
+                                    + body_galley.size().y
+                                    + desc_h
+                                    + 6.0;
+                                // The button label line heads
+                                // the rows; it is not itself a
+                                // choice.
+                                if !button_label.is_empty() {
+                                    let g = layout_text(
+                                        ui,
+                                        button_label,
+                                        FontId::proportional(12.0),
+                                        text_color,
+                                        inner_w,
+                                    );
+                                    y += interactive_line_h(g.size().y);
                                 }
-                                for row in &section.rows {
-                                    let h = list_row_h(!row.description.is_empty());
-                                    if pos.y >= y && pos.y < y + h {
-                                        return Some(BubbleAction::InteractiveChoice(
-                                            msg.id,
-                                            true,
-                                            row.id.clone(),
-                                            row.title.clone(),
-                                        ));
+                                for section in sections {
+                                    if !section.title.is_empty() {
+                                        let g = layout_text(
+                                            ui,
+                                            &section.title,
+                                            FontId::proportional(11.0),
+                                            text_color,
+                                            inner_w,
+                                        );
+                                        y += interactive_line_h(g.size().y);
                                     }
-                                    y += h;
+                                    for row in &section.rows {
+                                        let title_h = layout_text(
+                                            ui,
+                                            &row.title,
+                                            FontId::proportional(13.0),
+                                            text_color,
+                                            inner_w - 16.0,
+                                        )
+                                        .size()
+                                        .y;
+                                        let desc_h = if row.description.is_empty() {
+                                            0.0
+                                        } else {
+                                            layout_text(
+                                                ui,
+                                                &row.description,
+                                                FontId::proportional(11.0),
+                                                text_color,
+                                                inner_w - 16.0,
+                                            )
+                                            .size()
+                                            .y
+                                        };
+                                        let h = list_row_h_for(title_h, desc_h);
+                                        if pos.y >= y && pos.y < y + h {
+                                            hit = Some(BubbleAction::InteractiveChoice(
+                                                msg.id,
+                                                true,
+                                                row.id.clone(),
+                                                row.title.clone(),
+                                            ));
+                                            break;
+                                        }
+                                        y += h;
+                                    }
+                                    if hit.is_some() {
+                                        break;
+                                    }
                                 }
                             }
-                            None
+                            hit
                         })
                     }
                     MessageKind::Event {
@@ -3087,9 +3203,19 @@ pub(crate) fn message_bubble(
                         );
                     }
                     let label_color = if mine { secondary } else { rgb(t.accent) };
-                    let g = layout_text(
+                    // One line per chip, ellipsized to the
+                    // chip: a wrapped label painted past the
+                    // chip's fixed height into the next one.
+                    let label = ellipsize_lines(
                         ui,
                         &button.text,
+                        FontId::proportional(13.0),
+                        inner_w - 16.0,
+                        1,
+                    );
+                    let g = layout_text(
+                        ui,
+                        &label,
                         FontId::proportional(13.0),
                         label_color,
                         inner_w - 16.0,
@@ -3158,8 +3284,9 @@ pub(crate) fn message_bubble(
                         rgb(t.accent),
                         inner_w,
                     );
+                    let line_h = interactive_line_h(g.size().y);
                     painter.galley(Pos2::new(x, cy + 1.0), g, rgb(t.accent));
-                    cy += INTERACTIVE_LINE_H;
+                    cy += line_h;
                 }
                 for section in sections {
                     if !section.title.is_empty() {
@@ -3170,11 +3297,32 @@ pub(crate) fn message_bubble(
                             rgb(t.text_faint),
                             inner_w,
                         );
+                        let line_h = interactive_line_h(g.size().y);
                         painter.galley(Pos2::new(x, cy + 2.0), g, rgb(t.text_faint));
-                        cy += INTERACTIVE_LINE_H;
+                        cy += line_h;
                     }
                     for row in &section.rows {
-                        let h = list_row_h(!row.description.is_empty());
+                        let title_g = layout_text(
+                            ui,
+                            &row.title,
+                            FontId::proportional(13.0),
+                            text_color,
+                            inner_w - 16.0,
+                        );
+                        let title_h = title_g.size().y;
+                        let desc_g = if row.description.is_empty() {
+                            None
+                        } else {
+                            Some(layout_text(
+                                ui,
+                                &row.description,
+                                FontId::proportional(11.0),
+                                secondary,
+                                inner_w - 16.0,
+                            ))
+                        };
+                        let desc_h = desc_g.as_ref().map_or(0.0, |g| g.size().y);
+                        let h = list_row_h_for(title_h, desc_h);
                         if !mine {
                             let row_rect =
                                 Rect::from_min_size(Pos2::new(x, cy), Vec2::new(inner_w, h));
@@ -3184,23 +3332,13 @@ pub(crate) fn message_bubble(
                                 inner_card_fill(t, mine),
                             );
                         }
-                        let g = layout_text(
-                            ui,
-                            &row.title,
-                            FontId::proportional(13.0),
-                            text_color,
-                            inner_w - 16.0,
-                        );
-                        painter.galley(Pos2::new(x + 8.0, cy + 3.0), g, text_color);
-                        if !row.description.is_empty() {
-                            let g = layout_text(
-                                ui,
-                                &row.description,
-                                FontId::proportional(11.0),
+                        painter.galley(Pos2::new(x + 8.0, cy + 3.0), title_g, text_color);
+                        if let Some(g) = desc_g {
+                            painter.galley(
+                                Pos2::new(x + 8.0, cy + 3.0 + title_h),
+                                g,
                                 secondary,
-                                inner_w - 16.0,
                             );
-                            painter.galley(Pos2::new(x + 8.0, cy + 19.0), g, secondary);
                         }
                         cy += h;
                     }
@@ -3435,8 +3573,8 @@ pub(crate) fn message_album(
 #[cfg(test)]
 mod tests {
     use super::{
-        carousel_block_h, chevron_rect, human_size, poll_option_row_h, preview_site,
-        voice_wave_rect, VOICE_DL, VOICE_PILL_W,
+        carousel_block_h, chevron_rect, human_size, list_row_h_for, poll_option_row_h,
+        preview_site, voice_wave_rect, VOICE_DL, VOICE_PILL_W,
     };
     use eframe::egui::{Pos2, Rect, Vec2};
 
@@ -3449,6 +3587,17 @@ mod tests {
         assert_eq!(poll_option_row_h(20.0), 36.0);
         assert_eq!(poll_option_row_h(34.0), 50.0);
         assert_eq!(poll_option_row_h(51.0), 67.0);
+    }
+
+    #[test]
+    fn list_rows_grow_with_the_title_wrap() {
+        // One-line rows keep their historical heights; a
+        // wrapped title adds its full height so the
+        // description always clears the title's last line.
+        assert_eq!(list_row_h_for(17.0, 0.0), 26.0);
+        assert_eq!(list_row_h_for(17.0, 14.0), 37.0);
+        assert_eq!(list_row_h_for(34.0, 0.0), 40.0);
+        assert_eq!(list_row_h_for(34.0, 14.0), 54.0);
     }
 
     #[test]

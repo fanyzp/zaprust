@@ -402,26 +402,21 @@ impl App {
                     // round-trips through the area's state so
                     // the wheel path below keeps working on the
                     // same value.
-                    let drag_id = ui.id().with("chat_filter_chips_drag");
-                    let (mut offset_x, mut drag_moved, mut drag_origin) =
-                        ui.ctx().data_mut(|d| {
-                            (
-                                d.get_temp::<f32>(drag_id).unwrap_or(0.0),
-                                d.get_temp::<bool>(drag_id.with("moved")).unwrap_or(false),
-                                d.get_temp::<Option<egui::Pos2>>(drag_id.with("origin"))
-                                    .unwrap_or(None),
-                            )
-                        });
+                    let drag_id = ui.scope_id().with("chat_filter_chips_drag");
+                    let (mut offset_x, mut drag_moved, mut drag_origin) = ui.ctx().data_mut(|d| {
+                        (
+                            d.get_temp::<f32>(drag_id).unwrap_or(0.0),
+                            d.get_temp::<bool>(drag_id.with("moved")).unwrap_or(false),
+                            d.get_temp::<Option<egui::Pos2>>(drag_id.with("origin"))
+                                .unwrap_or(None),
+                        )
+                    });
                     let row_rect = egui::Rect::from_min_size(
                         ui.cursor().min,
                         egui::Vec2::new(ui.available_width(), 28.0),
                     );
                     let (primary_down, pointer_delta, pointer_pos) = ui.ctx().input(|i| {
-                        (
-                            i.pointer.primary_down(),
-                            i.pointer.delta(),
-                            i.pointer.latest_pos(),
-                        )
+                        (i.pointer.primary_down(), i.pointer.delta(), i.pointer.latest_pos())
                     });
                     // The gesture's origin is tracked here, not
                     // read from the pointer state: on some

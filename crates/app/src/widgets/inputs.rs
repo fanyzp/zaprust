@@ -284,6 +284,7 @@ pub(crate) const SWITCH_H: f32 = 26.0;
 /// keyboard focus. One painter for both owners of the control:
 /// the standalone widget below and the settings toggle row,
 /// which hosts the switch on its own full-row interaction.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn switch_paint(
     ui: &mut egui::Ui,
     rect: egui::Rect,

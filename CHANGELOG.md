@@ -4,6 +4,17 @@ All notable changes to Zaprust are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com), versions
 follow [SemVer](https://semver.org).
 
+## [1.6.26] - 2026-11-25
+
+### fix:
+
+- Carousel cards no longer paint their text over themselves. A card's height now follows its content: a title that wraps pushes the body down, a body that wraps pushes the button row down, and the card grows instead of the rows colliding; button labels are ellipsized to their chip instead of wrapping out of it. Cards with short content keep the exact height they had.
+- Location and contact cards no longer strike a wrapped second line through the line below. A place or contact name that wraps now grows the card, and the coordinates or number sit under the name's last line; the measure pass lays the name at the same width the paint pass uses.
+- Photo and video captions are measured at the width they are painted at. A long caption's timestamp used to land on the caption's second-to-last line because the caption was sized at a wider width than the tile it sits under; the tile and the caption are now sized at the bubble's final inner width, and the timestamp sits after the last line.
+- Poll options that wrap no longer collide with their vote bar. Each option row is as tall as its label's wrap, the bar sits under the label's last line, and tapping a wrapped option votes for the option actually tapped.
+- The conversation header no longer paints a long chat title through its action buttons. The title, and the subtitle under it, ellipsize to the width left after the buttons. At phone widths this also stops the conversation column from being laid out wider than the window, which used to push bubbles off the right edge.
+- A fresh session no longer opens on an empty conversation. When the session starts before any chat has synced, the first chat to arrive now becomes the open conversation and its messages load on their own; before, its header showed over an empty stream until the chat was clicked.
+
 ## [1.6.25] - 2026-11-25
 
 ### fix:

@@ -3043,6 +3043,23 @@ impl crate::state::App {
             }
         }
         self.sort_live_chats();
+        // A session that started on an empty archive has no
+        // selection: the session-start pick found no chat and
+        // left the sentinel, and every conversation sync keys
+        // on the raw selection id, so the first chat's header
+        // (the shell's fallback) would sit over a stream that
+        // never loads and never marks read. The first chat to
+        // land becomes the open conversation, the same pick
+        // session start makes from a populated archive, with
+        // the same no-read-marking semantics (selection alone
+        // never marks anything read; engagement does).
+        if self.selected_chat == 0 {
+            if let Some(first) = self.chats.first().map(|c| c.id) {
+                self.switch_composer_chat(0, first);
+                self.selected_chat = first;
+                self.sync_conversation();
+            }
+        }
     }
 }
 
@@ -3393,6 +3410,61 @@ mod burst_drain_tests {
         tx.send(group_upsert("Grup Kebesaran Baru")).unwrap();
         drain_all(&mut app, &ctx);
         assert_eq!(chat_of(&app, jid_id(GROUP)).title, "Grup Kebesaran Baru");
+    }
+
+    /// QC1626: a session that starts on an empty archive
+    /// leaves the selection at the sentinel (0); the first
+    /// chat to land must become the open conversation, or the
+    /// shell's fallback header sits over a stream that never
+    /// loads (every sync keys on the raw selection id) until
+    /// the user clicks the row. Later chats never move the
+    /// adopted selection.
+    #[test]
+    pub(super) fn first_chat_landing_adopts_the_selection() {
+        let upsert = |jid: &str, title: &str| {
+            BackendEvent::ChatUpsert(LiveChat {
+                jid: jid.to_owned(),
+                title: title.to_owned(),
+                kind: LiveChatKind::Dm,
+                preview: String::new(),
+                preview_sender: None,
+                timestamp: BASE_TS,
+                unread: 0,
+                archived: false,
+                locked: false,
+                pinned: false,
+                ephemeral_secs: 0,
+                muted: false,
+                mute_until: 0,
+                parent_jid: None,
+                is_parent: false,
+            })
+        };
+        let (mut app, tx, ctx, _cmd_rx) = live_app();
+        app.selected_chat = 0;
+        app.chats.clear();
+        app.conversation.clear();
+        tx.send(upsert(CHAT_JID, "First Chat")).unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(app.selected_chat, jid_id(CHAT_JID), "the first chat is adopted");
+        // A message for the adopted chat reaches the open
+        // conversation with no click anywhere.
+        tx.send(BackendEvent::MessageUpsert(LiveMessage::text(
+            "m-adopt-1",
+            CHAT_JID,
+            Some("Sender".to_owned()),
+            "hello".to_owned(),
+            BASE_TS + 1,
+            false,
+        )))
+        .unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(app.conversation.len(), 1, "the adopted chat's stream loads");
+        // A second chat landing later never steals it.
+        const OTHER: &str = "6289999999999@s.whatsapp.net";
+        tx.send(upsert(OTHER, "Second Chat")).unwrap();
+        drain_all(&mut app, &ctx);
+        assert_eq!(app.selected_chat, jid_id(CHAT_JID), "the selection stays adopted");
     }
 
     /// v1.6.12: the identity discipline on titles. A direct

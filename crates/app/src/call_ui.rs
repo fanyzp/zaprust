@@ -762,6 +762,23 @@ fn call_action(
                 (f32::from(c.a()) * 0.55) as u8,
             )
         };
+        // Hover and press step the disc fill through the shared
+        // factors, the same endpoints the dock rows use, so a call
+        // action answers the pointer like every other control
+        // instead of sitting flat until it is clicked.
+        let hov = crate::anim::hover_factor(ui, ("call_action", label), response.hovered());
+        let press = crate::anim::press_factor(
+            ui,
+            ("call_action", label),
+            response.is_pointer_button_down_on(),
+        );
+        let base = core::theme::Rgb(bg.r(), bg.g(), bg.b());
+        let stepped = if press > 0.001 {
+            core::theme::mix(base, core::theme::pressed_step(base), press)
+        } else {
+            core::theme::mix(base, core::theme::hover_step(base), hov)
+        };
+        let bg = egui::Color32::from_rgba_unmultiplied(stepped.0, stepped.1, stepped.2, bg.a());
         let (bg, glyph, label_color) = if pending {
             (dim(bg), dim(glyph), dim(rgb(t.text_secondary)))
         } else {
@@ -777,7 +794,8 @@ fn call_action(
             egui::FontId::proportional(12.0),
             label_color,
         );
-        clicked = response.on_hover_text(label).clicked();
+        clicked =
+            response.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(label).clicked();
     });
     clicked
 }
@@ -996,7 +1014,7 @@ impl App {
                                 if let Some(caption) = caption {
                                     let galley = ui.painter().layout_no_wrap(
                                         caption,
-                                        egui::FontId::proportional(11.0),
+                                        egui::FontId::proportional(12.0),
                                         egui::Color32::WHITE,
                                     );
                                     let chip = egui::Rect::from_min_size(
@@ -1445,12 +1463,12 @@ impl App {
             ui.add_space(SP_2);
             ui.label(
                 RichText::new(self.call_participant_name(call, &participant.jid))
-                    .size(13.0)
+                    .size(15.0)
                     .color(rgb(t.text_primary)),
             );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if participant.state != "connected" {
-                    ui.label(RichText::new(&participant.state).size(11.0).color(rgb(t.text_faint)));
+                    ui.label(RichText::new(&participant.state).size(12.0).color(rgb(t.text_faint)));
                 }
                 if participant.sharing {
                     let (rect, _) = ui.allocate_exact_size(Vec2::splat(18.0), egui::Sense::hover());
@@ -1547,8 +1565,37 @@ impl App {
                                     Vec2::new(ui.available_width(), 44.0),
                                     Sense::click(),
                                 );
-                                if response.hovered() {
-                                    ui.painter().rect_filled(rect, 8.0, rgb(t.bg_panel_alt));
+                                let hov = crate::anim::hover_factor(
+                                    ui,
+                                    ("call_invite_row", member.address.as_str()),
+                                    response.hovered(),
+                                );
+                                let press = crate::anim::press_factor(
+                                    ui,
+                                    ("call_invite_row", member.address.as_str()),
+                                    response.is_pointer_button_down_on(),
+                                );
+                                if hov > 0.001 {
+                                    ui.painter().rect_filled(
+                                        rect,
+                                        crate::theme::RADIUS_MICRO,
+                                        crate::theme::glass_wash(
+                                            t,
+                                            t.bg_panel_alt,
+                                            (hov * 115.0) as u8,
+                                        ),
+                                    );
+                                }
+                                if press > 0.001 {
+                                    ui.painter().rect_filled(
+                                        rect,
+                                        crate::theme::RADIUS_MICRO,
+                                        crate::theme::glass_wash(
+                                            t,
+                                            t.bg_panel_alt,
+                                            (press * 170.0) as u8,
+                                        ),
+                                    );
                                 }
                                 let center = egui::pos2(rect.min.x + 22.0, rect.center().y);
                                 crate::widgets::paint_avatar(
@@ -1562,7 +1609,7 @@ impl App {
                                     egui::pos2(rect.min.x + 44.0, rect.center().y),
                                     Align2::LEFT_CENTER,
                                     &member.label,
-                                    egui::FontId::proportional(13.0),
+                                    egui::FontId::proportional(15.0),
                                     rgb(t.text_primary),
                                 );
                                 if response.clicked() {

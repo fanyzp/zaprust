@@ -279,8 +279,20 @@ impl App {
                         if hov > 0.001 {
                             ui.painter().rect_filled(
                                 rect,
-                                CornerRadius::same(10),
+                                CornerRadius::same(crate::theme::RADIUS_SMALL),
                                 crate::theme::glass_wash(t, t.bg_panel_alt, (hov * 115.0) as u8),
+                            );
+                        }
+                        let press = crate::anim::press_factor(
+                            ui,
+                            ("starred_row", msg.id),
+                            resp.is_pointer_button_down_on(),
+                        );
+                        if press > 0.001 {
+                            ui.painter().rect_filled(
+                                rect,
+                                CornerRadius::same(crate::theme::RADIUS_SMALL),
+                                crate::theme::glass_wash(t, t.bg_panel_alt, (press * 170.0) as u8),
                             );
                         }
                         let painter = ui.painter();

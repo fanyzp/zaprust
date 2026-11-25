@@ -544,6 +544,6 @@ fn event_form_fields(ui: &mut egui::Ui, t: core::theme::Tokens, draft: &mut Even
     ui.checkbox(&mut draft.scheduled_call, crate::i18n::t("event.scheduled_call"));
     ui.checkbox(&mut draft.extra_guests, crate::i18n::t("event.extra_guests"));
     if let Some(error) = &draft.error {
-        ui.label(RichText::new(error.clone()).size(12.5).color(rgb(t.danger)));
+        ui.label(RichText::new(error.clone()).size(12.0).color(rgb(t.danger)));
     }
 }

@@ -180,12 +180,7 @@ impl App {
                     .cloned()
                     .collect();
                 if rows.is_empty() {
-                    ui.add_space(SP_3);
-                    ui.label(
-                        RichText::new(crate::i18n::t("channels.empty"))
-                            .size(12.0)
-                            .color(rgb(t.text_secondary)),
-                    );
+                    crate::widgets::empty_state(ui, t, &crate::i18n::t("channels.empty"));
                 }
                 let mut clicked: Option<u64> = None;
                 let mut row_pick: Option<(u64, ChannelPick)> = None;

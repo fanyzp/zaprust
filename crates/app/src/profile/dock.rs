@@ -216,18 +216,19 @@ pub(super) fn dock_row(
 ) -> egui::Response {
     let width = ui.available_width();
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, DOCK_ROW_H), egui::Sense::click());
-    if resp.is_pointer_button_down_on() {
-        ui.painter().rect_filled(
-            rect,
-            CornerRadius::same(10),
-            rgb(core::theme::pressed_step(dock_card_fill(t))),
-        );
-    } else if resp.hovered() {
-        ui.painter().rect_filled(
-            rect,
-            CornerRadius::same(10),
-            rgb(core::theme::hover_step(dock_card_fill(t))),
-        );
+    // The fills crossfade through the shared hover and press
+    // factors between the same step endpoints the row used to
+    // snap between.
+    let base = dock_card_fill(t);
+    let hov = crate::anim::hover_factor(ui, ("dock_row", label), resp.hovered());
+    let press =
+        crate::anim::press_factor(ui, ("dock_row", label), resp.is_pointer_button_down_on());
+    if press > 0.001 {
+        let fill = core::theme::mix(base, core::theme::pressed_step(base), press);
+        ui.painter().rect_filled(rect, CornerRadius::same(crate::theme::RADIUS_SMALL), rgb(fill));
+    } else if hov > 0.001 {
+        let fill = core::theme::mix(base, core::theme::hover_step(base), hov);
+        ui.painter().rect_filled(rect, CornerRadius::same(crate::theme::RADIUS_SMALL), rgb(fill));
     }
     if let Some((icon, color)) = icon {
         crate::icons::draw(
@@ -272,18 +273,16 @@ pub(super) fn dock_stat_row(
 ) -> egui::Response {
     let width = ui.available_width();
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, DOCK_ROW_H), egui::Sense::click());
-    if resp.is_pointer_button_down_on() {
-        ui.painter().rect_filled(
-            rect,
-            CornerRadius::same(10),
-            rgb(core::theme::pressed_step(dock_card_fill(t))),
-        );
-    } else if resp.hovered() {
-        ui.painter().rect_filled(
-            rect,
-            CornerRadius::same(10),
-            rgb(core::theme::hover_step(dock_card_fill(t))),
-        );
+    let base = dock_card_fill(t);
+    let hov = crate::anim::hover_factor(ui, ("dock_stat_row", label), resp.hovered());
+    let press =
+        crate::anim::press_factor(ui, ("dock_stat_row", label), resp.is_pointer_button_down_on());
+    if press > 0.001 {
+        let fill = core::theme::mix(base, core::theme::pressed_step(base), press);
+        ui.painter().rect_filled(rect, CornerRadius::same(crate::theme::RADIUS_SMALL), rgb(fill));
+    } else if hov > 0.001 {
+        let fill = core::theme::mix(base, core::theme::hover_step(base), hov);
+        ui.painter().rect_filled(rect, CornerRadius::same(crate::theme::RADIUS_SMALL), rgb(fill));
     }
     ui.painter().text(
         egui::pos2(rect.left() + DOCK_LABEL_X, rect.center().y),
@@ -342,14 +341,31 @@ pub(super) fn dock_action_row(
         for (i, (icon, label)) in actions.iter().enumerate() {
             let (rect, resp) =
                 ui.allocate_exact_size(egui::vec2(cell_w, DOCK_ACTION_H), egui::Sense::click());
-            if resp.is_pointer_button_down_on() {
+            let hov = crate::anim::hover_factor(ui, ("dock_action_cell", *label), resp.hovered());
+            let press = crate::anim::press_factor(
+                ui,
+                ("dock_action_cell", *label),
+                resp.is_pointer_button_down_on(),
+            );
+            // Endpoints unchanged: rest is the card's own fill
+            // (no visible fill), hover the panel-alt fill, press
+            // its pressed step; the factors only crossfade
+            // between them.
+            let base = dock_card_fill(t);
+            if press > 0.001 {
+                let fill = core::theme::mix(base, core::theme::pressed_step(t.bg_panel_alt), press);
                 ui.painter().rect_filled(
                     rect,
-                    CornerRadius::same(12),
-                    rgb(core::theme::pressed_step(t.bg_panel_alt)),
+                    CornerRadius::same(crate::theme::RADIUS_SMALL),
+                    rgb(fill),
                 );
-            } else if resp.hovered() {
-                ui.painter().rect_filled(rect, CornerRadius::same(12), rgb(t.bg_panel_alt));
+            } else if hov > 0.001 {
+                let fill = core::theme::mix(base, t.bg_panel_alt, hov);
+                ui.painter().rect_filled(
+                    rect,
+                    CornerRadius::same(crate::theme::RADIUS_SMALL),
+                    rgb(fill),
+                );
             }
             let disc_c = egui::pos2(rect.center().x, rect.top() + DOCK_ACTION_DISC / 2.0 + 2.0);
             ui.painter().circle_filled(disc_c, DOCK_ACTION_DISC / 2.0, rgb(t.bg_panel_alt));
@@ -515,18 +531,19 @@ pub(super) fn ephemeral_option_row(
 ) -> bool {
     let width = ui.available_width();
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, DOCK_ROW_H), egui::Sense::click());
-    if resp.is_pointer_button_down_on() {
-        ui.painter().rect_filled(
-            rect,
-            CornerRadius::same(10),
-            rgb(core::theme::pressed_step(dock_card_fill(t))),
-        );
-    } else if resp.hovered() {
-        ui.painter().rect_filled(
-            rect,
-            CornerRadius::same(10),
-            rgb(core::theme::hover_step(dock_card_fill(t))),
-        );
+    let base = dock_card_fill(t);
+    let hov = crate::anim::hover_factor(ui, ("dock_ephemeral_row", label), resp.hovered());
+    let press = crate::anim::press_factor(
+        ui,
+        ("dock_ephemeral_row", label),
+        resp.is_pointer_button_down_on(),
+    );
+    if press > 0.001 {
+        let fill = core::theme::mix(base, core::theme::pressed_step(base), press);
+        ui.painter().rect_filled(rect, CornerRadius::same(crate::theme::RADIUS_SMALL), rgb(fill));
+    } else if hov > 0.001 {
+        let fill = core::theme::mix(base, core::theme::hover_step(base), hov);
+        ui.painter().rect_filled(rect, CornerRadius::same(crate::theme::RADIUS_SMALL), rgb(fill));
     }
     ui.painter().text(
         egui::pos2(rect.left() + DOCK_LABEL_X, rect.center().y),

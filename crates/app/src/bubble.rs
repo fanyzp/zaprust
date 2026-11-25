@@ -234,12 +234,12 @@ fn list_block_h(
     }
     for section in sections {
         if !section.title.is_empty() {
-            let g = layout_text(ui, &section.title, FontId::proportional(11.0), secondary, wrap_w);
+            let g = layout_text(ui, &section.title, FontId::proportional(12.0), secondary, wrap_w);
             h += interactive_line_h(g.size().y);
         }
         for row in &section.rows {
             let title_h =
-                layout_text(ui, &row.title, FontId::proportional(13.0), text_color, wrap_w - 16.0)
+                layout_text(ui, &row.title, FontId::proportional(15.0), text_color, wrap_w - 16.0)
                     .size()
                     .y;
             let desc_h = if row.description.is_empty() {
@@ -248,7 +248,7 @@ fn list_block_h(
                 layout_text(
                     ui,
                     &row.description,
-                    FontId::proportional(11.0),
+                    FontId::proportional(12.0),
                     secondary,
                     wrap_w - 16.0,
                 )
@@ -259,7 +259,7 @@ fn list_block_h(
         }
     }
     if !footer.is_empty() {
-        let g = layout_text(ui, footer, FontId::proportional(11.0), secondary, wrap_w);
+        let g = layout_text(ui, footer, FontId::proportional(12.0), secondary, wrap_w);
         h += interactive_line_h(g.size().y);
     }
     h
@@ -288,7 +288,7 @@ pub(crate) struct VoiceSnap {
 /// Without a known aspect the tile keeps the long-standing
 /// 300 by 200 card proportion.
 /// One metadata line of the event card (when, location,
-/// link, tallies): 12.5 px text on an 18 px row.
+/// link, tallies): 12 px text on an 18 px row.
 pub(crate) const EVENT_LINE_H: f32 = 18.0;
 /// The event card's RSVP button row height.
 pub(crate) const EVENT_RSVP_H: f32 = 32.0;
@@ -780,9 +780,10 @@ pub(crate) const INNER_CARD_RADIUS: u8 = crate::theme::RADIUS_SMALL;
 /// Inner-card text grammar: the quoted sender's name and the
 /// embed's title are semibold at this size; their body text
 /// (quoted text, embed description, poll options) is regular at
-/// the same size, so every inner card reads as one system.
-pub(crate) const INNER_TITLE_SIZE: f32 = 12.5;
-pub(crate) const INNER_BODY_SIZE: f32 = 12.5;
+/// the same size, so every inner card reads as one system. The
+/// size is the type scale's label step (TEXT_LABEL, 12).
+pub(crate) const INNER_TITLE_SIZE: f32 = 12.0;
+pub(crate) const INNER_BODY_SIZE: f32 = 12.0;
 
 /// Body-text line height as a multiple of the font size: the
 /// airier reading rhythm of the rounded-modern bubble.
@@ -1489,14 +1490,14 @@ pub(crate) fn message_bubble(
             body_galley = layout_text(ui, body_text, body_font.clone(), text_color, inner_max);
             let widest = buttons
                 .iter()
-                .map(|b| measure_text(ui, &b.text, FontId::proportional(13.0)))
+                .map(|b| measure_text(ui, &b.text, FontId::proportional(15.0)))
                 .fold(0.0, f32::max);
             content_w = content_w.max(body_galley.size().x.max((widest + 24.0).min(inner_max)));
             let footer_h = if footer.is_empty() {
                 0.0
             } else {
                 interactive_line_h(
-                    layout_text(ui, footer, FontId::proportional(11.0), secondary, inner_max)
+                    layout_text(ui, footer, FontId::proportional(12.0), secondary, inner_max)
                         .size()
                         .y,
                 )
@@ -1516,7 +1517,7 @@ pub(crate) fn message_bubble(
             let widest = sections
                 .iter()
                 .flat_map(|s| &s.rows)
-                .map(|r| measure_text(ui, &r.title, FontId::proportional(13.0)))
+                .map(|r| measure_text(ui, &r.title, FontId::proportional(15.0)))
                 .fold(0.0, f32::max);
             content_w = content_w.max(body_galley.size().x.max((widest + 24.0).min(inner_max)));
             // The block's elements are laid out at the width
@@ -1806,7 +1807,7 @@ pub(crate) fn message_bubble(
                                         let g = layout_text(
                                             ui,
                                             &section.title,
-                                            FontId::proportional(11.0),
+                                            FontId::proportional(12.0),
                                             text_color,
                                             inner_w,
                                         );
@@ -1816,7 +1817,7 @@ pub(crate) fn message_bubble(
                                         let title_h = layout_text(
                                             ui,
                                             &row.title,
-                                            FontId::proportional(13.0),
+                                            FontId::proportional(15.0),
                                             text_color,
                                             inner_w - 16.0,
                                         )
@@ -1828,7 +1829,7 @@ pub(crate) fn message_bubble(
                                             layout_text(
                                                 ui,
                                                 &row.description,
-                                                FontId::proportional(11.0),
+                                                FontId::proportional(12.0),
                                                 text_color,
                                                 inner_w - 16.0,
                                             )
@@ -2929,7 +2930,7 @@ pub(crate) fn message_bubble(
                             (inner_card_fill(t, mine), text_color)
                         };
                         painter.rect_filled(btn, CornerRadius::same(INNER_CARD_RADIUS), fill);
-                        let g = layout_text(ui, label, FontId::proportional(13.0), fg, bw);
+                        let g = layout_text(ui, label, FontId::proportional(15.0), fg, bw);
                         painter.galley(
                             Pos2::new(
                                 bx + (bw - g.size().x) / 2.0,
@@ -2969,9 +2970,9 @@ pub(crate) fn message_bubble(
                         );
                         painter.galley(Pos2::new(x + 34.0, cy + 3.0), g, secondary);
                         let count = format!("{}", layout.event_guests);
-                        let cw = measure_text(ui, &count, FontId::proportional(13.0));
+                        let cw = measure_text(ui, &count, FontId::proportional(15.0));
                         let g =
-                            layout_text(ui, &count, FontId::proportional(13.0), text_color, 30.0);
+                            layout_text(ui, &count, FontId::proportional(15.0), text_color, 30.0);
                         painter.galley(Pos2::new(x + inner_w - 34.0 - cw, cy + 3.0), g, text_color);
                         painter.circle_filled(
                             Pos2::new(x + inner_w - 13.0, cy + 12.0),
@@ -3235,14 +3236,14 @@ pub(crate) fn message_bubble(
                     let label = ellipsize_lines(
                         ui,
                         &button.text,
-                        FontId::proportional(13.0),
+                        FontId::proportional(15.0),
                         inner_w - 16.0,
                         1,
                     );
                     let g = layout_text(
                         ui,
                         &label,
-                        FontId::proportional(13.0),
+                        FontId::proportional(15.0),
                         label_color,
                         inner_w - 16.0,
                     );
@@ -3255,7 +3256,7 @@ pub(crate) fn message_bubble(
                     let g = layout_text(
                         ui,
                         footer,
-                        FontId::proportional(11.0),
+                        FontId::proportional(12.0),
                         rgb(t.text_faint),
                         inner_w,
                     );
@@ -3319,7 +3320,7 @@ pub(crate) fn message_bubble(
                         let g = layout_text(
                             ui,
                             &section.title,
-                            FontId::proportional(11.0),
+                            FontId::proportional(12.0),
                             rgb(t.text_faint),
                             inner_w,
                         );
@@ -3331,7 +3332,7 @@ pub(crate) fn message_bubble(
                         let title_g = layout_text(
                             ui,
                             &row.title,
-                            FontId::proportional(13.0),
+                            FontId::proportional(15.0),
                             text_color,
                             inner_w - 16.0,
                         );
@@ -3342,7 +3343,7 @@ pub(crate) fn message_bubble(
                             Some(layout_text(
                                 ui,
                                 &row.description,
-                                FontId::proportional(11.0),
+                                FontId::proportional(12.0),
                                 secondary,
                                 inner_w - 16.0,
                             ))
@@ -3369,7 +3370,7 @@ pub(crate) fn message_bubble(
                     let g = layout_text(
                         ui,
                         footer,
-                        FontId::proportional(11.0),
+                        FontId::proportional(12.0),
                         rgb(t.text_faint),
                         inner_w,
                     );

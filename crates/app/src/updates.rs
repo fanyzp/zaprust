@@ -77,7 +77,7 @@ impl App {
                         .fill(rgb(t.bg_panel))
                         .inner_margin(Margin::symmetric(16, 14)),
                 )
-                .show(root, |ui| self.updates_content(ui));
+                .show(root, |ui| self.updates_content(ui, false));
             return;
         }
         let panel = self.list_panel(root);
@@ -87,7 +87,7 @@ impl App {
                     .fill(rgb(t.bg_panel))
                     .inner_margin(Margin::symmetric(crate::theme::LIST_PANEL_INSET_X, 8)),
             )
-            .show(root, |ui| self.updates_content(ui));
+            .show(root, |ui| self.updates_content(ui, true));
         crate::widgets::soft_right_edge(root, panel.response.rect, t);
         self.draw_conversation_placeholder(root);
     }
@@ -95,14 +95,17 @@ impl App {
     /// The Updates content, shared by the panel and the
     /// full-screen page: title, My Status row, then the feed
     /// grouped by author under Recent updates / Viewed
-    /// headers, or the feed's empty state.
-    fn updates_content(&mut self, ui: &mut egui::Ui) {
+    /// headers, or the feed's empty state. The title follows
+    /// the surface it sits on: a list panel's header is the
+    /// shared medium 15 every other panel uses, while the
+    /// full-screen page keeps the page-title semibold 19.
+    fn updates_content(&mut self, ui: &mut egui::Ui, panel: bool) {
         let t = self.tokens();
         let now = self.status_now();
         self.prune_statuses();
         ui.label(
             RichText::new(crate::i18n::t("nav.updates"))
-                .font(crate::theme::semibold(19.0))
+                .font(if panel { crate::theme::medium(15.0) } else { crate::theme::semibold(19.0) })
                 .color(rgb(t.text_primary)),
         );
         ui.add_space(SP_3);
@@ -120,8 +123,17 @@ impl App {
             if hov > 0.001 {
                 ui.painter().rect_filled(
                     rect,
-                    CornerRadius::same(10),
+                    CornerRadius::same(crate::theme::RADIUS_SMALL),
                     crate::theme::glass_wash(t, t.bg_panel_alt, (hov * 115.0) as u8),
+                );
+            }
+            let press =
+                crate::anim::press_factor(ui, "my_status_row", resp.is_pointer_button_down_on());
+            if press > 0.001 {
+                ui.painter().rect_filled(
+                    rect,
+                    CornerRadius::same(crate::theme::RADIUS_SMALL),
+                    crate::theme::glass_wash(t, t.bg_panel_alt, (press * 170.0) as u8),
                 );
             }
             let painter = ui.painter();
@@ -250,8 +262,20 @@ impl App {
         if hov > 0.001 {
             ui.painter().rect_filled(
                 rect,
-                CornerRadius::same(10),
+                CornerRadius::same(crate::theme::RADIUS_SMALL),
                 crate::theme::glass_wash(t, t.bg_panel_alt, (hov * 115.0) as u8),
+            );
+        }
+        let press = crate::anim::press_factor(
+            ui,
+            format!("status_row_{}", row.author_jid),
+            resp.is_pointer_button_down_on(),
+        );
+        if press > 0.001 {
+            ui.painter().rect_filled(
+                rect,
+                CornerRadius::same(crate::theme::RADIUS_SMALL),
+                crate::theme::glass_wash(t, t.bg_panel_alt, (press * 170.0) as u8),
             );
         }
         let painter = ui.painter();

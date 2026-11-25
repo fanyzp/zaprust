@@ -227,7 +227,7 @@ pub(crate) fn ai_chip(painter: &egui::Painter, left_center: Pos2, t: Tokens) -> 
         rect.center(),
         egui::Align2::CENTER_CENTER,
         "AI",
-        FontId::proportional(9.0),
+        FontId::proportional(10.0),
         rgb(t.bg_panel),
     );
     22.0

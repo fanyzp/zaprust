@@ -392,6 +392,15 @@ impl App {
                                     if self.recorder.is_some() { 1.0 } else { 0.0 },
                                     rec_secs,
                                 );
+                                // The plus and emoji controls sit
+                                // tight: the row's item spacing is
+                                // one 4pt step, not the global 8,
+                                // so the two glyphs read as one
+                                // cluster (the owner's composer
+                                // ruling). Set before the width
+                                // computation below, which reads
+                                // the same spacing.
+                                ui.spacing_mut().item_spacing.x = 4.0;
                                 let line_height = composer_line_height(ui);
                                 let (field_rows, field_h) = if rec_p > 0.001 {
                                     (1, composer_field_height(1, line_height))
@@ -422,9 +431,16 @@ impl App {
                                     (rows, composer_field_height(rows, line_height))
                                 };
                                 let row_h = composer_row_height(field_rows, line_height);
+                                // Bottom-aligned, not centred: as
+                                // the field grows line by line, the
+                                // attach and emoji buttons stay on
+                                // the pill's bottom line with the
+                                // morph slot outside, instead of
+                                // riding up half a line per added
+                                // line while the slot stays put.
                                 ui.allocate_ui_with_layout(
                                     Vec2::new(ui.available_width(), row_h),
-                                    Layout::left_to_right(Align::Center),
+                                    Layout::left_to_right(Align::Max),
                                     |ui| {
                                         if composer_icon(
                                             ui,
@@ -630,16 +646,20 @@ impl App {
                                 // The microphone and the send
                                 // button morph into each other
                                 // instead of swapping in one
-                                // frame: as the draft gains or
-                                // loses its text, the accent
-                                // disc grows out of (or shrinks
-                                // back into) the mic's hover
-                                // circle while the two glyphs
-                                // crossfade and counter-scale.
+                                // frame: the accent disc grows out
+                                // of (or shrinks back into) the
+                                // mic's hover circle while the two
+                                // glyphs crossfade and
+                                // counter-scale. The morph target
+                                // is the owner's composer rule: the
+                                // mic shows while the input is
+                                // unused, and the send disc takes
+                                // over as soon as the input is
+                                // focused or holds a draft.
                                 let swap = crate::anim::swap_factor(
                                     ui,
                                     "composer_send_swap",
-                                    has_text,
+                                    has_text || input_focused,
                                     self.motion,
                                 );
                                 if swap < 0.999 {
@@ -759,8 +779,13 @@ impl App {
                     if send_clicked && recording {
                         // The stop disc ends and sends the note.
                         self.finish_recording(engaged);
-                    } else if send_clicked && !has_text && !recording {
+                    } else if send_clicked && !has_text && !input_focused && !recording {
                         // The idle mic starts a voice recording.
+                        // While the input is focused the slot
+                        // wears the send disc (the owner's rule
+                        // above), so a click there is a send
+                        // attempt on an empty draft: inert, never
+                        // a recording started under a send glyph.
                         self.start_recording();
                     }
                     if has_text && (send_clicked || enter_send) && !recording {
@@ -898,12 +923,16 @@ impl App {
                     // the chat search pill already speak
                     // (1.5 px accent, inside stroke), so
                     // every text entry in the app shows
-                    // focus the same way.
-                    if input_focused {
+                    // focus the same way. The ring fades in
+                    // and out on the shared factor instead of
+                    // snapping on and off with the focus flag.
+                    let focus_ring =
+                        crate::anim::hover_factor(ui, "composer_focus_ring", input_focused);
+                    if focus_ring > 0.001 {
                         ui.painter().rect_stroke(
                             pill_rect,
                             CornerRadius::same(28),
-                            Stroke::new(1.5_f32, rgb(t.accent)),
+                            Stroke::new(1.5_f32, fade(rgb(t.accent), focus_ring)),
                             egui::StrokeKind::Inside,
                         );
                     }
@@ -979,7 +1008,7 @@ impl App {
                                             rgb(t.bg_panel),
                                         );
                                         ui.add(
-                                            egui::Label::new(RichText::new(label).size(13.0))
+                                            egui::Label::new(RichText::new(label).size(12.0))
                                                 .sense(egui::Sense::click()),
                                         )
                                         .clicked()

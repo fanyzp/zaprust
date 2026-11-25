@@ -175,17 +175,20 @@ impl ThemeId {
 /// or light scheme generates the entire token set; the names are
 /// plain color names of our own.
 pub const SEED_PRESETS: [(&str, Rgb); 6] = [
+    ("Blue", Rgb(0x0B, 0x57, 0xD0)),
     ("Green", Rgb(0x00, 0xA8, 0x84)),
-    ("Blue", Rgb(0x3B, 0x82, 0xC4)),
     ("Purple", Rgb(0x7C, 0x6B, 0xD9)),
     ("Rose", Rgb(0xD9, 0x6B, 0xA0)),
     ("Amber", Rgb(0xD9, 0x93, 0x3B)),
     ("Teal", Rgb(0x2A, 0xA1, 0x98)),
 ];
 
-/// The seed the built-in Dark / Light schemes are generated from
-/// (the Green preset, Zaprust's brand color).
-pub const DEFAULT_SEED: Rgb = Rgb(0x00, 0xA8, 0x84);
+/// The seed the built-in Dark / Light schemes are generated from:
+/// the Blue preset, the canonical accent of the owner's design
+/// system (design-rifan/DESIGN.md: light #0B57D0, dark #A8C7FA).
+/// The derivation below pairs it with its lightened dark tint, so
+/// the built-in schemes carry the canonical accent values.
+pub const DEFAULT_SEED: Rgb = Rgb(0x0B, 0x57, 0xD0);
 
 /// Semantic color tokens. UI code may only use these, never literals.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -381,22 +384,23 @@ impl Tokens {
     ///   accent family instead of washing every surface. The
     ///   surface lightness steps are wide enough that adjacent
     ///   layers separate at a glance (the value ladder the eye
-    ///   reads first): dark surfaces step 4% to 12.8% lightness
-    ///   (chat darkest, then app, panel, panel alt), light
+    ///   reads first): dark surfaces step 4% to 16% lightness
+    ///   (chat darkest, then app, panel, panel alt, on the
+    ///   canonical stops of the owner's design system), light
     ///   surfaces step 90% to 99%. One step above panel alt, the
     ///   elevated-card step is a derivation, not a token: see
     ///   [`elevated_step`].
-    /// - Text sits at the opposite end of the ladder (82% / 64% /
-    ///   51% dark, 10% / 32% / 47% light), which is what keeps body
+    /// - Text sits at the opposite end of the ladder (84% / 64% /
+    ///   57% dark, 10% / 32% / 47% light), which is what keeps body
     ///   text at WCAG AA on every surface, bubbles included.
     /// - The accent keeps the seed hue with its saturation floored
-    ///   at 45%: in the dark scheme it keeps the seed's own
-    ///   lightness, so the dark accent is the seed color itself
-    ///   rather than a brightened mint, stepping up only as far as
-    ///   a dark custom seed needs to stay legible on dark panels;
-    ///   in the light scheme it starts at lightness 42% and steps
-    ///   down when a naturally bright hue (greens, ambers) needs
-    ///   the help to stay legible on light panels. `bubble_out` is a deep tint of the accent
+    ///   at 45%: in the dark scheme it is the seed lightened to
+    ///   the canonical pairing lightness (0.82), the pattern of
+    ///   the owner's design system (light #0B57D0 pairs with dark
+    ///   #A8C7FA); in the light scheme it starts at the seed's own
+    ///   lightness (capped at 0.45) and steps down when a naturally
+    ///   bright hue (greens, ambers) needs the help to stay legible
+    ///   on light panels. `bubble_out` is a deep tint of the accent
     ///   (dark) or a pale tint (light). `tick_read` ignores the
     ///   seed: it is a fixed blue (hue 199) in both schemes, the
     ///   read-tick color users recognize.
@@ -430,45 +434,48 @@ impl Tokens {
         let at = |s: f32, l: f32| hsl_to_rgb(h, s, l);
 
         if dark {
-            let bg_panel = at(s_surf, 0.088);
-            let bg_panel_alt = at(s_surf, 0.128);
-            // The dark accent is the seed itself: its own hue,
-            // saturation and lightness, so the accent family is
-            // the seed's family at full strength instead of a
-            // lightness-pushed mint. The only adjustment is a
-            // legibility guard for dark custom seeds, mirroring
-            // the light scheme's: step up only until the accent
-            // clears 3.2:1 on the panel (the suite's AA floor for
-            // UI colors is 3:1). Every preset seed clears it at
-            // its own lightness and never steps.
-            let mut accent_l = seed_l;
-            let mut accent = at(s_acc, accent_l);
-            while contrast_ratio(accent, bg_panel) < 3.2 && accent_l < 0.62 {
-                accent_l += 0.02;
-                accent = at(s_acc, accent_l);
-            }
+            // The dark surface stops sit on the canonical ladder
+            // of the owner's design system (DESIGN.md dark table:
+            // bg #131314, surface #1E1F20, surface-2 #282A2C):
+            // app 0.077, panel 0.115, panel alt 0.16, with the
+            // chat one extra step below the app sheet, an app-only
+            // level the canonical three-level nesting does not
+            // name.
+            let bg_panel = at(s_surf, 0.115);
+            let bg_panel_alt = at(s_surf, 0.16);
+            // The dark accent is the seed lightened to its
+            // canonical pairing lightness (0.82): the pattern of
+            // the owner's design system, whose dark accent is the
+            // light accent's pale tint (#0B57D0 pairs with
+            // #A8C7FA), never the seed at full strength, which
+            // read as a dark jewel tone on dark panels. A seed
+            // already lighter than the pairing keeps its own
+            // lightness. At 0.82 the accent clears the panel
+            // contrast floor by a wide margin, so no legibility
+            // step-up loop is needed.
+            let accent = at(s_acc, seed_l.max(0.82));
             let badge_bg = hsl_to_rgb(h, 0.55, 0.55);
             Tokens {
-                bg_app: at(s_surf, 0.058),
+                bg_app: at(s_surf, 0.077),
                 bg_panel,
                 bg_panel_alt,
                 bg_chat: at(s_surf, 0.04),
                 // Soft off-whites, not pure white: full-brightness
                 // text on dark surfaces glares in a dim room. The
-                // ladder has stepped down twice (0.93, then 0.87)
-                // and still read as white-hot on the near-black
-                // chat surface, so it sits at 0.82 / 0.64 / 0.51
-                // now, still far above the AA contrast floor.
-                text_primary: at(s_surf, 0.82),
+                // ladder sits at the canonical ink steps (ink
+                // #DCD8D1, muted #A3A3A3, faint #929292):
+                // 0.84 / 0.64 / 0.57, far above the AA contrast
+                // floor on every surface.
+                text_primary: at(s_surf, 0.84),
                 text_secondary: at(s_surf, 0.64),
-                text_faint: at(s_surf, 0.51),
+                text_faint: at(s_surf, 0.57),
                 accent,
                 bubble_in: bg_panel_alt,
                 bubble_out: hsl_to_rgb(h, seed_s.clamp(0.35, 0.60), 0.15),
                 badge_bg,
                 badge_text: on_color(badge_bg),
-                border: at(s_surf, 0.205),
-                system_chip: at(s_surf, 0.16),
+                border: at(s_surf, 0.19),
+                system_chip: at(s_surf, 0.20),
                 doodle: at(s_surf, 0.15),
                 danger: hsl_to_rgb(DANGER_HUE, 0.65, 0.60),
                 tick_read: hsl_to_rgb(READ_HUE, 0.80, 0.62),
@@ -478,11 +485,14 @@ impl Tokens {
         } else {
             let bg_panel = at(s_surf, 0.955);
             let bg_panel_alt = at(s_surf, 0.90);
-            // Legibility guard for the accent: bright hues are
-            // naturally luminous, so step the lightness down until
-            // the accent clears 3.2:1 on the panel (the suite's AA
-            // floor for UI colors is 3:1).
-            let mut accent_l = 0.42;
+            // The light accent starts at the seed's own lightness,
+            // capped at 0.45, so the canonical seed reproduces its
+            // canonical value (#0B57D0) exactly instead of a
+            // ladder-shifted neighbour. Legibility guard: bright
+            // hues are naturally luminous, so step the lightness
+            // down until the accent clears 3.2:1 on the panel (the
+            // suite's AA floor for UI colors is 3:1).
+            let mut accent_l = seed_l.clamp(0.30, 0.45);
             let mut accent = at(s_acc, accent_l);
             while contrast_ratio(accent, bg_panel) < 3.2 && accent_l > 0.20 {
                 accent_l -= 0.02;
@@ -889,20 +899,20 @@ mod tests {
     fn schemes_and_seeds_have_distinct_backgrounds() {
         assert_ne!(Tokens::dark().bg_app, Tokens::light().bg_app);
         // The seed hue tints the surfaces, so different seeds differ.
-        let green = Tokens::dynamic(SEED_PRESETS[0].1, true);
+        let blue = Tokens::dynamic(SEED_PRESETS[0].1, true);
         let violet = Tokens::dynamic(SEED_PRESETS[2].1, true);
-        assert_ne!(green.bg_app, violet.bg_app);
-        assert_ne!(green.accent, violet.accent);
+        assert_ne!(blue.bg_app, violet.bg_app);
+        assert_ne!(blue.accent, violet.accent);
         // Read ticks are the fixed blue in every seed and scheme:
         // they must not follow the accent.
         for (_, seed) in SEED_PRESETS {
-            assert_eq!(Tokens::dynamic(seed, true).tick_read, green.tick_read);
+            assert_eq!(Tokens::dynamic(seed, true).tick_read, blue.tick_read);
             assert_eq!(
                 Tokens::dynamic(seed, false).tick_read,
                 Tokens::dynamic(SEED_PRESETS[0].1, false).tick_read
             );
         }
-        assert_ne!(green.tick_read, green.accent);
+        assert_ne!(blue.tick_read, blue.accent);
     }
 
     #[test]
@@ -922,11 +932,11 @@ mod tests {
                 );
             }
         }
-        // And the default seed's badge is the familiar green
+        // And the default seed's badge is the canonical blue
         // family, unchanged for users who never pick an accent.
         let (default_hue, _, _) = rgb_to_hsl(Tokens::dark().badge_bg);
-        let (green_hue, _, _) = rgb_to_hsl(SEED_PRESETS[0].1);
-        assert!((default_hue - green_hue).abs() < 0.01);
+        let (blue_hue, _, _) = rgb_to_hsl(SEED_PRESETS[0].1);
+        assert!((default_hue - blue_hue).abs() < 0.01);
     }
 
     #[test]
@@ -956,7 +966,7 @@ mod tests {
         assert_eq!(ThemeId::Dark.tokens(), Tokens::dark());
         assert_eq!(ThemeId::Light.tokens(), Tokens::light());
         assert_eq!(ThemeId::Auto.tokens(), Tokens::dark(), "Auto falls back to Dark");
-        // The default seed is the Green preset.
+        // The default seed is the Blue preset, the canonical accent.
         assert_eq!(DEFAULT_SEED, SEED_PRESETS[0].1);
     }
 
@@ -1115,14 +1125,14 @@ mod tests {
         }
     }
 
-    /// The dark accent must stay in the seed's color family: the
-    /// same hue (within rounding) and the seed's own lightness,
-    /// instead of the old forced 0.62 step that rendered the
-    /// default green as neon mint. This is the regression pin for
-    /// that drift: hue family plus closeness to the seed's
-    /// lightness, for every preset seed (none of them needs the
-    /// legibility step-up), and the accent always darker than the
-    /// primary text it shares screens with.
+    /// The dark accent must stay in the seed's color family at
+    /// the canonical pairing lightness: the same hue (within
+    /// rounding), lightened to 0.82 unless the seed is already
+    /// lighter, the pattern of the owner's design system (light
+    /// #0B57D0 pairs with dark #A8C7FA). This is the regression
+    /// pin for the pairing rule, replacing the earlier
+    /// seed-lightness pin from when the dark accent was the seed
+    /// itself at full strength.
     #[test]
     fn dark_accent_stays_in_the_seed_family() {
         let hue_gap = |a: f32, b: f32| {
@@ -1138,11 +1148,10 @@ mod tests {
                 "{name}: dark accent hue {h:.3} drifted from seed hue {seed_h:.3}"
             );
             assert!(
-                (l - seed_l).abs() <= 0.04,
-                "{name}: dark accent lightness {l:.2} drifted from the seed's {seed_l:.2}"
+                (l - seed_l.max(0.82)).abs() <= 0.04,
+                "{name}: dark accent lightness {l:.2} drifted from the pairing lightness"
             );
-            let (_, _, text_l) = rgb_to_hsl(t.text_primary);
-            assert!(l < text_l, "{name}: dark accent must stay darker than the text");
+            assert!(l >= 0.75, "{name}: dark accent must stay a light tint");
         }
         // And the light accent keeps the seed hue too.
         for (name, seed) in SEED_PRESETS {

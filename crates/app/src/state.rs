@@ -704,6 +704,15 @@ pub(crate) struct AnimState {
     /// frames is what arms [`Self::screen_fade`]. `None` until
     /// the first frame, which never fades.
     pub(crate) screen_key: Option<(Screen, bool)>,
+    /// Running settings-page switch fade (a tab change or the
+    /// blocked page opening or closing), on the motion system's
+    /// SWITCH duration.
+    pub(crate) settings_fade: Option<crate::motion::Anim>,
+    /// The settings page key the last frame drew, as (tab,
+    /// blocked page open): a change between frames is what arms
+    /// [`Self::settings_fade`]. `None` until the first frame,
+    /// which never fades.
+    pub(crate) settings_key: Option<(&'static str, bool)>,
 }
 
 /// Calls state: the call log behind the Calls panel, its search and filters, the new-call picker, and the one live call's UI state.
@@ -3165,6 +3174,8 @@ impl App {
                 viewer_reveal: None,
                 screen_fade: None,
                 screen_key: None,
+                settings_fade: None,
+                settings_key: None,
             },
             reaction_actors: std::collections::HashMap::new(),
             my_reactions: std::collections::HashMap::new(),

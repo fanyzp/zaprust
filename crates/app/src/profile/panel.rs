@@ -1206,6 +1206,11 @@ impl App {
                                                     ui.close();
                                                 }
                                             });
+                                        crate::anim::stock_popup_enter(
+                                            ui.ctx(),
+                                            egui::Popup::default_response_id(&kebab),
+                                            kebab.rect.center(),
+                                        );
                                         ui.add_space(SP_1);
                                     }
                                     if live_list.len() > shown {

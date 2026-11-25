@@ -536,6 +536,36 @@ pub(crate) fn popup_transform(ctx: &egui::Context, area_id: Id, anchor: Pos2, p:
     );
 }
 
+/// The enter half of the popup treatment for egui's stock
+/// popups (the kebab buttons' `Popup::menu`, the ComboBox
+/// dropdowns). egui paints those popups itself inside an Area
+/// whose id the call site can derive, so the shared phase
+/// machine and the layer transform apply to them exactly like
+/// the hand-built menus: while the popup is open, its layer
+/// scales in from the anchor on the FADE run. The other two
+/// halves of the treatment are honestly out of reach without
+/// forking egui: the popup's frame is painted before its
+/// content closure runs, so an opacity set inside the closure
+/// cannot fade the frame, and the popup stops being drawn the
+/// same frame egui decides it closed, so no exit frame ever
+/// reaches the app. The phase machine still runs on the real
+/// open state every frame, which keeps its bookkeeping current
+/// for the next open. Call this right after the popup's show
+/// call, with the popup's Area id and the trigger's anchor
+/// point. Motion Off collapses the run to nothing, like every
+/// other animation here.
+pub(crate) fn stock_popup_enter(ctx: &egui::Context, popup_id: Id, anchor: Pos2) {
+    let motion = ctx
+        .data(|d| d.get_temp::<crate::motion::MotionSetting>(Id::unique("anim_motion_setting")))
+        .unwrap_or_default();
+    let open = egui::Popup::is_id_open(ctx, popup_id);
+    if let Some(p) = popup_phase(ctx, ("stock_popup", popup_id), open, motion) {
+        if open {
+            popup_transform(ctx, popup_id, anchor, p);
+        }
+    }
+}
+
 /// The typing indicator: three dots that bounce and fade in a
 /// staggered wave. Paints into a small strip the caller allocates
 /// inline (for example next to the header's "typing" label).

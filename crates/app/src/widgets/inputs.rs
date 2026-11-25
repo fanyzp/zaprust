@@ -47,7 +47,7 @@ fn text_field_impl(
 ) -> egui::Response {
     let frame = egui::Frame::new()
         .fill(field_fill(t))
-        .corner_radius(CornerRadius::same(8))
+        .corner_radius(crate::theme::RADIUS_MICRO)
         .inner_margin(egui::Margin::symmetric(10, 8));
     let shown = frame.show(ui, |ui| {
         let edit = if rows > 1 {
@@ -65,7 +65,7 @@ fn text_field_impl(
     if resp.has_focus() {
         ui.painter().rect_stroke(
             shown.response.rect,
-            CornerRadius::same(8),
+            crate::theme::RADIUS_MICRO,
             Stroke::new(1.5_f32, rgb(t.accent)),
             egui::StrokeKind::Inside,
         );
@@ -83,11 +83,19 @@ pub(crate) fn select(
     selected: &str,
     add_contents: impl FnOnce(&mut egui::Ui),
 ) -> egui::Response {
-    egui::ComboBox::from_id_salt(id)
+    let out = egui::ComboBox::from_id_salt(id)
         .selected_text(RichText::new(selected).font(crate::theme::medium(12.0)))
         .width(width)
-        .show_ui(ui, add_contents)
-        .response
+        .show_ui(ui, add_contents);
+    // The ComboBox popup is a stock egui popup; give it the
+    // shared enter treatment (its popup id is the button id with
+    // "popup", egui's own derivation).
+    crate::anim::stock_popup_enter(
+        ui.ctx(),
+        out.response.id.with("popup"),
+        out.response.rect.left_top(),
+    );
+    out.response
 }
 
 /// The one numeric field: a DragValue wearing the same field chrome
@@ -105,11 +113,11 @@ pub(crate) fn number_field<T: egui::emath::Numeric>(
     ui.scope(|ui| {
         let v = ui.visuals_mut();
         v.widgets.inactive.bg_fill = field_fill(t);
-        v.widgets.inactive.corner_radius = CornerRadius::same(8);
+        v.widgets.inactive.corner_radius = crate::theme::RADIUS_MICRO.into();
         v.widgets.hovered.bg_fill = rgb(core::theme::hover_step(t.bg_panel_alt));
-        v.widgets.hovered.corner_radius = CornerRadius::same(8);
+        v.widgets.hovered.corner_radius = crate::theme::RADIUS_MICRO.into();
         v.widgets.active.bg_fill = rgb(core::theme::pressed_step(t.bg_panel_alt));
-        v.widgets.active.corner_radius = CornerRadius::same(8);
+        v.widgets.active.corner_radius = crate::theme::RADIUS_MICRO.into();
         ui.add_sized([width, 30.0], egui::DragValue::new(value).range(range).speed(speed))
     })
     .inner
@@ -123,8 +131,8 @@ pub(crate) const FORM_LABEL_W: f32 = 128.0;
 /// a settings form share it, so a form reads as one kit.
 pub(crate) const FORM_CONTROL_W: f32 = 300.0;
 
-/// One form row: a fixed label column (the label in Medium 13, an
-/// optional hint under it in 11.5 faint), then the control. Returns
+/// One form row: a fixed label column (the label in Medium 12, an
+/// optional hint under it in 12 faint), then the control. Returns
 /// the control closure's return value, so callers keep using the
 /// control's Response (changed, clicked, lost focus) as before,
 /// together with the row's rect (the Settings search highlight
@@ -204,10 +212,10 @@ pub(crate) fn radio_row(
     if press > 0.001 {
         let pressed = core::theme::pressed_step(t.bg_panel_alt);
         let fill = core::theme::mix(t.bg_panel_alt, pressed, press);
-        ui.painter().rect_filled(rect, CornerRadius::same(8), rgb(fill));
+        ui.painter().rect_filled(rect, crate::theme::RADIUS_MICRO, rgb(fill));
     } else if hov > 0.001 {
         let fill = core::theme::mix(t.bg_panel, t.bg_panel_alt, hov);
-        ui.painter().rect_filled(rect, CornerRadius::same(8), rgb(fill));
+        ui.painter().rect_filled(rect, crate::theme::RADIUS_MICRO, rgb(fill));
     }
     let cy = rect.center().y;
     let ring_c = Pos2::new(rect.left() + 14.0, cy);

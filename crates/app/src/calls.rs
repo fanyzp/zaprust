@@ -205,8 +205,17 @@ fn draw_call_row(
     if hov > 0.001 {
         ui.painter().rect_filled(
             rect,
-            CornerRadius::same(10),
+            CornerRadius::same(crate::theme::RADIUS_SMALL),
             crate::theme::glass_wash(t, t.bg_panel_alt, (hov * 115.0) as u8),
+        );
+    }
+    let press =
+        crate::anim::press_factor(ui, ("call_row", entry.id), resp.is_pointer_button_down_on());
+    if press > 0.001 {
+        ui.painter().rect_filled(
+            rect,
+            CornerRadius::same(crate::theme::RADIUS_SMALL),
+            crate::theme::glass_wash(t, t.bg_panel_alt, (press * 170.0) as u8),
         );
     }
     let painter = ui.painter();
@@ -1250,7 +1259,7 @@ impl App {
                             .color(rgb(t.text_secondary)),
                         );
                         ui.add_space(SP_2);
-                        ui.label(RichText::new(&url).size(13.0).color(rgb(t.text_primary)));
+                        ui.label(RichText::new(&url).size(15.0).color(rgb(t.text_primary)));
                         ui.add_space(SP_2);
                         ui.label(
                             RichText::new(crate::i18n::t("call.link_created_note"))
@@ -1282,16 +1291,30 @@ impl App {
                         });
                     }
                     None => {
-                        ui.radio_value(
-                            &mut self.calls.link_create_video,
-                            true,
-                            crate::i18n::t("call.link_kind_video"),
-                        );
-                        ui.radio_value(
-                            &mut self.calls.link_create_video,
-                            false,
-                            crate::i18n::t("call.link_kind_audio"),
-                        );
+                        // The link kind is the shared radio row,
+                        // the same control the settings pages use,
+                        // not the stock egui radio: one feedback
+                        // family for one kind of choice.
+                        if crate::widgets::radio_row(
+                            ui,
+                            t,
+                            self.calls.link_create_video,
+                            None,
+                            &crate::i18n::t("call.link_kind_video"),
+                            "",
+                        ) {
+                            self.calls.link_create_video = true;
+                        }
+                        if crate::widgets::radio_row(
+                            ui,
+                            t,
+                            !self.calls.link_create_video,
+                            None,
+                            &crate::i18n::t("call.link_kind_audio"),
+                            "",
+                        ) {
+                            self.calls.link_create_video = false;
+                        }
                         ui.add_space(SP_SECTION);
                         if crate::widgets::button(
                             ui,
@@ -1380,7 +1403,7 @@ impl App {
                         } else {
                             "call.link_kind_audio"
                         }))
-                        .size(13.0)
+                        .size(15.0)
                         .color(rgb(t.text_primary)),
                     );
                     let creator = self

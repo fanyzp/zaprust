@@ -222,7 +222,7 @@ impl App {
                 // key field.
                 egui::Frame::new()
                     .fill(rgb(t.bg_panel_alt))
-                    .corner_radius(CornerRadius::same(10))
+                    .corner_radius(crate::theme::RADIUS_SMALL)
                     .inner_margin(Margin::symmetric(14, 12))
                     .show(ui, |ui| {
                         ui.label(

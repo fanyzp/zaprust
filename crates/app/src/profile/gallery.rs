@@ -178,10 +178,16 @@ fn media_cell(
     actions: &mut GalleryActions,
 ) {
     let (rect, resp) = ui.allocate_exact_size(Vec2::splat(cell), Sense::click());
+    // Pointer factors are read here, before the match arms move
+    // the response into their cursor calls; the wash itself is
+    // painted after the match so it lies over the cell content.
+    let cell_hov = crate::anim::hover_factor(ui, ("gallery_cell", msg.id), resp.hovered());
+    let cell_press =
+        crate::anim::press_factor(ui, ("gallery_cell", msg.id), resp.is_pointer_button_down_on());
     let painter = ui.painter();
     // Cell base: the panel-alt surface every placeholder and
     // not-yet-loaded tile stands on.
-    painter.rect_filled(rect, CornerRadius::same(6), rgb(t.bg_panel_alt));
+    painter.rect_filled(rect, CornerRadius::same(crate::theme::RADIUS_MICRO), rgb(t.bg_panel_alt));
     let view_once = msg.is_view_once();
     match &msg.kind {
         MessageKind::Image { .. } if !view_once => {
@@ -308,6 +314,26 @@ fn media_cell(
             }
         }
     }
+    // Pointer feedback, painted last so it lies over whatever
+    // the cell holds: the cell used to sit silent under the
+    // pointer while every row around it answered. The wash is
+    // lighter than a list row's (it lies over imagery) and
+    // crossfades on the shared factors.
+    let hov = cell_hov;
+    let press = cell_press;
+    if press > 0.001 {
+        painter.rect_filled(
+            rect,
+            CornerRadius::same(crate::theme::RADIUS_MICRO),
+            crate::theme::glass_wash(t, t.bg_panel_alt, (press * 115.0) as u8),
+        );
+    } else if hov > 0.001 {
+        painter.rect_filled(
+            rect,
+            CornerRadius::same(crate::theme::RADIUS_MICRO),
+            crate::theme::glass_wash(t, t.bg_panel_alt, (hov * 70.0) as u8),
+        );
+    }
 }
 
 /// The Links section: one row per link, newest first, the
@@ -323,8 +349,25 @@ fn links_section(ui: &mut egui::Ui, t: Tokens, source: &[Message], _actions: &mu
         let msg = link.message;
         let (rect, resp) =
             ui.allocate_exact_size(Vec2::new(ui.available_width(), 52.0), Sense::click());
-        if resp.hovered() {
-            ui.painter().rect_filled(rect, CornerRadius::same(10), rgb(t.bg_panel_alt));
+        let hov = crate::anim::hover_factor(ui, ("gallery_link_row", msg.id), resp.hovered());
+        if hov > 0.001 {
+            ui.painter().rect_filled(
+                rect,
+                CornerRadius::same(crate::theme::RADIUS_SMALL),
+                crate::theme::glass_wash(t, t.bg_panel_alt, (hov * 115.0) as u8),
+            );
+        }
+        let press = crate::anim::press_factor(
+            ui,
+            ("gallery_link_row", msg.id),
+            resp.is_pointer_button_down_on(),
+        );
+        if press > 0.001 {
+            ui.painter().rect_filled(
+                rect,
+                CornerRadius::same(crate::theme::RADIUS_SMALL),
+                crate::theme::glass_wash(t, t.bg_panel_alt, (press * 170.0) as u8),
+            );
         }
         let painter = ui.painter();
         let title = msg
@@ -375,8 +418,25 @@ fn docs_section(ui: &mut egui::Ui, t: Tokens, source: &[Message], actions: &mut 
         };
         let (rect, resp) =
             ui.allocate_exact_size(Vec2::new(ui.available_width(), 52.0), Sense::click());
-        if resp.hovered() {
-            ui.painter().rect_filled(rect, CornerRadius::same(10), rgb(t.bg_panel_alt));
+        let hov = crate::anim::hover_factor(ui, ("gallery_doc_row", msg.id), resp.hovered());
+        if hov > 0.001 {
+            ui.painter().rect_filled(
+                rect,
+                CornerRadius::same(crate::theme::RADIUS_SMALL),
+                crate::theme::glass_wash(t, t.bg_panel_alt, (hov * 115.0) as u8),
+            );
+        }
+        let press = crate::anim::press_factor(
+            ui,
+            ("gallery_doc_row", msg.id),
+            resp.is_pointer_button_down_on(),
+        );
+        if press > 0.001 {
+            ui.painter().rect_filled(
+                rect,
+                CornerRadius::same(crate::theme::RADIUS_SMALL),
+                crate::theme::glass_wash(t, t.bg_panel_alt, (press * 170.0) as u8),
+            );
         }
         let painter = ui.painter();
         crate::icons::draw(

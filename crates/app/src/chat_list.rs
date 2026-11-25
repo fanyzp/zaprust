@@ -461,7 +461,7 @@ impl App {
                             }
                             ui.label(
                                 RichText::new(crate::i18n::t("labels.clear_filter"))
-                                    .size(11.5)
+                                    .size(12.0)
                                     .color(rgb(t.text_faint)),
                             );
                         });
@@ -491,8 +491,20 @@ impl App {
                         if hov > 0.001 {
                             ui.painter().rect_filled(
                                 rect,
-                                CornerRadius::same(10),
+                                CornerRadius::same(crate::theme::RADIUS_SMALL),
                                 crate::theme::glass_wash(t, t.bg_panel_alt, (hov * 115.0) as u8),
+                            );
+                        }
+                        let press = crate::anim::press_factor(
+                            ui,
+                            "portrait_archived_row",
+                            resp.is_pointer_button_down_on(),
+                        );
+                        if press > 0.001 {
+                            ui.painter().rect_filled(
+                                rect,
+                                CornerRadius::same(crate::theme::RADIUS_SMALL),
+                                crate::theme::glass_wash(t, t.bg_panel_alt, (press * 170.0) as u8),
                             );
                         }
                         crate::icons::draw(
@@ -545,8 +557,20 @@ impl App {
                         if hov > 0.001 {
                             ui.painter().rect_filled(
                                 rect,
-                                CornerRadius::same(10),
+                                CornerRadius::same(crate::theme::RADIUS_SMALL),
                                 crate::theme::glass_wash(t, t.bg_panel_alt, (hov * 115.0) as u8),
+                            );
+                        }
+                        let press = crate::anim::press_factor(
+                            ui,
+                            "locked_entry_row",
+                            resp.is_pointer_button_down_on(),
+                        );
+                        if press > 0.001 {
+                            ui.painter().rect_filled(
+                                rect,
+                                CornerRadius::same(crate::theme::RADIUS_SMALL),
+                                crate::theme::glass_wash(t, t.bg_panel_alt, (press * 170.0) as u8),
                             );
                         }
                         crate::icons::draw(
@@ -592,8 +616,20 @@ impl App {
                     if hov > 0.001 {
                         ui.painter().rect_filled(
                             rect,
-                            CornerRadius::same(10),
+                            CornerRadius::same(crate::theme::RADIUS_SMALL),
                             crate::theme::glass_wash(t, t.bg_panel_alt, (hov * 115.0) as u8),
+                        );
+                    }
+                    let press = crate::anim::press_factor(
+                        ui,
+                        "labels_entry_row",
+                        resp.is_pointer_button_down_on(),
+                    );
+                    if press > 0.001 {
+                        ui.painter().rect_filled(
+                            rect,
+                            CornerRadius::same(crate::theme::RADIUS_SMALL),
+                            crate::theme::glass_wash(t, t.bg_panel_alt, (press * 170.0) as u8),
                         );
                     }
                     crate::icons::draw(
@@ -978,7 +1014,7 @@ impl App {
             ui.add_space(16.0);
             ui.label(
                 RichText::new(crate::i18n::t("nav.locked"))
-                    .font(crate::theme::medium(16.0))
+                    .font(crate::theme::semibold(19.0))
                     .color(rgb(t.text_primary)),
             );
             ui.add_space(6.0);
@@ -1112,6 +1148,11 @@ impl App {
                             ui.close();
                         }
                     });
+                crate::anim::stock_popup_enter(
+                    ui.ctx(),
+                    egui::Popup::default_response_id(&kebab),
+                    kebab.rect.center(),
+                );
             });
         });
         if new_group {
@@ -1201,7 +1242,7 @@ pub(crate) fn chat_row(
     if selected {
         ui.painter().rect_filled(
             rect,
-            CornerRadius::same(10),
+            CornerRadius::same(crate::theme::RADIUS_SMALL),
             crate::theme::glass_wash(t, t.bg_panel_alt, 175),
         );
     } else {
@@ -1213,11 +1254,19 @@ pub(crate) fn chat_row(
         );
         if hov > 0.001 {
             let fill = core::theme::mix(t.bg_panel, core::theme::hover_step(t.bg_panel), hov);
-            ui.painter().rect_filled(rect, CornerRadius::same(10), rgb(fill));
+            ui.painter().rect_filled(
+                rect,
+                CornerRadius::same(crate::theme::RADIUS_SMALL),
+                rgb(fill),
+            );
         }
         if press > 0.001 {
             let fill = core::theme::mix(t.bg_panel, core::theme::pressed_step(t.bg_panel), press);
-            ui.painter().rect_filled(rect, CornerRadius::same(10), rgb(fill));
+            ui.painter().rect_filled(
+                rect,
+                CornerRadius::same(crate::theme::RADIUS_SMALL),
+                rgb(fill),
+            );
         }
     }
     let painter = ui.painter();
@@ -1686,8 +1735,20 @@ impl App {
                     if hov > 0.001 {
                         ui.painter().rect_filled(
                             rect,
-                            CornerRadius::same(10),
+                            CornerRadius::same(crate::theme::RADIUS_SMALL),
                             crate::theme::glass_wash(t, t.bg_panel_alt, (hov * 115.0) as u8),
+                        );
+                    }
+                    let press = crate::anim::press_factor(
+                        ui,
+                        ("search_hit", hit.msg_id),
+                        resp.is_pointer_button_down_on(),
+                    );
+                    if press > 0.001 {
+                        ui.painter().rect_filled(
+                            rect,
+                            CornerRadius::same(crate::theme::RADIUS_SMALL),
+                            crate::theme::glass_wash(t, t.bg_panel_alt, (press * 170.0) as u8),
                         );
                     }
                     let painter = ui.painter();

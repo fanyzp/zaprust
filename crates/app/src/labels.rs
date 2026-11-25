@@ -154,8 +154,20 @@ impl App {
                         if hov > 0.001 {
                             ui.painter().rect_filled(
                                 rect,
-                                CornerRadius::same(10),
+                                CornerRadius::same(crate::theme::RADIUS_SMALL),
                                 crate::theme::glass_wash(t, t.bg_panel_alt, (hov * 115.0) as u8),
+                            );
+                        }
+                        let press = crate::anim::press_factor(
+                            ui,
+                            ("label_row", label.id.as_str()),
+                            resp.is_pointer_button_down_on(),
+                        );
+                        if press > 0.001 {
+                            ui.painter().rect_filled(
+                                rect,
+                                CornerRadius::same(crate::theme::RADIUS_SMALL),
+                                crate::theme::glass_wash(t, t.bg_panel_alt, (press * 170.0) as u8),
                             );
                         }
                         let color = crate::live::label_color(label.color);
@@ -168,7 +180,7 @@ impl App {
                             Pos2::new(rect.left() + 32.0, rect.center().y - 9.0),
                             egui::Align2::LEFT_CENTER,
                             &label.name,
-                            crate::theme::medium(14.0),
+                            crate::theme::medium(15.0),
                             rgb(t.text_primary),
                         );
                         let count = counts.get(&label.id).copied().unwrap_or(0);
@@ -178,7 +190,7 @@ impl App {
                             Pos2::new(rect.left() + 32.0, rect.center().y + 10.0),
                             egui::Align2::LEFT_CENTER,
                             count_text,
-                            FontId::proportional(11.5),
+                            FontId::proportional(12.0),
                             rgb(t.text_faint),
                         );
                         // The row's kebab glyph: the menu
@@ -273,7 +285,7 @@ impl App {
                 };
                 ui.label(
                     RichText::new(title)
-                        .font(crate::theme::medium(13.5))
+                        .font(crate::theme::medium(15.0))
                         .color(rgb(t.text_primary)),
                 );
                 ui.add_space(SP_2);
@@ -416,14 +428,14 @@ impl App {
                         ui.set_width(260.0);
                         ui.label(
                             RichText::new(crate::i18n::t(title_key))
-                                .font(crate::theme::medium(14.0))
+                                .font(crate::theme::medium(15.0))
                                 .color(rgb(t.text_primary)),
                         );
                         ui.add_space(SP_2);
                         if labels.is_empty() {
                             ui.label(
                                 RichText::new(crate::i18n::t("labels.empty"))
-                                    .size(12.5)
+                                    .size(12.0)
                                     .color(rgb(t.text_secondary)),
                             );
                         }
@@ -433,11 +445,36 @@ impl App {
                                 Vec2::new(ui.available_width(), 34.0),
                                 Sense::click(),
                             );
-                            if resp.hovered() {
+                            let hov = crate::anim::hover_factor(
+                                ui,
+                                ("label_picker_row", label.id.as_str()),
+                                resp.hovered(),
+                            );
+                            if hov > 0.001 {
                                 ui.painter().rect_filled(
                                     rect,
-                                    CornerRadius::same(8),
-                                    rgb(t.bg_panel_alt),
+                                    CornerRadius::same(crate::theme::RADIUS_MICRO),
+                                    crate::theme::glass_wash(
+                                        t,
+                                        t.bg_panel_alt,
+                                        (hov * 115.0) as u8,
+                                    ),
+                                );
+                            }
+                            let press = crate::anim::press_factor(
+                                ui,
+                                ("label_picker_row", label.id.as_str()),
+                                resp.is_pointer_button_down_on(),
+                            );
+                            if press > 0.001 {
+                                ui.painter().rect_filled(
+                                    rect,
+                                    CornerRadius::same(crate::theme::RADIUS_MICRO),
+                                    crate::theme::glass_wash(
+                                        t,
+                                        t.bg_panel_alt,
+                                        (press * 170.0) as u8,
+                                    ),
                                 );
                             }
                             let color = crate::live::label_color(label.color);
@@ -450,7 +487,7 @@ impl App {
                                 Pos2::new(rect.left() + 26.0, rect.center().y),
                                 egui::Align2::LEFT_CENTER,
                                 &label.name,
-                                crate::theme::medium(13.5),
+                                crate::theme::medium(15.0),
                                 rgb(t.text_primary),
                             );
                             if on {

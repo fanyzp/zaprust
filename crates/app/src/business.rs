@@ -73,18 +73,18 @@ impl App {
                             summary.push_str(" · ");
                             summary.push_str(word);
                         }
-                        ui.label(RichText::new(summary).size(12.5).color(rgb(t.text_secondary)));
+                        ui.label(RichText::new(summary).size(12.0).color(rgb(t.text_secondary)));
                         ui.add_space(SP_3);
                         match &state {
                             OrderDialogState::Loading => {
                                 ui.label(
                                     RichText::new(crate::i18n::t("business.order_loading"))
-                                        .size(12.5)
+                                        .size(12.0)
                                         .color(rgb(t.text_secondary)),
                                 );
                             }
                             OrderDialogState::Failed(message) => {
-                                ui.label(RichText::new(message).size(12.5).color(rgb(t.danger)));
+                                ui.label(RichText::new(message).size(12.0).color(rgb(t.danger)));
                             }
                             OrderDialogState::Loaded(order) => {
                                 for item in &order.items {
@@ -98,7 +98,7 @@ impl App {
                                         }
                                         ui.label(
                                             RichText::new(line)
-                                                .size(13.0)
+                                                .size(15.0)
                                                 .color(rgb(t.text_primary)),
                                         );
                                         if let Some(price) = item.price_amount_1000 {
@@ -113,7 +113,7 @@ impl App {
                                                             price * qty,
                                                             &currency,
                                                         ))
-                                                        .size(13.0)
+                                                        .size(15.0)
                                                         .color(rgb(t.text_secondary)),
                                                     );
                                                 },
@@ -123,7 +123,7 @@ impl App {
                                     for (vname, vvalue) in &item.variant {
                                         ui.label(
                                             RichText::new(format!("{vname}: {vvalue}"))
-                                                .size(11.5)
+                                                .size(12.0)
                                                 .color(rgb(t.text_faint)),
                                         );
                                     }
@@ -178,15 +178,15 @@ impl App {
 /// right, the total in the stronger voice.
 fn total_row(ui: &mut egui::Ui, t: core::theme::Tokens, label: &str, amount: String, strong: bool) {
     ui.horizontal(|ui| {
-        ui.label(RichText::new(label).size(13.0).color(if strong {
+        ui.label(RichText::new(label).size(15.0).color(if strong {
             rgb(t.text_primary)
         } else {
             rgb(t.text_secondary)
         }));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let text = RichText::new(amount).size(13.0);
+            let text = RichText::new(amount).size(15.0);
             ui.label(if strong {
-                text.font(crate::theme::semibold(13.0)).color(rgb(t.text_primary))
+                text.font(crate::theme::semibold(15.0)).color(rgb(t.text_primary))
             } else {
                 text.color(rgb(t.text_secondary))
             });

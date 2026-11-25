@@ -91,7 +91,7 @@ pub(super) fn business_section(
     dock_card_section(ui, t, &crate::i18n::t("business.title"), None, |ui| {
         if !profile.description.is_empty() {
             dock_prose(ui, |ui| {
-                ui.label(RichText::new(&profile.description).size(13.0).color(rgb(t.text_primary)));
+                ui.label(RichText::new(&profile.description).size(15.0).color(rgb(t.text_primary)));
             });
             ui.add_space(SP_1);
         }
@@ -153,7 +153,7 @@ pub(super) fn business_section(
 /// A secondary info line inside the business section.
 fn info_line(ui: &mut egui::Ui, t: Tokens, text: &str) {
     dock_prose(ui, |ui| {
-        ui.label(RichText::new(text).size(12.5).color(rgb(t.text_secondary)));
+        ui.label(RichText::new(text).size(12.0).color(rgb(t.text_secondary)));
     });
 }
 
@@ -206,7 +206,7 @@ fn product_row(
     let name_g = layout_text(
         ui,
         name,
-        crate::theme::semibold(13.0),
+        crate::theme::semibold(15.0),
         rgb(t.text_primary),
         rect.right() - text_x - 8.0,
     );
@@ -276,7 +276,7 @@ pub(super) fn catalog_body(
     let Some(state) = business.catalogs.get(jid) else {
         ui.label(
             RichText::new(crate::i18n::t("business.catalog_loading"))
-                .size(12.5)
+                .size(12.0)
                 .color(rgb(t.text_faint)),
         );
         return;
@@ -291,7 +291,7 @@ pub(super) fn catalog_body(
     if failed {
         ui.label(
             RichText::new(crate::i18n::t("business.catalog_failed"))
-                .size(12.5)
+                .size(12.0)
                 .color(rgb(t.text_secondary)),
         );
         return;
@@ -300,7 +300,7 @@ pub(super) fn catalog_body(
     if products.is_empty() && collections.is_empty() {
         ui.label(
             RichText::new(crate::i18n::t("business.catalog_empty"))
-                .size(12.5)
+                .size(12.0)
                 .color(rgb(t.text_faint)),
         );
         return;
@@ -309,7 +309,7 @@ pub(super) fn catalog_body(
         for collection in &collections {
             ui.label(
                 RichText::new(collection.name.as_deref().unwrap_or(""))
-                    .font(crate::theme::semibold(13.0))
+                    .font(crate::theme::semibold(15.0))
                     .color(rgb(t.text_primary)),
             );
             ui.add_space(SP_1);

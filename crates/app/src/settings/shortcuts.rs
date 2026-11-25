@@ -25,7 +25,7 @@ impl App {
                     &crate::i18n::t(shortcut.label_key),
                     "",
                     |ui| {
-                        ui.label(RichText::new(chord).size(13.0).color(rgb(t.text_secondary)));
+                        ui.label(RichText::new(chord).size(12.0).color(rgb(t.text_secondary)));
                     },
                 );
             }

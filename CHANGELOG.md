@@ -4,6 +4,21 @@ All notable changes to Zaprust are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com), versions
 follow [SemVer](https://semver.org).
 
+## [1.6.28] - 2026-11-25
+
+### fix:
+
+- Press feedback now reaches the list rows that only had hover. Call rows, starred rows, label rows, community rows, the chat list's entry rows and search hits, the Updates rows and the profile dock rows all answer a press with the same wash the chat rows use, crossfaded through the shared animation factors instead of snapping or staying silent.
+- Settings no longer switches tabs in one frame, and its navigation rows no longer paint hover and selection with the same fill. The page crossfades on a tab switch, the selected row keeps a steady fill, and hover and press crossfade underneath it. The settings list panel now uses the same frame inset as every other list panel.
+- Settings wears the canonical design system. Group labels are sentence case at the caption size instead of small caps, the choice rows (theme, font size, motion, language) are segmented toggles on a tone track with a surface pill for the active segment, and the cards sit at the panel radius on the 4pt spacing grid.
+- The app's default accent is now the canonical blue of the owner's design system (#0B57D0, paired with its lightened tint #A8C7FA on the dark scheme), and the dark surfaces sit on the canonical tone ladder. The other seed colours remain available under Appearance, unchanged in character.
+- Gallery media cells, the rail's profile avatar and the call action discs now answer the pointer: cells wash over their content on hover and press, the avatar wears a halo wash, and the call discs step their fill and show the hand cursor.
+- Kebab menus and dropdown popups now open with the same enter animation as the app's own menus (a short scale from the anchor). Stock egui popups give the app no closing frame to animate, so the exit stays instant; the log records the evidence instead of faking a fade.
+- The type scale is enforced everywhere. Business surfaces, label rows, blocked rows, bubble inner cards, interactive cards, system pills and settings rows that had drifted to sizes between the scale steps (11.5, 12.5, 13, 13.5, 14, 16) now sit on the scale (10, 12, 15, 19, 23), and row washes use the named small radius instead of an unnamed 10.
+- The Updates panel header matches every other list panel header, and the Channels empty state uses the shared empty-state treatment instead of a smaller hand-rolled label.
+- The composer's icons no longer drift when the draft wraps. The attach and emoji buttons stay on the pill's bottom line as it grows, the focus ring fades in instead of snapping on, and the plus and emoji controls sit one 4pt step apart. Following the owner's rule, the slot shows the microphone while the input is unused and the send disc as soon as the input is focused or holds a draft.
+- The call link dialog's kind choice uses the shared radio row instead of the stock radio widget, and the invite picker rows in a call crossfade their hover and press like other rows.
+
 ## [1.6.27] - 2026-11-25
 
 ### fix:

@@ -12,7 +12,7 @@ impl App {
         if self.live.is_none() {
             ui.label(
                 RichText::new(crate::i18n::t("business.live_only"))
-                    .size(13.0)
+                    .size(15.0)
                     .color(rgb(t.text_secondary)),
             );
             return;
@@ -35,7 +35,7 @@ impl App {
         if replies.is_empty() {
             ui.label(
                 RichText::new(crate::i18n::t("business.quick_empty"))
-                    .size(12.5)
+                    .size(12.0)
                     .color(rgb(t.text_faint)),
             );
             ui.add_space(SP_2);
@@ -49,7 +49,7 @@ impl App {
                         ui.vertical(|ui| {
                             ui.label(
                                 RichText::new(format!("/{}", reply.shortcut))
-                                    .font(crate::theme::semibold(13.5)),
+                                    .font(crate::theme::semibold(15.0)),
                             );
                             ui.label(
                                 RichText::new(ellipsize_chars(&reply.message, 60))
@@ -232,12 +232,12 @@ impl App {
                 } else {
                     "business.own_loading"
                 };
-                ui.label(RichText::new(crate::i18n::t(key)).size(12.5).color(rgb(t.text_faint)));
+                ui.label(RichText::new(crate::i18n::t(key)).size(12.0).color(rgb(t.text_faint)));
             }
             Some(None) => {
                 ui.label(
                     RichText::new(crate::i18n::t("business.own_not_business"))
-                        .size(12.5)
+                        .size(12.0)
                         .color(rgb(t.text_secondary)),
                 );
             }
@@ -245,18 +245,18 @@ impl App {
                 let profile = profile.clone();
                 settings_card(ui, t, |ui| {
                     if !profile.description.is_empty() {
-                        ui.label(RichText::new(&profile.description).size(13.0));
+                        ui.label(RichText::new(&profile.description).size(15.0));
                     }
                     if let Some(email) = &profile.email {
-                        ui.label(RichText::new(email).size(12.5).color(rgb(t.text_secondary)));
+                        ui.label(RichText::new(email).size(12.0).color(rgb(t.text_secondary)));
                     }
                     if let Some(address) = &profile.address {
-                        ui.label(RichText::new(address).size(12.5).color(rgb(t.text_secondary)));
+                        ui.label(RichText::new(address).size(12.0).color(rgb(t.text_secondary)));
                     }
                     if !profile.websites.is_empty() {
                         ui.label(
                             RichText::new(profile.websites.join(", "))
-                                .size(12.5)
+                                .size(12.0)
                                 .color(rgb(t.text_secondary)),
                         );
                     }
@@ -332,7 +332,7 @@ impl App {
                     }
                     ui.label(
                         RichText::new(crate::i18n::t("business.categories_bound"))
-                            .size(11.5)
+                            .size(12.0)
                             .color(rgb(t.text_faint)),
                     );
                     ui.add_space(SP_2);
@@ -352,7 +352,7 @@ impl App {
                     ui.horizontal(|ui| {
                         ui.label(
                             RichText::new(crate::i18n::t(day_name_key(day.day)))
-                                .size(12.5)
+                                .size(12.0)
                                 .color(rgb(t.text_secondary)),
                         );
                         let current = MODES
@@ -360,7 +360,7 @@ impl App {
                             .find(|(value, _)| *value == day.mode)
                             .map(|(_, key)| crate::i18n::t(key))
                             .unwrap_or_default();
-                        egui::ComboBox::from_id_salt(("own-biz-day", i))
+                        let combo = egui::ComboBox::from_id_salt(("own-biz-day", i))
                             .selected_text(current)
                             .width(150.0)
                             .show_ui(ui, |ui| {
@@ -373,6 +373,11 @@ impl App {
                                     }
                                 }
                             });
+                        crate::anim::stock_popup_enter(
+                            ui.ctx(),
+                            combo.response.id.with("popup"),
+                            combo.response.rect.left_top(),
+                        );
                         if day.mode == "specific_hours" {
                             ui.add(egui::TextEdit::singleline(&mut day.open).desired_width(52.0));
                             ui.label("-");

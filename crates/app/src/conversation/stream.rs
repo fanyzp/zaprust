@@ -1578,7 +1578,7 @@ fn paint_lock(painter: &egui::Painter, center: Pos2, color: Color32, bg: Color32
 /// left-aligned, broken bubbles; the audit's hierarchy verdict:
 /// date, encryption and events at equal weight read as noise).
 /// The font the whole family shares.
-const SYSTEM_PILL_FONT: f32 = 11.5;
+const SYSTEM_PILL_FONT: f32 = 12.0;
 
 /// Which system voice a centered stream row speaks in: the
 /// hierarchy is date = a small solid pill, encryption = a

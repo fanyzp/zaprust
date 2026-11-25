@@ -165,7 +165,7 @@ fn other_group_row(ui: &mut egui::Ui, chat: &Chat, t: Tokens, pill_key: &str) ->
     if hov > 0.001 {
         ui.painter().rect_filled(
             rect,
-            CornerRadius::same(10),
+            CornerRadius::same(crate::theme::RADIUS_SMALL),
             crate::theme::glass_wash(t, t.bg_panel_alt, (hov * 115.0) as u8),
         );
     }
@@ -208,17 +208,22 @@ fn other_group_row(ui: &mut egui::Ui, chat: &Chat, t: Tokens, pill_key: &str) ->
     }
     // The pill as its own button: a quiet tinted outline, never
     // a filled button sitting inside a list row. Hover and press
-    // only deepen the tint, with the pointing hand.
+    // only deepen the tint, with the pointing hand. The tint now
+    // crossfades through the shared factors between the same
+    // three endpoints (32 rest, 64 hovered, 96 held) instead of
+    // snapping between them. The row itself stays hover-only:
+    // it is not a click target, so a press wash on it would
+    // promise a click it does not take.
     let pill_resp = ui
         .interact(pill, egui::Id::unique(("join_pill", chat.id)), Sense::click())
         .on_hover_cursor(egui::CursorIcon::PointingHand);
-    let pill_alpha = if pill_resp.is_pointer_button_down_on() {
-        96
-    } else if pill_resp.hovered() {
-        64
-    } else {
-        32
-    };
+    let pill_hov = crate::anim::hover_factor(ui, ("join_pill", chat.id), pill_resp.hovered());
+    let pill_press = crate::anim::press_factor(
+        ui,
+        ("join_pill", chat.id),
+        pill_resp.is_pointer_button_down_on(),
+    );
+    let pill_alpha = (32.0 + 32.0 * pill_hov + 32.0 * pill_press).round() as u8;
     painter.rect_filled(
         pill,
         CornerRadius::same(14),
@@ -257,8 +262,29 @@ fn managed_group_row(ui: &mut egui::Ui, t: Tokens, chat: &Chat) -> ManagedGroupA
     if hov > 0.001 {
         ui.painter().rect_filled(
             rect,
-            CornerRadius::same(10),
+            CornerRadius::same(crate::theme::RADIUS_SMALL),
             crate::theme::glass_wash(t, t.bg_panel_alt, (hov * 115.0) as u8),
+        );
+    }
+    // The row's click target is the separate open rect below
+    // (the row itself is hover-sense, so its response cannot
+    // report a press); the press wash reads the pointer state
+    // over that same rect, short of the kebab's slot.
+    let press = crate::anim::press_factor(
+        ui,
+        ("managed_group_row", chat.id),
+        ui.input(|i| {
+            i.pointer.button_down(egui::PointerButton::Primary)
+                && i.pointer
+                    .interact_pos()
+                    .is_some_and(|p| rect.contains(p) && p.x < rect.right() - 37.0)
+        }),
+    );
+    if press > 0.001 {
+        ui.painter().rect_filled(
+            rect,
+            CornerRadius::same(crate::theme::RADIUS_SMALL),
+            crate::theme::glass_wash(t, t.bg_panel_alt, (press * 170.0) as u8),
         );
     }
     let painter = ui.painter();
@@ -325,6 +351,11 @@ fn managed_group_row(ui: &mut egui::Ui, t: Tokens, chat: &Chat) -> ManagedGroupA
                 ui.close();
             }
         });
+    crate::anim::stock_popup_enter(
+        ui.ctx(),
+        egui::Popup::default_response_id(&kebab),
+        kebab.rect.center(),
+    );
     action
 }
 
@@ -413,6 +444,11 @@ fn draw_community_admin_sections(
                             ui.close();
                         }
                     });
+                crate::anim::stock_popup_enter(
+                    ui.ctx(),
+                    egui::Popup::default_response_id(&kebab),
+                    kebab.rect.center(),
+                );
             }
             ui.add_space(SP_1);
         }
@@ -1192,8 +1228,20 @@ impl App {
                         if hov > 0.001 {
                             ui.painter().rect_filled(
                                 rect,
-                                CornerRadius::same(10),
+                                CornerRadius::same(crate::theme::RADIUS_SMALL),
                                 crate::theme::glass_wash(t, t.bg_panel_alt, (hov * 115.0) as u8),
+                            );
+                        }
+                        let press = crate::anim::press_factor(
+                            ui,
+                            "community_new_row",
+                            resp.is_pointer_button_down_on(),
+                        );
+                        if press > 0.001 {
+                            ui.painter().rect_filled(
+                                rect,
+                                CornerRadius::same(crate::theme::RADIUS_SMALL),
+                                crate::theme::glass_wash(t, t.bg_panel_alt, (press * 170.0) as u8),
                             );
                         }
                         let thumb = egui::Rect::from_min_size(
@@ -1254,11 +1302,27 @@ impl App {
                             if hov > 0.001 {
                                 ui.painter().rect_filled(
                                     rect,
-                                    CornerRadius::same(10),
+                                    CornerRadius::same(crate::theme::RADIUS_SMALL),
                                     crate::theme::glass_wash(
                                         t,
                                         t.bg_panel_alt,
                                         (hov * 115.0) as u8,
+                                    ),
+                                );
+                            }
+                            let press = crate::anim::press_factor(
+                                ui,
+                                ("community_overview_row", community.id),
+                                resp.is_pointer_button_down_on(),
+                            );
+                            if press > 0.001 {
+                                ui.painter().rect_filled(
+                                    rect,
+                                    CornerRadius::same(crate::theme::RADIUS_SMALL),
+                                    crate::theme::glass_wash(
+                                        t,
+                                        t.bg_panel_alt,
+                                        (press * 170.0) as u8,
                                     ),
                                 );
                             }

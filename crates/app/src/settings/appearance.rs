@@ -126,8 +126,26 @@ impl App {
         }
         let (header_rect, header_resp) =
             ui.allocate_exact_size(egui::vec2(ui.available_width(), 30.0), egui::Sense::click());
-        if header_resp.hovered() {
-            ui.painter().rect_filled(header_rect, egui::CornerRadius::same(8), rgb(t.bg_panel_alt));
+        let adv_hov =
+            crate::anim::hover_factor(ui, "appearance.advanced_header", header_resp.hovered());
+        let adv_press = crate::anim::press_factor(
+            ui,
+            "appearance.advanced_header",
+            header_resp.is_pointer_button_down_on(),
+        );
+        if adv_hov > 0.001 {
+            ui.painter().rect_filled(
+                header_rect,
+                crate::theme::RADIUS_MICRO,
+                crate::theme::glass_wash(t, t.bg_panel_alt, (adv_hov * 115.0) as u8),
+            );
+        }
+        if adv_press > 0.001 {
+            ui.painter().rect_filled(
+                header_rect,
+                crate::theme::RADIUS_MICRO,
+                crate::theme::glass_wash(t, t.bg_panel_alt, (adv_press * 170.0) as u8),
+            );
         }
         crate::icons::draw(
             ui.painter(),
@@ -144,8 +162,8 @@ impl App {
         ui.painter().text(
             egui::Pos2::new(header_rect.left() + 26.0, header_rect.center().y),
             egui::Align2::LEFT_CENTER,
-            crate::i18n::t("appearance.advanced").to_uppercase(),
-            crate::theme::semibold(10.0),
+            crate::i18n::t("appearance.advanced"),
+            crate::theme::medium(crate::theme::TEXT_LABEL),
             rgb(t.text_secondary),
         );
         if header_resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
@@ -214,24 +232,22 @@ impl App {
         group_label(ui, t, &crate::i18n::t("appearance.font_size"));
         let scoped = ui.scope(|ui| {
             settings_card(ui, t, |ui| {
-                ui.horizontal(|ui| {
-                    for (percent, key) in [
-                        (85_u32, "appearance.font_small"),
-                        (100, "appearance.font_default"),
-                        (115, "appearance.font_large"),
-                    ] {
-                        if chip(ui, &crate::i18n::t(key), self.zoom_percent == percent, t).clicked()
-                        {
-                            // Applies from the next frame (the
-                            // shell composes the preference with
-                            // the layout mode's density factor)
-                            // and persists like every other
-                            // Appearance choice.
-                            self.zoom_percent = percent;
-                            self.persist_settings();
-                        }
-                    }
-                });
+                let percents = [85_u32, 100, 115];
+                let labels: Vec<String> =
+                    ["appearance.font_small", "appearance.font_default", "appearance.font_large"]
+                        .iter()
+                        .map(|key| crate::i18n::t(key))
+                        .collect();
+                let options: Vec<&str> = labels.iter().map(String::as_str).collect();
+                let selected = percents.iter().position(|p| *p == self.zoom_percent).unwrap_or(1);
+                if let Some(i) = segmented(ui, t, "appearance.font_size", &options, selected) {
+                    // Applies from the next frame (the shell
+                    // composes the preference with the layout
+                    // mode's density factor) and persists like
+                    // every other Appearance choice.
+                    self.zoom_percent = percents[i];
+                    self.persist_settings();
+                }
             })
         });
         paint_highlight(
@@ -252,18 +268,25 @@ impl App {
                         .color(rgb(t.text_secondary)),
                 );
                 ui.add_space(SP_1_5);
-                ui.horizontal(|ui| {
-                    for (setting, key) in [
-                        (crate::motion::MotionSetting::Full, "appearance.motion_full"),
-                        (crate::motion::MotionSetting::Reduced, "appearance.motion_reduced"),
-                        (crate::motion::MotionSetting::Off, "appearance.motion_off"),
-                    ] {
-                        if chip(ui, &crate::i18n::t(key), self.motion == setting, t).clicked() {
-                            self.motion = setting;
-                            self.persist_settings();
-                        }
-                    }
-                });
+                let settings = [
+                    crate::motion::MotionSetting::Full,
+                    crate::motion::MotionSetting::Reduced,
+                    crate::motion::MotionSetting::Off,
+                ];
+                let labels: Vec<String> = [
+                    "appearance.motion_full",
+                    "appearance.motion_reduced",
+                    "appearance.motion_off",
+                ]
+                .iter()
+                .map(|key| crate::i18n::t(key))
+                .collect();
+                let options: Vec<&str> = labels.iter().map(String::as_str).collect();
+                let selected = settings.iter().position(|s| *s == self.motion).unwrap_or(0);
+                if let Some(i) = segmented(ui, t, "appearance.motion", &options, selected) {
+                    self.motion = settings[i];
+                    self.persist_settings();
+                }
             })
         });
         paint_highlight(
@@ -284,15 +307,15 @@ impl App {
                         .color(rgb(t.text_secondary)),
                 );
                 ui.add_space(SP_1_5);
-                ui.horizontal(|ui| {
-                    for (id, name) in crate::i18n::LOCALES {
-                        if chip(ui, name, self.language == *id, t).clicked() {
-                            self.language = (*id).to_owned();
-                            crate::i18n::set_locale(id);
-                            self.persist_settings();
-                        }
-                    }
-                });
+                let locales: Vec<(&str, &str)> = crate::i18n::LOCALES.to_vec();
+                let options: Vec<&str> = locales.iter().map(|(_, name)| *name).collect();
+                let selected = locales.iter().position(|(id, _)| self.language == *id).unwrap_or(0);
+                if let Some(i) = segmented(ui, t, "appearance.language", &options, selected) {
+                    let (id, _) = locales[i];
+                    self.language = id.to_owned();
+                    crate::i18n::set_locale(id);
+                    self.persist_settings();
+                }
             })
         });
         paint_highlight(

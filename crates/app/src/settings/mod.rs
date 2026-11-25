@@ -25,8 +25,7 @@ mod storage;
 use crate::state::{App, Notice};
 use crate::theme::{rgb, SP_1, SP_1_5, SP_2, SP_2_5, SP_3_5, SP_4, SP_4_5, SP_SECTION};
 use crate::widgets::{
-    avatar, chip, form_row, number_field, radio_row, select, switch, text_field_password,
-    FORM_CONTROL_W,
+    avatar, form_row, number_field, radio_row, select, switch, text_field_password, FORM_CONTROL_W,
 };
 use core::theme::ThemeId;
 use eframe::egui::{self, CornerRadius, FontId, Margin, Pos2, RichText, Sense, Vec2};
@@ -530,7 +529,11 @@ impl App {
         let t = self.tokens();
         let panel = egui::Panel::left("simple_list")
             .exact_size(280.0)
-            .frame(egui::Frame::new().fill(rgb(t.bg_panel)).inner_margin(Margin::symmetric(14, 12)))
+            .frame(
+                egui::Frame::new()
+                    .fill(rgb(t.bg_panel))
+                    .inner_margin(Margin::symmetric(crate::theme::LIST_PANEL_INSET_X, 8)),
+            )
             .show(root, |ui| {
                 ui.label(
                     RichText::new(title).font(crate::theme::semibold(crate::theme::TEXT_HEADING)),
@@ -560,8 +563,42 @@ impl App {
                         if title == "Settings" { Some(settings_tab_icon(item)) } else { None };
                     let (rect, response) = ui
                         .allocate_exact_size(Vec2::new(ui.available_width(), 34.0), Sense::click());
-                    if selected || response.hovered() {
-                        ui.painter().rect_filled(rect, CornerRadius::same(10), rgb(t.bg_panel_alt));
+                    // Selected is the steady panel-alt fill;
+                    // hover and press are the eased washes, so
+                    // the row under the pointer never reads as
+                    // the selected one (the two used to paint the
+                    // identical fill, instantly).
+                    if selected {
+                        ui.painter().rect_filled(
+                            rect,
+                            CornerRadius::same(crate::theme::RADIUS_SMALL),
+                            rgb(t.bg_panel_alt),
+                        );
+                    } else {
+                        let hov = crate::anim::hover_factor(
+                            ui,
+                            ("settings_simple_row", item),
+                            response.hovered(),
+                        );
+                        if hov > 0.001 {
+                            ui.painter().rect_filled(
+                                rect,
+                                CornerRadius::same(crate::theme::RADIUS_SMALL),
+                                crate::theme::glass_wash(t, t.bg_panel_alt, (hov * 115.0) as u8),
+                            );
+                        }
+                        let press = crate::anim::press_factor(
+                            ui,
+                            ("settings_simple_row", item),
+                            response.is_pointer_button_down_on(),
+                        );
+                        if press > 0.001 {
+                            ui.painter().rect_filled(
+                                rect,
+                                CornerRadius::same(crate::theme::RADIUS_SMALL),
+                                crate::theme::glass_wash(t, t.bg_panel_alt, (press * 170.0) as u8),
+                            );
+                        }
                     }
                     let label_color =
                         if selected { rgb(t.text_primary) } else { rgb(t.text_secondary) };
@@ -679,7 +716,29 @@ impl App {
     /// by the two-pane layout (beside the nav column) and the
     /// single-pane layout (the whole width).
     fn settings_page(&mut self, ui: &mut egui::Ui, t: core::theme::Tokens) {
+        // A tab switch (or the blocked page opening or closing)
+        // crossfades the page in on the motion system's SWITCH
+        // run, the way screen switches fade in the shell: the
+        // nav column beside it never fades, only the page does.
+        // The key is compared before the page draws, and the nav
+        // is drawn earlier in the same frame, so a click's first
+        // frame of the new page already starts at zero.
+        let key = (self.settings_tab, self.settings_blocked_open);
+        match self.anim.settings_key {
+            None => self.anim.settings_key = Some(key),
+            Some(prev) if prev != key => {
+                self.anim.settings_key = Some(key);
+                self.anim.settings_fade =
+                    Some(self.fresh_anim(crate::motion::dur::SWITCH, ui.ctx()));
+            }
+            _ => {}
+        }
+        let now = ui.ctx().input(|i| i.time);
+        let fade_p = crate::motion::Anim::drive(&mut self.anim.settings_fade, ui.ctx(), now);
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            if fade_p < 0.999 {
+                ui.set_opacity(fade_p);
+            }
             // The scroll area inherits the horizontal layout of
             // the nav row in two-pane mode; the page itself is a
             // vertical stack, so force it here.
@@ -771,8 +830,26 @@ impl App {
             for (_, id, title) in &matches {
                 let (rect, response) =
                     ui.allocate_exact_size(Vec2::new(ui.available_width(), 30.0), Sense::click());
-                if response.hovered() {
-                    ui.painter().rect_filled(rect, CornerRadius::same(8), rgb(t.bg_panel_alt));
+                let hov =
+                    crate::anim::hover_factor(ui, ("settings_search_row", *id), response.hovered());
+                if hov > 0.001 {
+                    ui.painter().rect_filled(
+                        rect,
+                        CornerRadius::same(crate::theme::RADIUS_MICRO),
+                        crate::theme::glass_wash(t, t.bg_panel_alt, (hov * 115.0) as u8),
+                    );
+                }
+                let press = crate::anim::press_factor(
+                    ui,
+                    ("settings_search_row", *id),
+                    response.is_pointer_button_down_on(),
+                );
+                if press > 0.001 {
+                    ui.painter().rect_filled(
+                        rect,
+                        CornerRadius::same(crate::theme::RADIUS_MICRO),
+                        crate::theme::glass_wash(t, t.bg_panel_alt, (press * 170.0) as u8),
+                    );
                 }
                 ui.painter().text(
                     Pos2::new(rect.left() + 12.0, rect.center().y),
@@ -823,8 +900,37 @@ fn settings_nav_row(
 ) -> bool {
     let (rect, response) =
         ui.allocate_exact_size(Vec2::new(ui.available_width(), 34.0), Sense::click());
-    if selected || response.hovered() {
-        ui.painter().rect_filled(rect, CornerRadius::same(10), rgb(t.bg_panel_alt));
+    // Selected is the steady panel-alt fill; hover and press
+    // are the eased washes, so the row under the pointer never
+    // reads as the selected one (the two used to paint the
+    // identical fill, instantly).
+    if selected {
+        ui.painter().rect_filled(
+            rect,
+            CornerRadius::same(crate::theme::RADIUS_SMALL),
+            rgb(t.bg_panel_alt),
+        );
+    } else {
+        let hov = crate::anim::hover_factor(ui, ("settings_nav_row", item), response.hovered());
+        if hov > 0.001 {
+            ui.painter().rect_filled(
+                rect,
+                CornerRadius::same(crate::theme::RADIUS_SMALL),
+                crate::theme::glass_wash(t, t.bg_panel_alt, (hov * 115.0) as u8),
+            );
+        }
+        let press = crate::anim::press_factor(
+            ui,
+            ("settings_nav_row", item),
+            response.is_pointer_button_down_on(),
+        );
+        if press > 0.001 {
+            ui.painter().rect_filled(
+                rect,
+                CornerRadius::same(crate::theme::RADIUS_SMALL),
+                crate::theme::glass_wash(t, t.bg_panel_alt, (press * 170.0) as u8),
+            );
+        }
     }
     crate::icons::draw(
         ui.painter(),
@@ -886,13 +992,20 @@ fn page_header(ui: &mut egui::Ui, title: &str) {
     ui.add_space(SP_4);
 }
 
-/// Small caps group label above a card.
+/// Group label above a card: sentence case at the caption size,
+/// the canonical label treatment (DESIGN.md: no all-caps labels,
+/// no eyebrows).
 fn group_label(ui: &mut egui::Ui, t: core::theme::Tokens, text: &str) {
-    ui.label(RichText::new(text.to_uppercase()).size(10.0).strong().color(rgb(t.text_secondary)));
+    ui.label(
+        RichText::new(text)
+            .font(crate::theme::medium(crate::theme::TEXT_LABEL))
+            .color(rgb(t.text_secondary)),
+    );
     ui.add_space(SP_1_5);
 }
 
-/// One grouped settings card (radius 12, soft shadow, 18px padding).
+/// One grouped settings card (radius 20, 16px padding on the
+/// 4pt grid).
 fn settings_card(ui: &mut egui::Ui, t: core::theme::Tokens, body: impl FnOnce(&mut egui::Ui)) {
     let width = ui.available_width();
     // Text-bearing glass: the higher-alpha tint with the card
@@ -902,15 +1015,96 @@ fn settings_card(ui: &mut egui::Ui, t: core::theme::Tokens, body: impl FnOnce(&m
     // repeated stack of cards is one surface language, not a set
     // of separate floating objects.
     crate::theme::glass_text_frame(t, crate::theme::RADIUS_PANEL)
-        .inner_margin(Margin::symmetric(18, 12))
+        .inner_margin(Margin::symmetric(16, 12))
         .show(ui, |ui| {
             // Every card spans the full content width, no ragged edges
             // where a card's width depends on its longest line. The
             // clamp matters on the first frame inside the nav layout,
             // where the scroll area still reports a zero width.
-            ui.set_min_width((width - 36.0).max(0.0));
+            ui.set_min_width((width - 32.0).max(0.0));
             body(ui);
         });
+}
+
+/// The canonical segmented toggle (DESIGN.md): one track a tone
+/// step below the card it sits on, the active segment a pill a
+/// step above the track. Selection is tone alone: no border, no
+/// accent fill. Returns the clicked segment's index. Segment
+/// geometry matches the shared chip (label plus (20, 10)
+/// padding) so a row keeps its height when it converts.
+fn segmented(
+    ui: &mut egui::Ui,
+    t: core::theme::Tokens,
+    id: &str,
+    options: &[&str],
+    selected: usize,
+) -> Option<usize> {
+    let font = egui::FontId::proportional(crate::theme::TEXT_LABEL);
+    let widths: Vec<f32> = options
+        .iter()
+        .map(|label| {
+            ui.ctx().fonts_mut(|f| {
+                f.layout_no_wrap((*label).to_owned(), font.clone(), egui::Color32::WHITE).size().x
+            }) + 20.0
+        })
+        .collect();
+    let text_h = ui.ctx().fonts_mut(|f| f.row_height(&font));
+    let seg_h = text_h + 10.0;
+    let inset = 2.0;
+    let track_w = widths.iter().sum::<f32>() + inset * 2.0;
+    let track_h = seg_h + inset * 2.0;
+    let (track, _) = ui.allocate_exact_size(egui::vec2(track_w, track_h), egui::Sense::hover());
+    let radius = egui::CornerRadius::same((track_h / 2.0).round() as u8);
+    ui.painter().rect_filled(track, radius, rgb(t.bg_panel));
+    let mut clicked = None;
+    let mut x = track.left() + inset;
+    for (i, label) in options.iter().enumerate() {
+        let rect = egui::Rect::from_min_size(
+            egui::pos2(x, track.top() + inset),
+            egui::vec2(widths[i], seg_h),
+        );
+        x += widths[i];
+        let resp = ui.interact(rect, egui::Id::unique((id, i)), egui::Sense::click());
+        let seg_radius = egui::CornerRadius::same((seg_h / 2.0).round() as u8);
+        if i == selected {
+            ui.painter().rect_filled(rect, seg_radius, rgb(t.bg_panel_alt));
+        } else {
+            let hov = crate::anim::hover_factor(ui, ("segmented", id, i), resp.hovered());
+            let press = crate::anim::press_factor(
+                ui,
+                ("segmented", id, i),
+                resp.is_pointer_button_down_on(),
+            );
+            if hov > 0.001 || press > 0.001 {
+                let fill = core::theme::mix(
+                    core::theme::mix(t.bg_panel, t.bg_panel_alt, hov * 0.55),
+                    core::theme::pressed_step(t.bg_panel_alt),
+                    press,
+                );
+                ui.painter().rect_filled(rect, seg_radius, rgb(fill));
+            }
+        }
+        if resp.has_focus() {
+            ui.painter().rect_stroke(
+                rect,
+                seg_radius,
+                egui::Stroke::new(1.5_f32, rgb(t.accent)),
+                egui::StrokeKind::Inside,
+            );
+        }
+        let color = if i == selected { t.text_primary } else { t.text_secondary };
+        ui.painter().text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            label,
+            font.clone(),
+            rgb(color),
+        );
+        if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+            clicked = Some(i);
+        }
+    }
+    clicked
 }
 
 /// Group break between rows inside a card. Rows on one flat

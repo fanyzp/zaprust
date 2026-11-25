@@ -409,6 +409,42 @@ impl App {
                             let (rect, resp) =
                                 ui.allocate_exact_size(Vec2::splat(38.0), Sense::click());
                             self.profile_anchor = Some(rect.center());
+                            // Pointer feedback: a halo wash
+                            // behind the disc, crossfading on the
+                            // shared factors like every other
+                            // rail control (the avatar itself used
+                            // to sit silent under the pointer).
+                            let hov = crate::anim::hover_factor(
+                                ui,
+                                "rail_profile_avatar",
+                                resp.hovered(),
+                            );
+                            let press = crate::anim::press_factor(
+                                ui,
+                                "rail_profile_avatar",
+                                resp.is_pointer_button_down_on(),
+                            );
+                            if press > 0.001 {
+                                ui.painter().circle_filled(
+                                    rect.center(),
+                                    21.5,
+                                    crate::theme::glass_wash(
+                                        t,
+                                        t.bg_panel_alt,
+                                        (press * 170.0) as u8,
+                                    ),
+                                );
+                            } else if hov > 0.001 {
+                                ui.painter().circle_filled(
+                                    rect.center(),
+                                    21.5,
+                                    crate::theme::glass_wash(
+                                        t,
+                                        t.bg_panel_alt,
+                                        (hov * 115.0) as u8,
+                                    ),
+                                );
+                            }
                             crate::profile::paint_my_avatar_disc(
                                 ui.painter(),
                                 rect.center(),
@@ -429,7 +465,8 @@ impl App {
                                         Some(ui.ctx().cumulative_frame_nr());
                                 }
                             }
-                            resp.on_hover_text(crate::i18n::t("nav.accounts"));
+                            resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+                                .on_hover_text(crate::i18n::t("nav.accounts"));
                         }
                         ui.add_space(SP_1_5);
                         let settings_label = crate::i18n::t("nav.settings");

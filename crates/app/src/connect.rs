@@ -1438,7 +1438,7 @@ fn qr_layout(rect: egui::Rect, modules: usize) -> (egui::Rect, f32) {
 }
 
 fn draw_qr_matrix(painter: &egui::Painter, rect: egui::Rect, matrix: &backend::QrMatrix) {
-    painter.rect_filled(rect, CornerRadius::same(10), Color32::WHITE);
+    painter.rect_filled(rect, crate::theme::RADIUS_SMALL, Color32::WHITE);
     let (inner, cell) = qr_layout(rect, matrix.size);
     let black = Color32::from_rgb(0x11, 0x1B, 0x21);
     for y in 0..matrix.size {

@@ -106,7 +106,7 @@ impl App {
                         ui.vertical(|ui| {
                             ui.label(
                                 RichText::new(title.clone())
-                                    .font(crate::theme::medium(14.0))
+                                    .font(crate::theme::medium(15.0))
                                     .color(rgb(t.text_primary)),
                             );
                             if !subtitle.is_empty() {
@@ -145,6 +145,11 @@ impl App {
                                         ui.close();
                                     }
                                 });
+                            crate::anim::stock_popup_enter(
+                                ui.ctx(),
+                                egui::Popup::default_response_id(&kebab),
+                                kebab.rect.center(),
+                            );
                         });
                     });
                 }
@@ -189,7 +194,7 @@ impl App {
                     ui.horizontal(|ui| {
                         ui.label(
                             RichText::new(title.clone())
-                                .font(crate::theme::medium(14.0))
+                                .font(crate::theme::medium(15.0))
                                 .color(rgb(t.text_primary)),
                         );
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

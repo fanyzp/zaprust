@@ -826,6 +826,15 @@ impl App {
                     let rows_h = visible.len() as f32 * 64.0 + 8.0;
                     let cap = (ui.available_height() - 190.0).max(70.0);
                     scroll = scroll.auto_shrink([false, true]).max_height(rows_h.min(cap));
+                } else if visible.is_empty() {
+                    // No rows: collapse the area to nothing, so
+                    // the empty label drawn after it lands at the
+                    // top of the panel. At full height the label
+                    // was pushed under the empty area and only
+                    // its top sliver stayed visible at the
+                    // window's bottom edge (archived and filtered
+                    // lists with no matches).
+                    scroll = scroll.auto_shrink([false, true]).max_height(0.0);
                 }
                 scroll.show_rows(ui, 64.0, visible.len(), |ui, range| {
                     for idx in range {

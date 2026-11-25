@@ -128,6 +128,66 @@ fn list_row_h(has_description: bool) -> f32 {
     }
 }
 
+/// One poll option row's height for a label laid out to
+/// `label_h`: the label, a 5 px gap, the 4 px vote bar and
+/// the breathing room under it, floored at the 36 px the
+/// one-line row has always taken. Measure and paint share
+/// this so the bar can never land on a wrapped second line.
+fn poll_option_row_h(label_h: f32) -> f32 {
+    (label_h + 16.0).max(36.0)
+}
+
+/// The carousel cards' uniform height: the tallest card's
+/// content at the cards' fixed text width (title, body and
+/// the button block), floored at the 118 px the cards have
+/// always taken so short content keeps its exact geometry.
+/// The heights come from real galleys: the fixed height let
+/// a wrapped title paint over the body and a wrapped body
+/// paint over the buttons.
+fn carousel_card_h(
+    ui: &egui::Ui,
+    cards: &[core::model::CarouselCard],
+    text_color: Color32,
+    secondary: Color32,
+) -> f32 {
+    let mut block_max = 0.0_f32;
+    for card in cards.iter().take(2) {
+        block_max = block_max.max(carousel_block_h(card.buttons.len().min(2)));
+    }
+    let mut card_h = 118.0_f32;
+    for card in cards.iter().take(2) {
+        let title_h = if card.title.is_empty() {
+            0.0
+        } else {
+            layout_text(ui, &card.title, FontId::proportional(12.0), text_color, 134.0).size().y
+        };
+        let body_h = if card.body.is_empty() {
+            0.0
+        } else {
+            layout_text(ui, &card.body, FontId::proportional(12.0), secondary, 134.0).size().y
+        };
+        // The body starts at the fixed +27 offset, pushed
+        // down by however far the title wrapped past its
+        // first line; the button block (uniform across the
+        // row, anchored to the card's bottom) follows with
+        // a 6 px gap and a 2 px bottom margin.
+        let need = 27.0 + (title_h - 16.0).max(0.0) + body_h + 6.0 + block_max + 2.0;
+        card_h = card_h.max(need);
+    }
+    card_h
+}
+
+/// The carousel button block's height for `n` painted
+/// buttons (chips of 15 px with 2 px gaps), shared by the
+/// measure helper and the paint pass.
+fn carousel_block_h(n: usize) -> f32 {
+    if n == 0 {
+        0.0
+    } else {
+        n as f32 * 15.0 + (n - 1) as f32 * 2.0
+    }
+}
+
 fn buttons_block_h(count: usize, footer: &str) -> f32 {
     count as f32 * (INTERACTIVE_CHIP_H + INTERACTIVE_GAP)
         + if footer.is_empty() { 0.0 } else { INTERACTIVE_LINE_H }
@@ -1070,7 +1130,13 @@ pub(crate) fn message_bubble(
 
     let mut content_w = sender_w.max(quote_w);
     let body_galley;
-    let kind_h;
+    let mut kind_h;
+    // Photo and video tiles paint at the bubble's final inner
+    // width, which is only known after the width pass below:
+    // those arms record their caption here and their height is
+    // settled once `inner_w` exists (see the fix-up after the
+    // match). The bool is `is_video` (the tile's aspect source).
+    let mut media_caption: Option<(String, bool)> = None;
     match &msg.kind {
         MessageKind::Text | MessageKind::System => {
             let est = crate::markdown::measure(
@@ -1103,20 +1169,11 @@ pub(crate) fn message_bubble(
             kind_h = 34.0;
         }
         MessageKind::Image { caption, view_once: false } => {
-            body_galley = crate::markdown::galley_leading(
-                ui,
-                &core::bidi::display(caption),
-                14.5,
-                text_color,
-                rgb(t.bg_panel_alt),
-                mention_color,
-                inner_max,
-                Some(14.5 * BODY_LEADING),
-            );
+            body_galley = layout_text(ui, "", body_font.clone(), text_color, inner_max);
             let tile_w = 300.0_f32.min(inner_max);
             content_w = content_w.max(tile_w);
-            kind_h = photo_tile_h(media.photo_aspect, tile_w)
-                + if caption.is_empty() { 0.0 } else { body_galley.size().y + 4.0 };
+            media_caption = Some((core::bidi::display(caption), false));
+            kind_h = 0.0;
         }
         MessageKind::Sticker if media.view_once && media.view_once_opened => {
             // A spent view-once sticker collapses to its
@@ -1137,24 +1194,17 @@ pub(crate) fn message_bubble(
                 content_w = content_w.max(170.0);
                 kind_h = 34.0;
             } else {
-                body_galley = crate::markdown::galley_leading(
-                    ui,
-                    &core::bidi::display(caption),
-                    14.5,
-                    text_color,
-                    rgb(t.bg_panel_alt),
-                    mention_color,
-                    inner_max,
-                    Some(14.5 * BODY_LEADING),
-                );
+                body_galley = layout_text(ui, "", body_font.clone(), text_color, inner_max);
                 let tile_w = 300.0_f32.min(inner_max);
                 content_w = content_w.max(tile_w);
                 // The tile's height follows the frame's own
                 // aspect (from its poster), exactly like a
                 // photo's: a fixed height stretched any frame
                 // that was not the card's shape into a smear.
-                kind_h = photo_tile_h(media.video_aspect, tile_w)
-                    + if caption.is_empty() { 0.0 } else { body_galley.size().y + 4.0 };
+                // Both are settled at the final inner width
+                // below, the width the paint pass draws at.
+                media_caption = Some((core::bidi::display(caption), true));
+                kind_h = 0.0;
             }
         }
         MessageKind::Voice { .. } if media.view_once && media.view_once_opened => {
@@ -1224,14 +1274,33 @@ pub(crate) fn message_bubble(
                 inner_max,
             );
             let mut w = body_galley.size().x;
+            let mut rows_h = 0.0;
             for (label, votes) in options {
+                let votes_w = measure_text(ui, &format!("{votes}"), FontId::proportional(12.0));
                 let ow = measure_text(ui, label, FontId::proportional(INNER_BODY_SIZE))
-                    + measure_text(ui, &format!("{votes}"), FontId::proportional(12.0))
+                    + votes_w
                     + 44.0;
                 w = w.max(ow);
+                // The row's height follows the label's wrap at
+                // the width the paint pass will give it: the
+                // narrower of the bubble cap and the width this
+                // option itself drives the bubble to (its
+                // single-line measure plus the votes and the
+                // row's fixed elements, less the paint indent).
+                // A fixed row height put the vote bar through
+                // the second line of any label that wrapped.
+                let wrap_w = (ow - 60.0).min(inner_max - 60.0).max(40.0);
+                let lg = layout_text(
+                    ui,
+                    label,
+                    FontId::proportional(INNER_BODY_SIZE),
+                    text_color,
+                    wrap_w,
+                );
+                rows_h += poll_option_row_h(lg.size().y);
             }
-            content_w = content_w.max(w.max(250.0));
-            kind_h = body_galley.size().y + 8.0 + options.len() as f32 * 36.0;
+            content_w = content_w.max(w.max(250.0).min(inner_max));
+            kind_h = body_galley.size().y + 8.0 + rows_h;
         }
         MessageKind::Event {
             name,
@@ -1303,22 +1372,35 @@ pub(crate) fn message_bubble(
         }
         MessageKind::Location { name, latitude, longitude } => {
             let title = if name.is_empty() { "Location" } else { name.as_str() };
-            body_galley = layout_text(ui, title, body_font.clone(), text_color, inner_max);
-            let coords = format!("{latitude:.5}, {longitude:.5}");
-            let cw = measure_text(ui, &coords, FontId::proportional(12.0));
-            // The paint pass offsets text by 34px (pin disc), the
-            // measure must budget that offset plus slack, or a long
-            // title wraps into the coordinates row. The payload's
+            // The paint pass lays the title at inner width
+            // less the 34 px pin-disc offset, so the measure
+            // lays it at that same width and the height
+            // follows the wrapped galley: a fixed height put
+            // the coordinates row through the title's second
+            // line whenever the name wrapped. The payload's
             // own map snapshot rides above the row when it
             // carried one, at a fixed banner height.
+            body_galley =
+                layout_text(ui, title, body_font.clone(), text_color, (inner_max - 34.0).max(40.0));
+            let coords = format!("{latitude:.5}, {longitude:.5}");
+            let cw = measure_text(ui, &coords, FontId::proportional(12.0));
             content_w = content_w.max((body_galley.size().x + 44.0).max(cw + 44.0));
-            kind_h = 42.0 + if media.location_thumb.is_some() { 106.0 } else { 0.0 };
+            kind_h = body_galley.size().y
+                + 22.0
+                + if media.location_thumb.is_some() { 106.0 } else { 0.0 };
         }
         MessageKind::Contact { name, phone } => {
-            body_galley = layout_text(ui, name, body_font.clone(), text_color, inner_max);
+            // The paint pass lays the name at inner width
+            // less the 40 px disc offset, so the measure lays
+            // it at that same width and the height follows
+            // the wrapped galley: a fixed height put the
+            // number row through the name's second line
+            // whenever the name wrapped.
+            body_galley =
+                layout_text(ui, name, body_font.clone(), text_color, (inner_max - 40.0).max(40.0));
             let pw = measure_text(ui, phone, FontId::proportional(12.0));
             content_w = content_w.max((body_galley.size().x + 52.0).max(pw + 52.0));
-            kind_h = 42.0;
+            kind_h = body_galley.size().y + 22.0;
         }
         MessageKind::Order { item_count, total_amount_1000, currency, status, .. } => {
             // The order card: a receipt disc, the title, and
@@ -1344,7 +1426,12 @@ pub(crate) fn message_bubble(
             );
             let row_w = (cards.len() as f32 * 158.0).min(316.0);
             content_w = content_w.max(body_galley.size().x.max(row_w));
-            kind_h = body_galley.size().y + if cards.is_empty() { 0.0 } else { 132.0 };
+            kind_h = body_galley.size().y
+                + if cards.is_empty() {
+                    0.0
+                } else {
+                    6.0 + carousel_card_h(ui, cards, text_color, secondary) + 8.0
+                };
         }
         MessageKind::Buttons { footer, buttons } => {
             body_galley = layout_text(ui, body_text, body_font.clone(), text_color, inner_max);
@@ -1391,6 +1478,34 @@ pub(crate) fn message_bubble(
     }
     let bubble_w = (content_w + pad_x * 2.0).clamp(84.0, max_bubble);
     let inner_w = bubble_w - pad_x * 2.0;
+
+    // Photo and video heights settle here, at the width the
+    // paint pass actually draws the tile and caption at. The
+    // measure arms used to size both at the pre-clamp cap
+    // width: a caption that wrapped to more lines at the
+    // tile's real width ran under the timestamp row, and a
+    // tile widened by a quote outgrew its reserved height.
+    if let Some((caption, is_video)) = &media_caption {
+        let aspect = if *is_video { media.video_aspect } else { media.photo_aspect };
+        let caption_h = if caption.is_empty() {
+            0.0
+        } else {
+            crate::markdown::galley_leading(
+                ui,
+                caption,
+                14.5,
+                text_color,
+                rgb(t.bg_panel_alt),
+                mention_color,
+                inner_w,
+                Some(14.5 * BODY_LEADING),
+            )
+            .size()
+            .y
+                + 4.0
+        };
+        kind_h = photo_tile_h(aspect, inner_w) + caption_h;
+    }
 
     let sender_h = if show_sender { 20.0 } else { 0.0 };
     let meta_h = if meta_inline { 3.0 } else { 16.0 };
@@ -1501,21 +1616,39 @@ pub(crate) fn message_bubble(
                     }
                     MessageKind::Order { .. } => Some(BubbleAction::OpenOrder(msg.id)),
                     MessageKind::Poll { ref options, .. } => {
-                        // Rows start below the question galley; each row
-                        // is 36px tall (matches the paint pass).
+                        // Rows start below the question galley;
+                        // each row is as tall as its label's
+                        // wrap (the measure and paint passes'
+                        // shared heights), so a tap lands on
+                        // the option it visually hit.
                         response.interact_pointer_pos().and_then(|pos| {
-                            let rows_top = rect.top()
+                            let mut row_top = rect.top()
                                 + pad_top
                                 + sender_h
                                 + quote_h
                                 + body_galley.size().y
                                 + 8.0;
-                            let idx = ((pos.y - rows_top) / 36.0) as usize;
-                            if pos.y >= rows_top && idx < options.len() {
-                                Some(BubbleAction::Vote(msg.id, idx))
-                            } else {
-                                None
+                            let mut hit = None;
+                            if pos.y >= row_top {
+                                for (idx, (label, _)) in options.iter().enumerate() {
+                                    let lh = layout_text(
+                                        ui,
+                                        label,
+                                        FontId::proportional(INNER_BODY_SIZE),
+                                        text_color,
+                                        inner_w - 60.0,
+                                    )
+                                    .size()
+                                    .y;
+                                    let rh = poll_option_row_h(lh);
+                                    if pos.y < row_top + rh {
+                                        hit = Some(BubbleAction::Vote(msg.id, idx));
+                                        break;
+                                    }
+                                    row_top += rh;
+                                }
                             }
+                            hit
                         })
                     }
                     MessageKind::Buttons { ref buttons, .. } if !mine => {
@@ -2477,20 +2610,25 @@ pub(crate) fn message_bubble(
                         text_color,
                         inner_w - 60.0,
                     );
+                    let label_h = g.size().y;
                     painter.galley(Pos2::new(x + 21.0, oy), g, text_color);
                     let vt = format!("{votes}");
                     let vw = measure_text(ui, &vt, FontId::proportional(12.0));
                     let g = layout_text(ui, &vt, FontId::proportional(12.0), secondary, 40.0);
                     painter.galley(Pos2::new(x + inner_w - vw, oy + 1.0), g, secondary);
+                    // The bar rides under the label's last line,
+                    // however many lines the label wrapped to:
+                    // the same row height the measure pass
+                    // reserved (see poll_option_row_h).
                     let bar = Rect::from_min_size(
-                        Pos2::new(x + 21.0, oy + 22.0),
+                        Pos2::new(x + 21.0, oy + label_h + 5.0),
                         Vec2::new(inner_w - 21.0, 4.0),
                     );
                     painter.rect_filled(bar, CornerRadius::same(2), inner_card_fill(t, mine));
                     let mut fill = bar;
                     fill.set_width(bar.width() * (*votes as f32 / total as f32));
                     painter.rect_filled(fill, CornerRadius::same(2), rgb(t.accent));
-                    oy += 36.0;
+                    oy += poll_option_row_h(label_h);
                 }
             }
             MessageKind::Event {
@@ -2744,11 +2882,12 @@ pub(crate) fn message_bubble(
                 );
                 let title = if name.is_empty() { "Location" } else { name.as_str() };
                 let g = layout_text(ui, title, body_font.clone(), text_color, inner_w - 34.0);
+                let title_h = g.size().y;
                 painter.galley(Pos2::new(x + 34.0, row_y + 2.0), g, text_color);
                 let coords = format!("{latitude:.5}, {longitude:.5}");
                 let g =
                     layout_text(ui, &coords, FontId::proportional(12.0), secondary, inner_w - 34.0);
-                painter.galley(Pos2::new(x + 34.0, row_y + 22.0), g, secondary);
+                painter.galley(Pos2::new(x + 34.0, row_y + 2.0 + title_h), g, secondary);
             }
             MessageKind::Contact { name, phone } => {
                 // Render-only contact card: initial disc + name + number.
@@ -2759,10 +2898,11 @@ pub(crate) fn message_bubble(
                     layout_text(ui, &initial, FontId::proportional(12.0), rgb(t.bg_panel), 26.0);
                 painter.galley(Pos2::new(x + 10.0, cy - 8.0), g, rgb(t.bg_panel));
                 let g = layout_text(ui, name, body_font.clone(), text_color, inner_w - 40.0);
+                let name_h = g.size().y;
                 painter.galley(Pos2::new(x + 36.0, y + 2.0), g, text_color);
                 let g =
                     layout_text(ui, phone, FontId::proportional(12.0), secondary, inner_w - 40.0);
-                painter.galley(Pos2::new(x + 36.0, y + 22.0), g, secondary);
+                painter.galley(Pos2::new(x + 36.0, y + 2.0 + name_h), g, secondary);
             }
             MessageKind::Order { item_count, total_amount_1000, currency, status, .. } => {
                 // The order card, mirroring the contact card's
@@ -2816,8 +2956,19 @@ pub(crate) fn message_bubble(
                 painter.galley(Pos2::new(x, y), g, text_color);
                 let mut cx = x;
                 let cy = y + body_h + 6.0;
+                // The cards share one height, sized by the
+                // tallest card's real content (the measure
+                // pass's helper), and the button block anchors
+                // to the card's bottom: wrapped text grows the
+                // card instead of painting over the rows below.
+                let card_h = carousel_card_h(ui, cards, text_color, secondary);
+                let block_max = cards
+                    .iter()
+                    .take(2)
+                    .map(|c| carousel_block_h(c.buttons.len().min(2)))
+                    .fold(0.0, f32::max);
                 for card in cards.iter().take(2) {
-                    let card_rect = Rect::from_min_size(Pos2::new(cx, cy), Vec2::new(150.0, 118.0));
+                    let card_rect = Rect::from_min_size(Pos2::new(cx, cy), Vec2::new(150.0, card_h));
                     painter.rect_filled(
                         card_rect,
                         CornerRadius::same(INNER_CARD_RADIUS),
@@ -2829,6 +2980,7 @@ pub(crate) fn message_bubble(
                         Stroke::new(1.0_f32, rgb(t.border)),
                         egui::StrokeKind::Inside,
                     );
+                    let mut title_h = 0.0;
                     if !card.title.is_empty() {
                         let g = layout_text(
                             ui,
@@ -2837,6 +2989,7 @@ pub(crate) fn message_bubble(
                             text_color,
                             134.0,
                         );
+                        title_h = g.size().y;
                         painter.galley(Pos2::new(cx + 8.0, cy + 7.0), g, text_color);
                     }
                     if !card.body.is_empty() {
@@ -2847,17 +3000,26 @@ pub(crate) fn message_bubble(
                             secondary,
                             134.0,
                         );
-                        painter.galley(Pos2::new(cx + 8.0, cy + 27.0), g, secondary);
+                        painter.galley(
+                            Pos2::new(cx + 8.0, cy + 27.0 + (title_h - 16.0).max(0.0)),
+                            g,
+                            secondary,
+                        );
                     }
                     // Template buttons cannot be tapped (their
                     // actions are not safe to synthesize), so they
                     // render as muted outlined labels, never in the
                     // accent color the app reserves for real actions.
-                    let mut by = cy + 118.0 - 34.0;
+                    let mut by = cy + card_h - 2.0 - block_max;
                     for button in card.buttons.iter().take(2) {
+                        // One line per chip, ellipsized to the
+                        // chip: a wrapped label spilled out of
+                        // the 15 px chip.
+                        let label =
+                            ellipsize_lines(ui, button, FontId::proportional(12.0), 118.0, 1);
                         let g = layout_text(
                             ui,
-                            button,
+                            &label,
                             FontId::proportional(12.0),
                             rgb(t.text_secondary),
                             118.0,
@@ -3272,8 +3434,29 @@ pub(crate) fn message_album(
 
 #[cfg(test)]
 mod tests {
-    use super::{chevron_rect, human_size, preview_site, voice_wave_rect, VOICE_DL, VOICE_PILL_W};
+    use super::{
+        carousel_block_h, chevron_rect, human_size, poll_option_row_h, preview_site,
+        voice_wave_rect, VOICE_DL, VOICE_PILL_W,
+    };
     use eframe::egui::{Pos2, Rect, Vec2};
+
+    #[test]
+    fn poll_rows_grow_with_the_label_wrap() {
+        // A one-line label keeps the historical 36 px row;
+        // each wrapped line adds its full height so the vote
+        // bar always clears the label's last line.
+        assert_eq!(poll_option_row_h(17.0), 36.0);
+        assert_eq!(poll_option_row_h(20.0), 36.0);
+        assert_eq!(poll_option_row_h(34.0), 50.0);
+        assert_eq!(poll_option_row_h(51.0), 67.0);
+    }
+
+    #[test]
+    fn carousel_block_heights_match_the_paint_stack() {
+        assert_eq!(carousel_block_h(0), 0.0);
+        assert_eq!(carousel_block_h(1), 15.0);
+        assert_eq!(carousel_block_h(2), 32.0);
+    }
 
     #[test]
     fn chevron_sits_fully_inside_the_bubble() {

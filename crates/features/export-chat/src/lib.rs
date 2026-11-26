@@ -1,0 +1,248 @@
+//! Export Chat, a native Zaprust feature.
+//!
+//! Renders a conversation to Markdown. The host owns the destination
+//! (it writes the file and tells the user where), and calls
+//! [`export_markdown`] when the user runs the feature's registered
+//! `command:export-chat`; the feature itself touches no files and no
+//! network.
+//!
+//! Capabilities used: `ui.command` for the export action, `chats.read`
+//! and `messages.read` because the host hands it chat + message data.
+#![forbid(unsafe_code)]
+#![warn(missing_docs)]
+
+use core::model::{Chat, Message, MessageKind};
+
+/// Renders a conversation as a Markdown document.
+///
+/// The header carries export metadata (chat name, export date,
+/// message count). System notices are rendered as blockquote lines;
+/// media messages are represented by a bracketed placeholder
+/// describing the content (the export carries text, not media
+/// bytes). Edited messages gain an `(edited)` marker; deleted ones
+/// export as the standard placeholder, and messages whose archived
+/// body survived a sender delete (older archives) are marked
+/// `(deleted by sender, retained locally)`.
+///
+/// View-once media messages are excluded entirely, from both
+/// export formats: the sender marked them to be viewed once,
+/// in place, so an export does not carry them, not even as a
+/// placeholder. The header count counts only exported messages.
+#[must_use]
+pub fn export_markdown(chat: &Chat, messages: &[Message], exported_at: &str) -> String {
+    let messages: Vec<&Message> = messages.iter().filter(|m| !m.is_view_once()).collect();
+    let mut out = String::new();
+    out.push_str(&format!("# {}\n\n", chat.title));
+    if !chat.subtitle.is_empty() {
+        out.push_str(&format!("_{}_\n\n", chat.subtitle));
+    }
+    out.push_str(&format!(
+        "Exported by Zaprust · {exported_at} · {} messages\n\n---\n\n",
+        messages.len()
+    ));
+    for msg in messages {
+        if msg.kind == MessageKind::System {
+            out.push_str(&format!("> _{}_\n\n", msg.body));
+        } else {
+            let who = msg.sender.as_deref().unwrap_or("Me");
+            out.push_str(&format!("**{who}** ({}):\n\n", msg.time));
+            if let (Some(qs), Some(qb)) = (&msg.quoted_sender, &msg.quoted_body) {
+                out.push_str(&format!("> **{qs}:** {qb}\n\n"));
+            }
+            out.push_str(&body_text(msg));
+            out.push_str("\n\n");
+            if !msg.reactions.is_empty() {
+                let rs: Vec<String> =
+                    msg.reactions.iter().map(|(e, n)| format!("{e} ×{n}")).collect();
+                out.push_str(&format!("Reactions: {}\n\n", rs.join(" · ")));
+            }
+        }
+    }
+    out
+}
+
+/// Renders a conversation as plain text (same content rules as
+/// [`export_markdown`], no Markdown formatting).
+#[must_use]
+pub fn export_text(chat: &Chat, messages: &[Message], exported_at: &str) -> String {
+    let messages: Vec<&Message> = messages.iter().filter(|m| !m.is_view_once()).collect();
+    let mut out = String::new();
+    out.push_str(&format!(
+        "{}, exported by Zaprust · {exported_at} · {} messages\n\n",
+        chat.title,
+        messages.len()
+    ));
+    for msg in messages {
+        if msg.kind == MessageKind::System {
+            out.push_str(&format!("--- {} ---\n", msg.body));
+        } else {
+            let who = msg.sender.as_deref().unwrap_or("Me");
+            out.push_str(&format!("[{}] {who}: {}\n", msg.time, body_text(msg)));
+        }
+    }
+    out
+}
+
+fn body_text(msg: &Message) -> String {
+    if msg.deleted {
+        return "[this message was deleted]".to_string();
+    }
+    let mut text = match &msg.kind {
+        MessageKind::Text | MessageKind::System => msg.body.clone(),
+        MessageKind::Image { caption, view_once } => {
+            if *view_once {
+                // Unreachable through the export entry points
+                // (view-once messages are filtered out first);
+                // if that ever changes, the placeholder still
+                // must not carry the caption out.
+                "[view-once photo]".to_string()
+            } else {
+                format!("[photo: {caption}]")
+            }
+        }
+        MessageKind::Video { caption, secs, .. } => {
+            if caption.is_empty() {
+                format!("[video, {secs}s]")
+            } else {
+                format!("[video: {caption}, {secs}s]")
+            }
+        }
+        MessageKind::Voice { secs, .. } => format!("[voice message, {secs}s]"),
+        MessageKind::Audio { secs, name, .. } => format!("[audio: {name}, {secs}s]"),
+        MessageKind::Document { name, size_bytes, .. } => {
+            format!("[document: {name}, {} KiB]", size_bytes / 1024)
+        }
+        MessageKind::Poll { question, options, .. } => {
+            let opts: Vec<String> =
+                options.iter().map(|(label, votes)| format!("{label}, {votes}")).collect();
+            format!("[poll] {question} ({})", opts.join(", "))
+        }
+        MessageKind::Event { name, start_time, canceled, .. } => {
+            if *canceled {
+                format!("[event canceled] {name}")
+            } else {
+                format!("[event] {name} (starts {start_time})")
+            }
+        }
+        MessageKind::Location { name, .. } => format!("[location: {name}]"),
+        MessageKind::Contact { name, .. } => format!("[contact: {name}]"),
+        MessageKind::Carousel { cards, .. } => format!("[carousel: {} cards]", cards.len()),
+        MessageKind::Buttons { buttons, .. } => {
+            let labels: Vec<&str> = buttons.iter().map(|b| b.text.as_str()).collect();
+            format!("[buttons] {} ({})", msg.body, labels.join(", "))
+        }
+        MessageKind::ListMsg { sections, .. } => {
+            let rows: Vec<&str> =
+                sections.iter().flat_map(|s| s.rows.iter().map(|r| r.title.as_str())).collect();
+            format!("[list] {} ({})", msg.body, rows.join(", "))
+        }
+        MessageKind::Order { item_count, .. } => format!("[order: {item_count} items]"),
+        MessageKind::Sticker => "[sticker]".to_string(),
+    };
+    if msg.edited {
+        text.push_str(" (edited)");
+    }
+    if msg.deleted_by_sender {
+        text.push_str(" (deleted by sender, retained locally)");
+    }
+    text
+}
+
+/// A filesystem-safe `.md` file name for a chat export.
+#[must_use]
+pub fn export_filename(chat: &Chat) -> String {
+    let slug: String = chat
+        .title
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect::<String>()
+        .split('-')
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("-");
+    format!("zaprust-chat-{slug}.md")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::model::{demo_chats, demo_conversation};
+
+    #[test]
+    fn export_contains_titles_and_messages() {
+        let chats = demo_chats();
+        let md = export_markdown(&chats[0], &demo_conversation(), "2026-11-14");
+        assert!(md.starts_with("# GTA VI Launch Crew"));
+        assert!(md.contains("**Sarah**"));
+        assert!(md.contains("[poll]"));
+        assert!(md.contains("[voice message, 42s]"));
+    }
+
+    #[test]
+    fn export_fixture_has_metadata_order_and_markers() {
+        use core::model::Message;
+        let chats = demo_chats();
+        let mut edited = Message::mine(1, "schedule moved to Thursday", "10:00");
+        edited.edited = true;
+        let mut deleted = Message::theirs(2, "Sarah", "a secret", "10:01");
+        deleted.deleted = true;
+        deleted.body = "This message was deleted".to_owned();
+        let mut retained = Message::theirs(3, "Mike", "do not use the old code", "10:02");
+        retained.deleted_by_sender = true;
+        let msgs = vec![edited, deleted, retained];
+        let md = export_markdown(&chats[0], &msgs, "2026-11-14");
+        // Metadata header: chat name, export date, message count.
+        assert!(md.contains("Exported by Zaprust · 2026-11-14 · 3 messages"), "{md}");
+        // Order is preserved.
+        let a = md.find("schedule moved").expect("first");
+        let b = md.find("this message was deleted").expect("second");
+        let c = md.find("do not use the old code").expect("third");
+        assert!(a < b && b < c, "ordering: {a} {b} {c}");
+        // Markers.
+        assert!(md.contains("(edited)"), "{md}");
+        assert!(md.contains("(deleted by sender, retained locally)"), "{md}");
+        // The deleted body never leaks into the export.
+        assert!(!md.contains("a secret"), "deleted body leaked: {md}");
+        // Plain-text variant carries the same facts.
+        let txt = export_text(&chats[0], &msgs, "2026-11-14");
+        assert!(txt.contains("[10:00] Me: schedule moved to Thursday (edited)"), "{txt}");
+        assert!(txt.contains("[this message was deleted]"), "{txt}");
+    }
+
+    #[test]
+    fn view_once_media_is_excluded_from_exports() {
+        use core::model::MessageKind;
+        let chats = demo_chats();
+        let mut vo_photo = Message::theirs(10, "Sarah", "vo caption", "10:10");
+        vo_photo.kind = MessageKind::Image { caption: "vo caption".to_owned(), view_once: true };
+        let mut vo_video = Message::theirs(11, "Sarah", "vo caption", "10:11");
+        vo_video.kind =
+            MessageKind::Video { caption: "vo caption".to_owned(), view_once: true, secs: 4 };
+        let mut photo = Message::theirs(12, "Sarah", "hello", "10:12");
+        photo.kind = MessageKind::Image { caption: "hello".to_owned(), view_once: false };
+        let text = Message::theirs(13, "Sarah", "see you at eight", "10:13");
+        let msgs = vec![vo_photo, vo_video, photo, text];
+        let md = export_markdown(&chats[0], &msgs, "2026-11-14");
+        // Only the ordinary photo and the text message are exported.
+        assert!(md.contains("Exported by Zaprust · 2026-11-14 · 2 messages"), "{md}");
+        assert!(md.contains("[photo: hello]"), "{md}");
+        assert!(md.contains("see you at eight"), "{md}");
+        // No trace of the view-once messages: no caption, no
+        // placeholder, not even their timestamps.
+        assert!(!md.contains("vo caption"), "view-once caption leaked: {md}");
+        assert!(!md.contains("view-once"), "view-once placeholder leaked: {md}");
+        assert!(!md.contains("10:10") && !md.contains("10:11"), "{md}");
+        let txt = export_text(&chats[0], &msgs, "2026-11-14");
+        assert!(txt.contains("2 messages"), "{txt}");
+        assert!(txt.contains("[photo: hello]"), "{txt}");
+        assert!(!txt.contains("vo caption"), "view-once caption leaked: {txt}");
+        assert!(!txt.contains("view-once"), "view-once placeholder leaked: {txt}");
+    }
+
+    #[test]
+    fn filename_is_filesystem_safe() {
+        let chats = demo_chats();
+        assert_eq!(export_filename(&chats[0]), "zaprust-chat-gta-vi-launch-crew.md");
+    }
+}

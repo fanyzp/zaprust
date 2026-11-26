@@ -1,0 +1,1173 @@
+//! Feature credentials: one central store, owned by the host.
+//!
+//! Native features declare the credential *slots* they need; they
+//! never ask the user for a key and never store one themselves. The
+//! host keeps the values and hands a feature a key from the slot's
+//! pool on demand.
+//!
+//! A slot can hold several keys. The pool hands them out
+//! round-robin, cools a key down after an HTTP 429, and marks a key
+//! bad (skipped until replaced) after a 401/403. All clock input is
+//! injected (`now`, seconds) so behavior is deterministic in tests.
+//!
+//! Storage backends: the OS keyring when available (feature
+//! `keyring-store`), otherwise a JSON file under the app data dir
+//! with `0600` permissions on Unix. Environment variables
+//! (`ZAPRUST_CRED_<SLOT>`, comma-separated) override both for
+//! development. Values are never written to the archive database,
+//! never logged, and never part of the repository.
+
+use std::collections::BTreeMap;
+use std::path::PathBuf;
+
+use serde::{Deserialize, Serialize};
+
+/// What kind of credential a slot holds. Only API keys exist today;
+/// the kind exists so the UI can label fields honestly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CredentialKind {
+    /// An API key / bearer token string.
+    ApiKey,
+}
+
+impl CredentialKind {
+    /// Parses the manifest spelling (`api_key`).
+    #[must_use]
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "api_key" => Some(Self::ApiKey),
+            _ => None,
+        }
+    }
+
+    /// The manifest spelling.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::ApiKey => "api_key",
+        }
+    }
+
+    /// Human label for settings UIs.
+    #[must_use]
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::ApiKey => "API key",
+        }
+    }
+}
+
+/// One credential slot a native feature declares.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CredentialSlot {
+    /// Slot id, unique per feature by convention (e.g. `example_api_key`).
+    pub id: String,
+    /// Human label shown in Settings (e.g. "AI provider API key").
+    pub label: String,
+    /// Credential kind.
+    pub kind: CredentialKind,
+}
+
+/// Health of one key inside a pool.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum KeyHealth {
+    /// Usable.
+    Ready,
+    /// Cooling down until this timestamp (seconds) after a 429.
+    CooldownUntil(u64),
+    /// Rejected by the provider (401/403); skipped until replaced.
+    Bad,
+}
+
+/// A pool of keys for one slot, with rotation and health tracking.
+///
+/// Manual `Debug` (SEC-20): a pool holds raw secret values, so its
+/// debug form shows only how many keys it holds, never a value.
+#[derive(Clone, Default)]
+pub struct KeyPool {
+    keys: Vec<String>,
+    health: Vec<KeyHealth>,
+    cursor: usize,
+}
+
+impl std::fmt::Debug for KeyPool {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("KeyPool")
+            .field("key_count", &self.keys.len())
+            .field("keys", &"<redacted>")
+            .finish_non_exhaustive()
+    }
+}
+
+impl KeyPool {
+    /// The raw keys in this pool (for building a sibling pool over
+    /// the same keys; health state is intentionally not shared).
+    #[must_use]
+    pub fn keys(&self) -> &[String] {
+        &self.keys
+    }
+}
+
+/// Default cooldown after a rate-limit response, in seconds.
+pub const RATE_LIMIT_COOLDOWN_SECS: u64 = 60;
+
+impl KeyPool {
+    /// Builds a pool from stored key values (order preserved).
+    #[must_use]
+    pub fn new(keys: Vec<String>) -> Self {
+        let health = vec![KeyHealth::Ready; keys.len()];
+        Self { keys, health, cursor: 0 }
+    }
+
+    /// Number of keys in the pool.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.keys.len()
+    }
+
+    /// Whether the pool holds no keys.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.keys.is_empty()
+    }
+
+    /// How many keys are currently usable at `now`.
+    #[must_use]
+    pub fn usable_count(&self, now: u64) -> usize {
+        self.health
+            .iter()
+            .filter(|h| {
+                matches!(h, KeyHealth::Ready)
+                    || matches!(h, KeyHealth::CooldownUntil(t) if *t <= now)
+            })
+            .count()
+    }
+
+    /// The stored values (host-side only; the UI masks them).
+    #[must_use]
+    pub fn values(&self) -> &[String] {
+        &self.keys
+    }
+
+    /// Next usable key, round-robin. `None` when every key is bad or
+    /// cooling down. The cursor advances past the returned key so
+    /// successive calls rotate.
+    pub fn acquire(&mut self, now: u64) -> Option<&str> {
+        if self.keys.is_empty() {
+            return None;
+        }
+        for step in 0..self.keys.len() {
+            let idx = (self.cursor + step) % self.keys.len();
+            let usable = match self.health[idx] {
+                KeyHealth::Ready => true,
+                KeyHealth::CooldownUntil(t) => t <= now,
+                KeyHealth::Bad => false,
+            };
+            if usable {
+                self.cursor = (idx + 1) % self.keys.len();
+                return Some(&self.keys[idx]);
+            }
+        }
+        None
+    }
+
+    /// Records the outcome of a request made with `key`:
+    /// 2xx clears any cooldown, 429 starts a cooldown, 401/403 marks
+    /// the key bad. Other statuses are ignored.
+    pub fn report_http_status(&mut self, key: &str, status: u16, now: u64) {
+        let Some(idx) = self.keys.iter().position(|k| k == key) else {
+            return;
+        };
+        match status {
+            200..=299 => self.health[idx] = KeyHealth::Ready,
+            429 => self.health[idx] = KeyHealth::CooldownUntil(now + RATE_LIMIT_COOLDOWN_SECS),
+            401 | 403 => self.health[idx] = KeyHealth::Bad,
+            _ => {}
+        }
+    }
+
+    /// Whether `key` is marked bad.
+    #[must_use]
+    pub fn is_bad(&self, key: &str) -> bool {
+        self.keys.iter().position(|k| k == key).is_some_and(|i| self.health[i] == KeyHealth::Bad)
+    }
+}
+
+/// Masks a secret for display: first 3 + last 2 characters survive.
+#[must_use]
+pub fn mask(secret: &str) -> String {
+    let chars: Vec<char> = secret.chars().collect();
+    if chars.len() <= 6 {
+        return "••••••".to_string();
+    }
+    let head: String = chars.iter().take(3).collect();
+    let tail: String = chars.iter().skip(chars.len() - 2).collect();
+    format!("{head}••••{tail}")
+}
+
+/// Errors from credential storage backends.
+#[derive(Debug)]
+pub enum CredentialError {
+    /// Filesystem failure (message only; never includes a value).
+    Io(String),
+    /// Stored data could not be parsed.
+    Corrupt(String),
+}
+
+impl std::fmt::Display for CredentialError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Io(m) => write!(f, "credential store I/O error: {m}"),
+            Self::Corrupt(m) => write!(f, "credential store is corrupt: {m}"),
+        }
+    }
+}
+
+impl std::error::Error for CredentialError {}
+
+/// A credential storage backend. One implementation is active at a
+/// time (keyring preferred, file as fallback; environment variables
+/// are layered on top by [`CredentialStore::keys_for`]).
+pub trait CredentialBackend {
+    /// All stored slots and their key values.
+    fn load_all(&self) -> Result<BTreeMap<String, Vec<String>>, CredentialError>;
+    /// Persists the full slot map.
+    fn save_all(&self, slots: &BTreeMap<String, Vec<String>>) -> Result<(), CredentialError>;
+    /// Short backend name for the UI ("OS keyring", "Local file").
+    fn name(&self) -> &'static str;
+    /// An honest one-line disclosure of how this backend protects
+    /// the values at rest, for the UI to show next to the backend
+    /// name, or `None` when the name already says it (the OS
+    /// keyring protects them itself; memory holds nothing at
+    /// rest). A backend whose protection is weaker than a user
+    /// might assume must speak up here rather than let the name
+    /// imply more than it delivers.
+    fn storage_note(&self) -> Option<&'static str> {
+        None
+    }
+}
+
+/// In-memory backend (tests, ephemeral sessions).
+///
+/// Manual `Debug` (SEC-20): the map holds raw secret values, so its
+/// debug form shows only slot names and per-slot key counts.
+#[derive(Default)]
+pub struct MemoryBackend {
+    slots: std::sync::Mutex<BTreeMap<String, Vec<String>>>,
+}
+
+impl std::fmt::Debug for MemoryBackend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.slots.lock() {
+            Ok(slots) => {
+                let counts: BTreeMap<&str, usize> =
+                    slots.iter().map(|(slot, keys)| (slot.as_str(), keys.len())).collect();
+                f.debug_struct("MemoryBackend")
+                    .field("slot_key_counts", &counts)
+                    .field("values", &"<redacted>")
+                    .finish()
+            }
+            Err(_) => f.debug_struct("MemoryBackend").field("values", &"<locked>").finish(),
+        }
+    }
+}
+
+impl CredentialBackend for MemoryBackend {
+    fn load_all(&self) -> Result<BTreeMap<String, Vec<String>>, CredentialError> {
+        Ok(self.slots.lock().expect("memory backend mutex").clone())
+    }
+
+    fn save_all(&self, slots: &BTreeMap<String, Vec<String>>) -> Result<(), CredentialError> {
+        *self.slots.lock().expect("memory backend mutex") = slots.clone();
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        "In-memory (not persisted)"
+    }
+}
+
+/// File backend: one JSON document under the app data dir. On Unix
+/// the file is created with `0600` permissions, it holds secrets.
+///
+/// The values are stored as plaintext JSON: mode-protected, not
+/// encrypted (privacy audit A10). That is a deliberate trade for
+/// the fallback path. Encrypting the file would need a key, and
+/// the only key the app holds for local data is itself served by
+/// this store's backends or by a key file in the same directory,
+/// so encryption here would add machinery without moving the
+/// trust boundary: anything that can read this file under its
+/// 0600 mode inside the owner-only data directory runs as the
+/// user and could take the key from the same places. What the
+/// design owes the user instead is honesty, and it pays it in
+/// two places: this comment, and the UI, which shows
+/// [`CredentialBackend::storage_note`] next to this backend's
+/// name wherever the name appears.
+#[derive(Debug, Clone)]
+pub struct FileBackend {
+    path: PathBuf,
+}
+
+impl FileBackend {
+    /// A file backend rooted at `path` (e.g. `<data dir>/secrets.json`).
+    #[must_use]
+    pub fn new(path: PathBuf) -> Self {
+        Self { path }
+    }
+
+    /// The file this backend writes to.
+    #[must_use]
+    pub fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+}
+
+impl CredentialBackend for FileBackend {
+    fn load_all(&self) -> Result<BTreeMap<String, Vec<String>>, CredentialError> {
+        if !self.path.exists() {
+            return Ok(BTreeMap::new());
+        }
+        let text =
+            std::fs::read_to_string(&self.path).map_err(|e| CredentialError::Io(e.to_string()))?;
+        serde_json::from_str(&text).map_err(|e| CredentialError::Corrupt(e.to_string()))
+    }
+
+    fn save_all(&self, slots: &BTreeMap<String, Vec<String>>) -> Result<(), CredentialError> {
+        if let Some(parent) = self.path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| CredentialError::Io(e.to_string()))?;
+        }
+        let text = serde_json::to_string_pretty(slots)
+            .map_err(|e| CredentialError::Corrupt(e.to_string()))?;
+        write_secret_file(&self.path, &text)
+    }
+
+    fn name(&self) -> &'static str {
+        "Local secrets file"
+    }
+
+    fn storage_note(&self) -> Option<&'static str> {
+        Some(
+            "Keys in this file are stored unencrypted; the file's owner-only \
+             permissions are their only protection.",
+        )
+    }
+}
+
+fn write_secret_file(path: &std::path::Path, text: &str) -> Result<(), CredentialError> {
+    // SEC-19: never truncate the live secrets file in place. Write
+    // the full contents to a fresh temp file in the SAME directory
+    // (0600 from creation on Unix, before any secret bytes land in
+    // it), fsync it, then rename over the target. The rename is
+    // atomic on the same filesystem, a crash mid-write leaves the
+    // old file intact, and a planted symlink at the target path is
+    // replaced by the rename rather than followed.
+    use std::io::Write;
+    static TEMP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("secrets.json");
+    let counter = TEMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let temp_path = parent.join(format!(".{file_name}.tmp-{}-{counter}", std::process::id()));
+
+    let write_temp = |temp_path: &std::path::Path| -> Result<(), CredentialError> {
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        let mut file = opts.open(temp_path).map_err(|e| CredentialError::Io(e.to_string()))?;
+        #[cfg(unix)]
+        {
+            // Belt and braces: the mode above applies because the
+            // file is created new, but assert 0600 explicitly before
+            // writing any secret bytes.
+            use std::os::unix::fs::PermissionsExt;
+            file.set_permissions(std::fs::Permissions::from_mode(0o600))
+                .map_err(|e| CredentialError::Io(e.to_string()))?;
+        }
+        file.write_all(text.as_bytes()).map_err(|e| CredentialError::Io(e.to_string()))?;
+        file.sync_all().map_err(|e| CredentialError::Io(e.to_string()))?;
+        Ok(())
+    };
+
+    if let Err(e) = write_temp(&temp_path) {
+        let _ = std::fs::remove_file(&temp_path);
+        return Err(e);
+    }
+    if let Err(e) = std::fs::rename(&temp_path, path) {
+        let _ = std::fs::remove_file(&temp_path);
+        return Err(CredentialError::Io(e.to_string()));
+    }
+    // Fsync the directory so the rename itself is durable.
+    #[cfg(unix)]
+    if let Ok(dir) = std::fs::File::open(parent) {
+        let _ = dir.sync_all();
+    }
+    Ok(())
+}
+
+/// Keyring service the credential entries live under.
+#[cfg(feature = "keyring-store")]
+const KEYRING_SERVICE: &str = "zaprust-credentials";
+
+/// Keyring service from before the rename (the app shipped as
+/// Zaplite until 1.0.0). Entries saved by the old build are adopted
+/// on first read so saved API keys are not orphaned by the rename.
+#[cfg(feature = "keyring-store")]
+const LEGACY_KEYRING_SERVICE: &str = "zaplite-credentials";
+
+/// OS keyring backend (feature `keyring-store`): one entry per slot,
+/// values joined as a JSON array under the `zaprust-credentials`
+/// service.
+#[cfg(feature = "keyring-store")]
+pub struct KeyringBackend;
+
+/// Raw per-slot storage under one keyring service. Split out from
+/// [`KeyringBackend`] so the index logic in [`load_all_slots`] and
+/// [`save_all_slots`] can run against a fake in tests.
+///
+/// Reads distinguish three outcomes: a stored value, affirmatively
+/// absent, and a backend failure. Collapsing a failure (locked
+/// keychain, daemon down) into "absent" is what once made a
+/// transient keyring outage read as an empty credential store,
+/// after which the next save rewrote the index and orphaned every
+/// previously saved key.
+#[cfg(feature = "keyring-store")]
+trait SlotStore {
+    /// The slot's stored keys: `Ok(Some)` when present, `Ok(None)`
+    /// when the backend affirmatively holds no such entry, and
+    /// `Err` when the backend could not answer or the stored value
+    /// could not be parsed.
+    fn read_slot(&self, slot: &str) -> Result<Option<Vec<String>>, CredentialError>;
+    /// Stores the slot's keys, replacing any previous value.
+    fn write_slot(&self, slot: &str, keys: &[String]) -> Result<(), CredentialError>;
+    /// Deletes the slot; an already-absent entry is success.
+    fn delete_slot(&self, slot: &str) -> Result<(), CredentialError>;
+}
+
+/// [`SlotStore`] over the OS keyring, under one service name.
+#[cfg(feature = "keyring-store")]
+struct KeyringSlotStore {
+    service: &'static str,
+}
+
+#[cfg(feature = "keyring-store")]
+impl SlotStore for KeyringSlotStore {
+    fn read_slot(&self, slot: &str) -> Result<Option<Vec<String>>, CredentialError> {
+        let entry = keyring::Entry::new(self.service, slot)
+            .map_err(|e| CredentialError::Io(e.to_string()))?;
+        match entry.get_password() {
+            Ok(raw) => serde_json::from_str(&raw)
+                .map(Some)
+                .map_err(|e| CredentialError::Corrupt(e.to_string())),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(e) => Err(CredentialError::Io(e.to_string())),
+        }
+    }
+
+    fn write_slot(&self, slot: &str, keys: &[String]) -> Result<(), CredentialError> {
+        let entry = keyring::Entry::new(self.service, slot)
+            .map_err(|e| CredentialError::Io(e.to_string()))?;
+        let raw =
+            serde_json::to_string(keys).map_err(|e| CredentialError::Corrupt(e.to_string()))?;
+        entry.set_password(&raw).map_err(|e| CredentialError::Io(e.to_string()))
+    }
+
+    fn delete_slot(&self, slot: &str) -> Result<(), CredentialError> {
+        let entry = keyring::Entry::new(self.service, slot)
+            .map_err(|e| CredentialError::Io(e.to_string()))?;
+        // The vendored keyring 3.x exposes deletion as
+        // `Entry::delete_credential`.
+        match entry.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(e) => Err(CredentialError::Io(e.to_string())),
+        }
+    }
+}
+
+/// Reads one slot from `current`, falling back to the pre-rename
+/// `legacy` service. A slot found only in legacy is written through
+/// under the current service so the adoption happens once; a failed
+/// write-through loses nothing, the legacy copy stays authoritative
+/// until a later read retries. Backend failures from either service
+/// propagate: an unreadable slot is never reported as absent.
+#[cfg(feature = "keyring-store")]
+fn read_slot_adopting(
+    current: &dyn SlotStore,
+    legacy: &dyn SlotStore,
+    slot: &str,
+) -> Result<Option<Vec<String>>, CredentialError> {
+    if let Some(keys) = current.read_slot(slot)? {
+        return Ok(Some(keys));
+    }
+    match legacy.read_slot(slot)? {
+        Some(keys) => {
+            let _ = current.write_slot(slot, &keys);
+            Ok(Some(keys))
+        }
+        None => Ok(None),
+    }
+}
+
+/// Loads every indexed slot from the keyring stores.
+///
+/// The keyring API has no enumeration, so an index entry
+/// (`__slots__`, a JSON list of slot ids) tracks what exists. The
+/// index read falls back to the pre-rename service, and adopted
+/// slots are written through under the new service (see
+/// LEGACY_KEYRING_SERVICE). An index or slot that cannot be read is
+/// an error, never an empty store: [`CredentialStore::open`] must
+/// fail rather than let a later save rewrite the index from a
+/// partial view and orphan the slots the read missed.
+#[cfg(feature = "keyring-store")]
+fn load_all_slots(
+    current: &dyn SlotStore,
+    legacy: &dyn SlotStore,
+) -> Result<BTreeMap<String, Vec<String>>, CredentialError> {
+    let Some(ids) = read_slot_adopting(current, legacy, "__slots__")? else {
+        return Ok(BTreeMap::new());
+    };
+    let mut out = BTreeMap::new();
+    for id in ids {
+        if id != "__slots__" {
+            if let Some(keys) = read_slot_adopting(current, legacy, &id)? {
+                out.insert(id, keys);
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Persists the full slot map to the keyring stores, ending with
+/// the `__slots__` index.
+///
+/// The previous index is read before anything is written, and a
+/// failed read refuses the whole save: rewriting `__slots__` from
+/// an unreliable read would orphan every slot the read missed.
+#[cfg(feature = "keyring-store")]
+fn save_all_slots(
+    current: &dyn SlotStore,
+    legacy: &dyn SlotStore,
+    slots: &BTreeMap<String, Vec<String>>,
+) -> Result<(), CredentialError> {
+    let previous = read_slot_adopting(current, legacy, "__slots__")?.unwrap_or_default();
+    // SEC-08: mirror the file backend, whose whole-map rewrite
+    // makes removed keys disappear. The keyring has no such
+    // rewrite, so slots that were indexed before but are gone now
+    // (or have been emptied, e.g. by `remove_key` dropping the last
+    // key of a slot) must be DELETED explicitly, or their secret
+    // values would stay in the OS keyring forever after the user
+    // removed them. Deletion covers both services: an unadopted
+    // pre-rename entry is removed too.
+    for old in &previous {
+        if old != "__slots__" && slots.get(old).is_none_or(std::vec::Vec::is_empty) {
+            current.delete_slot(old)?;
+            legacy.delete_slot(old)?;
+        }
+    }
+    let mut ids: Vec<String> = Vec::new();
+    for (slot, keys) in slots {
+        if keys.is_empty() {
+            // An emptied slot stores nothing (also covers a slot
+            // that was never in the old index).
+            current.delete_slot(slot)?;
+            legacy.delete_slot(slot)?;
+        } else {
+            current.write_slot(slot, keys)?;
+            ids.push(slot.clone());
+        }
+    }
+    current.write_slot("__slots__", &ids)
+}
+
+#[cfg(feature = "keyring-store")]
+impl CredentialBackend for KeyringBackend {
+    fn load_all(&self) -> Result<BTreeMap<String, Vec<String>>, CredentialError> {
+        load_all_slots(
+            &KeyringSlotStore { service: KEYRING_SERVICE },
+            &KeyringSlotStore { service: LEGACY_KEYRING_SERVICE },
+        )
+    }
+
+    fn save_all(&self, slots: &BTreeMap<String, Vec<String>>) -> Result<(), CredentialError> {
+        save_all_slots(
+            &KeyringSlotStore { service: KEYRING_SERVICE },
+            &KeyringSlotStore { service: LEGACY_KEYRING_SERVICE },
+            slots,
+        )
+    }
+
+    fn name(&self) -> &'static str {
+        "OS keyring"
+    }
+}
+
+#[cfg(feature = "keyring-store")]
+impl KeyringBackend {
+    /// Whether the keyring answers at all on this machine.
+    #[must_use]
+    pub fn available() -> bool {
+        keyring::Entry::new(KEYRING_SERVICE, "__probe__").is_ok()
+    }
+}
+
+/// The host-side credential store: declaration registry + pools +
+/// persistence, with environment overrides for development.
+pub struct CredentialStore {
+    backend: Box<dyn CredentialBackend + Send>,
+    declared: Vec<(String, CredentialSlot)>,
+    pools: BTreeMap<String, KeyPool>,
+    overrides: BTreeMap<String, String>,
+}
+
+impl CredentialStore {
+    /// Opens a store over `backend`, loading any persisted keys.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CredentialError`] when the backend cannot be read.
+    pub fn open(backend: Box<dyn CredentialBackend + Send>) -> Result<Self, CredentialError> {
+        let stored = backend.load_all()?;
+        let pools = stored.into_iter().map(|(slot, keys)| (slot, KeyPool::new(keys))).collect();
+        Ok(Self { backend, declared: Vec::new(), pools, overrides: BTreeMap::new() })
+    }
+
+    /// Sets `.env.local`-style overrides (variable name → value).
+    /// Real environment variables take precedence over these.
+    pub fn set_overrides(&mut self, overrides: BTreeMap<String, String>) {
+        self.overrides = overrides;
+    }
+
+    /// The active backend's display name.
+    #[must_use]
+    pub fn backend_name(&self) -> &'static str {
+        self.backend.name()
+    }
+
+    /// The active backend's at-rest disclosure, when it has one
+    /// (see [`CredentialBackend::storage_note`]).
+    #[must_use]
+    pub fn storage_note(&self) -> Option<&'static str> {
+        self.backend.storage_note()
+    }
+
+    /// Registers a feature's declared slots (idempotent per feature).
+    pub fn declare(&mut self, owner: &str, slots: &[CredentialSlot]) {
+        for slot in slots {
+            let entry = (owner.to_string(), slot.clone());
+            if !self.declared.contains(&entry) {
+                self.declared.push(entry);
+            }
+            self.pools.entry(slot.id.clone()).or_default();
+        }
+    }
+
+    /// Every declared slot with the feature that declared it.
+    #[must_use]
+    pub fn declared_slots(&self) -> &[(String, CredentialSlot)] {
+        &self.declared
+    }
+
+    /// The pool for a slot, if the slot is known.
+    #[must_use]
+    pub fn pool(&self, slot: &str) -> Option<&KeyPool> {
+        self.pools.get(slot)
+    }
+
+    /// Keys for a slot: environment override first
+    /// (`ZAPRUST_CRED_<SLOT>` comma-separated, plus values from a
+    /// `.env.local` the host loaded into the environment), then the
+    /// persisted pool.
+    #[must_use]
+    pub fn keys_for(&self, slot: &str) -> Vec<String> {
+        let name = env_var_name(slot);
+        // The pre-rename variable name (ZAPLITE_CRED_<SLOT>) is read
+        // as a fallback so existing shell setups and .env.local
+        // files keep working after the rename.
+        let from_env = std::env::var(&name)
+            .ok()
+            .or_else(|| std::env::var(legacy_env_var_name(slot)).ok())
+            .or_else(|| self.overrides.get(&name).cloned());
+        if let Some(raw) = from_env {
+            let keys: Vec<String> =
+                raw.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+            if !keys.is_empty() {
+                return keys;
+            }
+        }
+        self.stored_keys(slot)
+    }
+
+    /// A ready-to-use pool for a slot (env override applied).
+    #[must_use]
+    pub fn pool_for(&self, slot: &str) -> KeyPool {
+        KeyPool::new(self.keys_for(slot))
+    }
+
+    /// Replaces a slot's keys and persists them.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CredentialError`] when persistence fails.
+    pub(crate) fn set_keys(
+        &mut self,
+        slot: &str,
+        keys: Vec<String>,
+    ) -> Result<(), CredentialError> {
+        self.pools.insert(slot.to_string(), KeyPool::new(keys));
+        self.persist()
+    }
+
+    /// The slot's persisted keys, with no environment override
+    /// applied: the pool that add/remove mutate and that saves
+    /// write. Environment overrides are a read-time overlay for
+    /// [`keys_for`](Self::keys_for) only; persisting them would
+    /// bake ephemeral env secrets into the stored backend, and a
+    /// removal under an override would replace the stored pool
+    /// with the env-derived list.
+    fn stored_keys(&self, slot: &str) -> Vec<String> {
+        self.pools.get(slot).map(|p| p.values().to_vec()).unwrap_or_default()
+    }
+
+    /// Adds one key to a slot's persisted pool and persists.
+    /// An active environment override for the slot is unaffected
+    /// and keeps winning at read time.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CredentialError`] when persistence fails.
+    pub fn add_key(&mut self, slot: &str, key: String) -> Result<(), CredentialError> {
+        let mut keys = self.stored_keys(slot);
+        if !key.is_empty() && !keys.contains(&key) {
+            keys.push(key);
+        }
+        self.set_keys(slot, keys)
+    }
+
+    /// Removes one key (by value) from a slot's persisted pool
+    /// and persists. An active environment override for the slot
+    /// is unaffected and keeps winning at read time.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CredentialError`] when persistence fails.
+    pub fn remove_key(&mut self, slot: &str, key: &str) -> Result<(), CredentialError> {
+        let keys: Vec<String> = self.stored_keys(slot).into_iter().filter(|k| k != key).collect();
+        self.set_keys(slot, keys)
+    }
+
+    fn persist(&self) -> Result<(), CredentialError> {
+        let map: BTreeMap<String, Vec<String>> =
+            self.pools.iter().map(|(slot, pool)| (slot.clone(), pool.values().to_vec())).collect();
+        self.backend.save_all(&map)
+    }
+}
+
+/// The environment variable that overrides a slot, e.g.
+/// `example_api_key` → `ZAPRUST_CRED_EXAMPLE_API_KEY`.
+#[must_use]
+pub(crate) fn env_var_name(slot: &str) -> String {
+    let upper: String = slot
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_uppercase() } else { '_' })
+        .collect();
+    format!("ZAPRUST_CRED_{upper}")
+}
+
+/// The pre-rename form of [`env_var_name`] (the app shipped as
+/// Zaplite until 1.0.0), kept as a read fallback in
+/// [`CredentialStore::keys_for`].
+#[must_use]
+pub(crate) fn legacy_env_var_name(slot: &str) -> String {
+    env_var_name(slot).replacen("ZAPRUST", "ZAPLITE", 1)
+}
+
+/// Parses `KEY=VALUE` lines from a `.env.local`-style file into a
+/// map. The app passes the result to
+/// [`CredentialStore::set_overrides`]; real environment variables
+/// still win over file values (the host checks env first).
+#[must_use]
+pub fn load_dotenv_local(path: &std::path::Path) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return out;
+    };
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        out.insert(key.trim().to_string(), value.trim().trim_matches('"').to_string());
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pool_of(values: &[&str]) -> KeyPool {
+        KeyPool::new(values.iter().map(ToString::to_string).collect())
+    }
+
+    #[test]
+    fn acquire_rotates_round_robin() {
+        let mut pool = pool_of(&["k1", "k2", "k3"]);
+        assert_eq!(pool.acquire(0), Some("k1"));
+        assert_eq!(pool.acquire(0), Some("k2"));
+        assert_eq!(pool.acquire(0), Some("k3"));
+        assert_eq!(pool.acquire(0), Some("k1"));
+    }
+
+    #[test]
+    fn rate_limited_key_cools_down_and_is_skipped() {
+        let mut pool = pool_of(&["k1", "k2"]);
+        pool.report_http_status("k1", 429, 1_000);
+        assert_eq!(pool.acquire(1_000), Some("k2"));
+        assert_eq!(pool.acquire(1_000), Some("k2"), "k1 still cooling");
+        // After the cooldown the key rejoins the rotation.
+        assert_eq!(pool.acquire(1_000 + RATE_LIMIT_COOLDOWN_SECS), Some("k1"));
+    }
+
+    #[test]
+    fn unauthorized_key_is_marked_bad_and_never_served() {
+        let mut pool = pool_of(&["k1", "k2"]);
+        pool.report_http_status("k1", 401, 0);
+        assert!(pool.is_bad("k1"));
+        for _ in 0..4 {
+            assert_eq!(pool.acquire(9_999), Some("k2"));
+        }
+        pool.report_http_status("k2", 403, 0);
+        assert_eq!(pool.acquire(9_999), None, "all keys bad → None");
+    }
+
+    #[test]
+    fn success_clears_a_cooldown() {
+        let mut pool = pool_of(&["k1"]);
+        pool.report_http_status("k1", 429, 0);
+        assert_eq!(pool.acquire(1), None);
+        pool.report_http_status("k1", 200, 1);
+        assert_eq!(pool.acquire(1), Some("k1"));
+    }
+
+    #[test]
+    fn empty_pool_acquires_nothing() {
+        let mut pool = KeyPool::default();
+        assert_eq!(pool.acquire(0), None);
+        assert_eq!(pool.usable_count(0), 0);
+    }
+
+    #[test]
+    fn mask_never_reveals_the_middle() {
+        assert_eq!(mask("sk-1234567890"), "sk-••••90");
+        assert_eq!(mask("short"), "••••••");
+        assert!(!mask("sk-1234567890").contains("12345"));
+    }
+
+    #[test]
+    fn env_var_name_is_stable() {
+        assert_eq!(env_var_name("example_api_key"), "ZAPRUST_CRED_EXAMPLE_API_KEY");
+        assert_eq!(env_var_name("giphy_api_key"), "ZAPRUST_CRED_GIPHY_API_KEY");
+    }
+
+    #[test]
+    fn file_backend_round_trips_and_stays_private() {
+        let dir = std::env::temp_dir().join(format!("zaprust-cred-test-{}", std::process::id()));
+        let path = dir.join("secrets.json");
+        let backend = FileBackend::new(path.clone());
+        let mut store = CredentialStore::open(Box::new(backend)).expect("open");
+        store.declare(
+            "community.example",
+            &[CredentialSlot {
+                id: "example_api_key".into(),
+                label: "Example key".into(),
+                kind: CredentialKind::ApiKey,
+            }],
+        );
+        store.add_key("example_api_key", "secret-one".into()).expect("add");
+        store.add_key("example_api_key", "secret-two".into()).expect("add");
+        assert_eq!(store.pool_for("example_api_key").len(), 2);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).expect("meta").permissions().mode();
+            assert_eq!(mode & 0o777, 0o600, "secrets file must be 0600");
+        }
+        // Reload from disk: values survive.
+        let backend = FileBackend::new(path.clone());
+        let reopened = CredentialStore::open(Box::new(backend)).expect("reopen");
+        assert_eq!(reopened.keys_for("example_api_key").len(), 2);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn add_and_remove_never_persist_env_overrides() {
+        // With an override active, add/remove used to start from
+        // the env-provided list and write it back, baking the
+        // throwaway env key into the stored file. The `.env.local`
+        // override map stands in for the real
+        // `ZAPRUST_CRED_EXAMPLE_API_KEY` variable here (same seam
+        // `keys_for` reads).
+        let dir =
+            std::env::temp_dir().join(format!("zaprust-cred-env-test-{}", std::process::id()));
+        let path = dir.join("secrets.json");
+        let backend = FileBackend::new(path.clone());
+        let mut store = CredentialStore::open(Box::new(backend)).expect("open");
+        store.declare(
+            "community.example",
+            &[CredentialSlot {
+                id: "example_api_key".into(),
+                label: "Example key".into(),
+                kind: CredentialKind::ApiKey,
+            }],
+        );
+        let override_map = BTreeMap::from([(
+            "ZAPRUST_CRED_EXAMPLE_API_KEY".to_string(),
+            "env-only-key".to_string(),
+        )]);
+        store.set_overrides(override_map.clone());
+        assert_eq!(store.keys_for("example_api_key"), vec!["env-only-key".to_string()]);
+
+        store.add_key("example_api_key", "stored-key".into()).expect("add");
+        let text = std::fs::read_to_string(&path).expect("read secrets");
+        assert!(text.contains("stored-key"), "{text}");
+        assert!(!text.contains("env-only-key"), "env override must not persist: {text}");
+        // Reads still serve the override while it is set, and the
+        // stored pool once it is gone.
+        assert_eq!(store.keys_for("example_api_key"), vec!["env-only-key".to_string()]);
+        store.set_overrides(BTreeMap::new());
+        assert_eq!(store.keys_for("example_api_key"), vec!["stored-key".to_string()]);
+
+        // Removal under an override edits the stored pool only.
+        store.set_overrides(override_map);
+        store.remove_key("example_api_key", "stored-key").expect("remove");
+        let text = std::fs::read_to_string(&path).expect("read secrets");
+        assert!(!text.contains("stored-key"), "{text}");
+        assert!(!text.contains("env-only-key"), "env override must not persist: {text}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn debug_impls_redact_secret_values() {
+        // SEC-20: formatting a pool or the memory backend must show
+        // names/counts only, never a key value.
+        let pool = pool_of(&["sk-super-secret-value", "another-secret-value"]);
+        let pool_dbg = format!("{pool:?}");
+        assert!(!pool_dbg.contains("super-secret"), "{pool_dbg}");
+        assert!(!pool_dbg.contains("another-secret"), "{pool_dbg}");
+        assert!(pool_dbg.contains('2'), "debug shows the key count: {pool_dbg}");
+
+        let backend = MemoryBackend::default();
+        backend
+            .save_all(&BTreeMap::from([(
+                "example_api_key".to_string(),
+                vec!["sk-hidden-value".to_string()],
+            )]))
+            .expect("save");
+        let backend_dbg = format!("{backend:?}");
+        assert!(!backend_dbg.contains("sk-hidden-value"), "{backend_dbg}");
+        assert!(backend_dbg.contains("example_api_key"), "debug shows slot names: {backend_dbg}");
+    }
+
+    #[test]
+    fn file_backend_rewrite_is_atomic_and_leaves_no_temp() {
+        // SEC-19: a second save replaces the file (rename, not
+        // truncate-in-place) and leaves no temp file behind.
+        let dir = std::env::temp_dir().join(format!("zaprust-cred-atomic-{}", std::process::id()));
+        let path = dir.join("secrets.json");
+        let backend = FileBackend::new(path.clone());
+        backend
+            .save_all(&BTreeMap::from([("s".to_string(), vec!["one".to_string()])]))
+            .expect("first save");
+        backend
+            .save_all(&BTreeMap::from([("s".to_string(), vec!["two".to_string()])]))
+            .expect("second save");
+        let loaded = backend.load_all().expect("load");
+        assert_eq!(loaded["s"], vec!["two".to_string()]);
+        let leftovers: Vec<String> = std::fs::read_dir(&dir)
+            .expect("read dir")
+            .filter_map(Result::ok)
+            .filter_map(|e| e.file_name().into_string().ok())
+            .filter(|n| n.contains(".tmp-"))
+            .collect();
+        assert!(leftovers.is_empty(), "temp files left behind: {leftovers:?}");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).expect("meta").permissions().mode();
+            assert_eq!(mode & 0o777, 0o600, "replaced secrets file must stay 0600");
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn store_removes_keys() {
+        let mut store = CredentialStore::open(Box::new(MemoryBackend::default())).expect("open");
+        store.add_key("s", "a".into()).expect("add");
+        store.add_key("s", "b".into()).expect("add");
+        store.remove_key("s", "a").expect("remove");
+        assert_eq!(store.keys_for("s"), vec!["b".to_string()]);
+    }
+
+    #[test]
+    fn open_fails_when_the_backend_cannot_be_read() {
+        // An unreadable backend (e.g. a locked keyring) must fail
+        // the open, never read as an empty store: a store opened
+        // empty would persist its next save over the real contents.
+        struct UnreadableBackend;
+
+        impl CredentialBackend for UnreadableBackend {
+            fn load_all(&self) -> Result<BTreeMap<String, Vec<String>>, CredentialError> {
+                Err(CredentialError::Io("keyring is locked".into()))
+            }
+
+            fn save_all(
+                &self,
+                _slots: &BTreeMap<String, Vec<String>>,
+            ) -> Result<(), CredentialError> {
+                Ok(())
+            }
+
+            fn name(&self) -> &'static str {
+                "Unreadable (test)"
+            }
+        }
+
+        assert!(CredentialStore::open(Box::new(UnreadableBackend)).is_err());
+    }
+
+    /// In-memory [`SlotStore`] whose reads can be switched to fail,
+    /// standing in for a keyring that locks between runs.
+    #[cfg(feature = "keyring-store")]
+    #[derive(Default)]
+    struct FakeSlotStore {
+        entries: std::sync::Mutex<BTreeMap<String, Vec<String>>>,
+        fail_reads: std::sync::atomic::AtomicBool,
+    }
+
+    #[cfg(feature = "keyring-store")]
+    impl FakeSlotStore {
+        fn seed(&self, slot: &str, keys: &[&str]) {
+            self.entries
+                .lock()
+                .expect("fake slot store mutex")
+                .insert(slot.to_string(), keys.iter().map(ToString::to_string).collect());
+        }
+
+        fn stored(&self, slot: &str) -> Option<Vec<String>> {
+            self.entries.lock().expect("fake slot store mutex").get(slot).cloned()
+        }
+
+        fn set_fail_reads(&self, fail: bool) {
+            self.fail_reads.store(fail, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    #[cfg(feature = "keyring-store")]
+    impl SlotStore for FakeSlotStore {
+        fn read_slot(&self, slot: &str) -> Result<Option<Vec<String>>, CredentialError> {
+            if self.fail_reads.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err(CredentialError::Io("keyring is locked".into()));
+            }
+            Ok(self.stored(slot))
+        }
+
+        fn write_slot(&self, slot: &str, keys: &[String]) -> Result<(), CredentialError> {
+            self.entries
+                .lock()
+                .expect("fake slot store mutex")
+                .insert(slot.to_string(), keys.to_vec());
+            Ok(())
+        }
+
+        fn delete_slot(&self, slot: &str) -> Result<(), CredentialError> {
+            self.entries.lock().expect("fake slot store mutex").remove(slot);
+            Ok(())
+        }
+    }
+
+    #[cfg(feature = "keyring-store")]
+    #[test]
+    fn keyring_read_error_is_not_an_empty_store() {
+        let current = FakeSlotStore::default();
+        let legacy = FakeSlotStore::default();
+        current.seed("__slots__", &["example_api_key"]);
+        current.seed("example_api_key", &["secret-one"]);
+        current.set_fail_reads(true);
+        assert!(
+            load_all_slots(&current, &legacy).is_err(),
+            "a keyring that cannot be read must error, not load as empty"
+        );
+    }
+
+    #[cfg(feature = "keyring-store")]
+    #[test]
+    fn keyring_save_refuses_when_the_index_cannot_be_read() {
+        let current = FakeSlotStore::default();
+        let legacy = FakeSlotStore::default();
+        current.seed("__slots__", &["example_api_key"]);
+        current.seed("example_api_key", &["secret-one"]);
+        current.set_fail_reads(true);
+        let attempt = save_all_slots(
+            &current,
+            &legacy,
+            &BTreeMap::from([("other".to_string(), vec!["x".to_string()])]),
+        );
+        assert!(attempt.is_err(), "a save over an unreadable index must refuse");
+        // Nothing was written: the stored index and slot survive
+        // byte-identical, and the attempted slot never landed.
+        assert_eq!(current.stored("__slots__"), Some(vec!["example_api_key".to_string()]));
+        assert_eq!(current.stored("example_api_key"), Some(vec!["secret-one".to_string()]));
+        assert_eq!(current.stored("other"), None);
+    }
+
+    #[cfg(feature = "keyring-store")]
+    #[test]
+    fn keyring_slots_round_trip_add_and_remove() {
+        let current = FakeSlotStore::default();
+        let legacy = FakeSlotStore::default();
+        // First run: affirmatively empty, which is not an error.
+        assert!(load_all_slots(&current, &legacy).expect("load").is_empty());
+        save_all_slots(
+            &current,
+            &legacy,
+            &BTreeMap::from([("s".to_string(), vec!["a".to_string(), "b".to_string()])]),
+        )
+        .expect("save");
+        assert_eq!(
+            load_all_slots(&current, &legacy).expect("load")["s"],
+            vec!["a".to_string(), "b".to_string()]
+        );
+        save_all_slots(
+            &current,
+            &legacy,
+            &BTreeMap::from([("s".to_string(), vec!["b".to_string()])]),
+        )
+        .expect("save");
+        assert_eq!(load_all_slots(&current, &legacy).expect("load")["s"], vec!["b".to_string()]);
+        // Removing the last key deletes the entry (SEC-08) and
+        // empties the index.
+        save_all_slots(&current, &legacy, &BTreeMap::new()).expect("save");
+        assert!(load_all_slots(&current, &legacy).expect("load").is_empty());
+        assert_eq!(current.stored("s"), None);
+        assert_eq!(current.stored("__slots__"), Some(Vec::new()));
+    }
+
+    #[cfg(feature = "keyring-store")]
+    #[test]
+    fn keyring_load_adopts_legacy_slots() {
+        let current = FakeSlotStore::default();
+        let legacy = FakeSlotStore::default();
+        legacy.seed("__slots__", &["example_api_key"]);
+        legacy.seed("example_api_key", &["old-secret"]);
+        let loaded = load_all_slots(&current, &legacy).expect("load");
+        assert_eq!(loaded["example_api_key"], vec!["old-secret".to_string()]);
+        // Written through under the current service.
+        assert_eq!(current.stored("example_api_key"), Some(vec!["old-secret".to_string()]));
+    }
+}

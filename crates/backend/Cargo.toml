@@ -1,0 +1,89 @@
+[package]
+name = "backend"
+version.workspace = true
+publish = false
+description = "Zaprust backend: the WhatsApp protocol boundary. A Backend trait with a whatsapp-rust implementation and a deterministic fake for tests and demos."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = ["whatsapp"]
+# The real protocol implementation, backed by the whatsapp-rust library.
+# tokio and tracing are used only by the whatsapp module (and, for
+# tokio, the calls-gated audio helper), so they ride along here
+# instead of taxing the fake-only build.
+whatsapp = ["dep:whatsapp-rust", "dep:diesel", "dep:tokio", "dep:tracing", "dep:ureq"]
+# Voice/video calls. The feature set is assembled by hand instead of
+# using the library's umbrella `voip` feature: the umbrella pulls
+# voip-libopus (a C library binding), while WhatsApp calls natively
+# speak MLOW and the PCM path needs no C codec.
+calls = ["whatsapp", "whatsapp-rust/voip-mlow", "whatsapp-rust/voip-relay-native", "dep:cpal", "dep:openh264", "dep:camera"]
+
+[dependencies]
+# Core for one shared piece of pure logic: the crash display
+# scrubber, applied to the supervisor's Crashed summary before it
+# is emitted (the summary is rendered verbatim by the app, and
+# panic payloads are free text). Nothing else crosses from core;
+# the backend's event and command types stay its own.
+core = { path = "../core" }
+qrcode = "0.14"
+directories = "6"
+# Microphone/speaker I/O for calls (the `calls` feature). The same
+# major version the pinned library's voip example builds against.
+cpal = { version = "0.18", optional = true }
+# H.264 encode for the call camera (the `calls` feature): the same
+# vendored crate the app decodes chat video with, so one codec
+# implementation serves both directions. The protocol library
+# transports pre-encoded Annex-B access units and never touches
+# pixels, so the codec lives with the consumer: encode here, next
+# to the camera; decode in the app, next to the screen.
+openh264 = { version = "0.9", optional = true }
+# Camera capture for calls (the `calls` feature): the
+# workspace's own camera crate, a safe API over Video4Linux2.
+# It is a separate crate because this one forbids unsafe code
+# and the ioctls have to live somewhere; they live there, in
+# one small audited module. (A bindings crate was rejected:
+# its sys crate runs bindgen at build time and would make
+# every build host, release builds included, need libclang
+# installed.) A machine without a camera is a normal case the
+# call layer handles (receive-only video), not a build
+# variant.
+camera = { path = "../camera", optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "time", "sync"], optional = true }
+tracing = { version = "0.1", optional = true }
+# HTTP client for one call in the whatsapp module: downloading
+# the account's own profile picture bytes from the CDN URL the
+# protocol library's picture lookup returns. Same version and
+# TLS stack the app crate uses for its own fetches.
+ureq = { version = "3", default-features = false, features = ["rustls"], optional = true }
+
+# Pinned to a git revision, deliberately not the crates.io release:
+# crates.io 0.7.0 enables a `simd` feature in wacore-binary that needs a
+# nightly compiler (portable_simd); this revision builds on stable.
+# Bump the rev deliberately,
+# never float it, the library is pre-1.0 and breaks API on purpose.
+# The library's `sqlite-storage-bundled` feature is deliberately NOT
+# enabled: it pins libsqlite3-sys 0.40 while diesel 2.4 (the store's
+# own backend) resolves libsqlite3-sys 0.30, and two versions of a
+# `links = "sqlite3"` crate cannot coexist. The bundled SQLite for
+# the whole tree (a SQLCipher build, SEC-F01) comes from the store
+# crate's rusqlite dependency instead and unifies onto the same
+# libsqlite3-sys 0.30 the library's diesel uses.
+whatsapp-rust = { git = "https://github.com/oxidezap/whatsapp-rust", rev = "e634d245f71d66e2ae55f79ef714c4ca01615ed8", default-features = false, features = ["sqlite-storage", "tokio-transport", "tokio-runtime", "ureq-client", "tokio-native"], optional = true }
+# Direct dependency for one call: the session store's connection
+# init hook runs `PRAGMA key` through diesel (SEC-F01). The version
+# matches the one the protocol library itself uses.
+diesel = { version = "2.4", default-features = false, features = ["sqlite"], optional = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+store = { path = "../store" }
+# Temporary, for the headless pairing harness example only.
+tracing-log = "0.2"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

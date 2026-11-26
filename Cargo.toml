@@ -1,0 +1,58 @@
+# Zaprust, workspace root
+# A WhatsApp Client built natively with Rust. Every feature is native.
+# Built from scratch by fanyzp.
+
+[workspace]
+resolver = "2"
+members = [
+    "crates/core",
+    "crates/backend",
+    "crates/camera",
+    "crates/store",
+    "crates/app",
+    "crates/features/export-chat",
+    "crates/features/stickers",
+    "crates/features/giphy",
+]
+
+[workspace.package]
+edition = "2021"
+version = "1.0.0-beta"
+rust-version = "1.85"
+license = "MIT"
+authors = ["fanyzp"]
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+toml = "0.9"
+serde_json = "1"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+
+[profile.release]
+# Size-optimised codegen: in the November 2026 size pass, a scratch
+# build with opt-level "z" produced a 25,273,664 byte binary where
+# the opt-level 3 baseline measured 36,252,768 bytes (about 30
+# percent smaller). The hot paths of a chat client are I/O and
+# rendering bound, so the smaller code is worth more than the peak
+# optimisation level here.
+opt-level = "z"
+# Fat LTO over thin: whole-program optimisation across every crate,
+# for a smaller and faster binary at the cost of a slower link.
+lto = "fat"
+codegen-units = 1
+# Strip symbol tables from release binaries (v0.25 size pass: measured
+# 46,036,424 -> 37,650,456 bytes on the v0.22.0 binary). Trade-off:
+# panic backtraces in crash reports lose symbol names and keep raw
+# addresses; the crash message and report flow are unaffected.
+strip = true
+# No panic = "abort" here, deliberately: the backend supervisor and
+# the feature guard contain panics with catch_unwind and restart or
+# disable what failed. Aborting would take the whole app down for a
+# failure those paths are built to survive.

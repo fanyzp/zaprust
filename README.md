@@ -4,6 +4,10 @@
 
 ![Chats](docs/assets/zaprust-chats.png)
 
+![Conversation](docs/assets/zaprust-conversation.png)
+
+![Appearance](docs/assets/zaprust-appearance.png)
+
 ## Features
 
 - Chats, groups, communities, and channels
@@ -18,12 +22,6 @@
 
 ## Install
 
-Download the build for your system from [Releases](https://github.com/fanyzp/zaprust/releases):
-
-| Platform | File |
-|---|---|
-| Windows (x64 / ARM64) | `zaprust-windows-x86_64.exe`, `zaprust-windows-arm64.exe` |
-| Linux (x64 / ARM64) | `zaprust-linux-<arch>.deb`, `.rpm`, or `.AppImage` |
-| macOS (Apple Silicon) | `zaprust-macos-arm64` |
+Download `zaprust-linux-x86_64` from [Releases](https://github.com/fanyzp/zaprust/releases). Each release also carries `SHA256SUMS` and its signature `SHA256SUMS.sig`, so the download can be verified before running it.
 
 Run it, then link your phone with the QR code or a pairing code, the same way as WhatsApp Web.

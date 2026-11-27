@@ -1,0 +1,14 @@
+[package]
+name = "export-chat"
+version.workspace = true
+description = "Zaprust native feature: chat export to Markdown and files."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+core = { path = "../../../crates/core" }

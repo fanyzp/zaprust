@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000">
+  <!-- Zaprust app icon master: a natural speech bubble with a
+       bottom-left tail, filled solid black, three typing dots as
+       true cutouts. Monochrome black and white is the brand
+       identity for the mark. The dark-ground twin is this same
+       geometry in white. Rasters are generated from this file by
+       packaging/zaprust-icon.py; never edit the PNGs directly. -->
+  <path fill="#000000" fill-rule="evenodd" d="M 470 88 C 544.2 86.3, 635.8 85.5, 700 105 C 764.2 124.5, 815.8 155.8, 855 205 C 894.2 254.2, 925 330.8, 935 400 C 945 469.2, 937.5 557.5, 915 620 C 892.5 682.5, 854.2 737.5, 800 775 C 745.8 812.5, 654.2 833.3, 590 845 C 525.8 856.7, 460 848.3, 415 845 C 370 841.7, 361.7 811.7, 320 825 C 278.3 838.3, 180.8 942.5, 165 925 C 149.2 907.5, 235 767.5, 225 720 C 215 672.5, 131.2 690, 105 640 C 78.8 590, 68 490.8, 68 420 C 68 349.2, 73.8 265.8, 105 215 C 136.2 164.2, 194.2 136.2, 255 115 C 315.8 93.8, 395.8 89.7, 470 88 Z M 268 470 C 268 435.8, 295.8 408, 330 408 C 364.2 408, 392 435.8, 392 470 C 392 504.2, 364.2 532, 330 532 C 295.8 532, 268 504.2, 268 470 Z M 438 470 C 438 435.8, 465.8 408, 500 408 C 534.2 408, 562 435.8, 562 470 C 562 504.2, 534.2 532, 500 532 C 465.8 532, 438 504.2, 438 470 Z M 608 470 C 608 435.8, 635.8 408, 670 408 C 704.2 408, 732 435.8, 732 470 C 732 504.2, 704.2 532, 670 532 C 635.8 532, 608 504.2, 608 470 Z"/>
+</svg>

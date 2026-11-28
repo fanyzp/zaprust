@@ -1,0 +1,282 @@
+//! Keyboard shortcuts (parity row 127): one static table is
+//! the single source of truth for the handler here and for
+//! the Settings > Shortcuts reference page, so what the page
+//! lists is exactly what the app answers. Two entries are
+//! reference-only: their handlers predate this table and live
+//! where they always did (Ctrl+B in the shell, Ctrl+F in the
+//! conversation); the table still lists them so the reference
+//! surface is complete.
+//!
+//! Chords follow the house pattern of the two pre-existing
+//! ones: they are global to the window. None of them types
+//! text (every chord carries Ctrl, most carry Alt or Shift
+//! as well), and the handler stands down while a modal is
+//! open or the app is locked.
+
+use crate::state::App;
+use eframe::egui;
+
+/// What a shortcut does when its chord lands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ShortcutAction {
+    /// Open the new-chat dialog.
+    NewChat,
+    /// Select the next chat in the current list.
+    NextChat,
+    /// Select the previous chat in the current list.
+    PrevChat,
+    /// Archive or unarchive the open chat.
+    ToggleArchive,
+    /// Mute or unmute the open chat.
+    ToggleMute,
+    /// Mark the open chat as unread.
+    MarkUnread,
+    /// Lock the app now (needs a lock code).
+    LockApp,
+    /// Move keyboard focus to the chat-list search field.
+    FocusSearch,
+    /// Open the Settings screen.
+    OpenSettings,
+    /// Handled elsewhere (the shell / the conversation); the
+    /// table lists it for the reference page only.
+    ReferenceOnly,
+}
+
+/// One shortcut: its settings-page row id, its label key, its
+/// chord in display form, and its action. Each entry carries
+/// its own key and modifier shape, because one action can
+/// sit behind more than one chord (new chat answers both
+/// Ctrl+N and Ctrl+Alt+N).
+pub(crate) struct Shortcut {
+    /// The settings registry row id.
+    pub id: &'static str,
+    /// The i18n key of the action's name.
+    pub label_key: &'static str,
+    /// The chord as the reference page prints it.
+    pub chord: &'static str,
+    /// What the chord does.
+    pub action: ShortcutAction,
+    /// The egui key the chord ends in; `None` for
+    /// reference-only entries, which this handler never fires.
+    pub key: Option<egui::Key>,
+    /// Whether the chord needs Alt on top of the command
+    /// modifier (Ctrl, or Cmd on macOS), which every chord
+    /// requires.
+    pub alt: bool,
+    /// Whether the chord needs Shift on top of the command
+    /// modifier.
+    pub shift: bool,
+}
+
+/// The shortcut table, in the reference page's order.
+pub(crate) const SHORTCUTS: &[Shortcut] = &[
+    Shortcut {
+        id: "shortcut_new_chat",
+        label_key: "shortcuts.new_chat",
+        chord: "Ctrl+Alt+N",
+        action: ShortcutAction::NewChat,
+        key: Some(egui::Key::N),
+        alt: true,
+        shift: false,
+    },
+    Shortcut {
+        id: "shortcut_new_chat_plain",
+        label_key: "shortcuts.new_chat",
+        chord: "Ctrl+N",
+        action: ShortcutAction::NewChat,
+        key: Some(egui::Key::N),
+        alt: false,
+        shift: false,
+    },
+    Shortcut {
+        id: "shortcut_next_chat",
+        label_key: "shortcuts.next_chat",
+        chord: "Ctrl+Shift+]",
+        action: ShortcutAction::NextChat,
+        key: Some(egui::Key::CloseBracket),
+        alt: false,
+        shift: true,
+    },
+    Shortcut {
+        id: "shortcut_prev_chat",
+        label_key: "shortcuts.prev_chat",
+        chord: "Ctrl+Shift+[",
+        action: ShortcutAction::PrevChat,
+        key: Some(egui::Key::OpenBracket),
+        alt: false,
+        shift: true,
+    },
+    Shortcut {
+        id: "shortcut_archive",
+        label_key: "shortcuts.archive",
+        chord: "Ctrl+E",
+        action: ShortcutAction::ToggleArchive,
+        key: Some(egui::Key::E),
+        alt: false,
+        shift: false,
+    },
+    Shortcut {
+        id: "shortcut_mute",
+        label_key: "shortcuts.mute",
+        chord: "Ctrl+Shift+M",
+        action: ShortcutAction::ToggleMute,
+        key: Some(egui::Key::M),
+        alt: false,
+        shift: true,
+    },
+    Shortcut {
+        id: "shortcut_mark_unread",
+        label_key: "shortcuts.mark_unread",
+        chord: "Ctrl+Shift+U",
+        action: ShortcutAction::MarkUnread,
+        key: Some(egui::Key::U),
+        alt: false,
+        shift: true,
+    },
+    Shortcut {
+        id: "shortcut_search",
+        label_key: "shortcuts.search_in_chat",
+        chord: "Ctrl+F",
+        action: ShortcutAction::ReferenceOnly,
+        key: None,
+        alt: false,
+        shift: false,
+    },
+    Shortcut {
+        id: "shortcut_search_chats",
+        label_key: "shortcuts.search_chats",
+        chord: "Ctrl+K",
+        action: ShortcutAction::FocusSearch,
+        key: Some(egui::Key::K),
+        alt: false,
+        shift: false,
+    },
+    Shortcut {
+        id: "shortcut_sidebar",
+        label_key: "shortcuts.toggle_sidebar",
+        chord: "Ctrl+B",
+        action: ShortcutAction::ReferenceOnly,
+        key: None,
+        alt: false,
+        shift: false,
+    },
+    Shortcut {
+        id: "shortcut_open_settings",
+        label_key: "shortcuts.open_settings",
+        chord: "Ctrl+,",
+        action: ShortcutAction::OpenSettings,
+        key: Some(egui::Key::Comma),
+        alt: false,
+        shift: false,
+    },
+    Shortcut {
+        id: "shortcut_lock_app",
+        label_key: "shortcuts.lock_app",
+        chord: "Ctrl+Alt+L",
+        action: ShortcutAction::LockApp,
+        key: Some(egui::Key::L),
+        alt: true,
+        shift: false,
+    },
+];
+
+impl App {
+    /// Answers this frame's shortcut chords. Called by the
+    /// shell once per frame, after the backend polls and
+    /// before the screens draw, and never while the app is
+    /// locked (the shell draws the lock screen instead).
+    pub(crate) fn handle_shortcuts(&mut self, ctx: &egui::Context) {
+        if self.code_prompt.is_some() || self.ui_confirm.is_some() {
+            return;
+        }
+        let fired = ctx.input(|i| {
+            SHORTCUTS.iter().find_map(|s| {
+                let key = s.key?;
+                (i.modifiers.command
+                    && i.modifiers.alt == s.alt
+                    && i.modifiers.shift == s.shift
+                    && i.key_pressed(key))
+                .then_some(s.action)
+            })
+        });
+        let Some(action) = fired else { return };
+        match action {
+            ShortcutAction::NewChat => {
+                self.new_chat.open = true;
+            }
+            ShortcutAction::NextChat => self.step_chat(1),
+            ShortcutAction::PrevChat => self.step_chat(-1),
+            ShortcutAction::ToggleArchive => {
+                let id = self.selected_chat;
+                if let Some(c) = self.chats.iter().find(|c| c.id == id) {
+                    let (archived, pinned, muted) = (!c.archived, c.pinned, c.muted);
+                    self.apply_chat_action(id, archived, pinned, muted);
+                }
+            }
+            ShortcutAction::ToggleMute => {
+                let id = self.selected_chat;
+                if let Some(c) = self.chats.iter().find(|c| c.id == id) {
+                    let (archived, pinned, muted) = (c.archived, c.pinned, !c.muted);
+                    self.apply_chat_action(id, archived, pinned, muted);
+                }
+            }
+            ShortcutAction::MarkUnread => {
+                let id = self.selected_chat;
+                self.mark_chat_unread(id);
+            }
+            ShortcutAction::LockApp => {
+                if self.lock_code.is_some() {
+                    self.app_locked_now = true;
+                    self.code_entry.clear();
+                    self.code_error = None;
+                }
+            }
+            ShortcutAction::FocusSearch => {
+                // The search field lives on the chat list: land
+                // on the Chats screen with the list in front (in
+                // single-pane an open conversation would cover
+                // it), then ask egui to focus the field by the
+                // id the chat list draws it under. The request
+                // is made before the screens draw this frame, so
+                // the field takes focus in this same pass.
+                self.screen = crate::state::Screen::Chats;
+                self.conversation_open = false;
+                ctx.memory_mut(|m| m.request_focus(egui::Id::unique("chat_search")));
+            }
+            ShortcutAction::OpenSettings => {
+                self.screen = crate::state::Screen::Settings;
+            }
+            ShortcutAction::ReferenceOnly => {}
+        }
+    }
+
+    /// Moves the selection one step through the current
+    /// list (the visible chats, so the current screen and
+    /// filter bound the walk), wrapping at the ends. A
+    /// selection outside the list starts from the nearest
+    /// end.
+    fn step_chat(&mut self, delta: i32) {
+        let ids: Vec<u64> = {
+            let visible = self.visible_chats();
+            visible.iter().map(|&i| self.chats[i].id).collect()
+        };
+        if ids.is_empty() {
+            return;
+        }
+        let next = match ids.iter().position(|id| *id == self.selected_chat) {
+            Some(idx) => {
+                let len = i32::try_from(ids.len()).unwrap_or(0);
+                let idx = i32::try_from(idx).unwrap_or(0);
+                ids[usize::try_from((idx + delta).rem_euclid(len.max(1))).unwrap_or(0)]
+            }
+            None => {
+                if delta >= 0 {
+                    ids[0]
+                } else {
+                    ids[ids.len() - 1]
+                }
+            }
+        };
+        self.select_chat_now(next);
+    }
+}

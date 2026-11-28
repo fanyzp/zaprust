@@ -1,0 +1,245 @@
+name: Release
+
+# Manual only: run this workflow from the Actions tab and pass
+# an existing version tag (v*) to publish a GitHub Release with
+# binaries for Linux, Windows, and macOS + SHA256SUMS. Pushing a
+# tag no longer triggers anything.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to build and publish (for example v1.0.0). Must match the workspace version."
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact: zaprust-linux-x86_64
+            binary: target/release/zaprust
+          - os: ubuntu-24.04-arm
+            artifact: zaprust-linux-arm64
+            binary: target/release/zaprust
+          - os: windows-latest
+            artifact: zaprust-windows-x86_64.exe
+            binary: target/release/zaprust.exe
+            triplet: x64-windows
+          - os: windows-11-arm
+            artifact: zaprust-windows-arm64.exe
+            binary: target/release/zaprust.exe
+            triplet: arm64-windows
+          - os: macos-latest
+            artifact: zaprust-macos-arm64
+            binary: target/release/zaprust
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+
+      - name: Tag matches the workspace version
+        shell: bash
+        run: |
+          want="v$(grep -m1 '^version = ' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')"
+          if [ "${{ inputs.tag }}" != "$want" ]; then
+            echo "Tag ${{ inputs.tag }} does not match the workspace version $want" >&2
+            exit 1
+          fi
+
+
+      - name: System dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake perl clang \
+            libclang-dev libasound2-dev libpipewire-0.3-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
+            libgl1-mesa-dev libgtk-3-dev libopus-dev
+
+      - name: System dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install cmake perl
+
+      # libsqlite3-sys builds SQLCipher, which needs OpenSSL:
+      # the Windows runners carry it in the preinstalled
+      # vcpkg, so install the matrix triplet and point the
+      # build at it instead of adding a system package.
+      - name: OpenSSL (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          vcpkg install openssl:${{ matrix.triplet }}
+          $dir = "$env:VCPKG_INSTALLATION_ROOT\installed\${{ matrix.triplet }}"
+          "OPENSSL_DIR=$dir" >> $env:GITHUB_ENV
+          "OPENSSL_LIB_DIR=$dir\lib" >> $env:GITHUB_ENV
+          "OPENSSL_INCLUDE_DIR=$dir\include" >> $env:GITHUB_ENV
+
+      - name: Rust toolchain (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --release -p app
+
+      - name: Package
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp "${{ matrix.binary }}" "dist/${{ matrix.artifact }}"
+          cd dist && sha256sum "${{ matrix.artifact }}" > "${{ matrix.artifact }}.sha256"
+
+      # Linux only: the same binary also ships as a .deb, an .rpm,
+      # and an AppImage, so users can install through their package
+      # manager or run one portable file. Every package gets a
+      # .sha256 sidecar, so the publish job's combined SHA256SUMS
+      # covers them like the raw binaries.
+      - name: Linux packages (.deb, .rpm, AppImage)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(grep -m1 '^version = ' Cargo.toml | sed 's/.*\"\(.*\)\".*/\1/')"
+          march="$(uname -m)"
+          case "$march" in
+            x86_64) suffix="x86_64"; deb_arch="amd64"; rpm_arch="x86_64" ;;
+            aarch64) suffix="arm64"; deb_arch="arm64"; rpm_arch="aarch64" ;;
+            *) echo "No Linux packages for $march"; exit 0 ;;
+          esac
+          stage="$PWD/pkgstage"
+          mkdir -p "$stage/usr/bin" "$stage/usr/share/applications" \
+            "$stage/usr/share/icons/hicolor/512x512/apps"
+          install -m 0755 "${{ matrix.binary }}" "$stage/usr/bin/zaprust"
+          install -m 0644 packaging/zaprust.desktop "$stage/usr/share/applications/zaprust.desktop"
+          install -m 0644 packaging/icons/zaprust-plate-512.png "$stage/usr/share/icons/hicolor/512x512/apps/zaprust.png"
+          # Debian package, staged tree plus a control file.
+          mkdir -p "$stage/DEBIAN"
+          printf '%s\n' \
+            "Package: zaprust" \
+            "Version: $version" \
+            "Section: net" \
+            "Priority: optional" \
+            "Architecture: $deb_arch" \
+            "Maintainer: fanyzp" \
+            "Description: Zaprust, a fast native WhatsApp client" \
+            " A native WhatsApp client for desktop, written in Rust." \
+            > "$stage/DEBIAN/control"
+          find "$stage" -type d -exec chmod 0755 {} +
+          dpkg-deb --build --root-owner-group "$stage" "dist/zaprust-linux-$suffix.deb"
+          rm -rf "$stage/DEBIAN"
+          # RPM package, spec template lives in packaging/.
+          # RPM forbids '-' in Version, so a prerelease version stamps
+          # with the tilde spelling instead (1.0.0-beta -> 1.0.0~beta),
+          # which also sorts before the plain release it precedes.
+          rpm_version="${version//-/"~"}"
+          sudo apt-get install -y rpm
+          mkdir -p "$PWD/rpmbuild/SPECS" "$PWD/rpmbuild/RPMS"
+          sed -e "s/@VERSION@/$rpm_version/" -e "s/@ARCH@/$rpm_arch/" \
+            -e "s|@STAGE@|$stage|" packaging/zaprust.spec > "$PWD/rpmbuild/SPECS/zaprust.spec"
+          rpmbuild -bb --define "_topdir $PWD/rpmbuild" \
+            --target "$rpm_arch" "$PWD/rpmbuild/SPECS/zaprust.spec"
+          cp "$PWD/rpmbuild/RPMS/$rpm_arch/"*.rpm "dist/zaprust-linux-$suffix.rpm"
+          # AppImage, one portable file with the desktop entry inside.
+          appdir="$PWD/AppDir"
+          mkdir -p "$appdir/usr/bin"
+          install -m 0755 "${{ matrix.binary }}" "$appdir/usr/bin/zaprust"
+          install -m 0644 packaging/zaprust.desktop "$appdir/zaprust.desktop"
+          install -m 0644 packaging/zaprust.png "$appdir/zaprust.png"
+          ln -s usr/bin/zaprust "$appdir/AppRun"
+          curl -fsSL -o appimagetool \
+            "https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-$march.AppImage"
+          chmod +x appimagetool
+          ARCH="$march" APPIMAGE_EXTRACT_AND_RUN=1 \
+            ./appimagetool "$appdir" "dist/zaprust-linux-$suffix.AppImage"
+          cd dist
+          for f in "zaprust-linux-$suffix.deb" "zaprust-linux-$suffix.rpm" \
+            "zaprust-linux-$suffix.AppImage"; do
+            sha256sum "$f" > "$f.sha256"
+          done
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/*
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Combined checksums
+        run: |
+          cd dist
+          cat -- *.sha256 > SHA256SUMS
+          rm -- *.sha256
+          ls -la
+
+      - name: Release notes from CHANGELOG
+        id: notes
+        shell: bash
+        run: |
+          tag="${{ inputs.tag }}"
+          version="${tag#v}"
+          awk -v ver="$version" '
+            $0 ~ "^## \\[" ver "\\]" { capture = 1; next }
+            capture && /^## / { exit }
+            capture { print }
+          ' CHANGELOG.md > notes.md
+          if [ ! -s notes.md ]; then
+            echo "::error::CHANGELOG.md has no section for $tag; refusing to publish a release with generic notes."
+            exit 1
+          fi
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag }}
+          body_path: notes.md
+          files: dist/*
+
+      # This workflow cannot sign: the release key is offline by
+      # design (packaging/RELEASE-SIGNING.md). What it can do is
+      # make a missing signature impossible to miss. The release
+      # just published carries SHA256SUMS but no SHA256SUMS.sig,
+      # and every installed copy refuses to update to it until the
+      # maintainer signs SHA256SUMS offline and uploads the .sig.
+      - name: Signing reminder (action required)
+        shell: bash
+        run: |
+          echo "::warning title=Release not signed yet::SHA256SUMS.sig is missing from release ${{ inputs.tag }}. Installed copies will refuse this update until the maintainer signs SHA256SUMS offline and uploads SHA256SUMS.sig. See packaging/RELEASE-SIGNING.md."
+          {
+            echo "## Action required: sign release ${{ inputs.tag }}"
+            echo ""
+            echo "The release is published with \`SHA256SUMS\` but **without \`SHA256SUMS.sig\`**."
+            echo "The updater fails closed: installed copies refuse to update to an unsigned release."
+            echo ""
+            echo "1. Download \`SHA256SUMS\` from the published release (not a local copy)."
+            echo "2. Sign it offline, as in packaging/RELEASE-SIGNING.md:"
+            echo ""
+            echo '```sh'
+            echo "openssl pkeyutl -sign -inkey zaprust-release-ed25519.pem -rawin \\"
+            echo "  -in SHA256SUMS -out SHA256SUMS.sig.bin"
+            echo "base64 -w0 SHA256SUMS.sig.bin > SHA256SUMS.sig"
+            echo '```'
+            echo ""
+            echo "3. Upload \`SHA256SUMS.sig\` to the release and confirm the release page lists it next to \`SHA256SUMS\` before announcing the release."
+          } >> "$GITHUB_STEP_SUMMARY"

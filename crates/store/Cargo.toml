@@ -1,0 +1,46 @@
+[package]
+name = "store"
+version.workspace = true
+publish = false
+description = "Zaprust chat archive: the app's own SQLite store for chats and messages (the protocol library stores only session state)."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+backend = { path = "../backend" }
+# The view-once preview placeholder (core::model) is the one
+# string the archive writes into a chat row when it recomputes
+# a preview during the one-time caption scrub; nothing else
+# crosses from core.
+core = { path = "../core" }
+rusqlite = { version = "0.32", features = ["bundled-sqlcipher"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+getrandom = "0.3"
+
+# The keyring backend must be a real persistent platform store,
+# selected explicitly per target. The umbrella crate with no
+# platform feature silently substitutes an in-memory mock store
+# that reports success and persists nothing; that substitution
+# is what stranded the database key (see src/dbkey.rs). The
+# Linux persistent variant pairs the kernel keyring with the
+# Secret Service store; the Rust crypto backend keeps it free of
+# a system OpenSSL dependency, and the vendored D-Bus client
+# library keeps the build free of a system libdbus dependency
+# (the build container has none).
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3", features = ["linux-native-sync-persistent", "crypto-rust", "vendored"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3", features = ["apple-native"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring = { version = "3", features = ["windows-native"] }
+
+[target.'cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))'.dependencies]
+keyring = "3"

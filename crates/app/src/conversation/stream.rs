@@ -1,0 +1,2272 @@
+//! The message stream: day chips, the unread divider, the
+//! encryption notice, the bubble loop and its scroll
+//! management (stick-to-bottom, the scroll-to-bottom button).
+
+use super::*;
+
+impl App {
+    /// Draws the message stream into the panel under the
+    /// header and dispatches the bubble actions it produced.
+    /// Returns the scroll area's output (the scroll-to-bottom
+    /// button reads it) and the stream's full rect (the
+    /// floating composer zones itself from it).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn draw_stream(
+        &mut self,
+        ui: &mut egui::Ui,
+        chat: &core::model::Chat,
+        t: Tokens,
+        _now: f64,
+        composer_clearance: f32,
+        pending_actions: &mut Vec<BubbleAction>,
+        engaged: &mut bool,
+    ) -> (egui::scroll_area::ScrollAreaOutput<()>, egui::Rect) {
+        let available = ui.available_size();
+        let (full_rect, _) =
+            ui.allocate_exact_size(Vec2::new(available.x, available.y.max(120.0)), Sense::hover());
+        // The chat background is the panel's solid bg_chat fill;
+        // the messages sit directly on it.
+        let col_margin = side_margin(full_rect.width());
+        let rect = full_rect.shrink2(Vec2::new(col_margin, 0.0));
+        let mut child = ui
+            .new_child(egui::UiBuilder::new().max_rect(rect).layout(Layout::top_down(Align::Min)));
+        // Whether a starred-locate target is pending at the start
+        // of this draw. The locate is one-shot: it is cleared after
+        // this pass whether or not the target rendered as a bubble
+        // (see the clear after the closure), so a target that lives
+        // in an album run or a system row can never wedge
+        // stick-to-bottom off for this view.
+        // Cross-message selection (row 129): the previous
+        // frame's galley registry turns the stored selection
+        // into this frame's highlight ranges; the registry
+        // then restarts empty for this frame's paints. A chat
+        // switch clears the selection itself.
+        if self.selection_chat != Some(chat.id) {
+            if self.selection_chat.is_some() {
+                self.text_selection = None;
+                self.selection_drag = false;
+            }
+            self.selection_chat = Some(chat.id);
+        }
+        {
+            let ctx = ui.ctx().clone();
+            let previous = ctx
+                .data(|d| {
+                    d.get_temp::<crate::conversation::selection::GalleyRegistry>(
+                        crate::conversation::selection::registry_id(),
+                    )
+                })
+                .unwrap_or_default();
+            let highlights =
+                crate::conversation::selection::highlight_map(&previous, self.text_selection);
+            ctx.data_mut(|d| {
+                d.insert_temp(crate::conversation::selection::highlights_id(), highlights);
+                d.insert_temp(
+                    crate::conversation::selection::registry_id(),
+                    crate::conversation::selection::GalleyRegistry::new(),
+                );
+            });
+        }
+        // Windowing state belongs to one chat: a switch drops
+        // the heights and the anchor (they re-measure within
+        // the first windowful of the new chat).
+        if self.stream_anchor_chat != chat.id {
+            self.stream_anchor_chat = chat.id;
+            self.stream_heights.clear();
+            self.stream_anchor = None;
+            self.stream_anchor_offset = 0.0;
+            self.stream_last_offset = 0.0;
+            self.stream_last_viewport = 0.0;
+            self.stream_was_bottom = true;
+        }
+        // QA hook (--scroll-to N): locate the Nth message of
+        // the conversation once, through the same one-shot
+        // locate the search jump uses.
+        if let Some(n) = self.qa_scroll_to {
+            if self.scroll_to_message.is_none() {
+                if let Some(msg) = self.conversation.get(n.saturating_sub(1)) {
+                    self.scroll_to_message = Some(msg.id);
+                    self.qa_scroll_to = None;
+                }
+            }
+        }
+        // A locate target outside the retained window (a
+        // global-search hit, a starred row older than the
+        // window) pages the chat's whole archive in first
+        // (qc1644): the locate below then finds its row in the
+        // conversation like it always did. A target the
+        // archive does not hold either leaves the conversation
+        // extended and the locate a no-op, as a missing target
+        // was before paging existed.
+        if self.live_mode {
+            if let Some(target) = self.scroll_to_message {
+                if !self.conversation.iter().any(|m| m.id == target) {
+                    self.page_chat_fully(chat.id);
+                }
+            }
+        }
+        let locate_pending = self.scroll_to_message.is_some();
+        // Whether the user's hand is on the stream this frame
+        // (Claim V): the window force and the anchor-fix
+        // restore are bookkeeping corrections, and a correction
+        // issued mid-gesture fights the gesture for the offset.
+        // Both stand down while a gesture is active and land on
+        // the first quiet frame instead; the stored anchor
+        // survives the wait, so nothing is lost by deferring.
+        let scroll_gesture = {
+            let prev_velocity_y =
+                ui.ctx().data(|d| d.get_temp::<f32>(stream_velocity_id())).unwrap_or(0.0);
+            ui.ctx().input(|i| {
+                scroll_gesture_active(
+                    i.smooth_scroll_delta.y,
+                    i.events.iter().any(|e| matches!(e, egui::Event::MouseWheel { .. })),
+                    prev_velocity_y,
+                )
+            })
+        };
+        // Display fetches for photo messages whose real bytes are
+        // not here yet. The paint loop below borrows the
+        // conversation, so requests are collected here and
+        // dispatched after the scroll pass, before the return.
+        // The height of everything painted above the row
+        // region this frame (top padding, the loading row),
+        // captured inside the pass for the anchor bookkeeping
+        // after it.
+        let mut prefix_h_out = 0.0_f32;
+        let mut pending_photo_fetches: Vec<u64> = Vec::new();
+        let mut pending_sticker_fetches: Vec<u64> = Vec::new();
+        let mut pending_poster_fetches: Vec<u64> = Vec::new();
+        let scroll_out = crate::widgets::show_scroll_area(
+            &mut child,
+            "conversation_stream",
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .stick_to_bottom(!self.qa_scroll_top && self.scroll_to_message.is_none()),
+            |ui| {
+                // The content's top edge in frame coordinates:
+                // the windowing math below converts between
+                // scroll offsets (content coordinates) and
+                // painted positions through it.
+                let content_top = ui.cursor().top();
+                ui.add_space(SP_2_5);
+                // The older-history loading row (design
+                // standard section 22): painted only while a
+                // page request for this chat is outstanding
+                // with the phone. That fetch state is the real
+                // signal the audit-14 note once waited for (an
+                // earlier unconditional label was a permanent
+                // fake indicator): a fetch with no row would be
+                // a silent wait, a row with no fetch behind it
+                // a fake, and both are violations.
+                if self.live.as_ref().is_some_and(|s| {
+                    s.history.get(&chat.id) == Some(&crate::live::HistoryFetch::Fetching)
+                }) {
+                    crate::widgets::loading_row(
+                        ui,
+                        &crate::i18n::t("chat.loading_older"),
+                        14.0,
+                        t.text_secondary,
+                    );
+                    ui.add_space(SP_2);
+                }
+                // An empty conversation still opens with
+                // the encryption notice (below, the loop
+                // paints it under the first day chip when
+                // there are messages).
+                if self.conversation.is_empty() {
+                    encryption_notice(ui, t);
+                    ui.add_space(SP_2);
+                }
+                let mut actions: Vec<BubbleAction> = Vec::new();
+                crate::anim::begin_message_stream(ui, chat.id);
+                let total = self.conversation.len();
+                // Separators are derived from the message
+                // data, not hardcoded: a day chip wherever
+                // the day label changes, and the unread
+                // divider above the first unread message.
+                // The divider is the snapshot taken when
+                // the chat was opened, so the
+                // read-by-action flush clearing the badge
+                // as the user engages cannot move or
+                // remove it mid-view.
+                let divider = self.unread_divider;
+                // Whether sender identity keys resolve through
+                // the live sender directory (see `sender_key`).
+                // The key closure itself is defined after the
+                // pre-pass build below, so its borrow of the
+                // sender directory never spans that build's
+                // mutable borrow of the app.
+                let live_now = self.live.is_some();
+                // The pre-pass tables (qc1644): the sender
+                // photos, the name-key map, the sender colors,
+                // the mention display bodies, the album
+                // iteration tables and the ID index below all
+                // used to be rebuilt from scratch on every
+                // frame, seven full passes over the whole
+                // conversation before windowing could even
+                // start. They are pure functions of the inputs
+                // folded into `prepass_key` (see
+                // `stream_prepass_key`), so a frame whose key
+                // still matches reuses the memoized tables and
+                // pays only the fold. The memo lives in egui
+                // temp data, the pattern the selection registry
+                // above already uses.
+                let prepass_key = stream_prepass_key(self, chat.id, rect.width(), t);
+                let prepass = {
+                    let ctx = ui.ctx().clone();
+                    let cached = ctx
+                        .data(|d| d.get_temp::<StreamPrepassMemo>(stream_prepass_id()))
+                        .filter(|memo| memo.key == prepass_key);
+                    match cached {
+                        Some(memo) => memo.prepass,
+                        None => {
+                            let built = self.build_stream_prepass(ui.ctx(), t);
+                            ctx.data_mut(|d| {
+                                d.insert_temp(
+                                    stream_prepass_id(),
+                                    StreamPrepassMemo { key: prepass_key, prepass: built.clone() },
+                                );
+                            });
+                            built
+                        }
+                    }
+                };
+                let StreamPrepass {
+                    sender_photos,
+                    key_by_name,
+                    sender_colors,
+                    display_bodies,
+                    iterations,
+                    iter_of_msg,
+                    msg_index_of_id,
+                } = prepass;
+                // The identity key of one message's sender,
+                // resolved per message in the loop below.
+                let key_of = |m: &Message| sender_key(live_now, &self.sender_jids, m);
+                let divider_before = |i: usize| {
+                    divider.is_some_and(|d| d.first_unread_id == self.conversation[i].id)
+                };
+                // Sender grouping (WhatsApp's rhythm):
+                // consecutive messages from the same sender
+                // pack tight (3 px) and share one sender
+                // name and one tail (both on the first);
+                // groups separate by 14 px. System messages
+                // break a group, and so do day boundaries
+                // and the unread divider.
+                prefix_h_out = ui.cursor().top() - content_top;
+                let resolved: Vec<f32> = iterations
+                    .iter()
+                    .map(|(first, len)| {
+                        self.stream_heights
+                            .get(&crate::conversation::anchor::RowKey::Row(
+                                self.conversation[*first].id,
+                            ))
+                            .copied()
+                            .unwrap_or_else(|| iter_estimate(&self.conversation, *first, *len))
+                    })
+                    .collect();
+                let table = crate::conversation::anchor::Heights::new(
+                    resolved.iter().map(|h| Some(*h)).collect(),
+                    0.0,
+                );
+                let prefix_sums = table.prefix_sums();
+                let windowed = iterations.len() > STREAM_WINDOW_MIN;
+                let mut segments: Vec<(usize, usize)> = Vec::new();
+                let mut spacer_before: std::collections::HashMap<usize, f32> =
+                    std::collections::HashMap::new();
+                let mut trailing_spacer = 0.0_f32;
+                // (iteration, intra-row offset) the anchor fix
+                // restores after the paint, when one is due.
+                let mut anchor_fix: Option<(usize, f32)> = None;
+                if windowed {
+                    let viewport = if self.stream_last_viewport > 0.0 {
+                        self.stream_last_viewport
+                    } else {
+                        available.y
+                    };
+                    let prefix_h = ui.cursor().top() - content_top;
+                    let offset_rows = (self.stream_last_offset - prefix_h).max(0.0);
+                    let stick_engaged = !self.qa_scroll_top && self.scroll_to_message.is_none();
+                    let win_offset = if stick_engaged
+                        && !scroll_gesture
+                        && (self.stream_was_bottom || self.stream_last_viewport == 0.0)
+                    {
+                        table.offset_stuck_to_bottom(viewport)
+                    } else {
+                        offset_rows.min(table.total())
+                    };
+                    let (ws, we, _, _) = table.visible_range(win_offset, viewport, STREAM_OVERSCAN);
+                    segments.push((ws, we));
+                    // A locate target outside the window is
+                    // painted too (its own neighborhood), so
+                    // the rect-driven locate works unchanged.
+                    if let Some(target) = self.scroll_to_message {
+                        if let Some(&mi) = msg_index_of_id.get(&target) {
+                            let ti = iter_of_msg[mi];
+                            segments.push((ti.saturating_sub(4), (ti + 5).min(iterations.len())));
+                        }
+                    }
+                    // Anchor preservation: the model moved
+                    // rows above the captured anchor (a history
+                    // prepend landed, or rows above measured
+                    // differently than their estimates) while
+                    // the scroll offset stood still. The anchor
+                    // iteration is painted this frame and its
+                    // exact position restored after the paint.
+                    if let Some((key, intra)) = self.stream_anchor {
+                        if self.stream_anchor_chat == chat.id
+                            && !self.stream_was_bottom
+                            && (self.stream_last_offset - self.stream_anchor_offset).abs() <= 0.5
+                        {
+                            if let Some(ti) = iterations.iter().position(|(first, _)| {
+                                key == crate::conversation::anchor::RowKey::Row(
+                                    self.conversation[*first].id,
+                                )
+                            }) {
+                                let expected = table.offset_for_anchor((ti, intra)) + prefix_h;
+                                if (expected - self.stream_last_offset).abs() > 0.5 {
+                                    anchor_fix = Some((ti, intra));
+                                    segments.push((
+                                        ti.saturating_sub(4),
+                                        (ti + 5).min(iterations.len()),
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                    // Recapture the anchor from last frame's
+                    // final offset on this frame's model, for
+                    // the next frame's fix check. Skipped when
+                    // a fix just fired (the stored anchor stays
+                    // valid through its correction) and when
+                    // the stored anchor is inconsistent with
+                    // the standing offset for another reason
+                    // (its row was deleted: recapture then
+                    // takes whatever row the offset sits in).
+                    let user_scrolled =
+                        (self.stream_last_offset - self.stream_anchor_offset).abs() > 0.5;
+                    let stored_consistent = match self.stream_anchor {
+                        Some((key, intra)) => iterations
+                            .iter()
+                            .position(|(first, _)| {
+                                key == crate::conversation::anchor::RowKey::Row(
+                                    self.conversation[*first].id,
+                                )
+                            })
+                            .is_some_and(|ti| {
+                                (table.offset_for_anchor((ti, intra)) + prefix_h
+                                    - self.stream_last_offset)
+                                    .abs()
+                                    <= 2.0
+                            }),
+                        None => true,
+                    };
+                    if anchor_fix.is_none() && (user_scrolled || stored_consistent) {
+                        let offset_rows = (self.stream_last_offset - prefix_h).max(0.0);
+                        let (ai, intra) = table.anchor_at(offset_rows.min(table.total()));
+                        if ai < iterations.len() {
+                            self.stream_anchor = Some((
+                                crate::conversation::anchor::RowKey::Row(
+                                    self.conversation[iterations[ai].0].id,
+                                ),
+                                intra,
+                            ));
+                            self.stream_anchor_offset = self.stream_last_offset;
+                        }
+                    }
+                    segments.sort_unstable();
+                    let mut merged: Vec<(usize, usize)> = Vec::new();
+                    for seg in segments {
+                        if let Some(last) = merged.last_mut() {
+                            if seg.0 <= last.1 {
+                                last.1 = last.1.max(seg.1);
+                                continue;
+                            }
+                        }
+                        merged.push(seg);
+                    }
+                    segments = merged;
+                    for (i, (s, _)) in segments.iter().enumerate() {
+                        let sp = if i == 0 {
+                            prefix_sums[*s]
+                        } else {
+                            prefix_sums[*s] - prefix_sums[segments[i - 1].1]
+                        };
+                        if sp > 0.0 {
+                            spacer_before.insert(*s, sp);
+                        }
+                    }
+                    if let Some((_, last_end)) = segments.last() {
+                        trailing_spacer = prefix_sums[iterations.len()] - prefix_sums[*last_end];
+                    }
+                }
+                let in_window = |iter_idx: usize| -> bool {
+                    !windowed || segments.iter().any(|(s, e)| iter_idx >= *s && iter_idx < *e)
+                };
+                // The painted rect of the anchor-fix iteration,
+                // captured during the paint for the correction
+                // after the loop.
+                let mut anchor_fix_rect: Option<egui::Rect> = None;
+                // A manual index (not an iterator) so an album run
+                // can consume its whole run of messages in one step.
+                let mut idx = 0;
+                while idx < total {
+                    // Windowing bookkeeping for this iteration:
+                    // its spacer (when it opens a segment), its
+                    // top edge, and the skip for iterations
+                    // outside every segment (their height is
+                    // already inside the spacers).
+                    let iter_idx = iter_of_msg[idx];
+                    if let Some(sp) = spacer_before.get(&iter_idx) {
+                        ui.add_space(*sp);
+                    }
+                    let iter_top = ui.cursor().top();
+                    let mut iter_rise = 0.0_f32;
+                    if !in_window(iter_idx) {
+                        idx += iterations[iter_idx].1;
+                        continue;
+                    }
+                    let msg = &self.conversation[idx];
+                    let day_break =
+                        idx == 0 || msg.day_label() != self.conversation[idx - 1].day_label();
+                    if day_break {
+                        day_chip(ui, t, msg.day_label());
+                        ui.add_space(SP_2);
+                    } else if idx > 0 && time_chip_between(&self.conversation[idx - 1], msg) {
+                        // A centered time chip when a real pause
+                        // separates the runs, the reference
+                        // wireframe's "9:41 PM" separator.
+                        day_chip(ui, t, &msg.time);
+                        ui.add_space(SP_2);
+                    }
+                    // The encryption notice is a rendered
+                    // row, never a stored message: it opens
+                    // the stream under the first day
+                    // separator, once per conversation view.
+                    // It is painted outside the bubbles, so
+                    // grouping, the unread divider and the
+                    // scroll math never see it.
+                    if idx == 0 {
+                        encryption_notice(ui, t);
+                        ui.add_space(SP_2);
+                    }
+                    if divider_before(idx) {
+                        if let Some(d) = divider {
+                            unread_divider_row(ui, t, d.count);
+                        }
+                        ui.add_space(SP_2);
+                    }
+                    let sep_break = day_break || divider_before(idx);
+                    // Album: two or more consecutive photos or videos
+                    // from the same sender collapse into one grid
+                    // card; the run is consumed in a single step.
+                    let run = album_run_len(&self.conversation, idx, &key_of);
+                    if run >= 2 {
+                        // Photos in the run fetch their real bytes
+                        // for display, like single photo bubbles.
+                        for item in &self.conversation[idx..idx + run] {
+                            if matches!(
+                                item.kind,
+                                core::model::MessageKind::Image { view_once: false, .. }
+                            ) && self.photo_tile(item.id) == crate::media::PhotoTile::Idle
+                            {
+                                pending_photo_fetches.push(item.id);
+                            }
+                        }
+                        let run_items = &self.conversation[idx..idx + run];
+                        let (alpha, rise) = crate::anim::message_entrance(
+                            ui,
+                            chat.id,
+                            msg.id,
+                            idx + 3 >= total,
+                            self.motion.fades(),
+                        );
+                        let rise = if self.motion.slides() { rise } else { 0.0 };
+                        iter_rise = rise;
+                        if rise > 0.01 {
+                            ui.add_space(rise);
+                        }
+                        // The demo photo may fill album cells only
+                        // where it is the disclosed content (demo
+                        // and test mode); a real live session's
+                        // cells show the photo itself or the
+                        // neutral placeholder.
+                        if self.photo_demo_allowed() && self.media.photo_texture.is_none() {
+                            self.media.photo_texture = Some(crate::media::demo_photo(ui.ctx()));
+                        }
+                        let album_demo = if self.photo_demo_allowed() {
+                            self.media.photo_texture.as_ref().map(egui::TextureHandle::id)
+                        } else {
+                            None
+                        };
+                        // Video cells in the grid paint their own
+                        // thumbnails; decode any that are here.
+                        // A cell with no thumbnail bytes asks for
+                        // the video's hosted poster instead.
+                        for item in run_items {
+                            if matches!(item.kind, core::model::MessageKind::Video { .. }) {
+                                Self::video_thumb_texture(
+                                    &mut self.media,
+                                    self.live.as_ref(),
+                                    ui.ctx(),
+                                    item.id,
+                                );
+                                if self.video_tile(item.id) == crate::media::VideoTile::Neutral
+                                    && !self.media.poster_fetch.contains_key(&item.id)
+                                {
+                                    pending_poster_fetches.push(item.id);
+                                }
+                            }
+                        }
+                        let album_actions = ui
+                            .scope(|ui| {
+                                if alpha < 0.999 {
+                                    ui.set_opacity(alpha);
+                                }
+                                crate::bubble::message_album(
+                                    ui,
+                                    run_items,
+                                    t,
+                                    &self.media.textures,
+                                    &self.media.video_textures,
+                                    album_demo,
+                                )
+                            })
+                            .inner;
+                        actions.extend(album_actions);
+                        // Reaction pills stay per message under the
+                        // grid, exactly as they hang under bubbles.
+                        for item in run_items {
+                            self.draw_message_strip(ui, item);
+                        }
+                        let reacted = run_items.last().is_some_and(|m| !m.reactions.is_empty());
+                        ui.add_space(if reacted { REACTED_SPACE } else { RUN_GAP_SPACE });
+                        if windowed {
+                            let settled = (ui.cursor().top() - iter_top - iter_rise).max(0.0);
+                            self.stream_heights.insert(
+                                crate::conversation::anchor::RowKey::Row(
+                                    self.conversation[iterations[iter_idx].0].id,
+                                ),
+                                settled,
+                            );
+                            if anchor_fix.is_some_and(|(ti, _)| ti == iter_idx) {
+                                anchor_fix_rect = Some(egui::Rect::from_min_size(
+                                    egui::Pos2::new(rect.left(), iter_top),
+                                    egui::Vec2::new(rect.width(), ui.cursor().top() - iter_top),
+                                ));
+                            }
+                        }
+                        idx += run;
+                        continue;
+                    }
+                    // System notices (group events, timer
+                    // changes) read as centered chips, WhatsApp-style,
+                    // never as a participant's bubble.
+                    if msg.kind == core::model::MessageKind::System {
+                        system_chip(ui, t, &msg.body);
+                        ui.add_space(RUN_GAP_SPACE);
+                        if windowed {
+                            let settled = (ui.cursor().top() - iter_top - iter_rise).max(0.0);
+                            self.stream_heights.insert(
+                                crate::conversation::anchor::RowKey::Row(
+                                    self.conversation[iterations[iter_idx].0].id,
+                                ),
+                                settled,
+                            );
+                            if anchor_fix.is_some_and(|(ti, _)| ti == iter_idx) {
+                                anchor_fix_rect = Some(egui::Rect::from_min_size(
+                                    egui::Pos2::new(rect.left(), iter_top),
+                                    egui::Vec2::new(rect.width(), ui.cursor().top() - iter_top),
+                                ));
+                            }
+                        }
+                        idx += 1;
+                        continue;
+                    }
+                    let key = group_key(msg, key_of(msg));
+                    let group_first = sep_break
+                        || match (&key, idx.checked_sub(1).map(|i| &self.conversation[i])) {
+                            (Some(k), Some(prev)) => {
+                                group_key(prev, key_of(prev)).as_ref() != Some(k)
+                            }
+                            _ => true,
+                        };
+                    let next_sep_break = idx + 1 < total
+                        && (self.conversation[idx + 1].day_label() != msg.day_label()
+                            || divider_before(idx + 1));
+                    let group_last = next_sep_break
+                        || match (&key, self.conversation.get(idx + 1)) {
+                            (Some(k), Some(next)) => {
+                                group_key(next, key_of(next)).as_ref() != Some(k)
+                            }
+                            _ => true,
+                        };
+                    // Group runs of incoming messages carry
+                    // the sender's avatar: the column is
+                    // reserved for the whole run, the disc
+                    // paints under its last bubble.
+                    let group_incoming = chat.kind == core::model::ChatKind::Group
+                        && !msg.is_mine()
+                        && msg.kind != core::model::MessageKind::System;
+                    // A photo bubble whose real bytes are not
+                    // here yet asks for them (dispatched after the
+                    // scroll pass); its tile state decides what
+                    // the bubble may honestly paint meanwhile.
+                    let photo_tile = self.photo_tile(msg.id);
+                    if matches!(msg.kind, core::model::MessageKind::Image { view_once: false, .. })
+                        && photo_tile == crate::media::PhotoTile::Idle
+                    {
+                        pending_photo_fetches.push(msg.id);
+                    }
+                    let sticker_tile = self.sticker_tile(msg.id);
+                    if msg.kind == core::model::MessageKind::Sticker
+                        && sticker_tile == crate::media::PhotoTile::Idle
+                    {
+                        pending_sticker_fetches.push(msg.id);
+                    }
+                    // The photo's wire thumbnail and the best
+                    // known aspect for its tile: the decoded
+                    // photo's own proportions when its bytes are
+                    // here, else the thumbnail's.
+                    let photo_thumb_pair = if matches!(
+                        msg.kind,
+                        core::model::MessageKind::Image { view_once: false, .. }
+                    ) {
+                        Self::photo_thumb_texture(
+                            &mut self.media,
+                            self.live.as_ref(),
+                            ui.ctx(),
+                            msg.id,
+                        )
+                    } else {
+                        None
+                    };
+                    let own_aspect = self.media.textures.get(&msg.id).map(|handle| {
+                        let size = handle.size_vec2();
+                        size.x / size.y.max(1.0)
+                    });
+                    let video_thumb_pair =
+                        if matches!(msg.kind, core::model::MessageKind::Video { .. }) {
+                            Self::video_thumb_texture(
+                                &mut self.media,
+                                self.live.as_ref(),
+                                ui.ctx(),
+                                msg.id,
+                            )
+                        } else {
+                            None
+                        };
+                    // A video with no thumbnail bytes yet asks
+                    // for its hosted poster (dispatched after
+                    // the scroll pass), and until the poster
+                    // lands the tile takes the frame's shape
+                    // from the dimensions the wire stated.
+                    if matches!(msg.kind, core::model::MessageKind::Video { .. })
+                        && video_thumb_pair.is_none()
+                        && !self.media.poster_fetch.contains_key(&msg.id)
+                    {
+                        pending_poster_fetches.push(msg.id);
+                    }
+                    let wire_aspect = if video_thumb_pair.is_none() {
+                        self.live
+                            .as_ref()
+                            .and_then(|s| s.video_dims.get(&msg.id))
+                            .map(|(w, h)| *w as f32 / (*h).max(1) as f32)
+                    } else {
+                        None
+                    };
+                    // The media extras for this message: the
+                    // sticker's animation state, the embedded
+                    // thumbnails of a location, a document and a
+                    // link preview (decoded once into the shared
+                    // embedded cache), the GIF flag and the
+                    // view-once state of the kinds whose kind
+                    // carries no flag of its own.
+                    let (sticker_animated, sticker_lottie) = self
+                        .live
+                        .as_ref()
+                        .and_then(|s| s.sticker_anim.get(&msg.id).copied())
+                        .unwrap_or((false, false));
+                    if sticker_lottie && !self.media.textures.contains_key(&msg.id) {
+                        // A Lottie sticker's picture is its
+                        // payload's static frame: decode it into
+                        // the texture cache the sticker tile
+                        // paints, exactly like fetched bytes.
+                        let frame =
+                            self.live.as_ref().and_then(|s| s.sticker_thumbs.get(&msg.id).cloned());
+                        if let Some(frame) = frame {
+                            if let Some(tex) = crate::media::decode_photo(ui.ctx(), &frame) {
+                                self.media.textures.insert(msg.id, tex);
+                            }
+                        }
+                    }
+                    let location_thumb_pair =
+                        if matches!(msg.kind, core::model::MessageKind::Location { .. }) {
+                            let bytes = self
+                                .live
+                                .as_ref()
+                                .and_then(|s| s.location_thumbs.get(&msg.id).cloned());
+                            Self::embedded_thumb_texture(
+                                &mut self.media,
+                                ui.ctx(),
+                                msg.id,
+                                bytes.as_deref(),
+                            )
+                        } else {
+                            None
+                        };
+                    let document_thumb_pair =
+                        if matches!(msg.kind, core::model::MessageKind::Document { .. }) {
+                            let bytes = self
+                                .live
+                                .as_ref()
+                                .and_then(|s| s.document_thumbs.get(&msg.id).cloned());
+                            Self::embedded_thumb_texture(
+                                &mut self.media,
+                                ui.ctx(),
+                                msg.id,
+                                bytes.as_deref(),
+                            )
+                        } else {
+                            None
+                        };
+                    let preview_thumb_pair = if msg.link_preview.is_some() {
+                        let bytes =
+                            self.live.as_ref().and_then(|s| s.preview_thumbs.get(&msg.id).cloned());
+                        Self::embedded_thumb_texture(
+                            &mut self.media,
+                            ui.ctx(),
+                            msg.id,
+                            bytes.as_deref(),
+                        )
+                    } else {
+                        None
+                    };
+                    let media = MediaCtx {
+                        photo: if photo_tile == crate::media::PhotoTile::Demo {
+                            self.media.photo_texture.as_ref().map(egui::TextureHandle::id)
+                        } else {
+                            None
+                        },
+                        own_photo: self.media.textures.get(&msg.id).map(egui::TextureHandle::id),
+                        photo_tile,
+                        photo_thumb: photo_thumb_pair.map(|(id, _)| id),
+                        photo_aspect: own_aspect.or_else(|| photo_thumb_pair.map(|(_, a)| a)),
+                        sticker_tile,
+                        video_tile: self.video_tile(msg.id),
+                        video_thumb: video_thumb_pair.map(|(id, _)| id),
+                        video_aspect: video_thumb_pair.map(|(_, a)| a).or(wire_aspect),
+                        voice: match &self.media.voice_player {
+                            Some(player) if player.id == msg.id => {
+                                Some(crate::bubble::VoiceSnap {
+                                    progress: player.progress(),
+                                    playing: player.is_playing(),
+                                    // The pill shows the rate the
+                                    // engine is really running at.
+                                    speed: player.rate() as f32,
+                                    elapsed_secs: player.position_secs() as f32,
+                                })
+                            }
+                            _ => None,
+                        },
+                        voice_fetch: self.media.voice_fetch.get(&msg.id).copied(),
+                        view_once_opened: self.media.opened_view_once.contains(&msg.id),
+                        downloading: self.media.downloads.contains(&msg.id),
+                        video_gif: self
+                            .live
+                            .as_ref()
+                            .is_some_and(|s| s.gif_videos.contains(&msg.id)),
+                        sticker_animated,
+                        sticker_lottie,
+                        location_thumb: location_thumb_pair.map(|(id, _)| id),
+                        document_thumb: document_thumb_pair.map(|(id, _)| id),
+                        preview_thumb: preview_thumb_pair.map(|(id, _)| id),
+                        tags: self.message_tags(self.selected_chat, msg.id),
+                        view_once: msg.is_view_once()
+                            || self
+                                .live
+                                .as_ref()
+                                .is_some_and(|s| s.view_once_ids.contains(&msg.id)),
+                        sender_photo: if group_incoming {
+                            // Live: the photo map is keyed by
+                            // author JID. Demo: by sender name.
+                            let photo_key = if self.live.is_some() {
+                                self.sender_jids.get(&msg.id)
+                            } else {
+                                msg.sender.as_ref()
+                            };
+                            photo_key.and_then(|key| sender_photos.get(key).copied())
+                        } else {
+                            None
+                        },
+                        sender_color: key_of(msg).and_then(|key| sender_colors.get(&key).copied()),
+                        quoted_color: msg.quoted_sender.as_deref().and_then(|name| {
+                            let key = key_by_name.get(name).map(String::as_str).unwrap_or(name);
+                            sender_colors.get(key).copied()
+                        }),
+                    };
+                    // Entrance: a genuinely new arrival near
+                    // the end of the stream fades in and
+                    // rises about 10 px; history opening or
+                    // syncing in never replays (the anim
+                    // helpers track what was already shown).
+                    let (alpha, rise) = crate::anim::message_entrance(
+                        ui,
+                        chat.id,
+                        msg.id,
+                        idx + 3 >= total,
+                        self.motion.fades(),
+                    );
+                    // The Motion setting's contract: Reduced
+                    // keeps fades but drops slides.
+                    let rise = if self.motion.slides() { rise } else { 0.0 };
+                    iter_rise = rise;
+                    if rise > 0.01 {
+                        ui.add_space(rise);
+                    }
+                    // The bubble paints the mention-resolved
+                    // body when this message has one.
+                    let owned_msg: Option<core::model::Message> =
+                        display_bodies.get(&msg.id).map(|body| {
+                            let mut cloned = msg.clone();
+                            cloned.body = body.clone();
+                            cloned
+                        });
+                    let bubble_msg: &core::model::Message = owned_msg.as_ref().unwrap_or(msg);
+                    let bubble_scope = ui.scope(|ui| {
+                        if alpha < 0.999 {
+                            ui.set_opacity(alpha);
+                        }
+                        message_bubble(
+                            ui,
+                            bubble_msg,
+                            chat,
+                            t,
+                            media,
+                            crate::bubble::BubbleLayout {
+                                group_first,
+                                avatar_column: group_incoming,
+                                show_avatar: group_incoming && group_last,
+                                event_guests: self
+                                    .event_guests
+                                    .get(&bubble_msg.id)
+                                    .copied()
+                                    .unwrap_or(0),
+                            },
+                        )
+                    });
+                    let action = bubble_scope.inner;
+                    let bubble_rect = bubble_scope.response.rect;
+                    if let Some(action) = action {
+                        actions.push(action);
+                    }
+                    // Starred locate: scroll the target message to
+                    // the centre of the stream, with the same
+                    // animation the scroll-to-bottom path uses.
+                    if self.scroll_to_message == Some(msg.id) {
+                        ui.scroll_to_rect_animation(
+                            bubble_rect,
+                            Some(egui::Align::Center),
+                            egui::style::ScrollAnimation::new(
+                                2600.0,
+                                egui::emath::Rangef::new(0.18, 0.22),
+                            ),
+                        );
+                    }
+                    // Starred locate highlight: an accent wash over
+                    // the bubble that fades out over 1.8 s (long
+                    // enough to survive the scroll travel).
+                    if self.highlight_message == Some(msg.id) {
+                        let now_t = ui.ctx().input(|i| i.time);
+                        if self.highlight_started.is_none() {
+                            self.highlight_started = Some(now_t);
+                        }
+                        let start = self.highlight_started.unwrap_or(now_t);
+                        let progress = ((now_t - start) / 1.8) as f32;
+                        if progress < 1.0 {
+                            let alpha = ((1.0 - progress) * 70.0) as u8;
+                            let mut wash = rgb(t.accent);
+                            wash = egui::Color32::from_rgba_unmultiplied(
+                                wash.r(),
+                                wash.g(),
+                                wash.b(),
+                                alpha,
+                            );
+                            ui.painter().rect_filled(
+                                bubble_rect.expand(3.0),
+                                CornerRadius::same(crate::bubble::BUBBLE_RADIUS + 2),
+                                wash,
+                            );
+                            ui.ctx().request_repaint();
+                        } else {
+                            self.highlight_message = None;
+                            self.highlight_started = None;
+                        }
+                    }
+                    // In-chat search (section 25): the current
+                    // match wears a steady accent wash for as
+                    // long as the search strip is open, distinct
+                    // from the fading locate highlight above.
+                    if self.chat_search.open && self.chat_search.current == Some(msg.id) {
+                        let mut wash = rgb(t.accent);
+                        wash =
+                            egui::Color32::from_rgba_unmultiplied(wash.r(), wash.g(), wash.b(), 55);
+                        ui.painter().rect_filled(
+                            bubble_rect.expand(3.0),
+                            CornerRadius::same(crate::bubble::BUBBLE_RADIUS + 2),
+                            wash,
+                        );
+                    }
+                    self.draw_message_strip(ui, msg);
+                    // Grouped spacing: tight inside a
+                    // sender group, a real breath between
+                    // groups; reaction pills keep their
+                    // larger clearance either way.
+                    ui.add_space(if !msg.reactions.is_empty() {
+                        REACTED_SPACE
+                    } else if group_last {
+                        RUN_GAP_SPACE
+                    } else {
+                        RUN_TIGHT_SPACE
+                    });
+                    if windowed {
+                        let settled = (ui.cursor().top() - iter_top - iter_rise).max(0.0);
+                        self.stream_heights.insert(
+                            crate::conversation::anchor::RowKey::Row(
+                                self.conversation[iterations[iter_idx].0].id,
+                            ),
+                            settled,
+                        );
+                        if anchor_fix.is_some_and(|(ti, _)| ti == iter_idx) {
+                            anchor_fix_rect = Some(egui::Rect::from_min_size(
+                                egui::Pos2::new(rect.left(), iter_top),
+                                egui::Vec2::new(rect.width(), ui.cursor().top() - iter_top),
+                            ));
+                        }
+                    }
+                    idx += 1;
+                }
+                if windowed && trailing_spacer > 0.0 {
+                    ui.add_space(trailing_spacer);
+                }
+                crate::anim::end_message_stream(ui, chat.id);
+                *pending_actions = actions;
+                // Anchor fix: the anchor iteration painted at
+                // its new position this frame; scroll so its
+                // captured intra-row offset is restored exactly
+                // (the same scroll-to-rect route the locate
+                // takes, without animation: this is a
+                // correction, not a journey).
+                if !scroll_gesture {
+                    if let (Some(fix_rect), Some((_, intra))) = (anchor_fix_rect, anchor_fix) {
+                        ui.scroll_to_rect(
+                            egui::Rect::from_min_size(
+                                egui::Pos2::new(fix_rect.left(), fix_rect.top() - intra),
+                                egui::Vec2::new(fix_rect.width(), 1.0),
+                            ),
+                            Some(egui::Align::Min),
+                        );
+                    }
+                }
+                ui.add_space(SP_1);
+                ui.add_space(composer_clearance);
+                // The scroll-to-bottom button's request:
+                // point the cursor at the very end of the
+                // content and let the scroll area animate
+                // to it over about 200 ms (the animation
+                // span clamps the duration).
+                if self.scroll_bottom_requested {
+                    self.scroll_bottom_requested = false;
+                    ui.scroll_to_cursor_animation(
+                        Some(Align::BOTTOM),
+                        egui::style::ScrollAnimation::new(
+                            2600.0,
+                            egui::emath::Rangef::new(0.18, 0.22),
+                        ),
+                    );
+                }
+            },
+        );
+        // Windowing bookkeeping: remember this frame's final
+        // scroll geometry for the next frame's window and
+        // anchor work (the anchor itself is recaptured in the
+        // next pre-pass, from this stored offset).
+        self.stream_last_offset = scroll_out.state.clamped_offset().y;
+        self.stream_last_viewport = scroll_out.inner_rect.height();
+        // This frame's velocity becomes the next frame's
+        // gesture evidence (see the gate at the top of this
+        // draw): a gesture's coasting tail has no wheel events
+        // left, so last frame's reported velocity is the only
+        // sign it is still moving.
+        let velocity_y = scroll_out.state.velocity().y;
+        ui.ctx().data_mut(|d| d.insert_temp(stream_velocity_id(), velocity_y));
+        if locate_pending {
+            // One-shot clear (see locate_pending above): a matched
+            // target was scrolled to during this pass; an unmatched
+            // one gets no second chance. A highlight that never
+            // stamped its start (its message never rendered as a
+            // bubble) is cleared with it; a stamped one keeps
+            // fading on its own clock.
+            self.scroll_to_message = None;
+            if self.highlight_started.is_none() {
+                self.highlight_message = None;
+            }
+        }
+
+        // Read-by-action: the newest messages on screen in a
+        // focused window are read, whether the user scrolled
+        // to them (wheel, trackpad, End or PageDown over the
+        // message area) or the chat simply opened on them,
+        // which is the ordinary open: the conversation lands
+        // at its bottom (see `presentation_engages`). A chat
+        // presented scrolled up, or left open in an unfocused
+        // window, engages nothing; see live.rs.
+        let at_bottom = scroll_out.content_size.y
+            - (scroll_out.state.clamped_offset().y + scroll_out.inner_rect.height())
+            <= 48.0;
+        self.stream_was_bottom = at_bottom;
+        if at_bottom {
+            let (wheel, key_nav, hovering, focused) = ui.ctx().input(|i| {
+                (
+                    i.smooth_scroll_delta.y != 0.0
+                        || i.events.iter().any(|e| matches!(e, egui::Event::MouseWheel { .. })),
+                    i.key_pressed(egui::Key::End) || i.key_pressed(egui::Key::PageDown),
+                    i.pointer.hover_pos().is_some_and(|p| scroll_out.inner_rect.contains(p)),
+                    i.focused,
+                )
+            });
+            if hovering && (wheel || key_nav) || presentation_engages(at_bottom, focused) {
+                *engaged = true;
+            }
+        }
+
+        for action in pending_actions.drain(..) {
+            match action {
+                BubbleAction::Download(id) => {
+                    self.download_media(id);
+                }
+                BubbleAction::ToggleVoice(id) => {
+                    self.toggle_voice(id);
+                }
+                BubbleAction::CycleVoiceSpeed(id) => {
+                    let rate = self.cycle_voice_speed(id);
+                    // The pill drives the live session too: the
+                    // engine's own rate changes, never just the
+                    // label.
+                    if let Some(player) = &self.media.voice_player {
+                        if player.id == id {
+                            player.set_rate(f64::from(rate));
+                        }
+                    }
+                }
+                BubbleAction::SeekVoice(id, fraction) => {
+                    self.seek_voice(id, fraction);
+                }
+                BubbleAction::OpenViewOnce(id) => {
+                    self.media.viewing_photo = Some(id);
+                }
+                BubbleAction::OpenPhoto(id) => {
+                    self.media.viewing_photo = Some(id);
+                }
+                BubbleAction::Vote(id, idx) => {
+                    self.vote_poll(id, idx);
+                }
+                BubbleAction::InteractiveChoice(id, is_list, choice_id, choice_text) => {
+                    self.answer_interactive(id, is_list, choice_id, choice_text);
+                }
+                BubbleAction::Rsvp(id, response) => {
+                    let guests = self.event_guests.get(&id).copied().unwrap_or(0);
+                    self.respond_event(id, response, Some(guests));
+                }
+                BubbleAction::EventGuests(id, delta) => {
+                    // The stepper re-sends my Going answer with
+                    // the new count (the wire carries the count
+                    // with the response, there is no separate
+                    // guest update).
+                    let next = (self.event_guests.get(&id).copied().unwrap_or(0) + delta).max(0);
+                    self.event_guests.insert(id, next);
+                    self.respond_event(id, core::model::EventRsvp::Going, Some(next));
+                }
+                BubbleAction::OpenJoinLink(url) => {
+                    // The event's join link opens in the system
+                    // browser, on the user's own click only (the
+                    // same route the location card takes).
+                    let _ = open::that(url);
+                }
+                BubbleAction::OpenExternal(target) => {
+                    // A template button's link or call target
+                    // goes to the system handler, on the user's
+                    // own click only (the same route the join
+                    // link takes).
+                    let _ = open::that(target);
+                }
+                BubbleAction::CopyText(text) => {
+                    // A template button's code copies to the
+                    // clipboard, the one effect the button
+                    // promises.
+                    ui.ctx().copy_text(text);
+                }
+                BubbleAction::OpenOrder(id) => {
+                    self.open_order_dialog(self.selected_chat, id);
+                }
+                BubbleAction::RetrySticker(id) => {
+                    self.retry_sticker_fetch(id);
+                }
+                BubbleAction::OpenLocation(latitude, longitude) => {
+                    // The card opens the coordinates in the
+                    // system browser at the map: the same
+                    // open-external route links take, on the
+                    // user's own click only.
+                    let url = format!(
+                        "https://www.openstreetmap.org/?mlat={latitude}&mlon={longitude}#map=16/{latitude}/{longitude}"
+                    );
+                    let _ = open::that(url);
+                }
+                BubbleAction::ContextMenu(id) => {
+                    self.bubble_menu = Some(id);
+                }
+            }
+        }
+        // Cross-message selection gestures (row 129), against
+        // this frame's registry: a press on a painted body
+        // anchors, a drag extends, a release with no movement
+        // clears (it was a click, and the bubble's own click
+        // handling already ran). Escape clears; Ctrl+C copies
+        // while no text field holds focus (a focused field's
+        // own copy wins, as everywhere else).
+        {
+            let ctx = ui.ctx().clone();
+            let registry = ctx
+                .data(|d| {
+                    d.get_temp::<crate::conversation::selection::GalleyRegistry>(
+                        crate::conversation::selection::registry_id(),
+                    )
+                })
+                .unwrap_or_default();
+            let (pressed, down, released, pointer_pos) = ctx.input(|i| {
+                (
+                    i.pointer.primary_pressed(),
+                    i.pointer.primary_down(),
+                    i.pointer.primary_released(),
+                    i.pointer.hover_pos(),
+                )
+            });
+            if pressed {
+                if let Some(pos) = pointer_pos {
+                    if full_rect.contains(pos) {
+                        if let Some(hit) = crate::conversation::selection::hit_test(&registry, pos)
+                        {
+                            // Click granularity: a press that
+                            // continues a rapid sequence at the
+                            // same spot (the input layer's
+                            // double-click window, 0.3 s and
+                            // 6 pt, which this app never
+                            // overrides) selects at word level
+                            // on the second press and at
+                            // whole-message level on the third,
+                            // instead of collapsing to a bare
+                            // character anchor.
+                            let seq_id = egui::Id::unique("selection_press_seq");
+                            let (now, max_delay, max_dist) =
+                                (ctx.input(|i| i.time), 0.3_f64, 6.0_f32);
+                            let previous =
+                                ctx.data(|d| d.get_temp::<(f64, egui::Pos2, u32)>(seq_id));
+                            let count = match previous {
+                                Some((t, p, c))
+                                    if now - t < max_delay && p.distance(pos) <= max_dist =>
+                                {
+                                    (c + 1).min(3)
+                                }
+                                _ => 1,
+                            };
+                            ctx.data_mut(|d| d.insert_temp(seq_id, (now, pos, count)));
+                            match count {
+                                2 => {
+                                    if let Some(text) = crate::conversation::selection::message_text(
+                                        &registry, hit.0,
+                                    ) {
+                                        let (start, end) =
+                                            crate::conversation::selection::word_bounds(
+                                                text, hit.1,
+                                            );
+                                        self.text_selection = Some(crate::state::TextSelection {
+                                            anchor: (hit.0, start),
+                                            focus: (hit.0, end),
+                                        });
+                                    }
+                                    self.selection_drag = true;
+                                }
+                                3 => {
+                                    if let Some(text) = crate::conversation::selection::message_text(
+                                        &registry, hit.0,
+                                    ) {
+                                        self.text_selection = Some(crate::state::TextSelection {
+                                            anchor: (hit.0, 0),
+                                            focus: (hit.0, text.chars().count()),
+                                        });
+                                    }
+                                    self.selection_drag = false;
+                                }
+                                _ => {
+                                    self.text_selection = Some(crate::state::TextSelection {
+                                        anchor: hit,
+                                        focus: hit,
+                                    });
+                                    self.selection_drag = true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if self.selection_drag && down {
+                if let Some(pos) = pointer_pos {
+                    if let Some(hit) = crate::conversation::selection::hit_test(&registry, pos) {
+                        if let Some(selection) = &mut self.text_selection {
+                            selection.focus = hit;
+                        }
+                    }
+                }
+            }
+            if released && self.selection_drag {
+                self.selection_drag = false;
+                if let Some(selection) = self.text_selection {
+                    if selection.anchor == selection.focus {
+                        self.text_selection = None;
+                    }
+                }
+            }
+            if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+                self.text_selection = None;
+                self.selection_drag = false;
+            }
+            if self.text_selection.is_some()
+                && ctx.memory(|m| m.focused().is_none())
+                && ctx.input(|i| i.key_pressed(egui::Key::C) && i.modifiers.ctrl)
+            {
+                if let Some(selection) = self.text_selection {
+                    if let Some(text) =
+                        crate::conversation::selection::extract(&registry, selection)
+                    {
+                        ctx.copy_text(text);
+                    }
+                }
+            }
+        }
+        // End of stream closes the session: the bubble falls
+        // back to its idle state (the waveform keeps its heard
+        // fill from the final progress read). While a note plays,
+        // the paint loop follows the engine's real position.
+        if let Some(player) = &self.media.voice_player {
+            if player.is_ended() {
+                self.media.voice_player = None;
+            } else if player.is_playing() {
+                ui.ctx().request_repaint_after(std::time::Duration::from_millis(40));
+            }
+        }
+
+        // Older-history trigger (design standard section 22):
+        // the stream resting in its top zone with the trigger
+        // armed asks the phone for the page before the oldest
+        // message on hand. The trigger re-arms only after the
+        // stream has scrolled well away from the top, so
+        // resting at the top never loops requests, and a chat
+        // already fetching (or exhausted) never asks again.
+        if self.live_mode {
+            let offset_y = scroll_out.state.clamped_offset().y;
+            if offset_y > 240.0 {
+                if let Some(session) = &mut self.live {
+                    session.history_armed.insert(chat.id);
+                }
+            } else if offset_y <= 24.0 && !self.conversation.is_empty() {
+                if chat.kind == core::model::ChatKind::Channel {
+                    // Channels page on server IDs through
+                    // their own latch, not the chat anchor
+                    // path.
+                    let may_fetch = self.live.as_ref().is_some_and(|s| {
+                        s.history_armed.contains(&chat.id)
+                            && !s.channel_history.contains_key(&chat.id)
+                    });
+                    if may_fetch {
+                        if let Some(session) = &mut self.live {
+                            session.history_armed.remove(&chat.id);
+                        }
+                        self.request_older_channel_page(chat.id);
+                    }
+                } else {
+                    // Mirror paging first (qc1644): while the
+                    // archive still holds rows older than the
+                    // retained window, the top zone pages them
+                    // in from the store, locally and at once.
+                    // Only once the mirror reaches the archive's
+                    // start does the phone fetch below remain:
+                    // it asks for history the archive never had.
+                    let store_first = self.live.as_ref().is_some_and(|s| {
+                        s.history_armed.contains(&chat.id) && !s.paged_to_start.contains(&chat.id)
+                    });
+                    let mut paged = false;
+                    if store_first {
+                        if let Some(session) = &mut self.live {
+                            session.history_armed.remove(&chat.id);
+                        }
+                        paged = self.load_older_from_store(chat.id) > 0;
+                    }
+                    if !paged {
+                        let may_fetch = self.live.as_ref().is_some_and(|s| {
+                            s.history_armed.contains(&chat.id) && !s.history.contains_key(&chat.id)
+                        });
+                        if may_fetch {
+                            self.request_older_page(chat.id);
+                        }
+                    }
+                }
+            }
+        }
+
+        // The photo display fetches the paint pass asked for.
+        for id in pending_photo_fetches {
+            self.ensure_photo_fetch(id);
+        }
+        for id in pending_sticker_fetches {
+            self.ensure_sticker_fetch(id);
+        }
+        for id in pending_poster_fetches {
+            self.ensure_poster_fetch(id);
+        }
+
+        (scroll_out, full_rect)
+    }
+
+    /// The scroll-to-bottom button: a floating glass circle
+    /// that fades in once the user has scrolled well away from
+    /// the newest messages, badged with the open chat's unread
+    /// count. Clicking it requests the stream's animated scroll
+    /// and counts as read engagement.
+    pub(crate) fn draw_scroll_bottom(
+        &mut self,
+        ui: &mut egui::Ui,
+        full_rect: egui::Rect,
+        chat: &core::model::Chat,
+        scroll_out: &egui::scroll_area::ScrollAreaOutput<()>,
+        t: Tokens,
+        engaged: &mut bool,
+    ) {
+        let fmargin = side_margin(full_rect.width());
+        let dist_bottom = scroll_out.content_size.y
+            - (scroll_out.state.clamped_offset().y + scroll_out.inner_rect.height());
+        let btn_p = crate::anim::scalar(
+            ui,
+            ("scroll_bottom_btn", chat.id),
+            if dist_bottom > 480.0 { 1.0 } else { 0.0 },
+            (crate::motion::dur::REVEAL / 1000.0) as f32,
+        );
+        if btn_p > 0.01 {
+            let size = 46.0;
+            let btn_pos = Pos2::new(
+                full_rect.right() - fmargin - size,
+                scroll_bottom_button_top(full_rect.bottom(), self.composer.stack_h, size),
+            );
+            let mut btn_clicked = false;
+            egui::Area::new(egui::Id::unique("scroll_to_bottom"))
+                .fixed_pos(btn_pos)
+                .order(egui::Order::Foreground)
+                .show(ui.ctx(), |ui| {
+                    if btn_p < 0.999 {
+                        ui.set_opacity(btn_p);
+                    }
+                    let (rect, resp) = ui.allocate_exact_size(Vec2::splat(size), Sense::click());
+                    let painter = ui.painter();
+                    painter.add(
+                        crate::theme::glass_shadow(t)
+                            .as_shape(rect, CornerRadius::same((size / 2.0).round() as u8)),
+                    );
+                    painter.circle_filled(
+                        rect.center(),
+                        23.0,
+                        crate::theme::glass_tint(t, t.bg_panel),
+                    );
+                    painter.circle_stroke(rect.center(), 23.0, Stroke::new(1.0_f32, rgb(t.border)));
+                    crate::icons::draw(
+                        painter,
+                        crate::icons::Icon::ChevronDown,
+                        rect.center(),
+                        crate::icons::SIZE_TAB,
+                        rgb(t.text_secondary),
+                        rgb(t.bg_panel),
+                    );
+                    if chat.unread > 0 {
+                        // The unread count on the button, painted
+                        // by the shared badge component (with its
+                        // muted variant and the count pop), anchored
+                        // at the button's top right.
+                        let label = core::filter::format_count(u64::from(chat.unread));
+                        let scale = crate::anim::pop_scale(
+                            ui,
+                            ("scroll_bottom_badge", chat.id),
+                            chat.unread,
+                        );
+                        let size = crate::widgets::badge_size(ui, &label, scale);
+                        crate::widgets::paint_badge(
+                            painter,
+                            Pos2::new(rect.right() - 2.0, rect.top() + 2.0),
+                            &label,
+                            size,
+                            t,
+                            chat.muted,
+                            scale,
+                        );
+                    }
+                    if resp.clicked() {
+                        btn_clicked = true;
+                    }
+                });
+            if btn_clicked {
+                self.scroll_bottom_requested = true;
+                *engaged = true;
+            }
+        }
+    }
+}
+
+/// Sender-run spacing in the stream: consecutive messages from
+/// the same sender pack tight, a new run breathes, and a run
+/// carrying reaction pills keeps its own slightly tighter
+/// clearance (the pills hang below the bubble into the gap).
+const RUN_TIGHT_SPACE: f32 = 3.0;
+const RUN_GAP_SPACE: f32 = 14.0;
+const REACTED_SPACE: f32 = 13.0;
+
+/// Assigns sender-name colors for one conversation: palette
+/// colors go to distinct senders in first-appearance order,
+/// without replacement, so two senders in the same conversation
+/// never share a color (the old per-name hash put adjacent
+/// senders on the same palette entry whenever their name byte
+/// sums collided). Past the palette's end the standalone
+/// per-name color is the fallback.
+/// Substitutes display names for a message's `@<number>`
+/// mention spans. Each mentioned JID's user part is what the
+/// body carries; the replacement is the name directory's name
+/// for that JID, else (for a phone-number JID) the formatted
+/// number, else (for a LID the directory cannot name) a masked
+/// span: a raw LID is an internal identifier and never paints.
+/// Longer user parts are replaced first, so one mention's
+/// number can never partially rewrite another's.
+pub(crate) fn substitute_mentions(
+    body: &str,
+    mentions: &[String],
+    names: &std::collections::HashMap<String, String>,
+) -> String {
+    let mut order: Vec<&String> = mentions.iter().collect();
+    order.sort_by_key(|jid| std::cmp::Reverse(jid.len()));
+    let mut out = body.to_owned();
+    for jid in order {
+        let user = jid.split('@').next().unwrap_or(jid);
+        if user.is_empty() {
+            continue;
+        }
+        let replacement = match names.get(jid) {
+            Some(name) if !name.is_empty() => format!("@{name}"),
+            _ if jid.ends_with("@s.whatsapp.net") => format!("@+{user}"),
+            _ if jid.ends_with("@lid") => "@••••••".to_owned(),
+            _ => continue,
+        };
+        out = out.replace(&format!("@{user}"), &replacement);
+    }
+    out
+}
+
+/// The stream pre-pass tables (qc1644), computed once per
+/// distinct conversation state and reused by every frame that
+/// state lasts: the group sender portraits, the name-to-key
+/// map, the sender colors, the mention display bodies, the
+/// album iteration tables and the message ID index. Every one
+/// of them is a pure function of the inputs folded into
+/// [`StreamPrepassKey`]; nothing in here reads the scroll
+/// position or the measured heights, which stay per-frame.
+#[derive(Clone)]
+struct StreamPrepass {
+    sender_photos: std::collections::HashMap<String, egui::TextureId>,
+    key_by_name: std::collections::HashMap<String, String>,
+    sender_colors: std::collections::HashMap<String, Color32>,
+    display_bodies: std::collections::HashMap<u64, String>,
+    iterations: Vec<(usize, usize)>,
+    iter_of_msg: Vec<usize>,
+    msg_index_of_id: std::collections::HashMap<u64, usize>,
+}
+
+/// The version key a [`StreamPrepass`] was built under. The
+/// explicit fields are the cheap identity the audit named
+/// (chat, message count, first and last message IDs, viewport
+/// width, light or dark palette, and the theme's accent);
+/// the fold additionally covers
+/// every per-message input the tables actually read (IDs,
+/// bodies, senders, quoted senders, day labels, album shape,
+/// sender JIDs, and the mention JIDs with the names they
+/// currently resolve to), so an edit, a rename or a mention
+/// re-resolution in the middle of the conversation also moves
+/// the key. Avatar state rides along as counts: a portrait
+/// landing for anyone changes a count and rebuilds once.
+/// The fold is FNV over bytes with no allocation, which is
+/// the whole point: it replaces passes that cloned strings
+/// and rebuilt hash maps per frame.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct StreamPrepassKey {
+    chat: u64,
+    len: usize,
+    first: u64,
+    last: u64,
+    width_bits: u32,
+    light: bool,
+    /// The theme's accent token: the seed-derived identity
+    /// of the palette the sender colors were assigned from.
+    /// Light/dark alone cannot distinguish two token sets in
+    /// the same mode (a different accent seed, a custom
+    /// theme), and the prepass tables are built from the full
+    /// Tokens, so the accent rides in the key: switching the
+    /// seed within one mode rebuilds the tables instead of
+    /// serving colors assigned under the old palette.
+    accent: core::theme::Rgb,
+    live: bool,
+    avatar_bytes: usize,
+    fold: u64,
+}
+
+/// One memoized pre-pass and the key it belongs to, held in
+/// egui temp data under [`stream_prepass_id`].
+#[derive(Clone)]
+struct StreamPrepassMemo {
+    key: StreamPrepassKey,
+    prepass: StreamPrepass,
+}
+
+fn stream_prepass_id() -> egui::Id {
+    egui::Id::unique("stream_prepass_memo")
+}
+
+/// The identity key of one message's sender: the author JID in
+/// live mode, the display name in the demo. A free function over
+/// its two inputs rather than a closure over the app, so callers
+/// can resolve keys in scopes where the app is mutably borrowed.
+fn sender_key(
+    live: bool,
+    sender_jids: &std::collections::HashMap<u64, String>,
+    m: &Message,
+) -> Option<String> {
+    if live {
+        if let Some(jid) = sender_jids.get(&m.id) {
+            return Some(jid.clone());
+        }
+    }
+    m.sender.clone()
+}
+
+/// The fold at the heart of [`StreamPrepassKey`]: every
+/// per-message input the pre-pass tables read, folded with
+/// FNV over bytes and no allocation.
+fn prepass_fold(
+    conversation: &[Message],
+    sender_jids: &std::collections::HashMap<u64, String>,
+    live: Option<&crate::live::LiveSession>,
+    chat_id: u64,
+) -> u64 {
+    let mut fold: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut mix = |bytes: &[u8]| {
+        for b in bytes {
+            fold ^= u64::from(*b);
+            fold = fold.wrapping_mul(0x0100_0000_01b3);
+        }
+    };
+    mix(&chat_id.to_le_bytes());
+    for m in conversation {
+        mix(&m.id.to_le_bytes());
+        mix(m.body.as_bytes());
+        mix(m.sender.as_deref().unwrap_or("").as_bytes());
+        mix(m.quoted_sender.as_deref().unwrap_or("").as_bytes());
+        mix(m.day.as_bytes());
+        mix(&[
+            u8::from(m.sender.is_some()),
+            u8::from(m.quoted_sender.is_some()),
+            u8::from(m.quoted_body.is_some()),
+            u8::from(m.is_mine()),
+            u8::from(is_album_item(m)),
+            u8::from(m.kind == core::model::MessageKind::System),
+        ]);
+        if let Some(jid) = sender_jids.get(&m.id) {
+            mix(jid.as_bytes());
+            // The sender's staged portrait bytes, by length
+            // and edge content: a picture landing (or being
+            // replaced) for a sender in this conversation
+            // rebuilds the photo table it feeds.
+            if let Some(bytes) = live.and_then(|session| session.avatar_bytes.get(jid)) {
+                mix(&bytes.len().to_le_bytes());
+                mix(&bytes[..bytes.len().min(32)]);
+                mix(&bytes[bytes.len().saturating_sub(32)..]);
+            }
+        }
+        // The mention inputs of the display bodies: the
+        // message's mention JIDs and the name each currently
+        // resolves to, so a contact rename that reaches a
+        // mentioned person rebuilds the bodies it changes.
+        if let Some(session) = live {
+            if let Some(mentions) = session.message_mentions.get(&m.id) {
+                for jid in mentions {
+                    mix(jid.as_bytes());
+                    match session.names.get(jid) {
+                        Some(name) => {
+                            mix(&[1]);
+                            mix(name.as_bytes());
+                        }
+                        None => mix(&[0]),
+                    }
+                }
+            }
+        }
+    }
+    fold
+}
+
+fn stream_prepass_key(app: &App, chat_id: u64, width: f32, t: Tokens) -> StreamPrepassKey {
+    StreamPrepassKey {
+        chat: chat_id,
+        len: app.conversation.len(),
+        first: app.conversation.first().map_or(0, |m| m.id),
+        last: app.conversation.last().map_or(0, |m| m.id),
+        width_bits: width.to_bits(),
+        light: t.is_light(),
+        accent: t.accent,
+        live: app.live.is_some(),
+        avatar_bytes: app.live.as_ref().map_or(0, |s| s.avatar_bytes.len()),
+        fold: prepass_fold(&app.conversation, &app.sender_jids, app.live.as_ref(), chat_id),
+    }
+}
+
+impl App {
+    /// Builds the stream pre-pass tables from the current
+    /// conversation: the computation `draw_stream` used to run
+    /// inline on every frame, unchanged in what it produces.
+    /// Sender identity is keyed by JID end to end in live mode
+    /// (two people can share a display name; a JID cannot
+    /// collide), and by name only in the demo, which has no
+    /// JIDs.
+    fn build_stream_prepass(&mut self, ctx: &egui::Context, t: Tokens) -> StreamPrepass {
+        // Group sender portraits, resolved up front: the
+        // divider closure in `draw_stream` borrows the
+        // conversation for the whole loop, so textures load
+        // before it exists.
+        let sender_photos: std::collections::HashMap<String, egui::TextureId> = {
+            let mut map = std::collections::HashMap::new();
+            if self.live.is_some() {
+                let jids: std::collections::HashSet<String> = self
+                    .conversation
+                    .iter()
+                    .filter_map(|m| self.sender_jids.get(&m.id).cloned())
+                    .collect();
+                for jid in jids {
+                    self.ensure_avatar(ctx, &jid);
+                    if let Some(tex) = self.live_avatar(&jid) {
+                        map.insert(jid, tex.id());
+                    }
+                }
+            } else {
+                let names: std::collections::HashSet<String> =
+                    self.conversation.iter().filter_map(|m| m.sender.clone()).collect();
+                for name in names {
+                    if let Some(tex) = self.demo_avatar(ctx, &name) {
+                        map.insert(name, tex);
+                    }
+                }
+            }
+            map
+        };
+        // Sender identity keys for the tables below, resolved
+        // through the free helper: this build holds the app
+        // mutably, so no closure over the app can span it.
+        let key_of = |m: &Message| sender_key(self.live.is_some(), &self.sender_jids, m);
+        // A quoted sender's name resolved into the same key
+        // space through this conversation's senders, so a quote
+        // chip wears its author's color even though the quote
+        // itself carries only a name.
+        let key_by_name: std::collections::HashMap<String, String> = self
+            .conversation
+            .iter()
+            .filter_map(|m| Some((m.sender.clone()?, key_of(m)?)))
+            .collect();
+        // Sender colors for this conversation, assigned
+        // without replacement (see assign_sender_colors) over
+        // identity keys, resolved up front for the same borrow
+        // reason as the photos above.
+        let color_keys: Vec<String> = {
+            let mut keys: Vec<String> = Vec::new();
+            for m in &self.conversation {
+                if let Some(key) = key_of(m) {
+                    keys.push(key);
+                }
+                if let Some(quoted) = &m.quoted_sender {
+                    keys.push(key_by_name.get(quoted).cloned().unwrap_or_else(|| quoted.clone()));
+                }
+            }
+            keys
+        };
+        let sender_colors = assign_sender_colors(color_keys.iter().map(String::as_str), t);
+        // Mention display bodies, resolved up front for the
+        // same borrow reason: a message whose wire mentions are
+        // known gets a body whose `@<number>` spans carry the
+        // person's display name (the session's name directory),
+        // so a mention never renders as a raw LID or number the
+        // roster can name.
+        let display_bodies: std::collections::HashMap<u64, String> = {
+            let mut map = std::collections::HashMap::new();
+            if let Some(session) = &self.live {
+                // The name directory is fed under both JID
+                // forms by the backend's identity book, so a
+                // mention written against either form resolves
+                // here.
+                let names = &session.names;
+                for m in &self.conversation {
+                    if let Some(mentions) = session.message_mentions.get(&m.id) {
+                        let body = substitute_mentions(&m.body, mentions, names);
+                        if body != m.body {
+                            map.insert(m.id, body);
+                        }
+                    }
+                }
+            }
+            map
+        };
+        // P2-67 windowing pre-pass: the paint loop's
+        // iterations (one per message, an album run counting
+        // once) are derived up front, with their settled
+        // heights (measured in earlier frames, estimated until
+        // then).
+        let total = self.conversation.len();
+        let mut iterations: Vec<(usize, usize)> = Vec::new();
+        let mut iter_of_msg: Vec<usize> = vec![0; total];
+        {
+            let mut i = 0;
+            while i < total {
+                let run = album_run_len(&self.conversation, i, &key_of);
+                let len = if run >= 2 { run } else { 1 };
+                let iter_idx = iterations.len();
+                for slot in &mut iter_of_msg[i..i + len] {
+                    *slot = iter_idx;
+                }
+                iterations.push((i, len));
+                i += len;
+            }
+        }
+        let msg_index_of_id: std::collections::HashMap<u64, usize> =
+            self.conversation.iter().enumerate().map(|(i, m)| (m.id, i)).collect();
+        StreamPrepass {
+            sender_photos,
+            key_by_name,
+            sender_colors,
+            display_bodies,
+            iterations,
+            iter_of_msg,
+            msg_index_of_id,
+        }
+    }
+}
+
+fn assign_sender_colors<'a>(
+    names: impl Iterator<Item = &'a str>,
+    t: Tokens,
+) -> std::collections::HashMap<String, Color32> {
+    let palette = crate::widgets::sender_palette(t);
+    let mut map: std::collections::HashMap<String, Color32> = std::collections::HashMap::new();
+    for name in names {
+        if !map.contains_key(name) {
+            let color = match palette.get(map.len()) {
+                Some(rgb_color) => rgb(*rgb_color),
+                None => crate::widgets::sender_color(name, t),
+            };
+            map.insert(name.to_owned(), color);
+        }
+    }
+    map
+}
+
+/// Parses "HH:MM" (the stream's clock format) into minutes after
+/// midnight; None for times that do not parse (live echoes use
+/// "…" until the backend upsert lands).
+fn clock_minutes(time: &str) -> Option<u32> {
+    let (h, m) = time.split_once(':')?;
+    let h: u32 = h.parse().ok()?;
+    let m: u32 = m.parse().ok()?;
+    (h < 24 && m < 60).then_some(h * 60 + m)
+}
+
+/// Whether a centered time chip belongs between these two
+/// consecutive messages: both show parseable clocks and they sit
+/// 30+ minutes apart (wrapping past midnight counts as a gap;
+/// day boundaries already carry their own chip).
+fn time_chip_between(prev: &Message, msg: &Message) -> bool {
+    const GAP_MIN: u32 = 30;
+    match (clock_minutes(&prev.time), clock_minutes(&msg.time)) {
+        (Some(a), Some(b)) => {
+            let delta = if b >= a { b - a } else { b + 24 * 60 - a };
+            delta >= GAP_MIN
+        }
+        _ => false,
+    }
+}
+
+/// The sender-group key for message grouping: two adjacent
+/// messages belong to the same group when their keys match.
+/// System messages key to `None`, which matches nothing, so
+/// they break any group they sit in.
+/// The grouping identity of a message: mine-ness plus the
+/// sender's identity key (the author JID in live mode, the
+/// display name in the demo), so two group members who share
+/// a display name never pack into one run.
+fn group_key(m: &Message, key: Option<String>) -> Option<(bool, Option<String>)> {
+    if m.kind == core::model::MessageKind::System {
+        None
+    } else {
+        Some((m.is_mine(), key))
+    }
+}
+
+/// Whether a message can sit inside an album grid: a plain photo or
+/// video, not the view-once kind (those carry their own open-once
+/// flow) and not a reply (a quote makes the bubble stand alone).
+fn is_album_item(m: &Message) -> bool {
+    matches!(
+        &m.kind,
+        core::model::MessageKind::Image { view_once: false, .. }
+            | core::model::MessageKind::Video { view_once: false, .. }
+    )
+}
+
+/// The length of the album run starting at `start`: consecutive
+/// photos or videos from the same sender on the same day with no
+/// quote of their own. Runs shorter than two never reach the grid
+/// (the caller draws a normal bubble for them).
+/// Streams longer than this many paint iterations (messages,
+/// album runs counting once) render windowed (P2-67); shorter
+/// ones render whole, exactly as they always have.
+const STREAM_WINDOW_MIN: usize = 120;
+
+/// Rows painted beyond the viewport's edges on each side of
+/// the window, so a fast scroll does not run into unpainted
+/// content within a frame or two.
+const STREAM_OVERSCAN: usize = 12;
+
+/// The standing estimate for one paint iteration that has
+/// never rendered (or whose chat was reopened): per-kind
+/// typical heights. Measured heights replace them after the
+/// first render; they only steer the window and the spacers
+/// until then, and the anchor invariants keep positions
+/// exact as they converge.
+fn iter_estimate(conversation: &[Message], first: usize, len: usize) -> f32 {
+    if len > 1 {
+        return 300.0;
+    }
+    match &conversation[first].kind {
+        core::model::MessageKind::System => 46.0,
+        core::model::MessageKind::Image { view_once: true, .. } => 66.0,
+        core::model::MessageKind::Image { .. } => 320.0,
+        core::model::MessageKind::Video { .. } => 300.0,
+        core::model::MessageKind::Voice { .. } => 76.0,
+        core::model::MessageKind::Audio { .. } => 76.0,
+        core::model::MessageKind::Poll { options, .. } => 120.0 + 36.0 * options.len() as f32,
+        core::model::MessageKind::Event { .. } => 220.0,
+        core::model::MessageKind::Document { .. } => 92.0,
+        core::model::MessageKind::Sticker => 190.0,
+        core::model::MessageKind::Location { .. } => 130.0,
+        core::model::MessageKind::Contact { .. } => 66.0,
+        core::model::MessageKind::Carousel { .. } => 210.0,
+        core::model::MessageKind::Order { .. } => 92.0,
+        core::model::MessageKind::Buttons { buttons, .. } => 68.0 + 34.0 * buttons.len() as f32,
+        core::model::MessageKind::ListMsg { sections, .. } => {
+            90.0 + 30.0 * sections.iter().map(|s| s.rows.len()).sum::<usize>() as f32
+        }
+        core::model::MessageKind::Unsupported { .. } => 68.0,
+        core::model::MessageKind::Text => 68.0,
+    }
+}
+
+fn album_run_len(
+    msgs: &[Message],
+    start: usize,
+    key_of: &dyn Fn(&Message) -> Option<String>,
+) -> usize {
+    let first = &msgs[start];
+    if !is_album_item(first) || first.quoted_body.is_some() {
+        return 1;
+    }
+    let first_key = group_key(first, key_of(first));
+    let mut n = 1;
+    while start + n < msgs.len() {
+        let next = &msgs[start + n];
+        if !is_album_item(next)
+            || next.quoted_body.is_some()
+            || group_key(next, key_of(next)) != first_key
+            || next.day_label() != first.day_label()
+        {
+            break;
+        }
+        n += 1;
+    }
+    n
+}
+
+/// The small padlock on the system pills: the icon font's lock
+/// glyph, centred in the pill's icon slot.
+fn paint_lock(painter: &egui::Painter, center: Pos2, color: Color32, bg: Color32) {
+    crate::icons::draw(
+        painter,
+        crate::icons::Icon::Lock,
+        center,
+        crate::icons::SIZE_BADGE,
+        color,
+        bg,
+    );
+}
+
+/// The stream's system layer speaks in three distinct voices,
+/// so a technical notice can never be mistaken for a
+/// participant's bubble and the three kinds never read as one
+/// another (the round-3 grading verdict: the old frame-based
+/// chips stretched to the available width and read as wide,
+/// left-aligned, broken bubbles; the audit's hierarchy verdict:
+/// date, encryption and events at equal weight read as noise).
+/// The font the whole family shares.
+const SYSTEM_PILL_FONT: f32 = 12.0;
+
+/// Which system voice a centered stream row speaks in: the
+/// hierarchy is date = a small solid pill, encryption = a
+/// distinct tinted card, events = a plain centered caption
+/// with no surface at all.
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) enum SystemPillKind {
+    /// Day and time separators: a small solid pill.
+    Date,
+    /// The end-to-end encryption notice: a tinted card with
+    /// more padding and a smaller corner radius than the pill.
+    Encryption,
+    /// Group events and other system rows: plain centered text.
+    Event,
+}
+
+/// Measures a system row for `label`: the text laid out at
+/// the family font, wrapped at 85% of the available width (92%
+/// for the encryption card, so its text stays on one line at
+/// phone widths instead of wrapping inside a narrow pill; a
+/// long system event wraps instead of stretching edge to
+/// edge), plus the padlock slot when `lock` is set. Returns
+/// the galley and the size that hugs it; the encryption card
+/// gets extra padding on both axes.
+fn system_pill_layout(
+    ui: &egui::Ui,
+    label: &str,
+    color: Color32,
+    lock: bool,
+    kind: SystemPillKind,
+) -> (std::sync::Arc<egui::Galley>, Vec2) {
+    let font = FontId::proportional(SYSTEM_PILL_FONT);
+    let lock_w = if lock { 16.0 } else { 0.0 };
+    let wrap_factor = if kind == SystemPillKind::Encryption { 0.92 } else { 0.85 };
+    let wrap = (ui.available_width() * wrap_factor - 24.0 - lock_w).max(48.0);
+    let galley = ui.ctx().fonts_mut(|f| f.layout(label.to_owned(), font, color, wrap));
+    let extra = if kind == SystemPillKind::Encryption { Vec2::new(16.0, 10.0) } else { Vec2::ZERO };
+    let size = Vec2::new(
+        galley.size().x + lock_w + 24.0 + extra.x,
+        (galley.size().y + 11.0 + extra.y).max(23.0),
+    );
+    (galley, size)
+}
+
+/// Paints the surface for a system row of `kind` at `rect`:
+/// the date pill gets the card-soft step, fully rounded; the
+/// encryption card gets the system chip fill at a card
+/// radius; an event paints nothing (its quietness is the
+/// point). Returns the fill color (the padlock's keyhole is
+/// punched in it).
+fn paint_system_pill(ui: &egui::Ui, t: Tokens, rect: egui::Rect, kind: SystemPillKind) -> Color32 {
+    if kind == SystemPillKind::Event {
+        return rgb(t.bg_chat);
+    }
+    let radius =
+        if kind == SystemPillKind::Encryption { 12 } else { (rect.height() / 2.0).round() as u8 };
+    let fill = if kind == SystemPillKind::Encryption {
+        // The fill is the system chip token itself, never a
+        // mix toward the text color: the old 0.28 mix toward
+        // system_text pulled the fill a quarter of the way to
+        // the text in both themes and dropped the pair below
+        // the legibility floor (dark on dark in the owner's
+        // report). system_text on system_chip is the pair the
+        // core theme tests pin at AA for every seed, and the
+        // card's shape, padding and lock keep it distinct
+        // from the date pill beside it.
+        rgb(t.system_chip)
+    } else {
+        // The system chip tone retires onto the card-soft step
+        // (design standard section 1): a resting pill on the
+        // chat ground, no shadow and no frame stroke.
+        crate::theme::card_soft(t)
+    };
+    let painter = ui.painter();
+    painter.rect(rect, CornerRadius::same(radius), fill, Stroke::NONE, egui::StrokeKind::Inside);
+    fill
+}
+
+/// One centered system row: the row is measured first and
+/// painted manually at its exact size in the middle of the
+/// row (an egui Frame in a centered layout stretches to
+/// the available width, which is what made the old notices
+/// read as bubbles). `lock` reserves the padlock slot ahead
+/// of the label.
+pub(crate) fn system_pill(
+    ui: &mut egui::Ui,
+    t: Tokens,
+    label: &str,
+    color: Color32,
+    lock: bool,
+    kind: SystemPillKind,
+) {
+    let (galley, size) = system_pill_layout(ui, label, color, lock, kind);
+    let (row, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), size.y), Sense::hover());
+    let pill = egui::Rect::from_center_size(row.center(), size);
+    let fill = paint_system_pill(ui, t, pill, kind);
+    let painter = ui.painter();
+    let extra_x = if kind == SystemPillKind::Encryption { 8.0 } else { 0.0 };
+    let mut text_x = pill.left() + 12.0 + extra_x;
+    if lock {
+        let slot = egui::Rect::from_min_size(
+            Pos2::new(pill.left() + 8.0 + extra_x, pill.top()),
+            Vec2::new(16.0, pill.height()),
+        );
+        paint_lock(painter, slot.center(), color, fill);
+        text_x += 16.0;
+    }
+    let text_pos = if kind == SystemPillKind::Event {
+        Pos2::new(pill.center().x - galley.size().x / 2.0, pill.center().y - galley.size().y / 2.0)
+    } else {
+        Pos2::new(text_x, pill.center().y - galley.size().y / 2.0)
+    };
+    painter.galley(text_pos, galley, color);
+}
+
+/// The temp-data key carrying the stream scroll area's
+/// reported velocity from one frame to the next.
+fn stream_velocity_id() -> egui::Id {
+    egui::Id::unique("stream_prev_velocity_y")
+}
+
+/// The velocity above which the stream still counts as
+/// moving under the user's hand, in points per second: the
+/// same threshold the scrollbar boost treats as activity, so
+/// the two never disagree about whether a scroll is live.
+pub(crate) const SCROLL_GESTURE_VELOCITY_EPS: f32 = 1.0;
+
+/// Whether a scroll gesture is active over the stream this
+/// frame: a smoothed delta in flight, a wheel event in this
+/// frame's input, or the scroll area still carrying velocity
+/// from the previous frame (a coasting tail has no events
+/// left). Pure, so the gate's shape is testable without a
+/// frame.
+pub(crate) fn scroll_gesture_active(
+    smooth_delta_y: f32,
+    wheel_event: bool,
+    prev_velocity_y: f32,
+) -> bool {
+    smooth_delta_y != 0.0 || wheel_event || prev_velocity_y.abs() > SCROLL_GESTURE_VELOCITY_EPS
+}
+
+/// Whether presenting the stream counts as a read action
+/// (qc1654 Claim H, owner manifestation): a chat that opens
+/// at its newest messages has them on screen in front of the
+/// user, so the badge must clear without waiting for a wheel
+/// gesture on top of the presentation. Presentation engages
+/// only at the bottom of the stream (the newest messages are
+/// the ones on screen) and only while the window holds focus
+/// (a chat left open in a background window reads nothing).
+/// Selection without presentation never reaches this code at
+/// all: the stream is drawn only for the chat on screen, so
+/// every entry path that presents the conversation (list,
+/// search, starred, channels, communities, calls) passes this
+/// hook by construction. Pure, so the rule is testable
+/// without a frame.
+pub(crate) fn presentation_engages(at_bottom: bool, window_focused: bool) -> bool {
+    at_bottom && window_focused
+}
+
+/// The end-to-end encryption notice: a centered tinted card
+/// with a padlock, rendered at the top of every conversation
+/// (under the first day separator, or on its own when the
+/// conversation is empty). Rendered, never a stored message, so
+/// it appears exactly once per conversation view and cannot be
+/// quoted, reacted to or counted as history.
+fn encryption_notice(ui: &mut egui::Ui, t: Tokens) {
+    let label = crate::i18n::t("conversation.encryption_notice");
+    system_pill(ui, t, &label, rgb(t.system_text), true, SystemPillKind::Encryption);
+}
+
+/// A system notice in the stream: a plain centered caption, so
+/// group events stay quieter than the date pills and never
+/// read as a participant's message.
+fn system_chip(ui: &mut egui::Ui, t: Tokens, label: &str) {
+    system_pill(ui, t, label, rgb(t.text_secondary), false, SystemPillKind::Event);
+}
+
+/// A day separator in the message stream: a centered solid
+/// pill carrying the day label ("Today", "Yesterday", or a
+/// full date), painted wherever the messages' day data
+/// changes. The time chips between distant messages use it
+/// too, so every separator in the stream is the same pill.
+fn day_chip(ui: &mut egui::Ui, t: Tokens, label: &str) {
+    system_pill(ui, t, label, rgb(t.text_secondary), false, SystemPillKind::Date);
+}
+
+/// The unread divider: a hairline across the stream with a
+/// system pill in the middle carrying the unread count as it
+/// was when the chat was opened. The pill is the family's
+/// shared one; only its accent text and the hairline are the
+/// divider's own.
+fn unread_divider_row(ui: &mut egui::Ui, t: Tokens, count: u32) {
+    let label = if count == 1 {
+        crate::i18n::t("conversation.unread_one")
+    } else {
+        crate::i18n::tf("conversation.unread_messages", "count", &count.to_string())
+    };
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 28.0), Sense::hover());
+    let painter = ui.painter();
+    painter.line_segment(
+        [Pos2::new(rect.left(), rect.center().y), Pos2::new(rect.right(), rect.center().y)],
+        Stroke::new(1.0_f32, rgb(t.border)),
+    );
+    let color = rgb(t.accent);
+    let (galley, size) = system_pill_layout(ui, &label, color, false, SystemPillKind::Date);
+    let pill = egui::Rect::from_center_size(rect.center(), size);
+    paint_system_pill(ui, t, pill, SystemPillKind::Date);
+    let text_pos =
+        Pos2::new(pill.center().x - galley.size().x / 2.0, pill.center().y - galley.size().y / 2.0);
+    painter.galley(text_pos, galley, color);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        assign_sender_colors, clock_minutes, prepass_fold, presentation_engages,
+        scroll_gesture_active, substitute_mentions, time_chip_between,
+    };
+    use core::model::Message;
+    use core::theme::Tokens;
+
+    #[test]
+    fn sender_colors_never_collide_inside_one_conversation() {
+        // Mike and Emma are the audit's collision pair: their
+        // name byte sums land on the same palette entry under
+        // the old per-name hash. Assigned per conversation in
+        // first-appearance order, they must differ.
+        let t = Tokens::dark();
+        let map = assign_sender_colors(["Mike", "Emma", "Sarah", "Mike"].into_iter(), t);
+        assert_eq!(map.len(), 3, "repeat senders keep their first color");
+        assert_ne!(map["Mike"], map["Emma"]);
+        assert_ne!(map["Emma"], map["Sarah"]);
+        assert_ne!(map["Mike"], map["Sarah"]);
+    }
+
+    /// Mentions render the person's name when the directory
+    /// knows it, the formatted number for a phone-form mention
+    /// without a name, and a masked span for a LID nothing can
+    /// name: a raw LID never paints. A shorter mention never
+    /// rewrites a longer one.
+    #[test]
+    fn mentions_substitute_names_then_numbers() {
+        let mut names = std::collections::HashMap::new();
+        names.insert("31525865312407@lid".to_owned(), "Bima Prasetyo".to_owned());
+        let body = "halo @31525865312407 dan @6281234567890 cc @999";
+        let mentions = vec![
+            "31525865312407@lid".to_owned(),
+            "6281234567890@s.whatsapp.net".to_owned(),
+            "999@lid".to_owned(),
+        ];
+        assert_eq!(
+            substitute_mentions(body, &mentions, &names),
+            "halo @Bima Prasetyo dan @+6281234567890 cc @••••••"
+        );
+        // Prefix safety: 6281 is a prefix of 6281234567890; the
+        // longer span is replaced first and stays intact.
+        let mentions = vec!["6281@lid".to_owned(), "6281234567890@s.whatsapp.net".to_owned()];
+        assert_eq!(
+            substitute_mentions("ping @6281234567890", &mentions, &names),
+            "ping @+6281234567890"
+        );
+    }
+
+    /// The pre-pass memo key must be stable for an unchanged
+    /// conversation and must move when any input the tables
+    /// read changes, including a same-length edit in the
+    /// middle (same count, same first and last IDs), which
+    /// the explicit key fields alone cannot see.
+    #[test]
+    fn prepass_fold_is_stable_and_detects_middle_edits() {
+        let jids = std::collections::HashMap::new();
+        let convo = vec![
+            Message::theirs(1, "Ana", "hello", "10:00"),
+            Message::mine(2, "middle body", "10:01"),
+            Message::theirs(3, "Ana", "bye", "10:02"),
+        ];
+        let base = prepass_fold(&convo, &jids, None, 7);
+        assert_eq!(base, prepass_fold(&convo, &jids, None, 7), "unchanged input, same key");
+        let mut edited = convo.clone();
+        edited[1].body = "middle EDIT".to_owned();
+        assert_ne!(base, prepass_fold(&edited, &jids, None, 7), "a middle edit moves the key");
+        assert_ne!(base, prepass_fold(&convo, &jids, None, 8), "another chat moves the key");
+        let mut appended = convo.clone();
+        appended.push(Message::mine(4, "more", "10:03"));
+        assert_ne!(base, prepass_fold(&appended, &jids, None, 7), "an append moves the key");
+    }
+
+    #[test]
+    fn scroll_gesture_gate_reads_each_evidence_source() {
+        // A quiet frame: no correction stands down.
+        assert!(!scroll_gesture_active(0.0, false, 0.0));
+        assert!(!scroll_gesture_active(0.0, false, 0.5));
+        // Any one source marks the gesture: a smoothed delta,
+        // a wheel event, or a coasting velocity past the
+        // epsilon, in either direction.
+        assert!(scroll_gesture_active(-12.0, false, 0.0));
+        assert!(scroll_gesture_active(0.0, true, 0.0));
+        assert!(scroll_gesture_active(0.0, false, 42.0));
+        assert!(scroll_gesture_active(0.0, false, -42.0));
+    }
+
+    #[test]
+    fn presentation_engages_only_at_the_bottom_of_a_focused_window() {
+        // The ordinary open: newest messages presented in the
+        // window the user is looking at.
+        assert!(presentation_engages(true, true));
+        // Presented scrolled up: the newest are not on screen.
+        assert!(!presentation_engages(false, true));
+        // Left open in a background window: nothing is read.
+        assert!(!presentation_engages(true, false));
+        assert!(!presentation_engages(false, false));
+    }
+
+    #[test]
+    fn clock_minutes_parses_the_stream_clock() {
+        assert_eq!(clock_minutes("17:44"), Some(17 * 60 + 44));
+        assert_eq!(clock_minutes("0:00"), Some(0));
+        assert_eq!(clock_minutes("23:59"), Some(23 * 60 + 59));
+        assert_eq!(clock_minutes("…"), None);
+        assert_eq!(clock_minutes("24:00"), None);
+        // Lenient about unpadded parts: "9:5" is 9:05.
+        assert_eq!(clock_minutes("9:5"), Some(9 * 60 + 5));
+    }
+
+    #[test]
+    fn time_chip_appears_after_a_real_pause_only() {
+        let earlier = Message::mine(1, String::new(), "17:10");
+        let later = Message::mine(2, String::new(), "17:41");
+        assert!(time_chip_between(&earlier, &later), "31 minutes apart");
+        let soon = Message::mine(3, String::new(), "17:20");
+        assert!(!time_chip_between(&earlier, &soon), "10 minutes apart");
+        let midnight_next = Message::mine(4, String::new(), "0:05");
+        assert!(time_chip_between(&earlier, &midnight_next), "wraps past midnight");
+        let echo = Message::mine(5, String::new(), "…");
+        assert!(!time_chip_between(&earlier, &echo), "unparseable clock");
+    }
+}

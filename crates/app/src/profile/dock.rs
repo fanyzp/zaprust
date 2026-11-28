@@ -1,0 +1,825 @@
+//! Dock building blocks for the profile panel: the card, row and
+//! section primitives in the WhatsApp info layout language, the
+//! shared header, and the per-kind body sections the panel in
+//! `super::panel` composes.
+
+use super::ProfileIntents;
+use crate::icons::Icon;
+use crate::theme::{medium, rgb, SP_1, SP_2, SP_3, SP_SECTION, TEXT_BODY, TEXT_LABEL};
+use crate::widgets::{chip, paint_chat_avatar_photo, verified_badge};
+use core::model::Chat;
+use core::theme::Tokens;
+use eframe::egui::{self, CornerRadius, RichText, Stroke};
+
+/// The centered profile header shared by every variant: large
+/// avatar, name with verified / AI badges, one status line under
+/// it. `title` is the display title the caller resolved through
+/// the shared `display_chat_title`, so the self chat carries its
+/// "(You)" form here like every other surface (qc1656 LOW-4);
+/// `subtitle` is resolved by the caller (presence for users,
+/// member count for groups, the AI line for AI contacts).
+pub(super) fn profile_header(
+    ui: &mut egui::Ui,
+    t: Tokens,
+    chat: &Chat,
+    title: &str,
+    subtitle: &str,
+    photo: Option<egui::TextureId>,
+) {
+    // The whole identity block centres on the dock's axis through
+    // layout alone: the avatar is allocated inside a centred
+    // layout and painted into the rect it was allocated (the old
+    // code painted at a centre computed from a different rect),
+    // and the name row centres as one unit, badges included, via
+    // the layout's main alignment (the old code centred it by
+    // hand-measured arithmetic that under-counted the badges and
+    // forgot the item spacing, landing the group left of centre
+    // whenever a badge was present).
+    ui.vertical_centered(|ui| {
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(96.0, 96.0), egui::Sense::hover());
+        paint_chat_avatar_photo(ui.painter(), rect.center(), 48.0, chat, photo);
+    });
+    ui.add_space(SP_2);
+    // The name row is painted on one measured line. egui has no
+    // primitive that centres a row of siblings as a group
+    // (`main_align` aligns content inside a widget, not between
+    // widgets), and nothing in this row is interactive, so the
+    // group is composed directly: measure the name, add the real
+    // badge widths and the real item spacing, and start the
+    // group at centre minus half the total. Allocation and paint
+    // use the same numbers, so the group is centred by
+    // construction, badges or not.
+    let name_font = crate::theme::semibold(19.0);
+    let name_w = ui
+        .painter()
+        .layout_no_wrap(title.to_owned(), name_font.clone(), rgb(t.text_primary))
+        .size()
+        .x;
+    let gap = ui.spacing().item_spacing.x;
+    let mut total = name_w;
+    if chat.verified {
+        total += gap + 18.0;
+    }
+    if chat.meta_ai {
+        total += gap + 22.0;
+    }
+    if title_scrolls(ui.available_width(), total) {
+        // The overflowing title (qc1654 item 26): the title
+        // group scrolls horizontally inside a strip held off
+        // the dock's edges by the title margin, so the full
+        // name is reachable and the text never touches the
+        // container's edge. Scrolling is the user's (wheel or
+        // drag); nothing animates on its own.
+        let viewport_w = ui.available_width() - 2.0 * DOCK_TITLE_MARGIN;
+        ui.horizontal(|ui| {
+            ui.add_space(DOCK_TITLE_MARGIN);
+            egui::ScrollArea::horizontal()
+                .id_salt(("dock_title", chat.id))
+                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+                .scroll_source(egui::scroll_area::ScrollSource {
+                    drag: egui::scroll_area::DragScroll::Always,
+                    ..Default::default()
+                })
+                .max_width(viewport_w)
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    let (content, _) =
+                        ui.allocate_exact_size(egui::vec2(total, 24.0), egui::Sense::hover());
+                    paint_title_group(
+                        ui.painter(),
+                        content.left(),
+                        content.center().y,
+                        chat,
+                        title,
+                        &name_font,
+                        name_w,
+                        gap,
+                        t,
+                    );
+                });
+        });
+    } else {
+        let (row, _) =
+            ui.allocate_exact_size(egui::vec2(ui.available_width(), 24.0), egui::Sense::hover());
+        paint_title_group(
+            ui.painter(),
+            row.center().x - total / 2.0,
+            row.center().y,
+            chat,
+            title,
+            &name_font,
+            name_w,
+            gap,
+            t,
+        );
+    }
+    ui.vertical_centered(|ui| {
+        ui.label(RichText::new(subtitle).size(12.0).color(rgb(t.text_secondary)));
+    });
+}
+
+/// The margin the header title keeps from the dock's edges
+/// (qc1654 item 26): a fitting title centres inside this
+/// margin box (symmetric, so the centre is the dock's), and
+/// an overflowing title scrolls inside it; in neither case
+/// does title text reach the container's edge.
+pub(super) const DOCK_TITLE_MARGIN: f32 = 16.0;
+
+/// Whether the title group scrolls for a dock row of `row_w`
+/// and a measured title group of `content_w`: it scrolls
+/// exactly when the group is wider than the margin box.
+/// Pure, so the decision is testable without a frame.
+pub(super) fn title_scrolls(row_w: f32, content_w: f32) -> bool {
+    content_w > row_w - 2.0 * DOCK_TITLE_MARGIN
+}
+
+/// Paints the title group (name, then the verified badge,
+/// then the AI chip) starting at `x` on the line centred at
+/// `cy`: the one paint both the centred layout and the
+/// scrolling strip use, so the two can never drift apart.
+#[allow(clippy::too_many_arguments)]
+fn paint_title_group(
+    painter: &egui::Painter,
+    mut x: f32,
+    cy: f32,
+    chat: &Chat,
+    title: &str,
+    name_font: &egui::FontId,
+    name_w: f32,
+    gap: f32,
+    t: Tokens,
+) {
+    painter.text(
+        egui::pos2(x, cy),
+        egui::Align2::LEFT_CENTER,
+        title,
+        name_font.clone(),
+        rgb(t.text_primary),
+    );
+    x += name_w;
+    if chat.verified {
+        x += gap;
+        verified_badge(painter, egui::pos2(x + 9.0, cy), 8.0, t);
+        x += 18.0;
+    }
+    if chat.meta_ai {
+        x += gap;
+        crate::widgets::ai_chip(painter, egui::pos2(x, cy), t);
+    }
+}
+
+// ----------------------------------------------------------------
+// Dock layout metrics: one grid for the whole info dock, so every
+// section lines up on the same axes instead of each section
+// hand-rolling its own row. The icon axis and label line reuse
+// the app-wide popup-row convention (`menu_item_row` in
+// widgets.rs centres its icon 19 px in and puts the label at
+// 38 px), so the dock reads as part of the same system. Member
+// avatars centre on the icon axis and their names start on the
+// label line, like every other row.
+
+/// Height of one simple dock row (action rows, stat rows).
+pub(super) const DOCK_ROW_H: f32 = 42.0;
+
+/// X of the row icon axis, from the dock content edge.
+pub(super) const DOCK_ICON_X: f32 = 19.0;
+
+/// X of the row label line, from the dock content edge.
+pub(super) const DOCK_LABEL_X: f32 = 38.0;
+
+/// Glyph size for row icons.
+pub(super) const DOCK_ICON_SIZE: f32 = 20.0;
+
+/// Height of one cell in the identity action row.
+pub(super) const DOCK_ACTION_H: f32 = 66.0;
+
+/// Diameter of the disc behind an action cell's icon.
+pub(super) const DOCK_ACTION_DISC: f32 = 44.0;
+
+/// The resting fill rows paint their hover and pressed states
+/// from: the dock panel itself. Sections are flat, in the
+/// settings page language, so a row's states step from the
+/// panel fill the row rests on.
+pub(super) fn dock_card_fill(t: Tokens) -> core::theme::Rgb {
+    t.bg_panel
+}
+
+/// A hairline between two rows of one section, inset to the
+/// label line so it runs under the row text, painted at the
+/// standard soft alpha (the soft_right_edge recipe): dock
+/// sections are long and flat, so their row splits survive,
+/// but never at full border contrast (design standard,
+/// hairline discipline).
+pub(super) fn dock_separator(ui: &mut egui::Ui, t: Tokens) {
+    let width = ui.available_width();
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, 1.0), egui::Sense::hover());
+    let c = rgb(t.border);
+    ui.painter().hline(
+        (rect.left() + DOCK_LABEL_X)..=rect.right(),
+        rect.center().y,
+        Stroke::new(1.0_f32, egui::Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), 100)),
+    );
+}
+
+/// One grouped dock section, flat on the panel: no fill, border
+/// or padding of its own. Sections separate by spacing, rows
+/// inside a section by hairlines, exactly like a settings page.
+/// The grid constants (icon axis, label line) are measured from
+/// the dock's content edge, so rows in every section share one
+/// alignment. The name keeps the call sites readable; it groups
+/// rows, it no longer draws a card.
+pub(super) fn dock_card<R>(
+    ui: &mut egui::Ui,
+    _t: Tokens,
+    body: impl FnOnce(&mut egui::Ui) -> R,
+) -> egui::InnerResponse<R> {
+    egui::Frame::new().show(ui, |ui| {
+        // Every section spans the dock's full content width:
+        // a section whose body is one short row must not hug
+        // its content while its neighbours stretch.
+        ui.set_min_width(ui.available_width());
+        body(ui)
+    })
+}
+
+/// Prose on the dock's label line (section captions, the
+/// About and description texts): indented by a margin frame,
+/// never by a horizontal row. A label inside a horizontal row
+/// takes its unwrapped width, so a long caption would size the
+/// row, and with it the whole dock, to hundreds of pixels
+/// beyond the panel; in a margin frame the same label wraps at
+/// the section's width like prose should.
+pub(super) fn dock_prose<R>(ui: &mut egui::Ui, body: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    egui::Frame::new()
+        .inner_margin(egui::Margin { left: DOCK_LABEL_X as i8, right: 0, top: 0, bottom: 0 })
+        .show(ui, body)
+        .inner
+}
+
+/// A flat dock section with its heading on the label line and
+/// an optional one-line caption under it: the standard grouped
+/// section of the dock.
+pub(super) fn dock_card_section<R>(
+    ui: &mut egui::Ui,
+    t: Tokens,
+    title: &str,
+    caption: Option<&str>,
+    body: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    ui.add_space(SP_SECTION);
+    dock_card(ui, t, |ui| {
+        ui.horizontal(|ui| {
+            ui.add_space(DOCK_LABEL_X);
+            ui.label(RichText::new(title).size(12.0).strong().color(rgb(t.text_primary)));
+        });
+        if let Some(caption) = caption {
+            dock_prose(ui, |ui| {
+                ui.label(RichText::new(caption).size(12.0).color(rgb(t.text_faint)));
+            });
+        }
+        ui.add_space(SP_1);
+        body(ui)
+    })
+    .inner
+}
+
+/// One full-width tappable dock row: an optional icon centred on
+/// the shared icon axis, the label on the shared label line, an
+/// optional chevron (only for rows that navigate somewhere;
+/// action rows pass `false`). Rows without an icon keep the
+/// empty column, so every label in the dock starts on the same
+/// vertical line.
+pub(super) fn dock_row(
+    ui: &mut egui::Ui,
+    t: Tokens,
+    icon: Option<(Icon, core::theme::Rgb)>,
+    label: &str,
+    label_color: core::theme::Rgb,
+    chevron: bool,
+) -> egui::Response {
+    let width = ui.available_width();
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, DOCK_ROW_H), egui::Sense::click());
+    // The fills crossfade through the shared hover and press
+    // factors between the same step endpoints the row used to
+    // snap between.
+    let base = dock_card_fill(t);
+    let hov = crate::anim::hover_factor(ui, ("dock_row", label), resp.hovered());
+    let press =
+        crate::anim::press_factor(ui, ("dock_row", label), resp.is_pointer_button_down_on());
+    if press > 0.001 {
+        let fill = core::theme::mix(base, core::theme::pressed_step(base), press);
+        ui.painter().rect_filled(rect, CornerRadius::same(crate::theme::RADIUS_SMALL), rgb(fill));
+    } else if hov > 0.001 {
+        let fill = core::theme::mix(base, core::theme::hover_step(base), hov);
+        ui.painter().rect_filled(rect, CornerRadius::same(crate::theme::RADIUS_SMALL), rgb(fill));
+    }
+    if let Some((icon, color)) = icon {
+        crate::icons::draw(
+            ui.painter(),
+            icon,
+            egui::pos2(rect.left() + DOCK_ICON_X, rect.center().y),
+            DOCK_ICON_SIZE,
+            rgb(color),
+            rgb(t.bg_panel),
+        );
+    }
+    ui.painter().text(
+        egui::pos2(rect.left() + DOCK_LABEL_X, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        label,
+        crate::theme::medium(TEXT_BODY),
+        rgb(label_color),
+    );
+    if chevron {
+        crate::icons::draw(
+            ui.painter(),
+            Icon::ChevronRight,
+            egui::pos2(rect.right() - 14.0, rect.center().y),
+            crate::icons::SIZE_ROW,
+            rgb(t.text_faint),
+            rgb(t.bg_panel),
+        );
+    }
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// One dock stat row that navigates (section 25): the same
+/// geometry as [`dock_row`], with a right-aligned value and a
+/// chevron at the edge, and the shared row's hover and press
+/// fills. Returns the row's response.
+pub(super) fn dock_stat_row(
+    ui: &mut egui::Ui,
+    t: Tokens,
+    label: &str,
+    value: &str,
+    separator: bool,
+) -> egui::Response {
+    let width = ui.available_width();
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, DOCK_ROW_H), egui::Sense::click());
+    let base = dock_card_fill(t);
+    let hov = crate::anim::hover_factor(ui, ("dock_stat_row", label), resp.hovered());
+    let press =
+        crate::anim::press_factor(ui, ("dock_stat_row", label), resp.is_pointer_button_down_on());
+    if press > 0.001 {
+        let fill = core::theme::mix(base, core::theme::pressed_step(base), press);
+        ui.painter().rect_filled(rect, CornerRadius::same(crate::theme::RADIUS_SMALL), rgb(fill));
+    } else if hov > 0.001 {
+        let fill = core::theme::mix(base, core::theme::hover_step(base), hov);
+        ui.painter().rect_filled(rect, CornerRadius::same(crate::theme::RADIUS_SMALL), rgb(fill));
+    }
+    ui.painter().text(
+        egui::pos2(rect.left() + DOCK_LABEL_X, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        label,
+        crate::theme::medium(TEXT_BODY),
+        rgb(t.text_primary),
+    );
+    ui.painter().text(
+        egui::pos2(rect.right() - 26.0, rect.center().y),
+        egui::Align2::RIGHT_CENTER,
+        value,
+        crate::theme::medium(TEXT_BODY),
+        rgb(t.text_secondary),
+    );
+    crate::icons::draw(
+        ui.painter(),
+        Icon::ChevronRight,
+        egui::pos2(rect.right() - 14.0, rect.center().y),
+        crate::icons::SIZE_ROW,
+        rgb(t.text_faint),
+        rgb(t.bg_panel),
+    );
+    if separator {
+        let c = rgb(t.border);
+        ui.painter().hline(
+            (rect.left() + DOCK_LABEL_X)..=rect.right(),
+            rect.bottom() - 0.5,
+            Stroke::new(1.0_f32, egui::Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), 100)),
+        );
+    }
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// The identity action row: equal-width cells spanning the dock,
+/// each cell's icon disc and caption centred on the cell's own
+/// axis as one unit (the structure Telegram's info panel uses,
+/// in this app's tokens). Painting the cell directly is what
+/// guarantees the centring: the previous implementation nested
+/// two sub-layouts with different alignment rules, so the icon
+/// and its caption were centred by different maths and never
+/// shared an axis. Returns the clicked cell's index, if any.
+pub(super) fn dock_action_row(
+    ui: &mut egui::Ui,
+    t: Tokens,
+    actions: &[(Icon, &str)],
+) -> Option<usize> {
+    if actions.is_empty() {
+        return None;
+    }
+    ui.spacing_mut().item_spacing.x = SP_2;
+    let n = actions.len() as f32;
+    let cell_w = ((ui.available_width() - SP_2 * (n - 1.0)) / n).max(0.0);
+    let mut clicked = None;
+    ui.horizontal(|ui| {
+        for (i, (icon, label)) in actions.iter().enumerate() {
+            let (rect, resp) =
+                ui.allocate_exact_size(egui::vec2(cell_w, DOCK_ACTION_H), egui::Sense::click());
+            let hov = crate::anim::hover_factor(ui, ("dock_action_cell", *label), resp.hovered());
+            let press = crate::anim::press_factor(
+                ui,
+                ("dock_action_cell", *label),
+                resp.is_pointer_button_down_on(),
+            );
+            // Endpoints unchanged: rest is the card's own fill
+            // (no visible fill), hover the panel-alt fill, press
+            // its pressed step; the factors only crossfade
+            // between them.
+            let base = dock_card_fill(t);
+            if press > 0.001 {
+                let fill = core::theme::mix(base, core::theme::pressed_step(t.bg_panel_alt), press);
+                ui.painter().rect_filled(
+                    rect,
+                    CornerRadius::same(crate::theme::RADIUS_SMALL),
+                    rgb(fill),
+                );
+            } else if hov > 0.001 {
+                let fill = core::theme::mix(base, t.bg_panel_alt, hov);
+                ui.painter().rect_filled(
+                    rect,
+                    CornerRadius::same(crate::theme::RADIUS_SMALL),
+                    rgb(fill),
+                );
+            }
+            let disc_c = egui::pos2(rect.center().x, rect.top() + DOCK_ACTION_DISC / 2.0 + 2.0);
+            ui.painter().circle_filled(disc_c, DOCK_ACTION_DISC / 2.0, rgb(t.bg_panel_alt));
+            crate::icons::draw(
+                ui.painter(),
+                *icon,
+                disc_c,
+                crate::icons::SIZE_CONTROL,
+                rgb(t.text_primary),
+                rgb(t.bg_panel_alt),
+            );
+            ui.painter().text(
+                egui::pos2(rect.center().x, rect.bottom() - 2.0),
+                egui::Align2::CENTER_BOTTOM,
+                label,
+                medium(TEXT_LABEL),
+                rgb(t.text_secondary),
+            );
+            if resp.clicked() {
+                clicked = Some(i);
+            }
+        }
+    });
+    clicked
+}
+
+/// One member row: the avatar centred on the shared icon axis,
+/// the name (and the address, in live lists) on the shared label
+/// line, the admin tag and, when the row carries actions, ONE
+/// kebab button at the right edge. Per-member actions live in
+/// the kebab's menu (progressive disclosure): a member row is a
+/// single visual unit, never a row of buttons. Returns the
+/// kebab's response so the caller can anchor the menu to it;
+/// rows without actions (demo lists) pass `kebab: false` and
+/// get `None`.
+pub(crate) fn dock_member_row(
+    ui: &mut egui::Ui,
+    t: Tokens,
+    name: &str,
+    address: Option<&str>,
+    admin: bool,
+    kebab: bool,
+    photo: Option<egui::TextureId>,
+) -> Option<egui::Response> {
+    dock_member_row_labeled(ui, t, name, address, admin, kebab, photo, None)
+}
+
+/// [`dock_member_row`] with the member's self-chosen label
+/// (row 65) riding beside the name, when they set one. The
+/// labeled form takes the label as an eighth argument; the
+/// row's inputs are all borrowed view data with no natural
+/// grouping struct, so the count is allowed here.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn dock_member_row_labeled(
+    ui: &mut egui::Ui,
+    t: Tokens,
+    name: &str,
+    address: Option<&str>,
+    admin: bool,
+    kebab: bool,
+    photo: Option<egui::TextureId>,
+    member_label: Option<&str>,
+) -> Option<egui::Response> {
+    let seed = (name.bytes().map(u32::from).sum::<u32>() % 8) as u8;
+    let mut kebab_resp = None;
+    ui.allocate_ui_with_layout(
+        egui::vec2(ui.available_width(), DOCK_ROW_H),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            let (r, _) =
+                ui.allocate_exact_size(egui::vec2(DOCK_LABEL_X, DOCK_ROW_H), egui::Sense::hover());
+            let center = egui::pos2(r.left() + DOCK_ICON_X, r.center().y);
+            match photo {
+                Some(tex) => crate::widgets::paint_photo_avatar(ui.painter(), center, 15.0, tex),
+                None => crate::widgets::paint_avatar(ui.painter(), center, 15.0, false, seed),
+            }
+            ui.vertical(|ui| {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(name).size(TEXT_BODY).color(rgb(t.text_primary)));
+                    // The member's own label in this group
+                    // (row 65): their words, shown as they set
+                    // them, never invented here.
+                    if let Some(label) = member_label {
+                        ui.label(
+                            RichText::new(label)
+                                .size(crate::theme::TEXT_CAPTION)
+                                .color(rgb(t.accent)),
+                        );
+                    }
+                });
+                if let Some(address) = address {
+                    ui.label(
+                        RichText::new(address)
+                            .size(crate::theme::TEXT_CAPTION)
+                            .color(rgb(t.text_faint)),
+                    );
+                }
+            });
+            if kebab || admin {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if kebab {
+                        kebab_resp = Some(crate::widgets::icon_button_on(
+                            ui,
+                            t,
+                            Icon::MoreVert,
+                            28.0,
+                            &crate::i18n::t("profile.member_actions"),
+                            None,
+                            core::theme::hover_step(dock_card_fill(t)),
+                            core::theme::pressed_step(dock_card_fill(t)),
+                        ));
+                    }
+                    if admin {
+                        if kebab {
+                            ui.add_space(SP_1);
+                        }
+                        ui.label(
+                            RichText::new(crate::i18n::t("profile.admin"))
+                                .font(medium(10.0))
+                                .color(rgb(t.accent)),
+                        );
+                    }
+                });
+            }
+        },
+    );
+    kebab_resp
+}
+
+/// The "Media, links and docs" section: counts computed by the
+/// caller from the loaded conversation. Each row opens the
+/// gallery on its section (section 25): the counts were always
+/// the gallery's index, and now they lead where they promise.
+pub(super) fn profile_counts_section(
+    ui: &mut egui::Ui,
+    t: Tokens,
+    media: usize,
+    links: usize,
+    docs: usize,
+    intents: &mut super::ProfileIntents,
+) {
+    dock_card_section(ui, t, &crate::i18n::t("profile.media"), None, |ui| {
+        let media_label = crate::i18n::t("profile.counts_media");
+        let links_label = crate::i18n::t("profile.counts_links");
+        let docs_label = crate::i18n::t("profile.counts_docs");
+        let rows = [
+            (media_label.as_str(), media, crate::state::GallerySection::Media),
+            (links_label.as_str(), links, crate::state::GallerySection::Links),
+            (docs_label.as_str(), docs, crate::state::GallerySection::Docs),
+        ];
+        for (i, (label, count, section)) in rows.iter().enumerate() {
+            if dock_stat_row(ui, t, label, &count.to_string(), i + 1 < rows.len()).clicked() {
+                intents.gallery = Some(*section);
+            }
+        }
+    });
+}
+
+/// One radio row on the dock grid: the shared row geometry
+/// with a radio dot at the right edge instead of a chevron.
+pub(super) fn ephemeral_option_row(
+    ui: &mut egui::Ui,
+    t: Tokens,
+    label: &str,
+    selected: bool,
+) -> bool {
+    let width = ui.available_width();
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, DOCK_ROW_H), egui::Sense::click());
+    let base = dock_card_fill(t);
+    let hov = crate::anim::hover_factor(ui, ("dock_ephemeral_row", label), resp.hovered());
+    let press = crate::anim::press_factor(
+        ui,
+        ("dock_ephemeral_row", label),
+        resp.is_pointer_button_down_on(),
+    );
+    if press > 0.001 {
+        let fill = core::theme::mix(base, core::theme::pressed_step(base), press);
+        ui.painter().rect_filled(rect, CornerRadius::same(crate::theme::RADIUS_SMALL), rgb(fill));
+    } else if hov > 0.001 {
+        let fill = core::theme::mix(base, core::theme::hover_step(base), hov);
+        ui.painter().rect_filled(rect, CornerRadius::same(crate::theme::RADIUS_SMALL), rgb(fill));
+    }
+    ui.painter().text(
+        egui::pos2(rect.left() + DOCK_LABEL_X, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        label,
+        crate::theme::medium(TEXT_BODY),
+        rgb(t.text_primary),
+    );
+    // The radio geometry matches the shared radio_row (ring
+    // r8, stroke 1.6, dot r4.5); it sits at the row's right
+    // edge because dock rows carry their affordance there,
+    // where the shared row's radio leads at the left.
+    let dot_c = egui::pos2(rect.right() - 14.0, rect.center().y);
+    let ring = if selected { t.accent } else { t.text_faint };
+    ui.painter().circle_stroke(dot_c, 8.0, Stroke::new(1.6, rgb(ring)));
+    if selected {
+        ui.painter().circle_filled(dot_c, 4.5, rgb(t.accent));
+    }
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
+}
+
+/// The encryption row: the end-to-end notice the reference's
+/// info panels carry, stated once in the dock as well as in
+/// the stream. It is informational only (no click target, no
+/// hover wash): the lock glyph sits on the row icon axis at
+/// the dock icon size and the line reads on the label line at
+/// the body step, like every other dock row. Channels never
+/// get this row: a newsletter is not an end-to-end chat.
+pub(super) fn encryption_row(ui: &mut egui::Ui, t: Tokens) {
+    ui.add_space(SP_SECTION);
+    dock_card(ui, t, |ui| {
+        let width = ui.available_width();
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(width, DOCK_ROW_H), egui::Sense::hover());
+        crate::icons::draw(
+            ui.painter(),
+            Icon::Lock,
+            egui::pos2(rect.left() + DOCK_ICON_X, rect.center().y),
+            DOCK_ICON_SIZE,
+            rgb(t.text_secondary),
+            rgb(t.bg_panel),
+        );
+        ui.painter().text(
+            egui::pos2(rect.left() + DOCK_LABEL_X, rect.center().y),
+            egui::Align2::LEFT_CENTER,
+            crate::i18n::t("conversation.encryption_notice"),
+            crate::theme::medium(TEXT_BODY),
+            rgb(t.text_primary),
+        );
+    });
+}
+
+/// The disappearing-messages section of the info dock: a
+/// heading and one radio row per duration, separated by
+/// hairlines. The explanation of the feature lives in Settings;
+/// the dock only carries the choice. Shared by the user and
+/// group bodies; channels do not carry the feature (a
+/// newsletter is not an end-to-end chat).
+pub(super) fn disappearing_section(
+    ui: &mut egui::Ui,
+    t: Tokens,
+    current: u32,
+    intents: &mut ProfileIntents,
+) {
+    dock_card_section(ui, t, &crate::i18n::t("profile.disappearing"), None, |ui| {
+        for (i, secs) in core::model::EPHEMERAL_OPTIONS.iter().enumerate() {
+            if i > 0 {
+                dock_separator(ui, t);
+            }
+            let label = crate::extras::ephemeral_duration_label(*secs);
+            if ephemeral_option_row(ui, t, &label, *secs == current) {
+                intents.ephemeral_pick = Some(*secs);
+            }
+        }
+    });
+}
+
+/// The user (DM contact) body: the action row, an identifier
+/// line (the live JID, when there is one), an About section
+/// when the contact carries a non-presence status line, the
+/// media counts, and the block / report rows at the bottom.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn profile_user_body(
+    ui: &mut egui::Ui,
+    t: Tokens,
+    id_line: Option<&str>,
+    about: Option<&str>,
+    counts: (usize, usize, usize),
+    blocked: bool,
+    ephemeral_secs: u32,
+    intents: &mut ProfileIntents,
+) {
+    // Action row: audio call (the same live-call path the chat
+    // header uses), search, and export, as equal-width cells.
+    // There is no video-call feature, so there is no video cell.
+    ui.add_space(SP_3);
+    let audio = crate::i18n::t("profile.audio_call");
+    let search = crate::i18n::t("profile.search");
+    let export = crate::i18n::t("common.export_chat");
+    let actions: Vec<(Icon, &str)> = vec![
+        (Icon::Phone, audio.as_str()),
+        (Icon::Search, search.as_str()),
+        (Icon::Download, export.as_str()),
+    ];
+    if let Some(i) = dock_action_row(ui, t, &actions) {
+        match actions[i].0 {
+            Icon::Phone => intents.start_call = true,
+            Icon::Search => intents.focus_search = true,
+            _ => intents.export = true,
+        }
+    }
+    if let Some(line) = id_line {
+        ui.add_space(SP_2);
+        ui.vertical_centered(|ui| {
+            ui.label(RichText::new(line).size(12.0).color(rgb(t.text_faint)));
+        });
+    }
+    if let Some(about) = about {
+        dock_card_section(ui, t, &crate::i18n::t("profile.about"), None, |ui| {
+            dock_prose(ui, |ui| {
+                ui.label(RichText::new(about).size(12.0).color(rgb(t.text_secondary)));
+            });
+        });
+    }
+    profile_counts_section(ui, t, counts.0, counts.1, counts.2, intents);
+    encryption_row(ui, t);
+    disappearing_section(ui, t, ephemeral_secs, intents);
+    ui.add_space(SP_SECTION);
+    // Block / report rows in their own section: danger text on
+    // the shared row grid, no chevron (they act immediately,
+    // they do not navigate).
+    dock_card(ui, t, |ui| {
+        let block_label = crate::i18n::t(if blocked { "profile.unblock" } else { "profile.block" });
+        if dock_row(ui, t, None, &block_label, t.danger, false).clicked() {
+            intents.toggle_block = true;
+        }
+        dock_separator(ui, t);
+        if dock_row(ui, t, None, &crate::i18n::t("profile.report"), t.danger, false).clicked() {
+            intents.report = true;
+        }
+    });
+}
+
+/// The AI profile body, in the style of Meta AI's profile: a short
+/// capability description under the header, then suggestion chips
+/// that drop a starter prompt into the composer. Flat fills only,
+/// no gradients: the sparkle avatar in the header carries the AI
+/// identity. `description` and `suggestions` are resolved by the
+/// caller (the description differs between demo and live data).
+pub(crate) fn profile_ai_body(
+    ui: &mut egui::Ui,
+    t: Tokens,
+    description: &str,
+    suggestions: &[String],
+    intents: &mut ProfileIntents,
+) {
+    ui.add_space(SP_2);
+    ui.label(RichText::new(description).size(12.0).color(rgb(t.text_secondary)));
+    ui.add_space(SP_3);
+    ui.label(
+        RichText::new(crate::i18n::t("profile.ai_suggest_label"))
+            .size(12.0)
+            .strong()
+            .color(rgb(t.text_primary)),
+    );
+    ui.add_space(SP_1);
+    ui.horizontal_wrapped(|ui| {
+        for s in suggestions {
+            if chip(ui, s, false, t).clicked() {
+                intents.suggestion = Some(s.clone());
+            }
+        }
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{title_scrolls, DOCK_TITLE_MARGIN};
+
+    #[test]
+    fn dock_title_scrolls_only_when_it_overflows_the_margin_box() {
+        // The dock is 360 wide; the margin box is 328.
+        let row = 360.0;
+        let box_w = row - 2.0 * DOCK_TITLE_MARGIN;
+        assert!(!title_scrolls(row, 120.0), "a short name centres");
+        assert!(!title_scrolls(row, box_w), "a name exactly filling the margin box still centres");
+        assert!(title_scrolls(row, box_w + 1.0), "one point over the margin box scrolls");
+        assert!(title_scrolls(row, 900.0), "a very long name scrolls");
+        // The margins take room on both sides: title text
+        // can never reach the container's edge in either
+        // layout.
+        assert!(box_w < row, "the margin box is narrower than the row");
+    }
+}
